@@ -15,6 +15,13 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-05 — Soft delete via uniform `status` flag (no hard DELETE in app code)
+**Scope:** db / shared
+**Proposed by:** user
+**Decision:** Every business table carries `status SMALLINT NOT NULL DEFAULT 1 CHECK (status IN (0, 1))` (1=active, 0=deleted). Application code never issues SQL DELETE — "delete" endpoints flip the flag. To keep the column name uniform across tables, the existing 1-5 lifecycle column on `tasks` is being renamed `tasks.status → tasks.process_status` (codes unchanged); the new `tasks.status` then carries the same 0/1 semantic as every other table. `tasks_history` is exempt (audit append-only by design).
+**Reasoning:** User policy — never lose business data. The audit trigger (`tasks_audit_trg`) snapshots the flag flip as `'U'`, so soft deletes remain traceable. Renaming the lifecycle column rather than picking a different soft-delete name avoids "different soft-delete column per table" sprawl. Reverses the earlier "Soft delete: no" line in db-schema.md Conventions.
+**Implications:** Every list endpoint defaults to `WHERE status=1`; opt-in `?include_deleted=true` to see soft-deleted rows. DELETE endpoints become PATCH `{"status": 0}`. Hard DELETE reserved for manual psql cleanup (`tasks_history.operation='D'` becomes rare). Migration tracked as a Kanban task — see standards/postgresql/soft-delete.md (to be drafted) for the operational details.
+
 ## 2026-05-04 — Auto-scaffold folder structure on POST /api/projects
 **Scope:** backend / shared
 **Proposed by:** backend

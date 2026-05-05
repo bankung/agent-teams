@@ -55,6 +55,15 @@ services:
       # COPY so source edits take effect under --reload.
       - .:/repo
     command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8456", "--reload"]
+    healthcheck:
+      # /health is a liveness probe (no DB touch — see standards/fastapi/runtime.md).
+      # curl is installed in api/Dockerfile specifically for this check.
+      # start_period gives uvicorn time to import + bind before failures count.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8456/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
   # ---------------------------------------------------------------------------
   # web — Phase 3 placeholder.

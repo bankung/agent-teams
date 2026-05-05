@@ -1,0 +1,43 @@
+# SQLAlchemy 2.0 ORM — project conventions
+
+**Scope:** rules this project commits to when defining ORM models and querying via `AsyncSession`. Not a tutorial — only points where we diverge from defaults or have made a deliberate call. See `context/standards/general.md` for Kanban codes and naming.
+
+## Stack
+
+- **Async-first.** SQLAlchemy 2.0 + `asyncpg` + `AsyncSession`. FastAPI handlers are `async def`. No sync engine, no sync session anywhere in `api/src/` (decision 2026-05-04). Sync I/O on the request path blocks the event loop.
+- **Session factory** is built once at import in `api/src/db.py` with `expire_on_commit=False` and `autoflush=False`. The first avoids `MissingGreenlet`/`InvalidRequestError` when serializers touch attributes after `commit()`; the second keeps writes explicit — call `await session.flush()` when you actually need it.
+- **Dependency injection.** Routers receive a session via `Depends(get_session)`. Never instantiate `SessionLocal()` inside business logic.
+
+## Model definitions
+
+- **Inherit from `src.models.base.Base`** (the project's single `DeclarativeBase`). One base, one metadata, one Alembic target.
+- **Typed `Mapped[T]` + `mapped_column(...)` only.** Bare `Column()` is forbidden — it loses the type and breaks `mypy --strict`. See `api/src/models/task.py:53-98` for the canonical shape.
+- **BigInteger autoincrement PKs.** `id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)`. UUIDs were intentionally rejected (decision 2026-05-04) — single-tenant app, smaller indexes, readable IDs in logs and URLs.
+- **CASCADE at the DB level.** Use `ForeignKey("...", ondelete="CASCADE")` on the column and `passive_deletes=True` on the relationship. Do NOT rely on relationship-level `cascade="all, delete-orphan"` to actually issue DELETEs — the DB constraint is the source of truth, and `passive_deletes=True` tells SQLAlchemy to trust it. Under the soft-delete policy hard DELETE is rare (manual psql cleanup only), but when it happens CASCADE is what cleans up children atomically. See `api/src/models/project.py:63-68` and `api/src/models/task.py:55-59`.
+- **Timestamps.** `created_at` and `updated_at` are `DateTime(timezone=True)` with `server_default=func.now()`. Note that `server_default` fires only on INSERT — PATCH handlers must bump `updated_at` manually (or move it to a PG trigger if write paths multiply). The same rule applies to any timestamp meant to track row changes.
+- **CHECK constraints reference `src.constants` ALL tuples via `in_clause(column, values)`** — never duplicate the integer list. Example: `CheckConstraint(in_clause("status", TaskStatus.ALL), name="ck_tasks_status_valid")`. Constraint names are `ck_<table>_<column>_valid` (or a more descriptive suffix). See `api/src/models/task.py:102-114`.
+- **`TYPE_CHECKING` import block** for relationship type hints — keeps relationship targets typed without creating import cycles. See `api/src/models/project.py:6-15`.
+
+## Soft-delete column (target convention — pending migration)
+
+Every business table declares:
+
+```python
+status: Mapped[int] = mapped_column(
+    SmallInteger,
+    nullable=False,
+    server_default="1",
+    default=1,
+)
+__table_args__ = (CheckConstraint("status IN (0, 1)", name="ck_<table>_status_valid"), ...)
+```
+
+`1` = active, `0` = deleted. App code never issues SQL DELETE — "delete" endpoints flip the flag (the audit trigger captures it as `'U'`). List endpoints filter `WHERE status = 1` by default; opt-in `?include_deleted=true`. Exempt: audit append-only tables (`tasks_history`).
+
+Note: current `tasks.status` is the 1-5 lifecycle code (`TaskStatus`); the queued migration renames it to `tasks.process_status` and frees `status` for the uniform 0/1 soft-delete flag.
+
+## Querying
+
+- **Single-row lookup or 404.** Use `db.get_or_404(session, Model, *, detail, **filters)` from `api/src/db.py:53-69`. Do NOT inline the `select(...).where(...)` + `await session.execute(...)` + `.scalar_one_or_none()` + manual `HTTPException(404)` pattern. The helper is the single canonical way; if it can't express your filter, extend the helper rather than duplicating the four lines. (Cross-ref: a future `fastapi/routing.md` may reiterate this from the routing perspective — keep this file authoritative for the SQLAlchemy mechanics.)
+- **List queries** stay explicit (`select(Model).where(...).order_by(...)`) — the helper is only for "fetch one or 404".
+- **Bool kwarg over `.is_(True)` for non-nullable booleans.** Pass `is_active=True` to `get_or_404`, not `Project.is_active.is_(True)` — both compile to the same SQL on a NOT NULL column, and the kwarg form is shorter and matches the helper's signature. (`kwarg` = Python keyword argument, the `name=value` calling syntax.)
