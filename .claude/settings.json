@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "defaultMode": "default",
+    "allow": [
+      "Read(*)",
+      "Glob(*)",
+      "Grep(*)"
+    ],
+    "ask": [
+      "Write(*)",
+      "Edit(*)",
+      "Bash(*)"
+    ]
+  }
+}

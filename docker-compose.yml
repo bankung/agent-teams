@@ -1,0 +1,76 @@
+# Dev compose for agent-teams.
+# Phase 2b: db + api only. web (Next.js Kanban UI) is Phase 3 — see commented block below.
+#
+# Bring-up:
+#   cp .env.example .env
+#   docker compose up --build
+#   # in another shell, once api logs say "Application startup complete":
+#   docker compose exec api alembic upgrade head
+#   docker compose exec api python -m scripts.seed
+#
+# Reset (DEV ONLY — wipes DB):
+#   docker compose down -v
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: agent-teams-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: agent_teams
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - agent-teams-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d agent_teams"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: agent-teams-api
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Inside the compose network the api talks to the `db` service by hostname,
+      # NOT localhost. The .env DATABASE_URL is for running uvicorn locally
+      # against the same compose db (host = localhost).
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/agent_teams
+      APP_ENV: ${APP_ENV:-development}
+      APP_DEBUG: ${APP_DEBUG:-true}
+      # The whole repo is bind-mounted at /repo so the project auto-scaffold
+      # can write context/projects/<name>/ from inside the container.
+      REPO_ROOT: /repo
+    ports:
+      - "${API_PORT:-8456}:8456"
+    volumes:
+      # Bind the repo root read-write. Working dir inside the container is
+      # /repo/api (set by Dockerfile WORKDIR). The mount overlays the build-time
+      # COPY so source edits take effect under --reload.
+      - .:/repo
+    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8456", "--reload"]
+
+  # ---------------------------------------------------------------------------
+  # web — Phase 3 placeholder.
+  # TODO(Phase 3): Next.js Kanban UI at ./web. Expected wiring:
+  #   web:
+  #     build:
+  #       context: ./web
+  #       dockerfile: Dockerfile
+  #     container_name: agent-teams-web
+  #     depends_on:
+  #       - api
+  #     environment:
+  #       NEXT_PUBLIC_API_URL: http://api:8456
+  #     ports:
+  #       - "${WEB_PORT:-3000}:3000"
+  # ---------------------------------------------------------------------------
+
+volumes:
+  agent-teams-pgdata:

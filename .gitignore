@@ -1,0 +1,45 @@
+.superpowers/
+.claude/projects/
+.claude/settings.local.json
+docs/
+
+# Env / secrets
+.env
+.env.local
+*.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Node
+node_modules/
+.next/
+dist/
+build/
+
+# DB
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+
+# Per-project per-role state — private state per machine, not committed
+# context/projects/<project>/shared/ ถูก commit (team-shared contract)
+# context/projects/<project>/<role>/ ถูก ignore ยกเว้น .gitkeep
+context/projects/*/frontend/*
+!context/projects/*/frontend/.gitkeep
+context/projects/*/backend/*
+!context/projects/*/backend/.gitkeep
+context/projects/*/devops/*
+!context/projects/*/devops/.gitkeep
+context/projects/*/qa/*
+!context/projects/*/qa/.gitkeep
+context/projects/*/reviewer/*
+!context/projects/*/reviewer/.gitkeep
