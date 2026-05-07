@@ -1,7 +1,7 @@
 .superpowers/
 .claude/projects/
 .claude/settings.local.json
-docs/
+/docs/
 
 # Env / secrets
 .env
@@ -30,9 +30,9 @@ build/
 *.sqlite
 *.sqlite-journal
 
-# Per-project per-role state — private state per machine, not committed
-# context/projects/<project>/shared/ ถูก commit (team-shared contract)
-# context/projects/<project>/<role>/ ถูก ignore ยกเว้น .gitkeep
+# Per-project per-role state — private per machine, not committed.
+# context/projects/<project>/shared/ is committed (team-shared contract).
+# context/projects/<project>/<role>/ is ignored except for .gitkeep.
 context/projects/*/frontend/*
 !context/projects/*/frontend/.gitkeep
 context/projects/*/backend/*

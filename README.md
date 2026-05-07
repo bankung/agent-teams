@@ -1,17 +1,17 @@
 # Dev Team Orchestrator
 
-Multi-agent dev team + **self-hosted Kanban** สำหรับ stack **Next.js + FastAPI + PostgreSQL** — **Lead** หนึ่งตัว spawn **specialist subagents** ตามต้องการ ผ่าน Claude Code subagent system (ไม่มี tmux)
+A multi-agent dev team + **self-hosted Kanban** for the **Next.js + FastAPI + PostgreSQL** stack. One **Lead** spawns **specialist subagents** on demand through Claude Code's subagent system (no tmux).
 
-แทนที่จะสั่ง AI ทำทีละขั้น — คุณสร้าง task ใน Kanban UI หรือพิมพ์งานให้ Lead Lead วิเคราะห์งาน → spawn agent เฉพาะ role ที่จำเป็น → รวมผลลัพธ์ → รายงานกลับ Agent ทำงานแบบ ephemeral (spawn-per-task) แล้ว terminate เมื่องานเสร็จ — state ที่สำคัญถูกเก็บ persistent
+Instead of driving the AI step by step, you create tasks in the Kanban UI or hand them to Lead in plain language. Lead analyzes the task → spawns the role-specific agents needed → integrates the results → reports back. Agents are ephemeral (spawn-per-task, terminate when done) — important state is persisted separately.
 
-รองรับ **multi-project** — Kanban UI เป็นที่จัดการ project ทั้งหมด (paths, stack, standards mapping) Lead จัดการ knowledge แยกตาม project พร้อมแชร์ **cross-project standards** ให้ทุก project ใช้ร่วมกัน
+**Multi-project ready** — the Kanban UI manages every project (paths, stack, standards mapping). Lead keeps per-project knowledge isolated while sharing **cross-project standards** that all projects can pull from.
 
-## Storage architecture (Three buckets)
+## Storage architecture (three buckets)
 
-| Bucket | Storage | ตัวอย่างข้อมูล | Writer |
+| Bucket | Storage | Examples | Writer |
 |---|---|---|---|
-| **1. Project config + Tasks** | PostgreSQL DB | name, paths, stack, standards mapping; Kanban tasks (status/priority/role) | UI ผ่าน Kanban + Lead via API |
-| **2. Cross-project standards** | MD files (`context/standards/<framework>/`) | coding conventions, Kanban schema codes | มนุษย์ MA โดยตรง |
+| **1. Project config + tasks** | PostgreSQL DB | name, paths, stack, standards mapping; Kanban tasks (status/priority/role) | UI via Kanban + Lead via API |
+| **2. Cross-project standards** | MD files (`context/standards/<framework>/`) | coding conventions, Kanban schema codes | humans only |
 | **3. Per-project knowledge** | MD files (`context/projects/<p>/`) | decisions, api-contracts, db-schema, role state | Lead writes shared/, role writes own folder |
 
 ## Architecture
@@ -20,7 +20,7 @@ Multi-agent dev team + **self-hosted Kanban** สำหรับ stack **Next.js
                     ┌─────────────┐
                     │    User     │
                     └──────┬──────┘
-                           │ (1) สั่ง Lead / (2) สร้าง task ใน Kanban UI
+                           │ (1) talks to Lead / (2) creates task in Kanban UI
               ┌────────────┼────────────┐
               │                         │
          ┌────▼─────┐          ┌────────▼────────┐
@@ -60,18 +60,18 @@ Multi-agent dev team + **self-hosted Kanban** สำหรับ stack **Next.js
               └────────────────────────────────┘
 ```
 
-- User สั่งงาน Lead ผ่าน Claude Code (CLI / IDE / Web) **หรือ** สร้าง task ใน Kanban UI
-- Lead resolve active project จาก **API** (`GET /api/projects/active`) — ไม่มี `projects.json` แล้ว
-- Lead **ไม่แก้โค้ดเอง** — delegate ไปยัง subagent ผ่าน `Agent` tool
-- Subagent ทำงาน → เขียน state กลับมาที่ `context/projects/<active>/<role>/` ของตัวเอง → return summary → terminate
-- Decisions / API contracts / DB schema ที่ข้าม role อยู่ใน `context/projects/<active>/shared/` (Lead writes only) — **per-project**
-- Coding conventions ที่ข้าม project + Kanban schema codes อยู่ใน `context/standards/<framework>/` — **มนุษย์เป็นคน MA เท่านั้น**
+- The user drives Lead through Claude Code (CLI / IDE / Web) **or** creates tasks in the Kanban UI.
+- Lead resolves the active project from the **API** (`GET /api/projects/active`) — there is no `projects.json`.
+- Lead **does not edit code itself** — it delegates to subagents through the `Agent` tool.
+- Subagents do the work → write state back to their own `context/projects/<active>/<role>/` → return a summary → terminate.
+- Cross-role decisions / API contracts / DB schema live in `context/projects/<active>/shared/` (Lead writes only) — **per-project**.
+- Cross-project coding conventions + Kanban schema codes live in `context/standards/<framework>/` — **humans only**.
 
 ## Why no tmux?
 
-ของเดิมใช้ tmux pane เพื่อให้ agent หลายตัว run พร้อมกัน — แต่ Claude Code มี subagent system ในตัว (`Agent` tool + `subagent_type`) ที่ spawn parallel ได้เหมือนกัน ไม่ต้องดู screen แยก ไม่มีปัญหา paste-buffer ค้าง ไม่ต้อง install tmux/jq และใช้บน Windows ได้ตรง ๆ
+The earlier design used tmux panes so multiple agents could run side by side — but Claude Code has a built-in subagent system (`Agent` tool + `subagent_type`) that spawns parallel jobs without screen-watching, paste-buffer issues, or installing tmux/jq. It also runs natively on Windows.
 
-Trade-off: subagent เป็น ephemeral (จบงานก็หาย) — เลยต้องมี persistent context (DB + MD files) เพื่อให้รอบหน้าทำงานต่อจากเดิมได้
+Trade-off: subagents are ephemeral (gone when the task ends) — so persistent context (DB + MD files) is what lets the next round pick up where the last one left off.
 
 ## Team roster
 
@@ -83,15 +83,15 @@ Trade-off: subagent เป็น ephemeral (จบงานก็หาย) — 
 | **qa**       | Vitest/Jest/Playwright, pytest, edge cases | `context/projects/<active>/qa/` |
 | **reviewer** | Code review (read-only — quality, security, perf) | `context/projects/<active>/reviewer/` |
 
-Definition แต่ละ role: [.claude/agents/](.claude/agents/)
+Per-role definitions: [.claude/agents/](.claude/agents/).
 
 ## Prerequisites
 
 | Requirement | Install |
 |---|---|
-| [Claude Code](https://docs.claude.com/en/docs/claude-code) | `npm i -g @anthropic-ai/claude-code` แล้ว `claude login` |
-| Docker Desktop | สำหรับรัน PostgreSQL + FastAPI ใน container |
-| Node + Python toolchain ของ project ปลายทาง | ตามที่แต่ละ project ต้องใช้ |
+| [Claude Code](https://docs.claude.com/en/docs/claude-code) | `npm i -g @anthropic-ai/claude-code` then `claude login` |
+| Docker Desktop | runs PostgreSQL + FastAPI in containers |
+| Node + Python toolchains for the target project | as required by the project itself |
 
 ## Quick start
 
@@ -100,126 +100,126 @@ Definition แต่ละ role: [.claude/agents/](.claude/agents/)
 git clone <this-repo> agent-teams
 cd agent-teams
 
-# 2. Copy env template (แก้ค่าใน .env ถ้าจำเป็น — defaults ใช้ได้ทันที)
+# 2. Copy env template (defaults work as-is; edit if needed)
 cp .env.example .env
 
 # 3. Start PostgreSQL + FastAPI backend
 docker compose up --build
-# - PG ที่ port ${POSTGRES_PORT:-5432}
-# - FastAPI ที่ port ${API_PORT:-8456}
-# (ใส่ -d ถ้าอยาก detach; ครั้งแรกแนะนำ foreground เพื่อดู build log)
+# - PG on port ${POSTGRES_PORT:-5432}
+# - FastAPI on port ${API_PORT:-8456}
+# (Add -d to detach; foreground is recommended on first run for the build log.)
 
-# 4. ในอีก shell หลัง api log ขึ้น "Application startup complete":
+# 4. In another shell, after api logs print "Application startup complete":
 docker compose exec api alembic upgrade head
 docker compose exec api python -m scripts.seed
-# seed สร้าง agent-teams project default + sample tasks
+# Seed creates the default agent-teams project + sample tasks.
 
-# 5. ทดสอบ
+# 5. Smoke test
 curl http://localhost:8456/api/projects/active
 
-# 6. (optional) เปิด Kanban UI — Phase 3
+# 6. (optional) Open the Kanban UI — Phase 3
 # cd web && pnpm dev
-# เปิด http://localhost:3000
+# Open http://localhost:3000
 
-# 7. เปิด Claude Code ที่ root ของ agent-teams
+# 7. Open Claude Code at the agent-teams repo root
 claude
-# Lead จะ resolve active project ผ่าน curl ไปยัง localhost:8456
+# Lead resolves the active project by curling localhost:8456.
 ```
 
-CLAUDE.md จะถูกโหลดอัตโนมัติ — Claude พร้อมรับงานใน role Lead
+CLAUDE.md is loaded automatically — Claude is ready to act as Lead.
 
-> **ครั้งแรกที่ Lead curl** Claude Code จะ prompt ให้ allow — เลือก "Yes and don't ask again for this command" เพื่อ allowlist
+> **First time Lead curls the API**, Claude Code prompts for permission — pick "Yes and don't ask again for this command" to allowlist.
 
-### Run with Docker — รายละเอียด
+### Run with Docker — details
 
-| Service | Container | Port | หมายเหตุ |
+| Service | Container | Port | Notes |
 |---|---|---|---|
 | `db` | `agent-teams-db` | `${POSTGRES_PORT:-5432}` | Postgres 16, named volume `agent-teams-pgdata` |
-| `api` | `agent-teams-api` | `${API_PORT:-8456}` | bind-mount repo ที่ `/repo` (auto-scaffold ของ project ใหม่ writable) |
-| `web` | (Phase 3) | `3000` | placeholder ใน `docker-compose.yml` |
+| `api` | `agent-teams-api` | `${API_PORT:-8456}` | bind-mounts the repo at `/repo` so newly scaffolded projects are writable |
+| `web` | (Phase 3) | `3000` | placeholder in `docker-compose.yml` |
 
-`docker-compose.yml` ตั้ง `DATABASE_URL` ของ api ให้ชี้ host `db` (service name) อัตโนมัติ — `.env` ของ host ใช้ตอน run `uvicorn` นอก compose เท่านั้น
+`docker-compose.yml` sets the api's `DATABASE_URL` to the `db` service hostname automatically — host `.env` only matters when running `uvicorn` outside compose.
 
-## วิธีใช้งานจริง
+## Day-to-day usage
 
-### ใช้ผ่าน Kanban UI
+### Through the Kanban UI
 
-1. เข้า http://localhost:3000
-2. **สร้าง project ใหม่** → กรอก name, paths (web/api/db), stack, standards
-3. **สร้าง task** → ระบุ role ที่จะทำ + description + priority
-4. **Trigger Lead** → กด "Start" ที่ task → Lead รับงาน → spawn subagent → กลับมา update status
+1. Open http://localhost:3000.
+2. **Create a project** → fill in name, paths (web/api/db), stack, standards.
+3. **Create a task** → role, description, priority.
+4. **Trigger Lead** → click "Start" on a task → Lead picks it up, spawns the right subagent, updates status.
 
-### สั่งงานแบบ Natural language ผ่าน Claude Code
-
-```
-เพิ่ม feature login พร้อม API
-```
-
-Lead จะ:
-1. resolve active project ผ่าน `curl http://localhost:8456/api/projects/active`
-2. (optional) create task ใน DB ผ่าน `POST /api/tasks` เพื่อ track ใน Kanban
-3. อ่าน `context/projects/<active>/shared/*` (decisions, api-contracts, db-schema)
-4. เลือก standards ที่จะ inject ตาม lane mapping
-5. spawn `backend` ก่อน → apply api-contracts → spawn `frontend` → spawn `qa` → spawn `reviewer`
-6. update task status ใน DB ตาม progress
-7. รายงานสรุปผลให้คุณ
-
-### สั่งระบุ role ตรง ๆ
+### Natural language through Claude Code
 
 ```
-ให้ frontend และ backend ทำ feature X พร้อมกัน
+add a login feature with API
 ```
 
-### สั่งสลับ project
+Lead will:
+1. resolve the active project via `curl http://localhost:8456/api/projects/active`,
+2. (optional) create a parent task with `POST /api/tasks` for Kanban tracking,
+3. read `context/projects/<active>/shared/*` (decisions, api-contracts, db-schema),
+4. choose which standards to inject per the lane mapping,
+5. spawn `backend` → apply api-contracts → spawn `frontend` → spawn `qa` → spawn `reviewer`,
+6. update task status in the DB as it goes,
+7. report a summary back to you.
+
+### Naming roles directly
 
 ```
-ย้ายไปทำ project myapp: เพิ่ม endpoint /users
+have frontend and backend work on feature X in parallel
 ```
 
-Lead จะ resolve ผ่าน `GET /api/projects/by-name/myapp` แล้วใช้ context ของ `projects/myapp/` แทน
+### Switching project
 
-### รูปแบบคำสั่งที่ใช้บ่อย
+```
+switch to project myapp: add the /users endpoint
+```
 
-| สั่ง | Lead ทำอะไร |
+Lead resolves it via `GET /api/projects/by-name/myapp` and uses `projects/myapp/` as context instead.
+
+### Common command shapes
+
+| You say | Lead does |
 |---|---|
-| "เพิ่ม endpoint X" | spawn backend → apply shared updates |
-| "หน้า dashboard ของผู้ใช้" | spawn frontend (อ่าน api-contracts ที่มีอยู่) |
-| "สร้าง docker-compose สำหรับ dev" | spawn devops |
-| "เขียน e2e test ของ login flow" | spawn qa |
-| "review PR ปัจจุบัน" | spawn reviewer |
-| "feature complete: comment ใน post" | spawn backend → frontend → qa → reviewer |
+| "add endpoint X" | spawn backend → apply shared updates |
+| "user dashboard page" | spawn frontend (reading existing api-contracts) |
+| "compose file for dev" | spawn devops |
+| "e2e tests for the login flow" | spawn qa |
+| "review the current PR" | spawn reviewer |
+| "feature complete: post comments" | backend → frontend → qa → reviewer |
 
 ## Permission model
 
-ไฟล์ [.claude/settings.json](.claude/settings.json) ตั้งให้:
+[.claude/settings.json](.claude/settings.json) enforces:
 
 | Tool | Behavior |
 |---|---|
 | `Read`, `Glob`, `Grep` | auto-allow |
-| `Write`, `Edit`, `Bash` | **ask ทุกครั้ง** |
+| `Write`, `Edit`, `Bash` | **prompt every time** |
 
-ทุก subagent ที่ Lead spawn inherit policy เดียวกัน ไม่ใช้ `--dangerously-skip-permissions`
+Subagents inherit the same policy. `--dangerously-skip-permissions` is never used.
 
-**คำสั่งที่ Lead จะใช้บ่อย** — แนะนำ allowlist ตอน prompt ครั้งแรก:
+**Commands Lead runs frequently** — worth allowlisting on first prompt:
 - `curl http://localhost:8456/api/*` (resolve project, update task status)
 - `git status`, `git diff` (verify subagent work)
 
 ## Bootstrap fallback
 
-ถ้า Lead `curl` ไม่ได้:
-1. Lead จะลอง run seed: `docker compose exec api python -m scripts.seed`
-2. ถ้า seed fail (DB down, script error) → Lead แจ้ง error + ขอให้ user แก้:
-   - `docker compose ps` (PG container running?)
-   - `docker compose logs api` (FastAPI ขึ้นไหม?)
-3. หลัง user แก้ → บอก Lead retry
+If Lead can't reach the API:
+1. Lead tries the seed: `docker compose exec api python -m scripts.seed`.
+2. If the seed fails (DB down, script error), Lead reports the error and asks you to:
+   - `docker compose ps` (PG running?)
+   - `docker compose logs api` (FastAPI started?)
+3. After you fix it, tell Lead to retry.
 
 ## Context persistence
 
 ```
 context/
-├── standards/                            ← Bucket 2: cross-project, มนุษย์ MA
+├── standards/                            ← Bucket 2: cross-project, humans only
 │   ├── README.md
-│   ├── general.md                        ← rule + Kanban schema codes (status/priority/role)
+│   ├── general.md                        ← rules + Kanban schema codes (status/priority/role)
 │   ├── nextjs/  react/  typescript/  tailwind/
 │   ├── fastapi/  python/  pydantic/  sqlalchemy/
 │   └── postgresql/  docker/
@@ -230,50 +230,50 @@ context/
         │   ├── decisions.md
         │   ├── api-contracts.md
         │   └── db-schema.md
-        └── <role>/                       ← role-owned (gitignored ยกเว้น .gitkeep)
+        └── <role>/                       ← role-owned (gitignored except .gitkeep)
             ├── current-state.md
             └── session-<date>-<slug>.md
 ```
 
-(Bucket 1 = DB ใน PG ดูใน `api/` source ไม่ใช่ filesystem)
+(Bucket 1 = DB inside Postgres; see `api/`, not the filesystem.)
 
 **Rules:**
-- Subagent **อ่าน** `context/projects/<p>/shared/*` ได้ แต่ **ห้ามเขียน** ส่ง proposal กลับให้ Lead
-- Subagent **เขียน** `context/projects/<p>/<role>/` ของตัวเองได้อิสระ
-- Subagent **อ่าน** `context/standards/*` ได้ แต่ **ห้ามเขียน** ทุกกรณี ถ้ามี insight propose ใน "Standards insights" ส่วนของ final report
-- ทุกครั้งก่อน return subagent ถูก mandate ให้ update `current-state.md`
-- DB writes ผ่าน FastAPI endpoint เท่านั้น — Lead/subagent ห้าม direct SQL
+- Subagents **read** `context/projects/<p>/shared/*` but **never write** — proposals go back to Lead.
+- Subagents **write freely** in their own `context/projects/<p>/<role>/`.
+- Subagents **read** `context/standards/*` but **never write** — insights go in the "Standards insights" section of the final report.
+- Every subagent updates `current-state.md` before returning.
+- DB writes go through FastAPI endpoints only — Lead and subagents never run direct SQL.
 
-**ทำไม standards/ และ shared/ commit แต่ role/ gitignore?**
+**Why standards/ and shared/ are committed but role/ is gitignored:**
 
-| Path | Commit? | เหตุผล |
+| Path | Commit? | Reason |
 |---|---|---|
-| `context/standards/` | ✅ | Cross-project knowledge ทีมต้องเห็นเหมือนกัน |
-| `context/projects/<p>/shared/` | ✅ | Per-project contract ทีมต้องเห็นเหมือนกัน |
-| `context/projects/<p>/<role>/` | ❌ | per-machine state — ความจำส่วนตัวต่อเครื่อง |
+| `context/standards/` | ✅ | Cross-project knowledge — the team needs the same view |
+| `context/projects/<p>/shared/` | ✅ | Per-project contract — the team needs the same view |
+| `context/projects/<p>/<role>/` | ❌ | Per-machine state — private memory per workstation |
 
 ## Standards lane mapping
 
-ตอน spawn subagent role X Lead resolve standards จาก `projects.config.standards` (ที่ได้จาก API):
+When spawning role X, Lead resolves standards from `projects.config.standards` (returned by the API):
 
-| Role | Lanes ที่ inject |
+| Role | Lanes injected |
 |---|---|
 | frontend | `standards.web` |
 | backend | `standards.api` + `standards.db` |
-| devops | ทุก lane |
-| qa | ทุก lane |
-| reviewer | ทุก lane |
+| devops | every lane |
+| qa | every lane |
+| reviewer | every lane |
 
-`context/standards/general.md` inject เข้าทุก role เสมอ ไม่ขึ้นกับ lane (รวม Kanban schema codes ที่ใช้ตอน update task status)
+`context/standards/general.md` is injected into every role regardless of lane (it includes the Kanban schema codes used when updating task status).
 
 ## File structure
 
 ```
 agent-teams/
-├── CLAUDE.md                       # playbook ของ Lead (โหลดอัตโนมัติ)
-├── README.md                       # ไฟล์นี้
+├── CLAUDE.md                       # Lead's playbook (auto-loaded)
+├── README.md                       # this file
 ├── docker-compose.yml              # PG + FastAPI services
-├── .env.example                    # template env vars
+├── .env.example                    # env var template
 ├── api/                            # FastAPI + SQLAlchemy + Alembic
 │   ├── pyproject.toml
 │   ├── alembic.ini
@@ -294,24 +294,25 @@ agent-teams/
 │       └── agent-teams/            # Bucket 3 (shared committed, role gitignored)
 └── .claude/
     ├── agents/                     # 5 role definitions
+    ├── docs/                       # Lead's reference docs (loaded on demand)
     └── settings.json               # permission policy
 ```
 
 ## Customizing agents
 
-แต่ละ role อยู่ใน `.claude/agents/<role>.md` — แก้ได้โดยตรงเพื่อ:
-- เพิ่ม / ลด stack ที่ role นั้นรู้
-- ปรับ report structure
-- เพิ่ม constraint เฉพาะ
+Each role lives in `.claude/agents/<role>.md` — edit it directly to:
+- expand or shrink the stack the role knows,
+- adjust the report structure,
+- add role-specific constraints.
 
-ถ้าจะใส่ convention เฉพาะ framework — เขียนใน `context/standards/<framework>/<topic>.md` (apply กับทุก project ที่เลือก framework นั้น)
+Framework-specific conventions belong in `context/standards/<framework>/<topic>.md` — they apply to every project that picks that framework.
 
 ## Workflow examples
 
-### Example 1: Single agent task
+### Example 1: single-agent task
 
 ```
-You: เพิ่ม component <UserAvatar> ใน web
+You: add a <UserAvatar> component in web
 
 Lead:
   → curl http://localhost:8456/api/projects/active → {name: "agent-teams", paths: {...}, standards: {...}}
@@ -327,18 +328,18 @@ Subagent (frontend):
   → Return: {summary, files modified}
 
 Lead:
-  → Verify file exists
+  → Verify the file exists
   → Report to user
 ```
 
-### Example 2: Multi-role feature with Kanban tracking
+### Example 2: multi-role feature with Kanban tracking
 
 ```
-You: feature login (email + password) เต็ม flow
+You: full login feature (email + password)
 
 Lead:
-  → curl POST http://localhost:8456/api/tasks (สร้าง parent task)
-  → Plan: backend ก่อน → apply contract → frontend → qa → reviewer
+  → curl POST http://localhost:8456/api/tasks (create parent task)
+  → Plan: backend → apply contract → frontend → qa → reviewer
   → curl PATCH /api/tasks/<id> {status: 2, started_at: now}  # in_progress
   → Spawn backend("create POST /auth/login + User model + migration")
 
@@ -353,18 +354,18 @@ Lead:
   → Apply proposed shared updates [user approves]
   → Spawn devops → apply migration
   → Spawn frontend → consume contract
-  → Spawn qa + reviewer parallel
+  → Spawn qa + reviewer in parallel
   → curl PATCH /api/tasks/<id> {status: 5, completed_at: now}  # done
   → Report to user
 ```
 
-### Example 3: Read-only review
+### Example 3: read-only review
 
 ```
 You: review branch feature/payments
 
 Lead:
-  → Spawn reviewer with full standards inject
+  → Spawn reviewer with the full standards inject
 
 Reviewer subagent:
   → git diff main...feature/payments [user approves]
@@ -373,64 +374,65 @@ Reviewer subagent:
   → Return: {summary, blockers: 1, major: 3, minor: 5}
 
 Lead:
-  → Report blockers + path to review file
+  → Report blockers + path to the review file
 ```
 
 ## Troubleshooting
 
-### Subagent หยุดเพราะ user deny permission
-**สาเหตุ:** ผู้ใช้กด deny ตอน Claude Code prompt
-**แก้:** Lead จะรายงานว่า block ที่ขั้นไหน — บอก Lead skip step นั้น หรือ allow ก่อนแล้วสั่ง retry
+### A subagent stopped because the user denied permission
+**Cause:** the user pressed deny on a Claude Code prompt.
+**Fix:** Lead reports which step blocked — tell Lead to skip it, or allow and retry.
 
-### Lead curl ไม่ผ่าน
-**สาเหตุ:** FastAPI server ไม่ขึ้น / PG container ไม่ขึ้น / port ผิด
-**แก้:**
-1. `docker compose ps` — เช็ค container running
-2. `docker compose logs api` — เช็ค FastAPI startup error
-3. ถ้า DB ว่างเปล่า — `docker compose exec api python -m scripts.seed`
+### Lead can't reach the API via curl
+**Cause:** FastAPI is not up / PG is not up / wrong port.
+**Fix:**
+1. `docker compose ps` — are containers running?
+2. `docker compose logs api` — any FastAPI startup error?
+3. If the DB is empty: `docker compose exec api python -m scripts.seed`.
 
-### API can't reach DB (`api` ขึ้นแต่ connect db ไม่ได้)
-**สาเหตุที่พบบ่อย:** db container ยังไม่ healthy / password mismatch / `DATABASE_URL` ใน api ชี้ผิด host
-**แก้:**
-1. `docker compose ps` — `db` ต้องเป็น `healthy`
-2. `docker compose logs db` — มอง error ตอน startup
-3. ตรวจว่า api ใช้ `host=db` (compose ตั้งให้) ไม่ใช่ `localhost`
+### API can't reach DB (`api` is up but can't connect)
+**Common causes:** the db container isn't `healthy` yet / password mismatch / `DATABASE_URL` points at the wrong host.
+**Fix:**
+1. `docker compose ps` — `db` must be `healthy`.
+2. `docker compose logs db` — check startup errors.
+3. The api should use `host=db` (compose sets that), not `localhost`.
 
 ### Migration fails
-**แก้:**
-1. `docker compose exec api alembic current` — ดู revision ปัจจุบัน
-2. (DEV ONLY — wipes data) reset โดย:
+**Fix:**
+1. `docker compose exec api alembic current` — what revision are we on?
+2. (DEV ONLY — wipes data) reset:
    ```bash
    docker compose exec api alembic downgrade base
    docker compose exec api alembic upgrade head
    ```
-3. ถ้า PL/pgSQL trigger error → ดู `docker compose logs db` หา syntax error ใน migration
+3. PL/pgSQL trigger errors → `docker compose logs db` for migration syntax issues.
 
 ### Reset everything (DEV ONLY)
-ลบ container + volume + DB content ทั้งหมด:
+Drop containers + volume + DB content:
 ```bash
 docker compose down -v
 ```
-`-v` ลบ named volume `agent-teams-pgdata` — Postgres จะ init ใหม่หมดในครั้ง `up` ถัดไป
+`-v` removes the named volume `agent-teams-pgdata` — Postgres re-initializes on the next `up`.
 
-### Subagent อ้างว่าแก้ shared/ หรือ standards/ แล้ว
-**ตรวจ:** `git status` / `git diff` ของ `context/projects/*/shared/` และ `context/standards/`
-**แก้:** ถ้ามี diff ที่ Lead ไม่ได้เขียนเอง → revert แล้วบอก Lead rewrite ตาม proposal
+### A subagent claims it edited shared/ or standards/
+**Check:** `git status` / `git diff` against `context/projects/*/shared/` and `context/standards/`.
+**Fix:** if there's a diff Lead didn't write, revert it and have Lead rewrite from the proposal.
 
-### Context file ใหญ่เกินไป
-**แก้:**
-- บอก Lead paste เฉพาะ section ที่ relevant
-- ลบ session note เก่าที่ consolidate เข้า current-state.md แล้ว
-- แยก api-contracts.md เป็นหลายไฟล์ตาม domain
-- standards ต่อ framework แตก section ลงหลายไฟล์
+### Context file too large
+**Fix:**
+- Tell Lead to paste only the relevant section.
+- Delete session notes that have been consolidated into `current-state.md`.
+- Split `api-contracts.md` per domain.
+- Split a framework's standards across more files.
 
-### Project switch แล้ว context ปนกัน
-**แก้:** สั่ง Lead "resolve active project ใหม่ + อ่าน context/projects/<new>/shared ใหม่ทั้งหมด"
+### Project switch carried over old context
+**Fix:** tell Lead "re-resolve the active project and re-read `context/projects/<new>/shared/` from scratch."
 
-## อ่านต่อ
+## Further reading
 
-- [CLAUDE.md](CLAUDE.md) — playbook เต็มของ Lead (lifecycle, spawn template, role boundaries, bootstrap)
-- [.claude/agents/](.claude/agents/) — definition + report structure ของแต่ละ role
-- [context/standards/README.md](context/standards/README.md) — ระบบ standards
+- [CLAUDE.md](CLAUDE.md) — Lead's playbook (golden rules, roster, lifecycle, anti-patterns)
+- [.claude/agents/](.claude/agents/) — per-role definitions and report structures
+- [.claude/docs/](.claude/docs/) — Lead's reference docs (spawn template, context layout, new project flow, lessons)
+- [context/standards/README.md](context/standards/README.md) — the standards system
 - [context/standards/general.md](context/standards/general.md) — Kanban schema codes
 - [context/projects/agent-teams/shared/](context/projects/agent-teams/shared/) — starter templates
