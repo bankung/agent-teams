@@ -43,12 +43,12 @@ Instead of driving the AI step by step, you create tasks in the Kanban UI or han
               │                │  tasks_history │
               │                └────────────────┘
               │
-              │ Agent tool (subagent_type)
+              │ Agent tool (subagent_type — names per active lead)
        ┌──────┼──────┬───────┬──────────┐
        │      │      │       │          │
    ┌───▼──┬───▼──┬───▼───┬──▼──┬────────▼────┐
-   │front │back  │devops │ qa  │  reviewer   │
-   │ end  │ end  │       │     │ (read-only) │
+   │front │back  │devops │test │  reviewer   │   (dev lead spawns dev-* roles)
+   │ end  │ end  │       │ er  │ (read-only) │   (novel lead spawns novel-* roles)
    └───┬──┴───┬──┴───┬───┴──┬──┴──────┬──────┘
        │      │      │      │         │
        └──────┴──────┼──────┴─────────┘
@@ -73,17 +73,30 @@ The earlier design used tmux panes so multiple agents could run side by side —
 
 Trade-off: subagents are ephemeral (gone when the task ends) — so persistent context (DB + MD files) is what lets the next round pick up where the last one left off.
 
-## Team roster
+## Multi-domain Leads
+
+Every project picks **one Lead** at creation time (`projects.lead`). The Lead is a *playbook* (not a subagent — Claude Code subagents can't spawn nested subagents) that the main session loads after resolving the active project. Different leads own different rosters and lifecycles.
+
+| Lead | Domain | Playbook | Roster prefix |
+|---|---|---|---|
+| `dev` | software development | [.claude/leads/dev.md](.claude/leads/dev.md) | `dev-*` |
+| `novel` | novel writing (skeleton — demonstrates the multi-domain pattern) | [.claude/leads/novel.md](.claude/leads/novel.md) | `novel-*` |
+
+Add new leads (`data`, `content`, etc.) by writing `.claude/leads/<name>.md`, defining its `<name>-*` agents in `.claude/agents/`, and extending the `lead` CHECK constraint on `projects` in the DB.
+
+## Team roster — `dev` lead
+
+The agent-teams repo itself uses `lead='dev'`.
 
 | Role | Stack / scope | Owns (writes only here) |
 |---|---|---|
-| **frontend** | Next.js (App Router), React, TypeScript | `context/projects/<active>/frontend/` |
-| **backend**  | FastAPI, Pydantic, SQLAlchemy/Alembic | `context/projects/<active>/backend/` |
-| **devops**   | Docker, CI/CD, env, deploy, apply migrations | `context/projects/<active>/devops/` |
-| **qa**       | Vitest/Jest/Playwright, pytest, edge cases | `context/projects/<active>/qa/` |
-| **reviewer** | Code review (read-only — quality, security, perf) | `context/projects/<active>/reviewer/` |
+| **dev-frontend** | Next.js (App Router), React, TypeScript | `context/projects/<active>/dev-frontend/` |
+| **dev-backend**  | FastAPI, Pydantic, SQLAlchemy/Alembic | `context/projects/<active>/dev-backend/` |
+| **dev-devops**   | Docker, CI/CD, env, deploy, apply migrations | `context/projects/<active>/dev-devops/` |
+| **dev-tester**   | Vitest/Jest/Playwright, pytest, edge cases | `context/projects/<active>/dev-tester/` |
+| **dev-reviewer** | Code review (read-only — quality, security, perf) | `context/projects/<active>/dev-reviewer/` |
 
-Per-role definitions: [.claude/agents/](.claude/agents/).
+Per-role definitions: [.claude/agents/](.claude/agents/) (`dev-*.md` files).
 
 ## Prerequisites
 
@@ -160,14 +173,14 @@ Lead will:
 2. (optional) create a parent task with `POST /api/tasks` for Kanban tracking,
 3. read `context/projects/<active>/shared/*` (decisions, api-contracts, db-schema),
 4. choose which standards to inject per the lane mapping,
-5. spawn `backend` → apply api-contracts → spawn `frontend` → spawn `qa` → spawn `reviewer`,
+5. spawn `dev-backend` → apply api-contracts → spawn `dev-frontend` → spawn `dev-tester` → spawn `dev-reviewer`,
 6. update task status in the DB as it goes,
 7. report a summary back to you.
 
 ### Naming roles directly
 
 ```
-have frontend and backend work on feature X in parallel
+have dev-frontend and dev-backend work on feature X in parallel
 ```
 
 ### Switching project
@@ -180,14 +193,14 @@ Lead resolves it via `GET /api/projects/by-name/myapp` and uses `projects/myapp/
 
 ### Common command shapes
 
-| You say | Lead does |
+| You say | Lead does (under `lead='dev'`) |
 |---|---|
-| "add endpoint X" | spawn backend → apply shared updates |
-| "user dashboard page" | spawn frontend (reading existing api-contracts) |
-| "compose file for dev" | spawn devops |
-| "e2e tests for the login flow" | spawn qa |
-| "review the current PR" | spawn reviewer |
-| "feature complete: post comments" | backend → frontend → qa → reviewer |
+| "add endpoint X" | spawn dev-backend → apply shared updates |
+| "user dashboard page" | spawn dev-frontend (reading existing api-contracts) |
+| "compose file for dev" | spawn dev-devops |
+| "e2e tests for the login flow" | spawn dev-tester |
+| "review the current PR" | spawn dev-reviewer |
+| "feature complete: post comments" | dev-backend → dev-frontend → dev-tester → dev-reviewer |
 
 ## Permission model
 
@@ -254,17 +267,17 @@ context/
 
 ## Standards lane mapping
 
-When spawning role X, Lead resolves standards from `projects.config.standards` (returned by the API):
+Standards are injected by the **active lead's playbook** — each lead defines its own role-to-lane mapping. For `lead='dev'` (see [.claude/leads/dev.md](.claude/leads/dev.md)):
 
 | Role | Lanes injected |
 |---|---|
-| frontend | `standards.web` |
-| backend | `standards.api` + `standards.db` |
-| devops | every lane |
-| qa | every lane |
-| reviewer | every lane |
+| dev-frontend | `standards.web` |
+| dev-backend | `standards.api` + `standards.db` |
+| dev-devops | every lane |
+| dev-tester | every lane |
+| dev-reviewer | every lane |
 
-`context/standards/general.md` is injected into every role regardless of lane (it includes the Kanban schema codes used when updating task status).
+Other leads define their own lanes (e.g., `lead='novel'` uses `voice` / `structure` / `research` / `markup`). `context/standards/general.md` is injected into every role regardless of lane and lead — it carries the universal Kanban schema codes used when updating task status.
 
 ## File structure
 
@@ -315,16 +328,17 @@ Framework-specific conventions belong in `context/standards/<framework>/<topic>.
 You: add a <UserAvatar> component in web
 
 Lead:
-  → curl http://localhost:8456/api/projects/active → {name: "agent-teams", paths: {...}, standards: {...}}
+  → curl http://localhost:8456/api/projects/active → {name: "agent-teams", lead: "dev", paths: {...}, standards: {...}}
+  → Read .claude/leads/dev.md  (load active lead's playbook)
   → Read context/projects/agent-teams/shared/decisions.md
-  → Read context/projects/agent-teams/frontend/current-state.md
+  → Read context/projects/agent-teams/dev-frontend/current-state.md
   → Read context/standards/{general,nextjs,react,typescript,tailwind}/*.md
-  → Spawn Agent({subagent_type: "frontend", prompt: "...add UserAvatar..." + context})
+  → Spawn Agent({subagent_type: "dev-frontend", prompt: "...add UserAvatar..." + context})
 
-Subagent (frontend):
+Subagent (dev-frontend):
   → Read package.json, existing components
   → Write src/components/user-avatar.tsx [user approves]
-  → Update context/projects/agent-teams/frontend/current-state.md [user approves]
+  → Update context/projects/agent-teams/dev-frontend/current-state.md [user approves]
   → Return: {summary, files modified}
 
 Lead:
@@ -339,22 +353,22 @@ You: full login feature (email + password)
 
 Lead:
   → curl POST http://localhost:8456/api/tasks (create parent task)
-  → Plan: backend → apply contract → frontend → qa → reviewer
+  → Plan: dev-backend → apply contract → dev-frontend → dev-tester → dev-reviewer
   → curl PATCH /api/tasks/<id> {status: 2, started_at: now}  # in_progress
-  → Spawn backend("create POST /auth/login + User model + migration")
+  → Spawn dev-backend("create POST /auth/login + User model + migration")
 
-Backend subagent:
+dev-backend subagent:
   → Generate Alembic migration
   → Write Pydantic models, endpoint, password hashing
-  → Update context/projects/agent-teams/backend/current-state.md
+  → Update context/projects/agent-teams/dev-backend/current-state.md
   → Return: {summary, proposed api-contracts.md update, proposed db-schema.md update,
-             handoff: devops-apply-migration, frontend-consume-contract}
+             handoff: dev-devops-apply-migration, dev-frontend-consume-contract}
 
 Lead:
   → Apply proposed shared updates [user approves]
-  → Spawn devops → apply migration
-  → Spawn frontend → consume contract
-  → Spawn qa + reviewer in parallel
+  → Spawn dev-devops → apply migration
+  → Spawn dev-frontend → consume contract
+  → Spawn dev-tester + dev-reviewer in parallel
   → curl PATCH /api/tasks/<id> {status: 5, completed_at: now}  # done
   → Report to user
 ```
@@ -365,12 +379,12 @@ Lead:
 You: review branch feature/payments
 
 Lead:
-  → Spawn reviewer with the full standards inject
+  → Spawn dev-reviewer with the full standards inject
 
-Reviewer subagent:
+dev-reviewer subagent:
   → git diff main...feature/payments [user approves]
   → Read changed files
-  → Write context/projects/agent-teams/reviewer/review-2026-05-04-payments.md
+  → Write context/projects/agent-teams/dev-reviewer/review-2026-05-04-payments.md
   → Return: {summary, blockers: 1, major: 3, minor: 5}
 
 Lead:
@@ -430,9 +444,10 @@ docker compose down -v
 
 ## Further reading
 
-- [CLAUDE.md](CLAUDE.md) — Lead's playbook (golden rules, roster, lifecycle, anti-patterns)
-- [.claude/agents/](.claude/agents/) — per-role definitions and report structures
+- [CLAUDE.md](CLAUDE.md) — Meta-Lead playbook (universal rules, bootstrap, lead dispatch)
+- [.claude/leads/](.claude/leads/) — per-domain lead playbooks (`dev.md`, `novel.md`, ...)
+- [.claude/agents/](.claude/agents/) — per-role subagent definitions (`dev-*.md`, `novel-*.md`, ...)
 - [.claude/docs/](.claude/docs/) — Lead's reference docs (spawn template, context layout, new project flow, lessons)
 - [context/standards/README.md](context/standards/README.md) — the standards system
-- [context/standards/general.md](context/standards/general.md) — Kanban schema codes
+- [context/standards/general.md](context/standards/general.md) — universal Kanban schema codes
 - [context/projects/agent-teams/shared/](context/projects/agent-teams/shared/) — starter templates

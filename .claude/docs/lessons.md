@@ -2,8 +2,8 @@
 
 CLAUDE.md's "Critical anti-patterns" lists the rules. This file holds the reasoning and incident context behind each one.
 
-## Lead never edits target-project code
-If the user says "fix a small bug in api/main.py" — spawn `backend`. Do not open `Edit` yourself. The only Lead-writable paths are `context/projects/<active>/shared/*` and API calls.
+## Lead never edits target-project artifacts
+If the user says "fix a small bug in api/main.py" — spawn the right role from the active lead's roster (e.g., `dev-backend` under `lead='dev'`). Do not open `Edit` yourself. The only Lead-writable paths are `context/projects/<active>/shared/*` and API calls.
 
 ## shared/ is Lead-only
 If a subagent reports "I updated api-contracts.md" — check `git diff`. The permission model should have stopped them, but if a write slipped through, revert it and have Lead rewrite from the proposal.
@@ -18,8 +18,10 @@ No `psql`, no `python -c "..."` that touches the DB directly. Routing through Fa
 A subagent saying "done" is not the same as it being done. Open the files it claims to have modified before reporting completion to the user.
 
 ## Parallel only when independent
-- Frontend + backend on the same feature with an unstable contract → sequential, backend first.
-- Frontend on feature A while backend works on feature B → safe to parallelize.
+- Two roles on the same artifact with an unstable contract → sequential, producer first. Examples:
+  - `dev-frontend` + `dev-backend` on the same feature with no stable API contract → backend first.
+  - `novel-writer` + `novel-editor` on the same chapter → writer first; editor only after a draft lands.
+- Two roles on independent artifacts → safe to parallelize.
 
 ## Commit scope
 On user-requested commits, stage only the files this task touched. Never `git add -A` — it picks up unrelated work or secrets.

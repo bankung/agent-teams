@@ -25,9 +25,11 @@ Never `condition: service_started`. `service_started` returns immediately after 
 
 ## Healthcheck convention
 
-- **Every long-running service should have one** so dependents can gate on `service_healthy`.
+- **Every long-running service must have one.** No exceptions — dependents rely on `service_healthy` to gate startup, and a missing healthcheck silently degrades that contract to `service_started`, which boots through PG init and crash-loops on first connect.
 - `db` uses `pg_isready -U postgres -d agent_teams` over the local unix socket inside the container — no creds passed on the command line. See `docker-compose.yml:26-30`.
-- **`api` does NOT have a healthcheck yet.** Adding one (HTTP `GET /health`) is tracked as Kanban task #9 — it must land before `web` (Phase 3) can gate on `service_healthy`. Until then, dependents cannot use `condition: service_healthy` against `api`.
+- `api` uses `curl -fsS http://localhost:8456/health` against the FastAPI liveness endpoint. `curl` is installed in `api/Dockerfile` specifically for this check; `start_period: 10s` gives uvicorn time to import + bind before failures count. See `docker-compose.yml:58-66`.
+- `/health` is a liveness probe — no DB touch. See `standards/fastapi/runtime.md`.
+- New services (Phase 3 `web`, future workers) inherit this rule on day one — land the service and its healthcheck in the same change.
 
 ## Port mapping — N:N convention
 
@@ -107,7 +109,8 @@ web:
 Notes:
 - `http://api:8456` uses **service-name DNS inside the compose network** — `api` resolves to the api container, not `localhost`.
 - `${WEB_PORT:-3000}:3000` follows the N:N rule.
-- `condition: service_healthy` requires the api healthcheck (Kanban #9) to land first.
+- `condition: service_healthy` works against the api `/health` healthcheck (already wired — see Healthcheck convention).
+- `web` itself must ship with its own healthcheck on day one (per Healthcheck convention).
 
 ## No production hardening yet
 

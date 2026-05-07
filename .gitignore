@@ -33,13 +33,8 @@ build/
 # Per-project per-role state — private per machine, not committed.
 # context/projects/<project>/shared/ is committed (team-shared contract).
 # context/projects/<project>/<role>/ is ignored except for .gitkeep.
-context/projects/*/frontend/*
-!context/projects/*/frontend/.gitkeep
-context/projects/*/backend/*
-!context/projects/*/backend/.gitkeep
-context/projects/*/devops/*
-!context/projects/*/devops/.gitkeep
-context/projects/*/qa/*
-!context/projects/*/qa/.gitkeep
-context/projects/*/reviewer/*
-!context/projects/*/reviewer/.gitkeep
+# Pattern: any subfolder of a project except `shared/` is treated as role-private.
+context/projects/*/*/
+!context/projects/*/shared/
+!context/projects/*/shared/**
+!context/projects/*/*/.gitkeep

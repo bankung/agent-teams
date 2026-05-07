@@ -1,10 +1,12 @@
 # Spawn prompt template
 
-Use the `Agent` tool with `subagent_type` matching the role.
+Use the `Agent` tool with `subagent_type` matching the role. Available role names depend on the active lead's roster — see `.claude/leads/<active.lead>.md`. Examples:
+- `lead='dev'` → `dev-frontend | dev-backend | dev-devops | dev-tester | dev-reviewer`
+- `lead='novel'` → `novel-writer | novel-editor`
 
 ```
 Agent({
-  subagent_type: "<frontend | backend | devops | qa | reviewer>",
+  subagent_type: "<role>",
   description: "<3-5 word task summary>",
   name: "<role>-<short-slug>",
   prompt: <see structure below>
@@ -74,4 +76,4 @@ Before returning:
 
 - If a file is large, paste only the relevant section and tell the subagent to read the full file at the path given.
 - Standards must include every framework in the lane — the subagent can't decide which framework applies; Lead has already decided.
-- Parallel spawns: only when independent. Same feature with an unstable contract → sequential, backend first.
+- Parallel spawns: only when independent. Same artifact with an unstable contract → sequential, with the producing role first (e.g., `dev-backend` before `dev-frontend`; `novel-writer` before `novel-editor`).

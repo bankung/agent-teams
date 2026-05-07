@@ -13,14 +13,14 @@ context/
     └── <project>/                          (auto-created on POST /api/projects)
         ├── shared/                       ← Lead writes only (committed)
         │   ├── decisions.md
-        │   ├── api-contracts.md
-        │   └── db-schema.md
-        ├── frontend/                     ← role-owned (gitignored except .gitkeep)
-        ├── backend/
-        ├── devops/
-        ├── qa/
-        └── reviewer/
+        │   ├── api-contracts.md          (dev lead; other leads have different shared files)
+        │   └── db-schema.md              (dev lead)
+        ├── <role-1>/                     ← role-owned (gitignored except .gitkeep)
+        ├── <role-2>/
+        └── ...
 ```
+
+Role folder names follow the active lead's roster. For `lead='dev'`: `dev-frontend/`, `dev-backend/`, `dev-devops/`, `dev-tester/`, `dev-reviewer/`. For `lead='novel'`: `novel-writer/`, `novel-editor/`. See `.claude/leads/<lead>.md` for the canonical list.
 
 (Bucket 1 = DB; see `api/`, not the filesystem.)
 
