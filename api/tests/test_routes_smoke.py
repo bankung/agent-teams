@@ -29,9 +29,21 @@ same name.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import pytest
+
+from src.constants import RecordStatus
+
+
+def _parse_ts(value: str) -> datetime:
+    """Parse an ISO-8601 timestamp from JSON. Handles trailing 'Z' (UTC) by
+    rewriting to '+00:00' so `datetime.fromisoformat` accepts it on 3.10.
+    """
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    return datetime.fromisoformat(value)
 
 
 def _unique_name(prefix: str) -> str:
@@ -643,17 +655,29 @@ async def test_redelete_task_does_not_grow_audit_history(client, db_session) -> 
     )
 
 
+# Regression: Kanban #76
 @pytest.mark.asyncio
-async def test_redelete_project_is_observable_noop(client, scaffold_cleanup) -> None:
-    """M9 lock (projects): A second DELETE on an already-soft-deleted project
-    is a no-op. Projects don't have an audit table — the observable signal is
-    that `updated_at` does NOT change between the two DELETEs (the no-op skip
-    in `delete_project` returns early before any UPDATE fires).
+async def test_first_delete_bumps_updated_at_redelete_does_not(client, scaffold_cleanup) -> None:
+    """M9 lock (projects), strengthened.
+
+    Three invariants:
+      1. First DELETE bumps `updated_at` strictly forward from the create
+         baseline (load-bearing — the original test missed this and passed
+         vacuously while the underlying code never bumped `updated_at` at all).
+      2. Second DELETE on an already-soft-deleted project is a no-op:
+         `updated_at` is unchanged between the post-first-DELETE snapshot and
+         the post-second-DELETE snapshot (the early-return skip path holds).
+      3. After both DELETEs the row is observable via `?include_deleted=true`
+         AND absent from the default (active-only) list — proxy for
+         `status == RecordStatus.DELETED` since `ProjectRead` does not surface
+         the SMALLINT `status` column. (`RecordStatus.DELETED` imported so a
+         future schema change that exposes `status` will be a one-line patch.)
     """
     name = scaffold_cleanup(_unique_name("proj-redelete"))
     create = await client.post("/api/projects", json=_project_create_payload(name))
     assert create.status_code == 201
     project_id = create.json()["id"]
+    updated_at_at_create = _parse_ts(create.json()["updated_at"])
 
     # First DELETE.
     first = await client.delete(f"/api/projects/{project_id}")
@@ -662,20 +686,117 @@ async def test_redelete_project_is_observable_noop(client, scaffold_cleanup) -> 
     # Snapshot the row state after the first DELETE.
     listing = await client.get("/api/projects?include_deleted=true&limit=500")
     rows = [p for p in listing.json() if p["id"] == project_id]
-    assert len(rows) == 1
-    updated_at_before = rows[0]["updated_at"]
+    assert len(rows) == 1, (
+        f"row missing from include_deleted listing after first DELETE "
+        f"(expected exactly one DELETED row, got {len(rows)})"
+    )
+    updated_at_after_first_delete = _parse_ts(rows[0]["updated_at"])
+
+    # Sanity: row must NOT show in the default (active-only) listing — proxy
+    # for status == RecordStatus.DELETED.
+    active_listing = await client.get("/api/projects?limit=500")
+    assert not any(p["id"] == project_id for p in active_listing.json()), (
+        f"DELETED project id={project_id} still showing in default listing "
+        f"(status proxy: expected RecordStatus.DELETED={RecordStatus.DELETED})"
+    )
+
+    # Invariant 1: first DELETE must advance updated_at past the create baseline.
+    assert updated_at_after_first_delete > updated_at_at_create, (
+        f"first DELETE did not bump updated_at: "
+        f"create={updated_at_at_create.isoformat()} "
+        f"after_first_delete={updated_at_after_first_delete.isoformat()}"
+    )
 
     # Second DELETE — must be a no-op (skip path returns 204 without UPDATE).
     second = await client.delete(f"/api/projects/{project_id}")
     assert second.status_code == 204
 
-    # Re-fetch and assert updated_at did NOT advance.
+    # Re-fetch and assert updated_at did NOT advance further.
     listing = await client.get("/api/projects?include_deleted=true&limit=500")
     rows = [p for p in listing.json() if p["id"] == project_id]
     assert len(rows) == 1
-    updated_at_after = rows[0]["updated_at"]
+    updated_at_after_second_delete = _parse_ts(rows[0]["updated_at"])
 
-    assert updated_at_after == updated_at_before, (
-        f"re-DELETE on a soft-deleted project mutated updated_at: "
-        f"{updated_at_before} → {updated_at_after} (the no-op skip is broken)"
+    # Status sanity (proxy via default listing): row still excluded post-re-DELETE.
+    active_listing = await client.get("/api/projects?limit=500")
+    assert not any(p["id"] == project_id for p in active_listing.json()), (
+        f"row reappeared in default listing after re-DELETE (status proxy broke; "
+        f"expected RecordStatus.DELETED={RecordStatus.DELETED})"
     )
+
+    # Invariant 2: re-DELETE is a true no-op for updated_at.
+    assert updated_at_after_second_delete == updated_at_after_first_delete, (
+        f"re-DELETE on a soft-deleted project mutated updated_at: "
+        f"{updated_at_after_first_delete.isoformat()} → "
+        f"{updated_at_after_second_delete.isoformat()} (the no-op skip is broken)"
+    )
+
+
+# Regression: Kanban #76 — sibling positive lock for the M9 invariant;
+# without this the no-op skip could silently regress.
+@pytest.mark.asyncio
+async def test_patch_project_updated_at_advances_on_real_change_and_no_op_skips(
+    client, scaffold_cleanup
+) -> None:
+    """PATCH /api/projects/{id} parity with tasks:
+      1. PATCH with a real change advances `updated_at` past the create baseline.
+      2. PATCH with the identical body is a no-op — `updated_at` does NOT advance.
+      3. PATCH with a second real change advances `updated_at` again.
+      4. None of the three PATCHes mutate `created_at`.
+    """
+    name = scaffold_cleanup(_unique_name("proj-patch-updated-at"))
+    create = await client.post("/api/projects", json=_project_create_payload(name))
+    assert create.status_code == 201
+    project_id = create.json()["id"]
+    updated_at_at_create = _parse_ts(create.json()["updated_at"])
+    created_at_at_create = _parse_ts(create.json()["created_at"])
+
+    # 1) Real change — should bump updated_at.
+    first_patch = await client.patch(
+        f"/api/projects/{project_id}",
+        json={"description": "first real change"},
+    )
+    assert first_patch.status_code == 200, first_patch.text
+    updated_at_after_patch = _parse_ts(first_patch.json()["updated_at"])
+    assert updated_at_after_patch > updated_at_at_create, (
+        f"PATCH with a real change did not advance updated_at: "
+        f"create={updated_at_at_create.isoformat()} "
+        f"after_patch={updated_at_after_patch.isoformat()}"
+    )
+
+    # 2) Identical body — N7 no-op skip should hold updated_at steady.
+    second_patch = await client.patch(
+        f"/api/projects/{project_id}",
+        json={"description": "first real change"},
+    )
+    assert second_patch.status_code == 200, second_patch.text
+    updated_at_after_noop = _parse_ts(second_patch.json()["updated_at"])
+    assert updated_at_after_noop == updated_at_after_patch, (
+        f"PATCH with an identical body bumped updated_at (no-op skip broken): "
+        f"{updated_at_after_patch.isoformat()} → {updated_at_after_noop.isoformat()}"
+    )
+
+    # 3) Second real change — should bump again.
+    third_patch = await client.patch(
+        f"/api/projects/{project_id}",
+        json={"description": "second real change"},
+    )
+    assert third_patch.status_code == 200, third_patch.text
+    updated_at_after_second_change = _parse_ts(third_patch.json()["updated_at"])
+    assert updated_at_after_second_change > updated_at_after_noop, (
+        f"second real-change PATCH did not advance updated_at: "
+        f"prev={updated_at_after_noop.isoformat()} "
+        f"after={updated_at_after_second_change.isoformat()}"
+    )
+
+    # 4) created_at must never move on PATCH.
+    for label, resp in (
+        ("first_patch", first_patch),
+        ("second_patch", second_patch),
+        ("third_patch", third_patch),
+    ):
+        created_at_seen = _parse_ts(resp.json()["created_at"])
+        assert created_at_seen == created_at_at_create, (
+            f"PATCH ({label}) mutated created_at: "
+            f"{created_at_at_create.isoformat()} → {created_at_seen.isoformat()}"
+        )

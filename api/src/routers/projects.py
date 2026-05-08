@@ -15,6 +15,8 @@ from fastapi import status as http_status
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import func
+from sqlalchemy.sql.elements import ClauseElement
 
 from src.constants import RecordStatus
 from src.db import get_or_404, get_session
@@ -164,8 +166,21 @@ async def update_project(
     if updates.get("is_active") is True:
         await _clear_other_active(session, keep_id=project.id)
 
+    # Skip writes where the new value equals the existing one — keeps PATCHes
+    # that touch only some fields from bumping `updated_at` (and from writing
+    # redundant rows once an audit table lands). SQL clause elements bypass the
+    # equality check — comparing a ClauseElement with `!=` returns a SQL
+    # BinaryExpression (not a bool), so the isinstance guard exists to keep the
+    # no-op detector from crashing on dynamic SQL values. Mirrors tasks.py.
+    changed = False
     for field, value in updates.items():
-        setattr(project, field, value)
+        if isinstance(value, ClauseElement) or getattr(project, field) != value:
+            setattr(project, field, value)
+            changed = True
+
+    # Force `updated_at` to refresh — server_default only fires on INSERT.
+    if changed:
+        project.updated_at = func.now()
 
     try:
         await session.commit()
@@ -206,6 +221,9 @@ async def delete_project(
     if project.is_active:
         # Same transaction so the partial unique index never sees a half-state.
         project.is_active = False
+
+    # Force `updated_at` to refresh — server_default only fires on INSERT.
+    project.updated_at = func.now()
 
     await session.commit()
     return Response(status_code=http_status.HTTP_204_NO_CONTENT)

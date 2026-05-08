@@ -90,7 +90,7 @@ Template for a new endpoint:
 - `422` — Pydantic validation error on missing/invalid fields, including missing `lead` or `lead` not in `{"dev","novel"}`
 
 ### PATCH /api/projects/{id}
-**Purpose:** Partial update. Setting `is_active=true` atomically clears every other row's `is_active`.
+**Purpose:** Partial update. Setting `is_active=true` atomically clears every other row's `is_active`. Server bumps `updated_at` on any real field change; an unchanged-body PATCH is a no-op (no `updated_at` advance, no audit-row noise) — N7 no-op-skip parity with PATCH `/api/tasks/{id}`.
 **Auth:** none
 
 **Request:** any subset of `{name, description, paths_web, paths_api, paths_db, stack_web, stack_api, stack_db, config, is_active, lead}`
@@ -107,7 +107,7 @@ Template for a new endpoint:
 - `400` — `{"detail":"Cannot activate a soft-deleted project — restore first"}` when PATCH sets `is_active=true` on a row with `status=0`. Restore is a deferred admin path (separate endpoint when UI demands it). Other fields can still be PATCHed on a soft-deleted row.
 
 ### DELETE /api/projects/{id}
-**Purpose:** Soft-delete a project — flips `status=0`. If the project was active (`is_active=true`), the same transaction also clears `is_active` so a new project can claim the slot. Idempotent (a second DELETE on an already-deleted row still returns 204). Folder under `context/projects/<name>/` is **not** removed (handled out-of-band).
+**Purpose:** Soft-delete a project — flips `status=0`. If the project was active (`is_active=true`), the same transaction also clears `is_active` so a new project can claim the slot. First DELETE advances `updated_at`; subsequent DELETEs on an already-deleted row are idempotent no-ops (return 204 without further `updated_at` bump — this is the M9 observable signal). Folder under `context/projects/<name>/` is **not** removed (handled out-of-band).
 **Auth:** none
 **Response 204:** No content
 **Errors:**
@@ -149,7 +149,7 @@ Template for a new endpoint:
 - `422` — Pydantic validation error
 
 ### PATCH /api/tasks/{id}
-**Purpose:** Partial update. Transitioning to `process_status=2` (in_progress) sets `started_at=now()` if NULL; transitioning to `process_status=5` (done) sets `completed_at=now()`. Server also bumps `updated_at` on every PATCH.
+**Purpose:** Partial update. Transitioning to `process_status=2` (in_progress) sets `started_at=now()` if NULL; transitioning to `process_status=5` (done) sets `completed_at=now()`. Server bumps `updated_at` on any real field change; an unchanged-body PATCH is a no-op (N7 no-op-skip — see `routers/tasks.py:117-127`).
 **Auth:** none
 
 **Request:** any subset of `{title, description, process_status, priority, assigned_role, started_at, completed_at}`. The soft-delete `status` flag is intentionally absent — sending `{"status": 0}` is silently ignored (use `DELETE` to soft-delete).
