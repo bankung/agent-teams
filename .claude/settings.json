@@ -22,6 +22,9 @@
       "Write(C:/Users/banku/.claude/projects/c--Users-banku-Documents-Personal-Projects-GitHub-agent-teams/memory/**)",
       "Edit(C:/Users/banku/.claude/projects/c--Users-banku-Documents-Personal-Projects-GitHub-agent-teams/memory/**)",
 
+      "Write(C:/Users/banku/AppData/Local/Temp/**)",
+      "Edit(C:/Users/banku/AppData/Local/Temp/**)",
+
       "Agent(*)",
 
       "Bash(git status:*)",
@@ -42,6 +45,14 @@
       "Bash(curl --silent -X PATCH http://localhost:8456/api/:*)",
       "Bash(curl --silent -X POST http://localhost:8456/api/:*)",
       "Bash(curl --silent -X DELETE http://localhost:8456/api/:*)",
+      "Bash(curl --silent http://localhost:8456:*)",
+      "Bash(curl --silent -X POST http://localhost:8456:*)",
+      "Bash(curl --silent -X PATCH http://localhost:8456:*)",
+      "Bash(curl --silent -X DELETE http://localhost:8456:*)",
+
+      "Bash(rm c:/Users/banku/AppData/Local/Temp/:*)",
+      "Bash(rm /c/Users/banku/AppData/Local/Temp/:*)",
+      "Bash(where:*)",
 
       "Bash(docker compose ps:*)",
       "Bash(docker compose logs:*)",
@@ -58,6 +69,9 @@
 
       "Bash(docker compose exec api pytest:*)",
       "Bash(docker compose exec -T api pytest:*)",
+
+      "Bash(docker compose exec -T api which:*)",
+      "Bash(docker compose exec -T api pip-audit:*)",
 
       "Bash(docker compose exec db psql -U postgres -d agent_teams -c SELECT:*)",
       "Bash(docker compose exec -T db psql -U postgres -d agent_teams -c SELECT:*)",
