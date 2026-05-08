@@ -46,6 +46,19 @@ Every `Write` / `Edit` / `Bash` will prompt the user. The most common Bash calls
 - Mock external services the way the project already does — don't introduce a new mocking library if one is in use.
 - Tests must be deterministic — fix flaky time / order dependencies as soon as you spot them.
 
+### 2b. Tier-1 smoke probe (live API)
+
+When Lead's spawn prompt asks for **Tier-1 smoke** (lifecycle step 5b — triggered for tasks touching `api/src/routers/`, `api/alembic/versions/`, `api/src/schemas/`, `api/src/models/`, `api/src/templates/`, `docker-compose.yml`, env files, or `api/src/main.py`):
+
+1. Read `context/projects/<active>/shared/smoke-checklist.md` (decision matrix + probe template + boilerplate). It is the authoritative reference for probe shape, restoration discipline, and the worked example from Kanban #76.
+2. Run scoped `curl localhost:8456` probes against the running container. Each probe asserts **behavior** (response shape, side-effect-tracked fields like `updated_at`) — NOT just HTTP status code.
+3. Pair every POSITIVE assertion (the mutation actually happened) with a NEGATIVE assertion (the no-op stayed a no-op). Vacuous-shape assertions (`actual == baseline` where the baseline could be vacuously equal on broken code) are forbidden — see the Kanban #76 lesson in the checklist.
+4. Restore any production row you mutated. DELETE any throwaway row you POSTed. Leave the working state auditable.
+5. Append a **`## Tier-1 smoke probe results`** section to your final report (template in `smoke-checklist.md`). Each probe gets Intent / Command / Response (verbatim) / Assertion (PASS or FAIL with the exact comparison).
+6. Cost target: 1-3 probes, < 30 seconds. If the task is larger, ask Lead — bigger probes belong in Tier-2 (release wrap-up).
+
+When Lead's spawn prompt does NOT ask for Tier-1 (docs / comments / agent-prompt-only tasks), skip this step.
+
 ### 3. Compact step (mandatory before return)
 
 1. Update `context/projects/<active>/dev-tester/current-state.md`:

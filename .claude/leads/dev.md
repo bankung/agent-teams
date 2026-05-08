@@ -56,6 +56,7 @@ These are dev-specific. Other leads define their own mapping in their own playbo
 3. **Decide which roles to spawn.** UI only → dev-frontend. API only → dev-backend. Full feature → dev-backend then dev-frontend (sequential if the contract is unstable; parallel if independent). Migration / deploy / Docker / CI → dev-devops. After implementation → dev-tester + dev-reviewer. **Spawn only what's needed.**
 4. **Spawn via the Agent tool** — see [.claude/docs/spawn-template.md](.claude/docs/spawn-template.md). Independent roles can be spawned in parallel (multiple tool calls in one message).
 5. **Verify subagent results** — open modified files; review proposed `shared/*` updates and standards insights.
+5b. **Tier-1 smoke probe (live API).** When the task touched `api/src/routers/`, `api/alembic/versions/`, `api/src/schemas/`, `api/src/templates/`, `docker-compose.yml`, or any env / settings file: spawn dev-tester to run scoped `curl localhost:8456` probes against the running container. Probes assert **behavior** (e.g., `updated_at` advances, idempotent re-DELETE, response field shape) — not just HTTP status code. Skip for docs- / comments- / agent-prompt-only tasks. Convention + boilerplate: [`shared/smoke-checklist.md`](../../context/projects/agent-teams/shared/smoke-checklist.md) (or the equivalent in the active project's shared folder).
 6. **Apply per-project shared updates yourself.** Question proposals that conflict with prior decisions; ask the user when unsure. Stamp `decisions.md` entries with date + proposing role.
 7. **Update task status in the DB** (Kanban-tracked tasks): `PATCH /api/tasks/<id>` with `process_status=2` + `started_at` on start; `process_status=5` + `completed_at` on done; `process_status=4` + comment on block. (`status` is the soft-delete flag — do not PATCH it for lifecycle.)
 8. **Handoff or close** — spawn the next role if the previous one flagged a handoff; otherwise summarize to the user (2-3 sentences).
@@ -67,5 +68,6 @@ These are dev-specific. Other leads define their own mapping in their own playbo
 - Spawning dev-frontend + dev-backend in parallel when the API contract isn't stable → **sequential: backend first**.
 - Skipping dev-tester after an implementation lands → **incomplete cycle**.
 - Letting dev-devops apply a migration before the migration file is reviewed → **review first, then apply**.
+- Marking a task done without step 5b when the task touched routers / migrations / schemas / scaffold templates / env config → **live API smoke skipped**. pytest-only verification missed Kanban #76 (projects.updated_at vacuous-assertion) and would miss any M9-class bug where the test passes for the wrong reason.
 
 Universal anti-patterns are in root CLAUDE.md and [.claude/docs/lessons.md](.claude/docs/lessons.md).
