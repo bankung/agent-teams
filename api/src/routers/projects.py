@@ -10,7 +10,8 @@ Detail endpoints return rows regardless of status (per standards/postgresql/soft
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import status as http_status
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -92,7 +93,7 @@ async def get_project_by_name(
     )
 
 
-@router.post("", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=ProjectRead, status_code=http_status.HTTP_201_CREATED)
 async def create_project(
     payload: ProjectCreate,
     session: AsyncSession = Depends(get_session),
@@ -182,7 +183,7 @@ async def update_project(
     return project
 
 
-@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{project_id}", status_code=http_status.HTTP_204_NO_CONTENT)
 async def delete_project(
     project_id: int,
     session: AsyncSession = Depends(get_session),
@@ -199,7 +200,7 @@ async def delete_project(
     # write a redundant audit row. The is_active clear is also unnecessary —
     # an already-deleted row should not be active, but be defensive and skip.
     if project.status == RecordStatus.DELETED:
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
+        return Response(status_code=http_status.HTTP_204_NO_CONTENT)
 
     project.status = RecordStatus.DELETED
     if project.is_active:
@@ -207,4 +208,4 @@ async def delete_project(
         project.is_active = False
 
     await session.commit()
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return Response(status_code=http_status.HTTP_204_NO_CONTENT)

@@ -11,7 +11,7 @@
 - **Error envelope:** FastAPI default — `{"detail": "<message>"}` with appropriate HTTP status
 - **Pagination:** `<offset/limit | cursor>` *(fill in once decided)*
 - **Datetime:** ISO 8601 with timezone (`2026-05-04T12:34:56+07:00`)
-- **IDs:** UUIDv4 strings unless specified
+- **IDs:** BigInteger (autoincrement) unless specified
 
 ## Endpoints
 

@@ -19,6 +19,8 @@
       "Edit(.gitignore)",
       "Edit(docker-compose.yml)",
 
+      "Agent(*)",
+
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)",

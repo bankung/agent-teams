@@ -115,9 +115,9 @@ async def update_task(
     # noise on PATCHes that touch only some fields. The lifecycle stamping above
     # already runs only when process_status actually changes, so the no-op skip
     # here doesn't bypass started_at / completed_at logic. SQL clause elements
-    # (e.g., func.now()) bypass the equality check — comparing them against a
-    # Python value yields a SQL BinaryExpression, not a bool, and these are
-    # always intentional writes anyway.
+    # (e.g., func.now()) bypass the equality check — comparing a ClauseElement
+    # with `!=` returns a SQL BinaryExpression (not a bool), so the isinstance
+    # guard exists to keep the no-op detector from crashing on dynamic SQL values.
     for field, value in updates.items():
         if isinstance(value, ClauseElement) or getattr(task, field) != value:
             setattr(task, field, value)
@@ -133,6 +133,7 @@ async def update_task(
         # unknown constraints so the failure is still surfaced (without leaking
         # raw PG text into the wire response).
         orig_text = str(exc.orig)
+        # Strings pinned by test_patch_task_400_detail_strings_are_pinned_in_router_source — keep the test in sync.
         if "ck_tasks_process_status_valid" in orig_text:
             detail = "process_status violates ck_tasks_process_status_valid"
         elif "ck_tasks_priority_valid" in orig_text:

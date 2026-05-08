@@ -21,7 +21,7 @@ from src.constants import (
 
 
 def test_in_clause_status_canonical() -> None:
-    assert in_clause("status", TaskStatus.ALL) == "status IN (1, 2, 3, 4, 5)"
+    assert in_clause("process_status", TaskStatus.ALL) == "process_status IN (1, 2, 3, 4, 5)"
 
 
 def test_in_clause_priority_canonical() -> None:

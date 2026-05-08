@@ -58,7 +58,7 @@ depends_on = None
 
 # Kept in sync with src/constants.py (TaskStatus.ALL, TaskRole.ALL, RecordStatus.ALL,
 # ProjectLead.ALL). Migrations don't import app code — see standards/sqlalchemy/migrations.md.
-_TASK_STATUS_ALL = (1, 2, 3, 4, 5)
+_TASK_PROCESS_STATUS_ALL = (1, 2, 3, 4, 5)
 _TASK_ROLE_ALL = (1, 2, 3, 4, 5)
 _RECORD_STATUS_ALL = (0, 1)
 _PROJECT_LEAD_ALL = ("dev", "novel")
@@ -91,7 +91,7 @@ def upgrade() -> None:
     op.create_check_constraint(
         "ck_tasks_process_status_valid",
         "tasks",
-        _in_clause("process_status", _TASK_STATUS_ALL),
+        _in_clause("process_status", _TASK_PROCESS_STATUS_ALL),
     )
 
     # Rename the existing index BEFORE creating the new soft-delete `ix_tasks_status`
@@ -235,5 +235,5 @@ def downgrade() -> None:
     op.create_check_constraint(
         "ck_tasks_status_valid",
         "tasks",
-        _in_clause("status", _TASK_STATUS_ALL),
+        _in_clause("status", _TASK_PROCESS_STATUS_ALL),
     )

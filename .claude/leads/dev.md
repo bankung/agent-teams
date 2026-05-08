@@ -57,7 +57,7 @@ These are dev-specific. Other leads define their own mapping in their own playbo
 4. **Spawn via the Agent tool** — see [.claude/docs/spawn-template.md](.claude/docs/spawn-template.md). Independent roles can be spawned in parallel (multiple tool calls in one message).
 5. **Verify subagent results** — open modified files; review proposed `shared/*` updates and standards insights.
 6. **Apply per-project shared updates yourself.** Question proposals that conflict with prior decisions; ask the user when unsure. Stamp `decisions.md` entries with date + proposing role.
-7. **Update task status in the DB** (Kanban-tracked tasks): `PATCH /api/tasks/<id>` with `status=2` + `started_at` on start; `status=5` + `completed_at` on done; `status=4` + comment on block.
+7. **Update task status in the DB** (Kanban-tracked tasks): `PATCH /api/tasks/<id>` with `process_status=2` + `started_at` on start; `process_status=5` + `completed_at` on done; `process_status=4` + comment on block. (`status` is the soft-delete flag — do not PATCH it for lifecycle.)
 8. **Handoff or close** — spawn the next role if the previous one flagged a handoff; otherwise summarize to the user (2-3 sentences).
 9. **Compaction is automatic** — every subagent updates its own `current-state.md` before returning.
 10. **Multi-turn with a running subagent** — `SendMessage({to: <agent_name>, ...})`. Rarely needed.

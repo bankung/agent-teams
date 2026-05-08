@@ -354,7 +354,7 @@ You: full login feature (email + password)
 Lead:
   → curl POST http://localhost:8456/api/tasks (create parent task)
   → Plan: dev-backend → apply contract → dev-frontend → dev-tester → dev-reviewer
-  → curl PATCH /api/tasks/<id> {status: 2, started_at: now}  # in_progress
+  → curl PATCH /api/tasks/<id> {process_status: 2, started_at: now}  # in_progress
   → Spawn dev-backend("create POST /auth/login + User model + migration")
 
 dev-backend subagent:
@@ -369,7 +369,7 @@ Lead:
   → Spawn dev-devops → apply migration
   → Spawn dev-frontend → consume contract
   → Spawn dev-tester + dev-reviewer in parallel
-  → curl PATCH /api/tasks/<id> {status: 5, completed_at: now}  # done
+  → curl PATCH /api/tasks/<id> {process_status: 5, completed_at: now}  # done
   → Report to user
 ```
 

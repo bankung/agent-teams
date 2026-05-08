@@ -36,7 +36,7 @@ def _project_kwargs() -> dict:
         "description": PROJECT_DESCRIPTION,
         "paths_web": str(repo / "web"),
         "paths_api": str(repo / "api"),
-        "paths_db": str(repo / "api" / "migrations"),
+        "paths_db": str(repo / "api" / "alembic" / "versions"),
         "stack_web": "Next.js 14 + TypeScript + Tailwind",
         "stack_api": "FastAPI + Pydantic + SQLAlchemy + Alembic",
         "stack_db": "PostgreSQL 16",

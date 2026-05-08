@@ -1,6 +1,6 @@
 """Kanban schema integer codes — mirror context/standards/general.md.
 
-These are the canonical values for tasks.status / tasks.priority / tasks.assigned_role
+These are the canonical values for tasks.process_status / tasks.priority / tasks.assigned_role
 across every project that uses this schema. Numbers are stable forever — extend by
 adding new codes, never repurpose existing ones.
 """
