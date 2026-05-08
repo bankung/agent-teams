@@ -1,8 +1,10 @@
 """Task and TaskHistory ORM models.
 
 `Task` mirrors the Kanban schema described in `context/standards/general.md`:
-status, priority, and assigned_role are INTEGER columns with CHECK constraints —
-canonical codes live in `src.constants` (TaskStatus, TaskPriority, TaskRole).
+process_status, priority are INTEGER columns with CHECK constraints — canonical
+codes live in `src.constants` (TaskStatus, TaskPriority). `assigned_role` no
+longer carries a DB CHECK — application code validates against the active
+project's lead roster (codes 1..5 for dev, 11..12 for novel, etc.).
 
 `TaskHistory` is an audit-only sink populated by a PG trigger on the `tasks` table
 (AFTER UPDATE OR DELETE). `task_id` is intentionally NOT a FK — when a task row
@@ -21,6 +23,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     Text,
     func,
 )
@@ -28,9 +31,9 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.constants import (
+    RecordStatus,
     TaskHistoryOperation,
     TaskPriority,
-    TaskRole,
     TaskStatus,
     in_clause,
 )
@@ -43,9 +46,13 @@ if TYPE_CHECKING:
 class Task(Base):
     """A Kanban task scoped to a Project.
 
-    Status / priority / assigned_role use stable integer codes (see src.constants).
-    Lifecycle timestamps `started_at` / `completed_at` are managed by the API layer
-    on status transitions (PATCH /api/tasks/{id}).
+    `process_status` (1..5) holds the lifecycle code (TODO/IN_PROGRESS/REVIEW/
+    BLOCKED/DONE — see TaskStatus). `status` (0/1) is the uniform soft-delete
+    flag (RecordStatus). `assigned_role` is an integer with no DB CHECK — the
+    app validates per active project's lead roster.
+
+    Lifecycle timestamps `started_at` / `completed_at` are managed by the API
+    layer on process_status transitions (PATCH /api/tasks/{id}).
     """
 
     __tablename__ = "tasks"
@@ -61,7 +68,7 @@ class Task(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    status: Mapped[int] = mapped_column(
+    process_status: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
         server_default=str(TaskStatus.TODO),
@@ -76,6 +83,13 @@ class Task(Base):
     assigned_role: Mapped[int | None] = mapped_column(
         Integer,
         nullable=True,
+    )
+
+    status: Mapped[int] = mapped_column(
+        SmallInteger,
+        nullable=False,
+        server_default="1",
+        default=RecordStatus.ACTIVE,
     )
 
     created_at: Mapped[datetime] = mapped_column(
@@ -101,26 +115,30 @@ class Task(Base):
 
     __table_args__ = (
         CheckConstraint(
-            in_clause("status", TaskStatus.ALL),
-            name="ck_tasks_status_valid",
+            in_clause("process_status", TaskStatus.ALL),
+            name="ck_tasks_process_status_valid",
         ),
         CheckConstraint(
             in_clause("priority", TaskPriority.ALL),
             name="ck_tasks_priority_valid",
         ),
+        # No ck_tasks_assigned_role_valid — app-layer validates per project lead's
+        # roster (dev=1..5, novel=11..12, etc.). DB CHECK was dropped 2026-05-08.
         CheckConstraint(
-            f"assigned_role IS NULL OR {in_clause('assigned_role', TaskRole.ALL)}",
-            name="ck_tasks_assigned_role_valid",
+            in_clause("status", RecordStatus.ALL),
+            name="ck_tasks_status_valid",
         ),
         Index("ix_tasks_project_id", "project_id"),
-        Index("ix_tasks_status", "status"),
+        Index("ix_tasks_process_status", "process_status"),
         Index("ix_tasks_assigned_role", "assigned_role"),
+        Index("ix_tasks_status", "status"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover
         return (
             f"<Task id={self.id} project_id={self.project_id} "
-            f"status={self.status} title={self.title!r}>"
+            f"process_status={self.process_status} status={self.status} "
+            f"title={self.title!r}>"
         )
 
 

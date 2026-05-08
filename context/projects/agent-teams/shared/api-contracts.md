@@ -12,6 +12,7 @@
 - **Pagination:** `offset` / `limit` query params, defaults `offset=0` `limit=50`, `limit` max 500
 - **Datetime:** ISO 8601 with timezone (`2026-05-04T12:34:56+07:00`)
 - **IDs:** `BigInteger` (positive integer; serialized as JSON number) — see [decisions.md](decisions.md) entry on BigInt vs UUID
+- **Soft delete:** business resources (`projects`, `tasks`) carry an internal `status` flag (1=active, 0=deleted) that is **NOT** exposed on Read schemas or accepted on Create/Update bodies. List endpoints default-filter to active rows. Clients soft-delete via `DELETE /api/<resource>/{id}` (204 No Content). Detail endpoints (`GET /{id}`) return rows regardless of soft-delete status. The `?include_deleted=true` query param on list endpoints is debug-only and intentionally omitted from this contract. PATCH ignores `{"status": 0}` silently (Pydantic Update schemas do not declare the field).
 
 ## Endpoints
 
@@ -75,32 +76,43 @@ Template for a new endpoint:
     "api": ["fastapi","python","pydantic","sqlalchemy"],
     "db": ["postgresql"]
   },
-  "is_active": true
+  "is_active": true,
+  "lead": "dev"
 }
 ```
+
+`lead` is required and must be one of `"dev"` | `"novel"` — picks the subagent roster the auto-scaffold uses.
 
 **Response 201:** `ProjectRead`
 
 **Errors:**
 - `409` — `{"detail":"Project '<name>' already exists"}` on unique-name violation
-- `422` — Pydantic validation error on missing/invalid fields
+- `422` — Pydantic validation error on missing/invalid fields, including missing `lead` or `lead` not in `{"dev","novel"}`
 
 ### PATCH /api/projects/{id}
 **Purpose:** Partial update. Setting `is_active=true` atomically clears every other row's `is_active`.
 **Auth:** none
 
-**Request:** any subset of `{name, description, paths_web, paths_api, paths_db, stack_web, stack_api, stack_db, config, is_active}`
+**Request:** any subset of `{name, description, paths_web, paths_api, paths_db, stack_web, stack_api, stack_db, config, is_active, lead}`
 
 **Response 200:** `ProjectRead`
 
 **Errors:**
 - `404` — project id not found
 - `409` — name conflict on rename
+- `422` — `lead` outside `{"dev","novel"}`
+
+### DELETE /api/projects/{id}
+**Purpose:** Soft-delete a project — flips `status=0`. If the project was active (`is_active=true`), the same transaction also clears `is_active` so a new project can claim the slot. Idempotent (a second DELETE on an already-deleted row still returns 204). Folder under `context/projects/<name>/` is **not** removed (handled out-of-band).
+**Auth:** none
+**Response 204:** No content
+**Errors:**
+- `404` — `{"detail":"Project id=<n> not found"}` when id does not exist
 
 ### GET /api/tasks
 **Purpose:** List tasks for a project (paginated, filterable).
 **Auth:** none
-**Query:** `project_id` (required), `status` (1..5), `assigned_role` (1..5), `limit`, `offset`
+**Query:** `project_id` (required), `process_status` (1..5, optional), `assigned_role` (optional), `limit`, `offset`
 **Response 200:** `[TaskRead, ...]`
 
 ### GET /api/tasks/{id}
@@ -120,7 +132,7 @@ Template for a new endpoint:
   "project_id": 1,
   "title": "Phase 3 — kanban UI scaffold",
   "description": "...",
-  "status": 1,
+  "process_status": 1,
   "priority": 2,
   "assigned_role": 1
 }
@@ -133,10 +145,10 @@ Template for a new endpoint:
 - `422` — Pydantic validation error
 
 ### PATCH /api/tasks/{id}
-**Purpose:** Partial update. Transitioning to `status=2` (in_progress) sets `started_at=now()` if NULL; transitioning to `status=5` (done) sets `completed_at=now()`. Server also bumps `updated_at` on every PATCH.
+**Purpose:** Partial update. Transitioning to `process_status=2` (in_progress) sets `started_at=now()` if NULL; transitioning to `process_status=5` (done) sets `completed_at=now()`. Server also bumps `updated_at` on every PATCH.
 **Auth:** none
 
-**Request:** any subset of `{title, description, status, priority, assigned_role, started_at, completed_at}`
+**Request:** any subset of `{title, description, process_status, priority, assigned_role, started_at, completed_at}`. The soft-delete `status` flag is intentionally absent — sending `{"status": 0}` is silently ignored (use `DELETE` to soft-delete).
 
 **Response 200:** `TaskRead`
 
@@ -144,12 +156,19 @@ Template for a new endpoint:
 - `404` — task id not found
 - `400` — CHECK violation
 
+### DELETE /api/tasks/{id}
+**Purpose:** Soft-delete a task — flips `status=0`. Idempotent. The audit trigger snapshots the flip as `'U'` in `tasks_history`.
+**Auth:** none
+**Response 204:** No content
+**Errors:**
+- `404` — `{"detail":"Task id=<n> not found"}` when id does not exist
+
 ## Schemas
 
-**`ProjectRead`** — `{id:int, name, description, paths_web, paths_api, paths_db, stack_web, stack_api, stack_db, config:object, is_active:bool, created_at, updated_at}`
+**`ProjectRead`** — `{id:int, name, description, paths_web, paths_api, paths_db, stack_web, stack_api, stack_db, config:object, is_active:bool, lead:"dev"|"novel", created_at, updated_at}`
 
-**`TaskRead`** — `{id:int, project_id:int, title, description, status:int, priority:int, assigned_role:int|null, created_at, updated_at, started_at:datetime|null, completed_at:datetime|null}`
+**`TaskRead`** — `{id:int, project_id:int, title, description, process_status:int, priority:int, assigned_role:int|null, created_at, updated_at, started_at:datetime|null, completed_at:datetime|null}`
 
-Integer code fields (`status`, `priority`, `assigned_role`) follow `context/standards/general.md` §"Kanban schema codes".
+Integer code fields (`process_status`, `priority`, `assigned_role`) follow `context/standards/general.md` §"Kanban schema codes". Note that the `tasks` lifecycle code is named `process_status` everywhere on the wire (renamed from `status` by the 2026-05-08 migration); `status` on the wire is reserved as the internal soft-delete flag and is not exposed.
 
 <!-- No endpoints documented yet. First endpoint goes above this line. -->

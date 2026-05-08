@@ -2,15 +2,20 @@
 
 Mounted at `/api/projects` from main.py. All endpoints async, async-SQLAlchemy.
 After-create-side-effect: auto-scaffolds the on-disk context/projects/<name>/ folder.
+
+Soft-delete: list endpoints default-filter `WHERE status=1`; opt-in `?include_deleted=true`
+returns soft-deleted rows too. DELETE flips `status=0` (and clears `is_active` if true).
+Detail endpoints return rows regardless of status (per standards/postgresql/soft-delete.md).
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.constants import RecordStatus
 from src.db import get_or_404, get_session
 from src.models.project import Project
 from src.schemas.project import ProjectCreate, ProjectRead, ProjectUpdate
@@ -32,11 +37,17 @@ async def _clear_other_active(session: AsyncSession, keep_id: int | None) -> Non
 async def list_projects(
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    include_deleted: bool = Query(
+        default=False,
+        description="If true, include soft-deleted (status=0) rows. Debug-only.",
+    ),
     session: AsyncSession = Depends(get_session),
 ) -> list[Project]:
-    result = await session.execute(
-        select(Project).order_by(Project.id.asc()).limit(limit).offset(offset)
-    )
+    stmt = select(Project)
+    if not include_deleted:
+        stmt = stmt.where(Project.status == RecordStatus.ACTIVE)
+    stmt = stmt.order_by(Project.id.asc()).limit(limit).offset(offset)
+    result = await session.execute(stmt)
     return list(result.scalars().all())
 
 
@@ -44,8 +55,15 @@ async def list_projects(
 async def get_active_project(
     session: AsyncSession = Depends(get_session),
 ) -> Project:
+    # The partial unique index `ux_projects_active_one` already gates is_active=true
+    # on status=1, so we don't need to filter status here — but pass it explicitly
+    # for clarity and as a safety net if the index is ever loosened.
     return await get_or_404(
-        session, Project, detail="No active project", is_active=True
+        session,
+        Project,
+        detail="No active project",
+        is_active=True,
+        status=RecordStatus.ACTIVE,
     )
 
 
@@ -54,8 +72,15 @@ async def get_project_by_name(
     name: str,
     session: AsyncSession = Depends(get_session),
 ) -> Project:
+    # By-name lookup is used by Lead bootstrap and external integrations — they
+    # only ever care about active projects. Soft-deleted projects are invisible
+    # by name (the partial unique index allows a new project to claim the name).
     return await get_or_404(
-        session, Project, detail=f"Project {name!r} not found", name=name
+        session,
+        Project,
+        detail=f"Project {name!r} not found",
+        name=name,
+        status=RecordStatus.ACTIVE,
     )
 
 
@@ -78,6 +103,7 @@ async def create_project(
         "stack_db": payload.stack.db,
         "config": config,
         "is_active": payload.is_active,
+        "lead": payload.lead,
     }
 
     # If caller wants this project to be the active one, clear others first —
@@ -99,7 +125,7 @@ async def create_project(
 
     # Side-effect: scaffold context/projects/<name>/ — failure is non-fatal.
     settings = get_settings()
-    scaffold_project_folder(settings.repo_root, project.name)
+    scaffold_project_folder(settings.repo_root, project.name, lead=project.lead)
 
     return project
 
@@ -131,3 +157,25 @@ async def update_project(
 
     await session.refresh(project)
     return project
+
+
+@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_project(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Soft-delete a project: flip status=0; if it was the active project, also
+    clear is_active so a new project can take that slot. Returns 204 No Content.
+    Idempotent — deleting an already-deleted project is a no-op (still 204).
+    """
+    project = await get_or_404(
+        session, Project, detail=f"Project id={project_id} not found", id=project_id
+    )
+
+    project.status = RecordStatus.DELETED
+    if project.is_active:
+        # Same transaction so the partial unique index never sees a half-state.
+        project.is_active = False
+
+    await session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -18,7 +18,12 @@ def in_clause(column: str, values: tuple[int, ...]) -> str:
 
 
 class TaskStatus:
-    """tasks.status — INTEGER NOT NULL DEFAULT 1, CHECK IN (1..5)."""
+    """tasks.process_status — INTEGER NOT NULL DEFAULT 1, CHECK IN (1..5).
+
+    Renamed from tasks.status -> tasks.process_status by the soft-delete migration
+    (2026_05_08_*) so the bare `status` name carries the uniform 0/1 soft-delete
+    flag across every business table. The 1..5 codes themselves are unchanged.
+    """
 
     TODO = 1
     IN_PROGRESS = 2
@@ -27,6 +32,33 @@ class TaskStatus:
     DONE = 5
 
     ALL = (TODO, IN_PROGRESS, REVIEW, BLOCKED, DONE)
+
+
+class RecordStatus:
+    """Uniform soft-delete flag — every business table has SMALLINT NOT NULL
+    DEFAULT 1 CHECK (status IN (0, 1)). 1=active, 0=deleted. App code never
+    issues SQL DELETE; "delete" endpoints flip the flag.
+    """
+
+    ACTIVE = 1
+    DELETED = 0
+
+    ALL = (DELETED, ACTIVE)
+
+
+class ProjectLead:
+    """projects.lead — TEXT NOT NULL DEFAULT 'dev', CHECK lead IN ('dev','novel').
+
+    Drives subagent roster selection (see scaffold service + .claude/leads/<lead>.md).
+    Codes 1..5 reserved for dev roles; 11..12 reserved for novel; future leads pick
+    their own ranges. App-layer validates assigned_role per active lead's roster
+    (no DB CHECK on tasks.assigned_role after the soft-delete migration).
+    """
+
+    DEV = "dev"
+    NOVEL = "novel"
+
+    ALL = (DEV, NOVEL)
 
 
 class TaskPriority:

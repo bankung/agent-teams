@@ -15,6 +15,13 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-08 — Multi-domain `lead` column + soft-delete migration bundled (`0002_soft_delete_and_lead`)
+**Scope:** db / backend / shared
+**Proposed by:** user (lead column) + dev-backend (migration bundle, scaffold dispatch, `_in_clause_text`)
+**Decision:** Single Alembic migration `0002_soft_delete_and_lead` (filename `2026_05_08_0300_soft_delete_and_lead.py`) lands three coupled changes atomically: (a) the soft-delete schema decided 2026-05-05 (rename `tasks.status → tasks.process_status`; add `status SMALLINT NOT NULL DEFAULT 1 CHECK (status IN (0,1))` to `projects` + `tasks`; partial unique on `projects.name` gated on `status=1`; tighten `ux_projects_active_one` to `WHERE is_active IS TRUE AND status=1`), (b) a new `projects.lead TEXT NOT NULL DEFAULT 'dev' CHECK (lead IN ('dev','novel'))` column, and (c) drop of `ck_tasks_assigned_role_valid` (app-layer validates per active project's lead roster). Two leads seed the multi-domain pattern: dev (1..5 roles), novel (11..12 roles); future leads pick their own ranges. Scaffold service dispatches on `project.lead` to pick role-folder names — per-lead `shared/*` templates are a follow-up (every project still gets the dev template trio).
+**Reasoning:** All three changes touch the same migration touchpoints (`tasks` columns, `projects` constraints) and the app rename has to flip on the same deploy as the column rename — splitting them invites a window where schemas mismatch source. Per-lead roster validation is dynamic (can't be expressed as a single static CHECK across all leads), so app-layer enforcement is the source of truth for `assigned_role`.
+**Implications:** `DELETE /api/projects/{id}` and `DELETE /api/tasks/{id}` are now public verbs (204; flip `status=0` internally; project DELETE also clears `is_active` if true). List endpoints default-filter `WHERE status=1` with opt-in `?include_deleted=true` (debug; intentionally NOT in api-contracts.md). Detail endpoints return rows regardless of soft-delete status. PATCH does NOT accept the soft-delete `status` flag — `TaskUpdate`/`ProjectUpdate` schemas omit the field; unknown fields are silently ignored (Pydantic default `extra='ignore'`); locked by `test_patch_task_silently_ignores_soft_delete_status_field`. Lifecycle status query param renamed `?status=1..5 → ?process_status=1..5`. POST `/api/projects` requires `lead` (422 if missing or unknown). `assigned_role` Pydantic validator still hardcodes against `TaskRole.ALL = (1..5)` — widening to per-lead roster logic is a Phase 3 follow-up.
+
 ## 2026-05-05 — Soft delete via uniform `status` flag (no hard DELETE in app code)
 **Scope:** db / shared
 **Proposed by:** user

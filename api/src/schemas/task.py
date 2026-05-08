@@ -1,8 +1,18 @@
 """Pydantic schemas for the `tasks` table.
 
-Integer code fields (status, priority, assigned_role) are validated against
-`src.constants` ALL tuples — keeps the API in lockstep with the DB CHECK
-constraints and the standards doc.
+Integer code fields (process_status, priority, assigned_role) are validated against
+`src.constants` ALL tuples — keeps the API in lockstep with the DB CHECK constraints
+and the standards doc.
+
+Note: `process_status` is the 1..5 lifecycle code (renamed from `status` by the
+2026-05-08 soft-delete migration). The bare `status` name is now reserved for the
+uniform 0/1 soft-delete flag — and is intentionally NOT exposed in any public
+schema; clients call `DELETE /api/tasks/{id}` to soft-delete.
+
+`assigned_role` is no longer guarded by a DB CHECK — app-layer validation against
+the active project's lead roster is the only constraint. The Pydantic validator
+still rejects values outside the dev roster (1..5) for now; widening to per-lead
+roster logic is a Phase 3 follow-up (frontend will pick from a roster picker).
 """
 
 from __future__ import annotations
@@ -15,7 +25,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.constants import TaskPriority, TaskRole, TaskStatus
 
-StatusCode = Annotated[int, Field(description="tasks.status — see TaskStatus.ALL")]
+ProcessStatusCode = Annotated[
+    int, Field(description="tasks.process_status — see TaskStatus.ALL")
+]
 PriorityCode = Annotated[int, Field(description="tasks.priority — see TaskPriority.ALL")]
 RoleCode = Annotated[int, Field(description="tasks.assigned_role — see TaskRole.ALL")]
 
@@ -29,7 +41,7 @@ def _make_code_validator(
 ) -> Callable[[Any], int | None]:
     """Build a validator closure for an integer-code field.
 
-    - `field_label`: name shown in error messages (e.g. "status").
+    - `field_label`: name shown in error messages (e.g. "process_status").
     - `allowed`: the canonical ALL tuple from src.constants.
     - `required=True` → raise on None ("<label> is required"); used by TaskCreate.
     - `required=False` → return None on None; used by TaskUpdate (and for the
@@ -58,12 +70,12 @@ class TaskCreate(BaseModel):
     project_id: int
     title: str = Field(min_length=1)
     description: str | None = None
-    status: StatusCode = TaskStatus.TODO
+    process_status: ProcessStatusCode = TaskStatus.TODO
     priority: PriorityCode = TaskPriority.NORMAL
     assigned_role: RoleCode | None = None
 
-    _check_status = field_validator("status")(
-        _make_code_validator("status", TaskStatus.ALL, required=True)
+    _check_process_status = field_validator("process_status")(
+        _make_code_validator("process_status", TaskStatus.ALL, required=True)
     )
     _check_priority = field_validator("priority")(
         _make_code_validator("priority", TaskPriority.ALL, required=True)
@@ -79,8 +91,12 @@ class TaskUpdate(BaseModel):
     """Request body for PATCH /api/tasks/{id} — all fields optional.
 
     Note: lifecycle timestamps (started_at, completed_at) are managed by the
-    router on status transitions — clients should not set them directly. They
-    are accepted here only for explicit overrides (e.g., backfill scripts).
+    router on process_status transitions — clients should not set them directly.
+    They are accepted here only for explicit overrides (e.g., backfill scripts).
+
+    Soft-delete `status` is intentionally absent — DELETE /api/tasks/{id} is the
+    public soft-delete path. If a client sends `{"status": 0}` in a PATCH body,
+    Pydantic silently ignores the unknown field (default model_config behavior).
 
     Missing-key vs explicit-null are different in PATCH semantics — that
     distinction is enforced at the router via `model_dump(exclude_unset=True)`.
@@ -88,14 +104,14 @@ class TaskUpdate(BaseModel):
 
     title: str | None = Field(default=None, min_length=1)
     description: str | None = None
-    status: int | None = None
+    process_status: int | None = None
     priority: int | None = None
     assigned_role: int | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
 
-    _check_status = field_validator("status")(
-        _make_code_validator("status", TaskStatus.ALL, required=False)
+    _check_process_status = field_validator("process_status")(
+        _make_code_validator("process_status", TaskStatus.ALL, required=False)
     )
     _check_priority = field_validator("priority")(
         _make_code_validator("priority", TaskPriority.ALL, required=False)
@@ -116,7 +132,7 @@ class TaskRead(BaseModel):
     project_id: int
     title: str
     description: str | None
-    status: int
+    process_status: int
     priority: int
     assigned_role: int | None
     created_at: datetime

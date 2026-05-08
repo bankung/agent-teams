@@ -4,14 +4,22 @@
 into the flat columns the ORM uses (paths_web, stack_api, etc.). The `standards`
 mapping is stored under `config.standards` (JSONB) so we don't need a column
 per lane.
+
+Soft-delete `status` (0/1) is intentionally NOT exposed in any public schema —
+clients call `DELETE /api/projects/{id}` to soft-delete; the flag is implementation
+detail. (Decision 2026-05-07.)
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from src.constants import ProjectLead
+
+LeadCode = Literal["dev", "novel"]
 
 
 class _Paths(BaseModel):
@@ -37,6 +45,9 @@ class ProjectCreate(BaseModel):
 
     Accepts the nested shape used by the Kanban UI's "Create Project" form.
     Server merges `standards` into `config['standards']` before insert.
+
+    `lead` is required — picks the subagent roster (dev=frontend/backend/devops/
+    tester/reviewer; novel=writer/editor). Unknown values reject with 422.
     """
 
     name: str = Field(min_length=1)
@@ -46,10 +57,17 @@ class ProjectCreate(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     standards: _Standards | None = None
     is_active: bool = False
+    lead: LeadCode
 
 
 class ProjectUpdate(BaseModel):
-    """Request body for PATCH /api/projects/{id} — all fields optional."""
+    """Request body for PATCH /api/projects/{id} — all fields optional.
+
+    `lead` may be changed post-creation; the scaffold side-effect does NOT
+    re-run on update (existing role folders are kept; the user manages folder
+    drift manually). Soft-delete `status` is NOT accepted here — use
+    DELETE /api/projects/{id} to soft-delete (silently ignored if sent).
+    """
 
     name: str | None = Field(default=None, min_length=1)
     description: str | None = None
@@ -64,6 +82,7 @@ class ProjectUpdate(BaseModel):
 
     config: dict[str, Any] | None = None
     is_active: bool | None = None
+    lead: LeadCode | None = None
 
 
 class ProjectRead(BaseModel):
@@ -82,5 +101,12 @@ class ProjectRead(BaseModel):
     stack_db: str | None
     config: dict[str, Any]
     is_active: bool
+    lead: str
     created_at: datetime
     updated_at: datetime
+
+
+# Sanity: the Literal stays in lockstep with src.constants.ProjectLead.ALL.
+assert set(LeadCode.__args__) == set(ProjectLead.ALL), (  # type: ignore[attr-defined]
+    "LeadCode Literal drifted from ProjectLead.ALL"
+)

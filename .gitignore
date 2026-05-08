@@ -38,3 +38,8 @@ context/projects/*/*/
 !context/projects/*/shared/
 !context/projects/*/shared/**
 !context/projects/*/*/.gitkeep
+
+# Test fixtures from api/tests/test_routes_smoke.py — POST /api/projects auto-scaffolds
+# folders, the tests soft-delete the DB row but leave the on-disk dir behind.
+# rmtree-on-teardown is a follow-up (Kanban #17 M8); ignore the prefix-pattern for now.
+context/projects/proj-*/
