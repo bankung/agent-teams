@@ -1217,3 +1217,398 @@ async def test_post_task_returns_stable_detail_on_fk_violation(client) -> None:
         f"Kanban #122: detail string drifted from the f-string template — "
         f"got {body!r}"
     )
+
+
+# -----------------------------------------------------------------------------
+# Kanban #238 — tasks.parent_task_id + subtask API support
+#
+# 8 contract tests for the locked design (2026-05-08):
+#   (a) POST parent + child happy path
+#   (b) POST cross-project parent rejection (400 stable detail)
+#   (c) DB-level CHECK rejects self-parent
+#   (d) PATCH parent_task_id → 422 (Pydantic model_validator)
+#   (e) DELETE parent with active children → 409 (with fail-before/pass-after demo)
+#   (f) DELETE parent after all children soft-deleted → 204
+#   (g) GET ?parent_task_id=N filters to direct children
+#   (h) GET ?top_level_only=true filters to parent_task_id IS NULL
+# -----------------------------------------------------------------------------
+
+
+# Regression: Kanban #238 (a)
+@pytest.mark.asyncio
+async def test_post_parent_and_child_round_trip(client) -> None:
+    """Happy path: create a parent, then a child referring to parent.id; both
+    succeed (201) and TaskRead exposes parent_task_id correctly on each."""
+    active = await client.get("/api/projects/active")
+    project_id = active.json()["id"]
+
+    parent_resp = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k238-a parent probe"},
+    )
+    assert parent_resp.status_code == 201, parent_resp.text
+    parent = parent_resp.json()
+    assert parent["parent_task_id"] is None, "top-level task must have parent_task_id=None"
+    parent_id = parent["id"]
+
+    try:
+        child_resp = await client.post(
+            "/api/tasks",
+            json={
+                "project_id": project_id,
+                "title": "k238-a child probe",
+                "parent_task_id": parent_id,
+            },
+        )
+        assert child_resp.status_code == 201, child_resp.text
+        child = child_resp.json()
+        assert child["parent_task_id"] == parent_id, (
+            f"parent_task_id did not round-trip: expected {parent_id} got "
+            f"{child['parent_task_id']!r}"
+        )
+        # Cleanup child first (parent has active child otherwise → 409).
+        await client.delete(f"/api/tasks/{child['id']}")
+    finally:
+        await client.delete(f"/api/tasks/{parent_id}")
+
+
+# Regression: Kanban #238 (b)
+@pytest.mark.asyncio
+async def test_post_child_rejects_cross_project_parent(
+    client, scaffold_cleanup
+) -> None:
+    """Parent in project A, child claiming project B but pointing at parent →
+    400 with the locked detail string."""
+    active = await client.get("/api/projects/active")
+    project_a_id = active.json()["id"]
+
+    # Create an inactive sibling project for the cross-project parent.
+    name_b = scaffold_cleanup(_unique_name("k238-b-proj"))
+    proj_b_resp = await client.post(
+        "/api/projects", json=_project_create_payload(name_b)
+    )
+    assert proj_b_resp.status_code == 201, proj_b_resp.text
+    project_b_id = proj_b_resp.json()["id"]
+
+    parent_resp = await client.post(
+        "/api/tasks",
+        json={"project_id": project_a_id, "title": "k238-b parent in A"},
+    )
+    assert parent_resp.status_code == 201
+    parent_id = parent_resp.json()["id"]
+
+    try:
+        bad_child = await client.post(
+            "/api/tasks",
+            json={
+                "project_id": project_b_id,  # B
+                "title": "k238-b child claiming B but referencing parent in A",
+                "parent_task_id": parent_id,
+            },
+        )
+        assert bad_child.status_code == 400, bad_child.text
+        assert bad_child.json() == {
+            "detail": f"parent_task_id {parent_id} belongs to a different project"
+        }, bad_child.json()
+    finally:
+        await client.delete(f"/api/tasks/{parent_id}")
+        await client.delete(f"/api/projects/{project_b_id}")
+
+
+# Regression: Kanban #238 (c)
+@pytest.mark.asyncio
+async def test_db_check_rejects_self_parent(client, db_session) -> None:
+    """Defense-in-depth: the DB CHECK ck_tasks_parent_task_id_not_self rejects
+    raw-SQL drift that bypasses the app's PATCH-422 guard. The app code path
+    can't actually self-parent (id is autoassigned post-INSERT), so we hit the
+    DB layer directly with an UPDATE."""
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+
+    active = await client.get("/api/projects/active")
+    project_id = active.json()["id"]
+
+    create = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k238-c self-parent probe"},
+    )
+    assert create.status_code == 201
+    task_id = create.json()["id"]
+
+    try:
+        with pytest.raises(IntegrityError) as excinfo:
+            await db_session.execute(
+                text("UPDATE tasks SET parent_task_id = :tid WHERE id = :tid"),
+                {"tid": task_id},
+            )
+            await db_session.commit()
+        await db_session.rollback()
+        assert "ck_tasks_parent_task_id_not_self" in str(excinfo.value), (
+            f"expected ck_tasks_parent_task_id_not_self in IntegrityError; got "
+            f"{excinfo.value!s}"
+        )
+    finally:
+        await client.delete(f"/api/tasks/{task_id}")
+
+
+# Regression: Kanban #238 (d)
+@pytest.mark.asyncio
+async def test_patch_parent_task_id_rejected_with_422(client) -> None:
+    """Re-parenting is not supported in V1 — PATCH parent_task_id → 422 with a
+    Pydantic validation error mentioning the field. We don't pin the exact
+    message text (Pydantic versions tweak wording); we pin the field path +
+    a substring of the locked message."""
+    active = await client.get("/api/projects/active")
+    project_id = active.json()["id"]
+
+    parent_create = await client.post(
+        "/api/tasks", json={"project_id": project_id, "title": "k238-d parent"}
+    )
+    assert parent_create.status_code == 201
+    parent_id = parent_create.json()["id"]
+
+    target_create = await client.post(
+        "/api/tasks", json={"project_id": project_id, "title": "k238-d target"}
+    )
+    assert target_create.status_code == 201
+    target_id = target_create.json()["id"]
+
+    try:
+        resp = await client.patch(
+            f"/api/tasks/{target_id}", json={"parent_task_id": parent_id}
+        )
+        assert resp.status_code == 422, resp.text
+        body = resp.json()
+        assert "detail" in body and isinstance(body["detail"], list)
+        msgs = " | ".join(err["msg"] for err in body["detail"])
+        assert "parent_task_id" in msgs, (
+            f"expected 'parent_task_id' in 422 envelope msgs; got {msgs!r}"
+        )
+        # Sanity: the row was NOT mutated.
+        detail = await client.get(f"/api/tasks/{target_id}")
+        assert detail.json()["parent_task_id"] is None
+
+        # Explicit-null PATCH must ALSO 422 — locked semantic uses
+        # model_fields_set so {"parent_task_id": None} is rejected the same
+        # as {"parent_task_id": <int>}. Guards against a future maintainer
+        # relaxing the validator to `if self.parent_task_id is not None:`
+        # which would silently let the null case through. (Kanban #238 W1.)
+        resp_null = await client.patch(
+            f"/api/tasks/{target_id}", json={"parent_task_id": None}
+        )
+        assert resp_null.status_code == 422, resp_null.text
+        msgs_null = " | ".join(err["msg"] for err in resp_null.json()["detail"])
+        assert "parent_task_id" in msgs_null, (
+            f"explicit-null PATCH must also 422; got {msgs_null!r}"
+        )
+    finally:
+        await client.delete(f"/api/tasks/{target_id}")
+        await client.delete(f"/api/tasks/{parent_id}")
+
+
+# Regression: Kanban #238 (e) — fail-before / pass-after demo target
+@pytest.mark.asyncio
+async def test_delete_parent_with_active_children_returns_409(client) -> None:
+    """Locked behaviour: soft-deleting a parent with at least one active child
+    is blocked with 409 + the stable detail string. Verify parent.status stays
+    1 (active) and the child also stays 1.
+
+    This is the most consequential rule from #238 — pinned with both the wire
+    contract (status + detail) and the DB-state invariant. The fail-before /
+    pass-after demo for this test is captured in the dev-backend session log.
+    """
+    active = await client.get("/api/projects/active")
+    project_id = active.json()["id"]
+
+    parent_create = await client.post(
+        "/api/tasks", json={"project_id": project_id, "title": "k238-e parent"}
+    )
+    assert parent_create.status_code == 201
+    parent_id = parent_create.json()["id"]
+
+    child_create = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "k238-e child",
+            "parent_task_id": parent_id,
+        },
+    )
+    assert child_create.status_code == 201
+    child_id = child_create.json()["id"]
+
+    try:
+        block = await client.delete(f"/api/tasks/{parent_id}")
+        assert block.status_code == 409, block.text
+        assert block.json() == {
+            "detail": "Cannot delete task — 1 active subtask(s) reference this task"
+        }, block.json()
+
+        # Parent still active in the default listing (status=1 proxy).
+        listing = await client.get(f"/api/tasks?project_id={project_id}&limit=500")
+        ids = {t["id"] for t in listing.json()}
+        assert parent_id in ids, "parent must still be active after blocked DELETE"
+        assert child_id in ids, "child must still be active after blocked DELETE"
+    finally:
+        await client.delete(f"/api/tasks/{child_id}")
+        await client.delete(f"/api/tasks/{parent_id}")
+
+
+# Regression: Kanban #238 (f)
+@pytest.mark.asyncio
+async def test_delete_parent_succeeds_after_children_soft_deleted(client) -> None:
+    """Once every child is soft-deleted (status=0), DELETE parent → 204 and
+    parent.status flips to 0."""
+    active = await client.get("/api/projects/active")
+    project_id = active.json()["id"]
+
+    parent_create = await client.post(
+        "/api/tasks", json={"project_id": project_id, "title": "k238-f parent"}
+    )
+    parent_id = parent_create.json()["id"]
+    child_create = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "k238-f child",
+            "parent_task_id": parent_id,
+        },
+    )
+    child_id = child_create.json()["id"]
+
+    # Soft-delete child first.
+    delete_child = await client.delete(f"/api/tasks/{child_id}")
+    assert delete_child.status_code == 204
+
+    # Now parent DELETE should succeed.
+    delete_parent = await client.delete(f"/api/tasks/{parent_id}")
+    assert delete_parent.status_code == 204, delete_parent.text
+
+    # Verify parent is gone from default listing (status=1 filter).
+    listing = await client.get(f"/api/tasks?project_id={project_id}&limit=500")
+    ids = {t["id"] for t in listing.json()}
+    assert parent_id not in ids, "parent must be soft-deleted (status=0) after success"
+
+
+# Regression: Kanban #238 (g)
+@pytest.mark.asyncio
+async def test_list_tasks_filters_by_parent_task_id(client) -> None:
+    """`?parent_task_id=N` returns only direct children of N (and excludes N itself,
+    plus unrelated rows in the same project)."""
+    active = await client.get("/api/projects/active")
+    project_id = active.json()["id"]
+
+    parent_create = await client.post(
+        "/api/tasks", json={"project_id": project_id, "title": "k238-g parent"}
+    )
+    parent_id = parent_create.json()["id"]
+    other_create = await client.post(
+        "/api/tasks", json={"project_id": project_id, "title": "k238-g unrelated top-level"}
+    )
+    other_id = other_create.json()["id"]
+
+    child_a = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "k238-g child A",
+            "parent_task_id": parent_id,
+        },
+    )
+    child_a_id = child_a.json()["id"]
+    child_b = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "k238-g child B",
+            "parent_task_id": parent_id,
+        },
+    )
+    child_b_id = child_b.json()["id"]
+
+    try:
+        resp = await client.get(
+            f"/api/tasks?project_id={project_id}&parent_task_id={parent_id}&limit=500"
+        )
+        assert resp.status_code == 200, resp.text
+        ids = {t["id"] for t in resp.json()}
+        assert ids == {child_a_id, child_b_id}, (
+            f"expected exactly {{child_a={child_a_id}, child_b={child_b_id}}}; "
+            f"got {ids!r}"
+        )
+        # Each row's parent_task_id round-trips correctly.
+        for t in resp.json():
+            assert t["parent_task_id"] == parent_id
+    finally:
+        await client.delete(f"/api/tasks/{child_a_id}")
+        await client.delete(f"/api/tasks/{child_b_id}")
+        await client.delete(f"/api/tasks/{parent_id}")
+        await client.delete(f"/api/tasks/{other_id}")
+
+
+# Regression: Kanban #238 (h)
+@pytest.mark.asyncio
+async def test_list_tasks_top_level_only_filter(client) -> None:
+    """`?top_level_only=true` returns only rows with parent_task_id IS NULL —
+    children of a parent must be excluded."""
+    active = await client.get("/api/projects/active")
+    project_id = active.json()["id"]
+
+    parent_create = await client.post(
+        "/api/tasks", json={"project_id": project_id, "title": "k238-h parent"}
+    )
+    parent_id = parent_create.json()["id"]
+    child_create = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "k238-h child",
+            "parent_task_id": parent_id,
+        },
+    )
+    child_id = child_create.json()["id"]
+
+    try:
+        resp = await client.get(
+            f"/api/tasks?project_id={project_id}&top_level_only=true&limit=500"
+        )
+        assert resp.status_code == 200, resp.text
+        rows = resp.json()
+        # Parent must appear; child must not.
+        ids = {t["id"] for t in rows}
+        assert parent_id in ids, "parent (top-level) must appear when top_level_only=true"
+        assert child_id not in ids, (
+            "child (parent_task_id is set) must NOT appear when top_level_only=true"
+        )
+        # Every returned row genuinely has parent_task_id IS NULL.
+        for t in rows:
+            assert t["parent_task_id"] is None, (
+                f"top_level_only=true returned a row with parent_task_id={t['parent_task_id']!r}"
+            )
+    finally:
+        await client.delete(f"/api/tasks/{child_id}")
+        await client.delete(f"/api/tasks/{parent_id}")
+
+
+# Regression: Kanban #238 — source-text pin for the new POST/DELETE detail strings
+def test_kanban_238_detail_strings_are_pinned_in_router_source() -> None:
+    """Mirrors the M5 / #122 source-text-pin pattern. The new POST 400 strings
+    on the parent-validation branch and the DELETE 409 string for blocked
+    parent-with-children are part of the wire contract; drift breaks the FE
+    error UX. Pin them here so a wording change requires a deliberate test
+    update.
+    """
+    from src.routers import tasks as tasks_router
+
+    source = Path(tasks_router.__file__).read_text(encoding="utf-8")
+
+    pinned = [
+        '"parent_task_id {payload.parent_task_id} does not exist or is deleted"',
+        '"parent_task_id {payload.parent_task_id} belongs to a different project"',
+        '"Cannot delete task — {active_children_count} active subtask(s) reference this task"',
+    ]
+    missing = [s for s in pinned if s not in source]
+    assert not missing, (
+        "Kanban #238 detail strings drifted in routers/tasks.py — "
+        f"missing: {missing}"
+    )

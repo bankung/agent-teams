@@ -68,6 +68,7 @@ Template for a new table:
 |----------------|-------------|---------------------------------------------------------------------|-------|
 | id             | bigint      | PK, identity                                                        |       |
 | project_id     | bigint      | NOT NULL, FK `projects(id)` ON DELETE CASCADE                       |       |
+| parent_task_id | bigint      | NULL, FK `tasks(id)` ON DELETE CASCADE, CHECK `parent_task_id IS NULL OR parent_task_id <> id` (named `ck_tasks_parent_task_id_not_self`) | self-ref subtask hierarchy (Kanban #238, 2026-05-08). FK CASCADE is defense-in-depth — app never hard-deletes; soft-delete with active children blocks at 409 in the API. |
 | title          | text        | NOT NULL                                                            |       |
 | description    | text        | NULL                                                                |       |
 | process_status | int         | NOT NULL DEFAULT 1, CHECK `process_status IN (1,2,3,4,5)` (named `ck_tasks_process_status_valid`) | TaskStatus codes (general.md). Renamed from `status` 2026-05-08. |
@@ -79,9 +80,9 @@ Template for a new table:
 | started_at     | timestamptz | NULL                                                                | router stamps on transition to in_progress |
 | completed_at   | timestamptz | NULL                                                                | router stamps on transition to done |
 
-**Indexes:** `ix_tasks_project_id`, `ix_tasks_process_status` (renamed from `ix_tasks_status` 2026-05-08), `ix_tasks_assigned_role`, `ix_tasks_status` (new — on the soft-delete column)
+**Indexes:** `ix_tasks_project_id`, `ix_tasks_process_status` (renamed from `ix_tasks_status` 2026-05-08), `ix_tasks_assigned_role`, `ix_tasks_status` (new — on the soft-delete column), `ix_tasks_parent_task_id` (Kanban #238, 2026-05-08)
 
-**Foreign keys:** `project_id` → `projects(id)` ON DELETE CASCADE
+**Foreign keys:** `project_id` → `projects(id)` ON DELETE CASCADE; `parent_task_id` → `tasks(id)` ON DELETE CASCADE (self-referential)
 
 ### tasks_history
 **Purpose:** Audit sink — populated by `tasks_audit_trg` on UPDATE / DELETE. Application code does NOT write here.
@@ -145,3 +146,4 @@ Format: YYYY-MM-DD HH:MM — <migration filename> — applied by <who> in commit
 -->
 
 - 2026-05-08 09:46 — 2026_05_08_0300_soft_delete_and_lead.py — dev-devops, container apply
+- 2026-05-08 16:00 — 2026_05_08_1600_tasks_parent_task_id.py — dev-devops, container apply (Kanban #238)

@@ -117,7 +117,7 @@ Template for a new endpoint:
 ### GET /api/tasks
 **Purpose:** List tasks for a project (paginated, filterable).
 **Auth:** none
-**Query:** `project_id` (required), `process_status` (1..5, optional), `assigned_role` (optional), `limit`, `offset`
+**Query:** `project_id` (required), `process_status` (1..5, optional), `assigned_role` (optional), `parent_task_id` (optional, ge=1 — return only direct children of N), `top_level_only` (bool, default false — when true, return only `parent_task_id IS NULL` rows), `limit`, `offset`. Precedence when both `parent_task_id` and `top_level_only` are provided: `top_level_only` takes precedence and `parent_task_id` is silently ignored (`routers/tasks.py` `list_tasks` `if top_level_only: ... elif parent_task_id is not None: ...`). Subtask hierarchy added 2026-05-08 by Kanban #238.
 **Response 200:** `[TaskRead, ...]`
 
 ### GET /api/tasks/{id}
@@ -139,15 +139,20 @@ Template for a new endpoint:
   "description": "...",
   "process_status": 1,
   "priority": 2,
-  "assigned_role": 1
+  "assigned_role": 1,
+  "parent_task_id": null
 }
 ```
+
+`parent_task_id` (int, optional, ge=1, default null) — set this to the id of an existing active task in the same project to create a subtask. Omit (or pass null) for a top-level task. Added 2026-05-08 by Kanban #238.
 
 **Response 201:** `TaskRead`
 
 **Errors:**
 - `400` — FK or CHECK violation. Detail strings (stable wire contract; mirror M5 PATCH pattern — CHECK branches gated by Pydantic 422 first, reachable today only via raw-SQL bypass or future schema drift):
   - `{"detail":"project_id <n> does not exist"}` when `tasks_project_id_fkey` is violated (`<n>` substitutes the user-supplied `project_id`)
+  - `{"detail":"parent_task_id <n> does not exist or is deleted"}` when `parent_task_id` references a missing or soft-deleted parent (Kanban #238)
+  - `{"detail":"parent_task_id <n> belongs to a different project"}` when parent's `project_id` differs from payload (cross-project parent rejection — app-layer enforced; Kanban #238)
   - `{"detail":"process_status violates ck_tasks_process_status_valid"}`
   - `{"detail":"priority violates ck_tasks_priority_valid"}`
   - `{"detail":"status violates ck_tasks_status_valid"}` (defensive — `status` is not a public POST field)
@@ -158,12 +163,13 @@ Template for a new endpoint:
 **Purpose:** Partial update. Transitioning to `process_status=2` (in_progress) sets `started_at=now()` if NULL; transitioning to `process_status=5` (done) sets `completed_at=now()`. Server bumps `updated_at` on any real field change; an unchanged-body PATCH is a no-op (N7 no-op-skip — `routers/tasks.py:121-130`; parity with PATCH `/api/projects/{id}`).
 **Auth:** none
 
-**Request:** any subset of `{title, description, process_status, priority, assigned_role, started_at, completed_at}`. The soft-delete `status` flag is intentionally absent — sending `{"status": 0}` is silently ignored (use `DELETE` to soft-delete).
+**Request:** any subset of `{title, description, process_status, priority, assigned_role, started_at, completed_at}`. The soft-delete `status` flag is intentionally absent — sending `{"status": 0}` is silently ignored (use `DELETE` to soft-delete). `parent_task_id` is REJECTED (V1 forbids re-parenting per Kanban #238) — see 422 below.
 
 **Response 200:** `TaskRead`
 
 **Errors:**
 - `404` — task id not found
+- `422` — Pydantic validation error if `parent_task_id` key is **present in the body** (whether int OR null). V1 forbids re-parenting; clients must omit the key. The router uses a `model_validator` that checks `model_fields_set` membership, so explicit-null is treated identically to a non-null value. Error message substring: `parent_task_id`. (Kanban #238)
 - `400` — CHECK violation. Detail strings (stable wire contract; defense-in-depth — the HTTP path is gated by Pydantic 422 first, so these branches are reachable today only via raw-SQL bypass or future schema drift):
   - `{"detail":"process_status violates ck_tasks_process_status_valid"}`
   - `{"detail":"priority violates ck_tasks_priority_valid"}`
@@ -171,17 +177,18 @@ Template for a new endpoint:
   - `{"detail":"Task update violates a database constraint"}` (fallback for unknown CHECK constraints)
 
 ### DELETE /api/tasks/{id}
-**Purpose:** Soft-delete a task — flips `status=0`. First DELETE advances `updated_at`; subsequent DELETEs on an already-deleted row are idempotent no-ops (return 204 without further `updated_at` bump — parity with DELETE `/api/projects/{id}`). The audit trigger snapshots the flip as `'U'` in `tasks_history`.
+**Purpose:** Soft-delete a task — flips `status=0`. First DELETE advances `updated_at`; subsequent DELETEs on an already-deleted row are idempotent no-ops (return 204 without further `updated_at` bump — parity with DELETE `/api/projects/{id}`). The audit trigger snapshots the flip as `'U'` in `tasks_history`. Blocked when active subtasks reference the row (Kanban #238).
 **Auth:** none
 **Response 204:** No content
 **Errors:**
 - `404` — `{"detail":"Task id=<n> not found"}` when id does not exist
+- `409` — `{"detail":"Cannot delete task — <n> active subtask(s) reference this task"}` when at least one row has `parent_task_id=<id> AND status=1`. Soft-delete the children first, then retry the parent. Idempotent re-DELETE on an already soft-deleted parent still returns 204 (the active-children check runs only on the first delete; per `routers/tasks.py` `delete_task`). (Kanban #238)
 
 ## Schemas
 
 **`ProjectRead`** — `{id:int, name, description, paths_web, paths_api, paths_db, stack_web, stack_api, stack_db, config:object, is_active:bool, lead:"dev"|"novel", created_at, updated_at}`
 
-**`TaskRead`** — `{id:int, project_id:int, title, description, process_status:int, priority:int, assigned_role:int|null, created_at, updated_at, started_at:datetime|null, completed_at:datetime|null}`
+**`TaskRead`** — `{id:int, project_id:int, parent_task_id:int|null, title, description, process_status:int, priority:int, assigned_role:int|null, created_at, updated_at, started_at:datetime|null, completed_at:datetime|null}`
 
 Integer code fields (`process_status`, `priority`, `assigned_role`) follow `context/standards/general.md` §"Kanban schema codes". Note that the `tasks` lifecycle code is named `process_status` everywhere on the wire (renamed from `status` by the 2026-05-08 migration); `status` on the wire is reserved as the internal soft-delete flag and is not exposed.
 

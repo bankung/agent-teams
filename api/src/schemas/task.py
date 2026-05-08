@@ -21,7 +21,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.constants import TaskPriority, TaskRole, TaskStatus
 
@@ -73,6 +73,9 @@ class TaskCreate(BaseModel):
     process_status: ProcessStatusCode = TaskStatus.TODO
     priority: PriorityCode = TaskPriority.NORMAL
     assigned_role: RoleCode | None = None
+    # Optional parent for subtask creation (Kanban #238). None = top-level task.
+    # Same-project + parent-exists checks happen in the router (need DB lookup).
+    parent_task_id: int | None = Field(default=None, ge=1)
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=True)
@@ -113,6 +116,12 @@ class TaskUpdate(BaseModel):
     assigned_role: int | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    # Re-parenting is NOT allowed in V1 (Kanban #238 lock 2026-05-08).
+    # The field is declared so we can REJECT it explicitly — `extra="ignore"` on
+    # this schema would silently drop unknown keys, which is wrong for this one.
+    # `model_fields_set` distinguishes "not provided" from "provided as None":
+    # the validator only raises if the caller actually included the key.
+    parent_task_id: int | None = Field(default=None, ge=1)
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=False)
@@ -126,6 +135,14 @@ class TaskUpdate(BaseModel):
         )
     )
 
+    @model_validator(mode="after")
+    def _reject_parent_task_id(self) -> "TaskUpdate":
+        if "parent_task_id" in self.model_fields_set:
+            raise ValueError(
+                "parent_task_id cannot be modified — re-parenting is not supported in V1"
+            )
+        return self
+
 
 class TaskRead(BaseModel):
     """Full task row as returned by the API."""
@@ -134,6 +151,7 @@ class TaskRead(BaseModel):
 
     id: int
     project_id: int
+    parent_task_id: int | None
     title: str
     description: str | None
     process_status: int

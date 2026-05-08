@@ -43,6 +43,20 @@ async def list_tasks(
     assigned_role: int | None = Query(
         default=None, description="Filter by tasks.assigned_role"
     ),
+    parent_task_id: int | None = Query(
+        default=None,
+        ge=1,
+        description="Filter to direct children of the given task id (Kanban #238).",
+    ),
+    top_level_only: bool = Query(
+        default=False,
+        description=(
+            "If true, return only tasks with parent_task_id IS NULL (top-level "
+            "umbrellas). Cleaner than coercing the literal string 'null' through "
+            "Query type-narrowing. When both are provided, top_level_only takes "
+            "precedence and parent_task_id is ignored."
+        ),
+    ),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     include_deleted: bool = Query(
@@ -58,6 +72,10 @@ async def list_tasks(
         stmt = stmt.where(Task.process_status == process_status)
     if assigned_role is not None:
         stmt = stmt.where(Task.assigned_role == assigned_role)
+    if top_level_only:
+        stmt = stmt.where(Task.parent_task_id.is_(None))
+    elif parent_task_id is not None:
+        stmt = stmt.where(Task.parent_task_id == parent_task_id)
     stmt = stmt.order_by(Task.id.asc()).limit(limit).offset(offset)
     result = await session.execute(stmt)
     return list(result.scalars().all())
@@ -78,6 +96,22 @@ async def create_task(
     payload: TaskCreate,
     session: AsyncSession = Depends(get_session),
 ) -> Task:
+    # Subtask parent validation (Kanban #238). Same-project enforcement is
+    # app-layer (no DB trigger). Stable detail strings are pinned by
+    # test_post_task_400_detail_strings_are_pinned_in_router_source — keep in sync.
+    if payload.parent_task_id is not None:
+        parent = await session.get(Task, payload.parent_task_id)
+        if parent is None or parent.status == RecordStatus.DELETED:
+            raise HTTPException(
+                status_code=400,
+                detail=f"parent_task_id {payload.parent_task_id} does not exist or is deleted",
+            )
+        if parent.project_id != payload.project_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"parent_task_id {payload.parent_task_id} belongs to a different project",
+            )
+
     task = Task(**payload.model_dump())
     session.add(task)
     try:
@@ -177,6 +211,20 @@ async def delete_task(
     # Idempotent: skip the no-op UPDATE so we don't write a redundant audit row.
     if task.status == RecordStatus.DELETED:
         return Response(status_code=http_status.HTTP_204_NO_CONTENT)
+
+    # Block soft-delete when active children reference this task (Kanban #238).
+    # Detail string pinned by test_delete_task_409_detail_strings_are_pinned_in_router_source.
+    active_children_count = await session.scalar(
+        select(func.count())
+        .select_from(Task)
+        .where(Task.parent_task_id == task_id, Task.status == RecordStatus.ACTIVE)
+    )
+    if active_children_count and active_children_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot delete task — {active_children_count} active subtask(s) reference this task",
+        )
+
     task.status = RecordStatus.DELETED
     # Force `updated_at` to refresh — server_default only fires on INSERT. Kanban #120.
     task.updated_at = func.now()

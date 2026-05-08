@@ -65,6 +65,15 @@ class Task(Base):
         nullable=False,
     )
 
+    # Self-referential FK for subtask hierarchy (Kanban #238). Locked design
+    # 2026-05-08: ON DELETE CASCADE is defense-in-depth — app never hard-deletes,
+    # and soft-delete with active children is blocked at 409 by the router.
+    parent_task_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+
     title: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -113,6 +122,21 @@ class Task(Base):
 
     project: Mapped["Project"] = relationship("Project", back_populates="tasks")
 
+    # Self-referential adjacency-list (SQLAlchemy "Adjacency List" pattern).
+    # `remote_side="Task.id"` disambiguates which side is the parent; without
+    # it SQLAlchemy can't tell parent.id from children.parent_task_id.
+    parent: Mapped["Task | None"] = relationship(
+        "Task",
+        remote_side="Task.id",
+        back_populates="subtasks",
+        lazy="select",
+    )
+    subtasks: Mapped[list["Task"]] = relationship(
+        "Task",
+        back_populates="parent",
+        lazy="select",
+    )
+
     __table_args__ = (
         CheckConstraint(
             in_clause("process_status", TaskStatus.ALL),
@@ -128,10 +152,17 @@ class Task(Base):
             in_clause("status", RecordStatus.ALL),
             name="ck_tasks_status_valid",
         ),
+        # No-self-parent backstop (Kanban #238). The app rejects re-parenting via
+        # PATCH 422 entirely; this CHECK catches raw-SQL drift.
+        CheckConstraint(
+            "parent_task_id IS NULL OR parent_task_id <> id",
+            name="ck_tasks_parent_task_id_not_self",
+        ),
         Index("ix_tasks_project_id", "project_id"),
         Index("ix_tasks_process_status", "process_status"),
         Index("ix_tasks_assigned_role", "assigned_role"),
         Index("ix_tasks_status", "status"),
+        Index("ix_tasks_parent_task_id", "parent_task_id"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover
