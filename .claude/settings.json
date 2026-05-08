@@ -19,6 +19,9 @@
       "Edit(.gitignore)",
       "Edit(docker-compose.yml)",
 
+      "Write(C:/Users/banku/.claude/projects/c--Users-banku-Documents-Personal-Projects-GitHub-agent-teams/memory/**)",
+      "Edit(C:/Users/banku/.claude/projects/c--Users-banku-Documents-Personal-Projects-GitHub-agent-teams/memory/**)",
+
       "Agent(*)",
 
       "Bash(git status:*)",
