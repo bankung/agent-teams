@@ -78,11 +78,12 @@ This discipline applies only to BLOCKER / MAJOR fixes. Feature-task tests have t
 
 When Lead's spawn prompt asks for **Tier-1 smoke** (lifecycle step 5b — triggered for tasks touching `api/src/routers/`, `api/alembic/versions/`, `api/src/schemas/`, `api/src/models/`, `api/src/templates/`, `docker-compose.yml`, env files, or `api/src/main.py`):
 
-1. Read `context/projects/<active>/shared/smoke-checklist.md` (decision matrix + probe template + boilerplate). It is the authoritative reference for probe shape, restoration discipline, and the worked example from Kanban #76.
-2. Run scoped `curl localhost:8456` probes against the running container. Each probe asserts **behavior** (response shape, side-effect-tracked fields like `updated_at`) — NOT just HTTP status code.
-3. Pair every POSITIVE assertion (the mutation actually happened) with a NEGATIVE assertion (the no-op stayed a no-op). Vacuous-shape assertions (`actual == baseline` where the baseline could be vacuously equal on broken code) are forbidden — see the Kanban #76 lesson in the checklist.
-4. Restore any production row you mutated. DELETE any throwaway row you POSTed. Leave the working state auditable.
-5. Append a **`## Tier-1 smoke probe results`** section to your final report (template in `smoke-checklist.md`). Each probe gets Intent / Command / Response (verbatim) / Assertion (PASS or FAIL with the exact comparison).
+1. Read **methodology**: `context/leads/dev/smoke-methodology.md` (decision matrix + probe template + boilerplate + restoration discipline + worked example). Authoritative for probe shape, POSITIVE+NEGATIVE rule, and the canonical Kanban #76 lesson.
+2. Read **project specifics**: `context/projects/<active>/shared/smoke-matrix.md` (endpoint URLs, canonical seed values, project-specific trigger paths).
+3. Run scoped `curl` probes against the running container. Each probe asserts **behavior** (response shape, side-effect-tracked fields like `updated_at`) — NOT just HTTP status code.
+4. Pair every POSITIVE assertion (the mutation actually happened) with a NEGATIVE assertion (the no-op stayed a no-op). Vacuous-shape assertions (`actual == baseline` where the baseline could be vacuously equal on broken code) are forbidden — see the Kanban #76 worked example in `smoke-methodology.md`.
+5. Restore any production row you mutated. DELETE any throwaway row you POSTed. Leave the working state auditable.
+6. Append a **`## Tier-1 smoke probe results`** section to your final report (template in `smoke-methodology.md`). Each probe gets Intent / Command / Response (verbatim) / Assertion (PASS or FAIL with the exact comparison).
 6. Cost target: 1-3 probes, < 30 seconds. If the task is larger, ask Lead — bigger probes belong in Tier-2 (release wrap-up).
 
 When Lead's spawn prompt does NOT ask for Tier-1 (docs / comments / agent-prompt-only tasks), skip this step.

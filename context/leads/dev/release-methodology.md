@@ -1,10 +1,11 @@
-# Tier-2 release wrap-up checklist
+# Tier-2 release wrap-up methodology (dev lead)
 
-> **Lead is the only writer of this file.** Updates come from Lead based on incident evidence (e.g., "release vX.Y.Z found CVE Z in dep Q — add Q to the dep-audit matrix"). Subagents read this; they do not edit it.
+> **Scope:** cross-project — applies to every `lead='dev'` project. Lead is the only writer of this file.
+> **Project-specific endpoint matrix / dep config / DB-name** lives in each project's `context/projects/<active>/shared/release-matrix.md`.
 
 Tier-2 = the EXPENSIVE gate that runs ONLY when a Kanban task titled `release wrap-up <version>` or `publish wrap-up <version>` is opened. Triggered manually by the user (semver bump, Phase milestone close, "we want to publish"). Cost target is intentionally high — full API matrix + security review + dep audit — because it runs maybe once per public release.
 
-Tier-1 (per-task smoke; cheap; runs every applicable task) lives in `smoke-checklist.md`. Tier-2 builds on its conventions as the superset.
+Tier-1 (per-task smoke; cheap; runs every applicable task) lives in `smoke-methodology.md` in this folder. Tier-2 builds on its conventions as the superset.
 
 ---
 
@@ -25,9 +26,9 @@ If neither applies → Tier-2 does NOT run. Per-task work uses Tier-1 only.
 Before running any Tier-2 step:
 
 ```bash
-# Verify no tasks in-progress or blocked
-curl --silent "http://localhost:8456/api/tasks?project_id=1&process_status=2"  # in_progress
-curl --silent "http://localhost:8456/api/tasks?project_id=1&process_status=4"  # blocked
+# Verify no tasks in-progress or blocked (substitute project_id for the active project)
+curl --silent "http://localhost:<api-port>/api/tasks?project_id=<id>&process_status=2"  # in_progress
+curl --silent "http://localhost:<api-port>/api/tasks?project_id=<id>&process_status=4"  # blocked
 ```
 
 Both MUST return `[]`. If not, abort the wrap-up and tell the user which tasks need to close (or move to backlog) first. A wrap-up with in-flight work is meaningless.
@@ -36,24 +37,9 @@ Both MUST return `[]`. If not, abort the wrap-up and tell the user which tasks n
 
 ## Step 1 — Full Tier-1 smoke matrix
 
-Spawn dev-tester with **full smoke mode** (NOT scoped per task — covers every endpoint, every lifecycle path, every soft-delete + lead-bundle invariant). Use the same POSITIVE+NEGATIVE pair shape as Tier-1 (see `smoke-checklist.md`).
+Spawn dev-tester with **full smoke mode** (NOT scoped per task — covers every endpoint, every lifecycle path, every soft-delete + lead-bundle invariant). Use the same POSITIVE+NEGATIVE pair shape as Tier-1 (see `smoke-methodology.md` in this folder).
 
-### Endpoint matrix (v0.x — extend as new endpoints land)
-
-| Endpoint | POSITIVE probes | NEGATIVE probes |
-|---|---|---|
-| `GET /health` | 200 + `{"status":"ok","env":...}` | — |
-| `GET /api/projects` | list returns active rows; `?include_deleted=true` includes soft-deleted | default list excludes `status=0` rows |
-| `GET /api/projects/active` | returns the one `is_active=true` row | only one such row exists; partial unique enforced |
-| `GET /api/projects/by-name/{name}` | 200 for existing name | 404 for unknown name |
-| `POST /api/projects` | 201 + `ProjectRead` shape; auto-scaffolds `context/projects/<name>/` | 422 on missing `lead`; 422 on `lead` outside `{dev,novel}`; 409 on duplicate active name; scaffold dispatches per `lead` (dev → 5 role folders; novel → 2) |
-| `PATCH /api/projects/{id}` | real change advances `updated_at`; 409 detail string on rename conflict | identical body = no-op (`updated_at` unchanged); 400 `Cannot activate a soft-deleted project` when flipping `is_active=true` on `status=0` |
-| `DELETE /api/projects/{id}` | 204; `status=0`; first DELETE advances `updated_at`; clears `is_active` if true | re-DELETE returns 204 without bumping `updated_at`; folder NOT removed |
-| `GET /api/tasks?project_id=<n>` | required `project_id`; default filters `status=1` | 422 missing `project_id`; `?include_deleted=true` exposes `status=0` |
-| `GET /api/tasks/{id}` | 200 + `TaskRead` shape | 404 unknown id |
-| `POST /api/tasks` | 201 + `TaskRead`; `started_at`/`completed_at` NULL on create | 400 FK violation (unknown `project_id`); 422 on bad code |
-| `PATCH /api/tasks/{id}` | `process_status=2` → `started_at=now()` if NULL; `process_status=5` → `completed_at=now()`; real change advances `updated_at` | identical body = no-op; soft-delete `status` field silently ignored (extra='ignore'); 400 detail strings pinned (M5: `process_status violates ck_tasks_process_status_valid` etc) |
-| `DELETE /api/tasks/{id}` | 204; `status=0`; advances `updated_at` (via task.updated_at = func.now()); writes `tasks_history` 'U' row | re-DELETE 204 without bumping `updated_at` and without writing extra `tasks_history` row (M9 task lock) |
+The **endpoint matrix is project-specific** and lives in the active project's `shared/release-matrix.md`. Lead injects that matrix into the dev-tester spawn prompt.
 
 ### Output convention
 
@@ -61,7 +47,7 @@ dev-tester emits one section per endpoint with all probes inline. Aggregate at t
 
 ### Probe artifact discipline
 
-All throwaway rows POSTed during the matrix MUST use the `_` prefix convention (`_release-<version>-<n>`, `_smoke-<timestamp>`, etc) — `.gitignore` excludes `context/projects/_*/` so scaffold folders don't pollute working tree. Tempfiles for payload bodies go in `_scratch/` at repo root (also gitignored, with `.gitkeep` keeping the dir in the index). See `smoke-checklist.md` "Restoration discipline" + "Tempfile location" for full convention.
+All throwaway rows POSTed during the matrix MUST use the `_` prefix convention (`_release-<version>-<n>`, `_smoke-<timestamp>`, etc) — `.gitignore` excludes `context/projects/_*/` so scaffold folders don't pollute working tree. Tempfiles for payload bodies go in `_scratch/` at repo root (also gitignored, with `.gitkeep` keeping the dir in the index). See `smoke-methodology.md` "Restoration discipline" + "Tempfile location" for full convention.
 
 ---
 
@@ -82,15 +68,15 @@ If the user opts to skip `/security-review` for cost reasons, document the skip 
 
 Spawn dev-reviewer with `mode: security` in the prompt body (the default review mode is correctness/style — security mode is a separate clause in `.claude/agents/dev-reviewer.md`).
 
-### Audit surface (this stack — extend as the codebase grows)
+### Audit surface (extend per project as the codebase grows)
 
 - **Input validation** — Pydantic schema constraints + DB CHECK constraints consistency. Flag any schema field whose Pydantic validator is weaker than the DB CHECK, or vice versa.
-- **Authn / authz** — currently NONE in v0.x (auth is Phase 4). Flag as **SECURITY-KNOWN-GAP** in every wrap-up until Phase 4 ships. NOT a SECURITY-BLOCKER for v0.x because it is documented.
+- **Authn / authz** — flag whatever auth posture is documented in the project's `shared/decisions.md`. If auth is deferred to a future Phase, tag findings as **SECURITY-KNOWN-GAP** (not SECURITY-BLOCKER) referencing the deferred decision.
 - **SQL injection** — verify all DB writes go through SQLAlchemy ORM or parameterised text(); flag any string-format SQL.
-- **CSRF** — FastAPI default behaviour + CORS config (none currently — flag if CORS opens up).
+- **CSRF / CORS** — FastAPI default behaviour + CORS config drift.
 - **Secret leakage** — env vars in logs / responses / git history. Grep `git log --all -p` for `password=`, `SECRET`, `KEY=`, `token=`. Grep current source for `print(os.environ)` style.
 - **Dependency CVE** — defer to Step 4 (`pip-audit`); cross-reference findings.
-- **Error-message info disclosure** — generic vs revealing PG internals. The M4/M5 detail-string hygiene is canonical; verify no new endpoints regress.
+- **Error-message info disclosure** — generic vs revealing PG internals. Detail-string hygiene is canonical; verify no new endpoints regress.
 - **Secrets in error responses** — flag any `HTTPException(detail=str(exc))` that leaks raw exception text.
 
 ### Severity scale (DISTINCT from regular review BLOCKER/WARN/NIT)
@@ -98,7 +84,7 @@ Spawn dev-reviewer with `mode: security` in the prompt body (the default review 
 - **SECURITY-BLOCKER** — release MUST NOT ship until fixed
 - **SECURITY-WARN** — release CAN ship with explicit user accept + a follow-up Kanban task
 - **SECURITY-NIT** — fix-when-convenient; no release impact
-- **SECURITY-KNOWN-GAP** — documented in shared/decisions.md as deferred (e.g., auth = Phase 4); NOT a release blocker
+- **SECURITY-KNOWN-GAP** — documented in shared/decisions.md as deferred; NOT a release blocker
 
 ### Output
 
@@ -116,7 +102,7 @@ Security mode running on a non-release task. dev-reviewer's prompt should refuse
 docker compose exec -T api pip-audit
 ```
 
-`pip-audit` is a persisted dev dep in `api/pyproject.toml` (added 2026-05-08, Kanban #123) so it's available in `agent-teams-api` after every `docker compose build` without manual install. If a future image rebuild ever surfaces "command not found", verify the dev block in `api/pyproject.toml` still includes `pip-audit>=2.7,<3.0`.
+`pip-audit` should be a persisted dev dep in the project's `api/pyproject.toml` so it's available after every `docker compose build` without manual install. Project-specific install context (when added, which Kanban task) is recorded in the project's `release-matrix.md`.
 
 **Severity gate:**
 - ANY `HIGH` or `CRITICAL` CVE → wrap-up RED, must upgrade or pin before release
@@ -130,25 +116,28 @@ Capture the verbatim output. Do NOT auto-upgrade — Lead reviews and routes to 
 ## Step 5 — Audit-log review
 
 ```bash
-docker compose exec -T db psql -U postgres -d agent_teams -c "
-  SELECT id, task_id, operation, changed_at, snapshot->>'process_status' AS process_status
-  FROM tasks_history
+docker compose exec -T db psql -U <db-user> -d <db-name> -c "
+  SELECT id, <entity>_id, operation, changed_at, snapshot->>'<field>' AS <field>
+  FROM <history-table>
   WHERE changed_at > '<last-release-date>'
   ORDER BY changed_at DESC LIMIT 100;
 "
 ```
 
-Read the rows. Anomalies to flag:
+Substitute `<db-user>`, `<db-name>`, `<history-table>`, and the relevant snapshot fields from the project's `release-matrix.md` (each project documents its own audit-log schema).
+
+### Anomalies to flag
+
 - `operation='D'` (hard delete) on a business row — should be rare. Hard deletes are reserved for manual psql cleanup; if any appeared via app code, the app violated soft-delete policy.
 - Repeated rapid soft-delete/restore cycles on the same row — unusual user pattern; investigate.
 - Bulk DELETE windows — many soft-deletes within a short timestamp range; usually a script ran. Verify it was intentional.
 
-For projects, there is no `projects_history` table (per shared/decisions.md). Use `updated_at` differential queries on `projects` to spot mass-mutation windows:
+For tables without a history table, use `updated_at` differential queries on the live table to spot mass-mutation windows:
 
 ```bash
-docker compose exec -T db psql -U postgres -d agent_teams -c "
-  SELECT id, name, status, is_active, created_at, updated_at
-  FROM projects
+docker compose exec -T db psql -U <db-user> -d <db-name> -c "
+  SELECT id, <name>, status, is_active, created_at, updated_at
+  FROM <table>
   WHERE updated_at > '<last-release-date>'
   ORDER BY updated_at DESC;
 "
@@ -186,7 +175,7 @@ Lead `PATCH`es the release-wrap-up Kanban task description with:
 - Status: GREEN / YELLOW / RED
 
 ### Step 5 — Audit-log review
-- tasks_history rows since last release: <n>
+- <history-table> rows since last release: <n>
 - Anomalies: <list or "none">
 - Status: GREEN / YELLOW / RED
 
@@ -203,6 +192,6 @@ Move the wrap-up task to `process_status=5` only when overall sign-off is reache
 ## Out of scope (NOT Tier-2)
 
 - Performance / load tests — separate concern, not part of release-blocker checklist
-- UX / visual regression — Phase 3 will introduce; not yet
-- Localisation / i18n — out of scope for v0.x
-- License audit — handle at Phase 4+
+- UX / visual regression — handled by web smoke patterns or e2e tests if the project has them
+- Localisation / i18n — out of scope for default Tier-2
+- License audit — handle as a separate workflow if/when project requires it

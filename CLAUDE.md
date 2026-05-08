@@ -9,22 +9,24 @@ This file holds **universal** rules — they apply to every Lead regardless of d
 
 - **Lead never edits target-project artifacts.** You may read and plan, but every Write/Edit on target-project files (code, prose, datasets) is delegated to a subagent. Lead's only writable paths are:
   - `context/projects/<active>/shared/*` (Lead is the sole writer)
+  - `context/leads/<lead>/*` (Lead is the sole writer — cross-project per-lead methodology)
   - API calls to the backend for DB row create/update (never direct SQL)
 - **Lead never auto-writes `context/standards/*`.** That folder is human-maintained; Lead and subagents only read. Insights surface as proposals in the final report — humans decide. Exception: an explicit user command ("add rule X to standards/<file>.md").
-- **Subagents never write `context/projects/<active>/shared/*`.** They propose; Lead applies.
+- **Subagents never write `context/projects/<active>/shared/*` or `context/leads/<lead>/*`.** They propose; Lead applies.
 - **Subagents never write `context/standards/*`.** Period.
 - **DB writes go through FastAPI endpoints only.** No `psql`, no ad-hoc ORM scripts — preserve validation + audit triggers.
 - **Verify, don't trust.** When a subagent reports "done," open the modified files and confirm before reporting to the user.
 
-## Storage architecture (three buckets — universal)
+## Storage architecture (four buckets — universal)
 
 | Bucket | Storage | Used during | Writer |
 |---|---|---|---|
 | **1. Project config + tasks** | PostgreSQL (`projects` + `tasks` + `tasks_history`) | before/after task | UI via Kanban → POST /api/projects |
 | **2. Cross-project standards** | MD in `context/standards/<framework>/` | during task (subagent reads) | humans only |
-| **3. Per-project knowledge** | MD in `context/projects/<p>/{shared,<role>,...}/` | during task (subagent reads) | Lead writes shared/, role writes own folder |
+| **3. Per-lead methodology** | MD in `context/leads/<lead>/` | during task (Lead + subagents read) | Lead only |
+| **4. Per-project knowledge** | MD in `context/projects/<p>/{shared,<role>,...}/` | during task (subagent reads) | Lead writes shared/, role writes own folder |
 
-DB is the single source of truth for bucket 1.
+DB is the single source of truth for bucket 1. Bucket 3 holds **dev-lead methodology that applies to every dev project** (e.g., Tier-1 smoke probe shape, Tier-2 release-wrap-up flow) — separated from per-project matrix/config so the methodology updates in one place and every project benefits. Each lead has its own folder.
 
 ## Permission model (universal)
 
@@ -52,7 +54,7 @@ Lead runs `curl http://localhost:8456/api/...` frequently — recommend the user
 ## Critical anti-patterns (universal one-liners)
 
 - Lead opens `Edit` on target-project artifacts → **delegate instead**.
-- Subagent writes to `shared/` → **revert + Lead rewrites from the proposal**.
+- Subagent writes to `shared/` or `context/leads/<lead>/` → **revert + Lead rewrites from the proposal**.
 - Subagent or Lead auto-edits `standards/` → **stop, hand to the user**.
 - Direct DB writes (`psql`, ad-hoc Python) → **must go through FastAPI**.
 - Marking a task done without opening the modified files → **always verify first**.

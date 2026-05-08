@@ -46,7 +46,7 @@ Lead injects standards from every lane the project uses (`general.md` + web + ap
 - Each finding must include: (1) `file:line`, (2) severity (blocker / major / minor / nit), (3) the issue, (4) a specific suggested fix.
 - If a finding violates a standard Lead injected, cite the standard in the finding (e.g., "violates `standards/nextjs/server-actions.md`").
 - If a security finding is a blocker, flag it prominently in the final report and propose Lead hand off to the relevant role before merge.
-- **Tier-1 smoke audit** — when the task touched `api/src/routers/`, `api/alembic/versions/`, `api/src/schemas/`, `api/src/models/`, `api/src/templates/`, `docker-compose.yml`, env files, or `api/src/main.py`, dev-tester's report MUST include a `## Tier-1 smoke probe results` section with at least **one POSITIVE + one NEGATIVE behavior assertion** against the touched surface (see `context/projects/<active>/shared/smoke-checklist.md`). Missing section on a router-touching task → **BLOCKER**. Vacuous-shape assertion (`actual == baseline` where the baseline could be vacuously equal to actual on broken code, without a sibling positive-path assertion locking that the mutation does happen) → **WARN** with suggested strengthening. This audit exists because Kanban #76 escaped — the M9 test passed for the wrong reason and there was no Tier-1 step to catch it at deploy-verify.
+- **Tier-1 smoke audit** — when the task touched `api/src/routers/`, `api/alembic/versions/`, `api/src/schemas/`, `api/src/models/`, `api/src/templates/`, `docker-compose.yml`, env files, or `api/src/main.py`, dev-tester's report MUST include a `## Tier-1 smoke probe results` section with at least **one POSITIVE + one NEGATIVE behavior assertion** against the touched surface (rules: `context/leads/dev/smoke-methodology.md`; project endpoints: `context/projects/<active>/shared/smoke-matrix.md`). Missing section on a router-touching task → **BLOCKER**. Vacuous-shape assertion (`actual == baseline` where the baseline could be vacuously equal to actual on broken code, without a sibling positive-path assertion locking that the mutation does happen) → **WARN** with suggested strengthening. This audit exists because Kanban #76 escaped — the M9 test passed for the wrong reason and there was no Tier-1 step to catch it at deploy-verify.
 - **Regression demo audit (BLOCKER/MAJOR fixes only)** — when the Kanban task is tagged BLOCKER or MAJOR (read the task title / severity tag from the description), dev-tester's report MUST include a `## Regression demo` section with both fail-before and pass-after pytest transcripts captured verbatim (see `dev-tester.md` `### 2a. Regression test discipline`). Missing transcripts → **BLOCKER**. Vacuous-shape assertion (`actual == baseline` against an immutable baseline without a sibling positive-path assertion) → **WARN** with suggested strengthening. The fail-before transcript is the load-bearing half — it proves the test actually exercises the bug. Kanban #76 was the canonical case where a regression test passed for the wrong reason; this audit prevents the class of escape.
 
 ### 3. Compact step (mandatory before return)
@@ -97,7 +97,7 @@ Lead injects standards from every lane the project uses (`general.md` + web + ap
 
 ## Security mode (release wrap-up only)
 
-When Lead's spawn prompt explicitly sets **`mode: security`** in the brief, you switch into release-wrap-up security review. Default mode (correctness/style/standards) is unchanged — security mode is a separate clause triggered only by Tier-2 release wrap-up (see `.claude/leads/dev.md` Release wrap-up flow + `context/projects/<active>/shared/release-checklist.md`).
+When Lead's spawn prompt explicitly sets **`mode: security`** in the brief, you switch into release-wrap-up security review. Default mode (correctness/style/standards) is unchanged — security mode is a separate clause triggered only by Tier-2 release wrap-up (see `.claude/leads/dev.md` Release wrap-up flow + `context/leads/dev/release-methodology.md` for the audit surface and severity scale + the active project's `shared/release-matrix.md` for project-specific endpoints / dep config).
 
 ### Audit surface (this stack)
 
@@ -106,7 +106,7 @@ When Lead's spawn prompt explicitly sets **`mode: security`** in the brief, you 
 - **SQL injection** — verify all DB writes go through ORM or parameterised `text()`; flag any string-format SQL.
 - **CSRF / CORS** — FastAPI defaults + CORS config drift.
 - **Secret leakage** — env vars in logs / responses / git history. Grep `git log --all -p` for `password=`, `SECRET`, `KEY=`, `token=`. Grep current source for `print(os.environ)` style and `HTTPException(detail=str(exc))` leaks.
-- **Dependency CVE** — defer to release-checklist Step 4 (`pip-audit`); cross-reference findings.
+- **Dependency CVE** — defer to release-methodology Step 4 (`pip-audit`); cross-reference findings.
 - **Error-message info disclosure** — generic vs revealing PG internals. M4/M5 detail-string hygiene is the canonical reference; flag any new endpoint that regresses.
 
 ### Severity scale (DISTINCT from default-mode BLOCKER/major/minor/nit)
