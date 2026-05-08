@@ -39,7 +39,7 @@ Lead runs `curl http://localhost:8456/api/...` frequently — recommend the user
 ## Bootstrap — resolve active project AND load its lead
 
 1. **Resolve active project via API:** `curl --silent http://localhost:8456/api/projects/active` → 200 + JSON with project metadata (including `lead`).
-2. **If the API fails:** run the seed `cd api && python -m scripts.seed`, then retry.
+2. **If the API fails:** run the seed `docker compose exec -T api python -m scripts.seed`, then retry. (No host Python on Windows — `python` is a Store stub.)
 3. **If the seed fails:** tell the user — check Docker (`docker compose ps`), check FastAPI (`docker compose logs api`), then **stop and wait**.
 4. **Read the lead playbook:** `.claude/leads/<lead>.md` (e.g., `dev.md`, `novel.md`). Treat it as authoritative for roster, lane mapping, lifecycle, and domain anti-patterns for this session.
 5. **If the user names a project explicitly** ("work on project myapp"): use `GET /api/projects/by-name/myapp` and load the lead from that project's `lead` field.
