@@ -7,6 +7,7 @@
 ## Conventions
 
 - **Base URL:** `http://localhost:8456` (development; override via `.env`)
+- **Frontend base URL convention:** the `web/` Next.js client reads its API base URL from `process.env.NEXT_PUBLIC_API_URL`. `NEXT_PUBLIC_*` vars are inlined into the client bundle at build time by Next.js — visible in browser-shipped JS, so MUST NOT contain secrets (the API itself enforces auth — Phase 4 deferred). The default value in both `docker-compose.yml` and `.env.example` is `http://localhost:8456` because the browser runs on the host (not inside the compose network) and cannot DNS-resolve the `api` service hostname. Server-side rendering / Route Handler calls (V2+) running INSIDE the web container would use `http://api:8456` and require an explicit override.
 - **Auth:** `none` for v1 (single-user dogfood)
 - **Error envelope:** FastAPI default — `{"detail": "<message>"}` with appropriate HTTP status
 - **Pagination:** `offset` / `limit` query params, defaults `offset=0` `limit=50`, `limit` max 500

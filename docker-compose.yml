@@ -1,5 +1,6 @@
 # Dev compose for agent-teams.
-# Phase 2b: db + api only. web (Next.js Kanban UI) is Phase 3 — see commented block below.
+# Phase 3: db + api + web. Production multi-stage Dockerfile for web is deferred
+# to a later slice (dev image only — `next dev` with hot reload via bind mount).
 #
 # Bring-up:
 #   cp .env.example .env
@@ -66,20 +67,38 @@ services:
       start_period: 10s
 
   # ---------------------------------------------------------------------------
-  # web — Phase 3 placeholder.
-  # TODO(Phase 3): Next.js Kanban UI at ./web. Expected wiring:
-  #   web:
-  #     build:
-  #       context: ./web
-  #       dockerfile: Dockerfile
-  #     container_name: agent-teams-web
-  #     depends_on:
-  #       - api
-  #     environment:
-  #       NEXT_PUBLIC_API_URL: http://api:8456
-  #     ports:
-  #       - "${WEB_PORT:-3000}:3000"
+  # web — Phase 3 Next.js Kanban UI (dev image only).
+  # Production multi-stage Dockerfile is deferred to a later slice.
   # ---------------------------------------------------------------------------
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: agent-teams-web
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # NEXT_PUBLIC_* vars are inlined into the client bundle by Next.js at build time —
+      # safe for non-secret URLs only. The browser runs on the host, so use the host-resolvable
+      # URL (`http://localhost:8456`) — the compose-internal `api` hostname is NOT browser-resolvable.
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8456}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    volumes:
+      # Bind ./web read-write so source edits hot-reload via `next dev`. Mount node_modules
+      # as an anonymous volume so the host node_modules (if any) doesn't clobber the
+      # container-installed one (Linux/Windows binary mismatch).
+      - ./web:/app
+      - /app/node_modules
+    healthcheck:
+      # Next dev mode takes ~5-10s for first-request compile; start_period covers it.
+      # wget is in alpine base by default; if not, swap to `node -e "require('http').get('http://localhost:3000', r => process.exit(r.statusCode === 200 ? 0 : 1))"`.
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 volumes:
   agent-teams-pgdata:

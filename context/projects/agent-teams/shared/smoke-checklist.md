@@ -151,6 +151,24 @@ The test bundle (#76 dev-tester pass) added two pytest regression locks that mir
 
 ---
 
+## Web smoke matrix (localhost:3000)
+
+When a task touches `web/**`, `docker-compose.yml`'s `web` service, or `.env.example`'s web vars (`WEB_PORT`, `NEXT_PUBLIC_API_URL`), Tier-1 also covers the Next.js surface. The probe shape diverges from the api side because there is no `updated_at` to advance — instead lock:
+
+| Touched | Probe | Assertion |
+|---|---|---|
+| New page (`web/app/**/page.tsx`) | `curl -fsS http://localhost:3000<route>` + grep for a known marker string | HTTP 200 AND grep count >= 1 (POSITIVE) |
+| App Router wiring | `curl -s -w "%{http_code}" http://localhost:3000/<unknown-route>` | HTTP 404 (NEGATIVE — confirms App Router default 404 still wired; catches accidental catch-all routes) |
+| `docker-compose.yml` web service / Dockerfile | `docker compose ps web --format json` | Contains `"Health":"healthy"` |
+| New API client (`web/lib/api.ts` and consumers) — V2+ | `curl http://localhost:3000/<page-that-calls-api>` AND inspect rendered output | Client round-trips `NEXT_PUBLIC_API_URL` and surfaces api data (POSITIVE — cross-container FE→BE) |
+| Next.js form / mutation — V2+ | Submit via `curl -X POST` against the page's server action endpoint, then GET the api row | Side-effect lands in DB AND identical resubmit is no-op (mirrors the api POSITIVE+NEGATIVE pair) |
+
+The api-side Kanban #76 lesson still applies on the web side: never assert `actual == baseline` where baseline could vacuously match. If you assert that an unknown route returns 404, also assert that a KNOWN route returns 200 in the same probe pass — otherwise a totally broken `next start` (returning 404 on every URL) would falsely pass the negative probe.
+
+Cost target unchanged: 1-3 probes, < 30 seconds.
+
+---
+
 ## Out of scope (NOT Tier-1)
 
 - Full-API matrix sweeps (every endpoint × every code path) — that is Tier-2 release wrap-up.
