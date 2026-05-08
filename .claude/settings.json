@@ -4,7 +4,60 @@
     "allow": [
       "Read(*)",
       "Glob(*)",
-      "Grep(*)"
+      "Grep(*)",
+
+      "Write(api/**)",
+      "Write(web/**)",
+      "Write(context/projects/**)",
+      "Write(.claude/**)",
+      "Edit(api/**)",
+      "Edit(web/**)",
+      "Edit(context/projects/**)",
+      "Edit(.claude/**)",
+      "Edit(CLAUDE.md)",
+      "Edit(README.md)",
+      "Edit(.gitignore)",
+      "Edit(docker-compose.yml)",
+
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(git stash list:*)",
+      "Bash(git stash show:*)",
+
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(pwd)",
+
+      "Bash(curl --silent http://localhost:8456/api/:*)",
+      "Bash(curl --silent -X PATCH http://localhost:8456/api/:*)",
+      "Bash(curl --silent -X POST http://localhost:8456/api/:*)",
+      "Bash(curl --silent -X DELETE http://localhost:8456/api/:*)",
+
+      "Bash(docker compose ps:*)",
+      "Bash(docker compose logs:*)",
+      "Bash(docker inspect:*)",
+
+      "Bash(docker compose exec api alembic current)",
+      "Bash(docker compose exec api alembic heads)",
+      "Bash(docker compose exec api alembic check)",
+      "Bash(docker compose exec api alembic history:*)",
+      "Bash(docker compose exec -T api alembic current)",
+      "Bash(docker compose exec -T api alembic heads)",
+      "Bash(docker compose exec -T api alembic check)",
+      "Bash(docker compose exec -T api alembic history:*)",
+
+      "Bash(docker compose exec api pytest:*)",
+      "Bash(docker compose exec -T api pytest:*)",
+
+      "Bash(docker compose exec db psql -U postgres -d agent_teams -c SELECT:*)",
+      "Bash(docker compose exec -T db psql -U postgres -d agent_teams -c SELECT:*)",
+      "Bash(docker compose exec db psql -U postgres -d agent_teams -c \\d:*)",
+      "Bash(docker compose exec -T db psql -U postgres -d agent_teams -c \\d:*)"
     ],
     "ask": [
       "Write(*)",
