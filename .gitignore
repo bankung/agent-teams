@@ -43,3 +43,13 @@ context/projects/*/*/
 # folders, the tests soft-delete the DB row but leave the on-disk dir behind.
 # rmtree-on-teardown is a follow-up (Kanban #17 M8); ignore the prefix-pattern for now.
 context/projects/proj-*/
+
+# Probe / smoke / backfill scaffold projects — convention: name MUST start with `_`
+# so smoke-checklist.md / release-checklist.md probes don't pollute the working tree.
+# Real projects use bare names (e.g., `agent-teams`, `myapp`).
+context/projects/_*/
+
+# Scratch dir for assistant-side tempfiles (POST payloads, JSON drafts, ad-hoc
+# probe scripts). Keep the dir tracked via .gitkeep but ignore its contents.
+_scratch/*
+!_scratch/.gitkeep

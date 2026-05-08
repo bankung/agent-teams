@@ -72,6 +72,23 @@ after=$(curl --silent http://localhost:8456/api/projects/<id> | grep -o '"update
 [ "$before" != "$after" ] && echo "POSITIVE PASS" || echo "POSITIVE FAIL"
 ```
 
+For larger payload bodies, write to `_scratch/` and `--data-binary @<path>`:
+
+```bash
+cat > _scratch/probe-<intent>.json <<'EOF'
+{"name":"_smoke-<timestamp>","lead":"dev","description":"...",...}
+EOF
+
+# Note the `_` prefix in the project name — required so .gitignore catches the
+# scaffold folder at context/projects/_smoke-<timestamp>/
+curl --silent -X POST http://localhost:8456/api/projects \
+  -H "Content-Type: application/json" \
+  --data-binary "@_scratch/probe-<intent>.json"
+
+# cleanup before return
+rm _scratch/probe-<intent>.json
+```
+
 ### When the host has no Python/jq
 
 This Windows host has no usable `python` / `python3` / `jq` — see memory `feedback_no_host_python.md`. Use one of:
@@ -83,7 +100,13 @@ This Windows host has no usable `python` / `python3` / `jq` — see memory `feed
 
 If a probe mutates a real production row (e.g., `paths_db` on the seeded `agent-teams` project), **restore it before returning**. Use the canonical seed value from `api/scripts/seed.py`. Capture the restore call as the final probe in the section so the working state is auditable.
 
-If a probe creates a throwaway row (POSTs a test project / task), tag it with a unique-suffix name (`proj-<task#>-smoke-<timestamp>`) and DELETE it before returning. Soft-deleted is acceptable — hard cleanup is out of scope.
+If a probe creates a throwaway row (POSTs a test project / task), tag it with the **`_` prefix convention** (e.g., `_smoke-<timestamp>`, `_probe-<reason>-<timestamp>`) and DELETE it before returning. Soft-deleted is acceptable — hard cleanup is out of scope. **The `_` prefix is mandatory** — `.gitignore` excludes `context/projects/_*/` so the scaffold folder doesn't pollute the working tree on `git status`. Probe rows that don't follow the convention WILL pollute (the original Kanban #81 backfill used `backfill-<timestamp>` without the underscore — those folders had to be manually `rm -r`d).
+
+### Tempfile location
+
+POST payloads, JSON drafts, ad-hoc probe scripts go in `_scratch/` at the repo root (gitignored). The dir is tracked via `.gitkeep` so it always exists. Use absolute paths (`/repo/_scratch/<name>.json` inside the api container; `c:/Users/banku/Documents/.../agent-teams/_scratch/<name>.json` from the host) so tools that don't honour `--cwd` find the file. Clean up with `rm _scratch/<name>` before return — leftover files in `_scratch/` are visible on `git status` (the dir is tracked even if its contents are ignored — `_scratch/.gitkeep` keeps it in the index, but uncommitted-and-ignored files show up to remind you).
+
+`C:/Users/banku/AppData/Local/Temp/` is the legacy path — still allowlisted as a fallback, but prefer `_scratch/` so cleanup is auditable.
 
 ---
 

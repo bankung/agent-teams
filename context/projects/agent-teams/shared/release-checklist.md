@@ -59,6 +59,10 @@ Spawn dev-tester with **full smoke mode** (NOT scoped per task — covers every 
 
 dev-tester emits one section per endpoint with all probes inline. Aggregate at the end: total probes, PASSes, FAILs. Any FAIL → wrap-up RED on this step.
 
+### Probe artifact discipline
+
+All throwaway rows POSTed during the matrix MUST use the `_` prefix convention (`_release-<version>-<n>`, `_smoke-<timestamp>`, etc) — `.gitignore` excludes `context/projects/_*/` so scaffold folders don't pollute working tree. Tempfiles for payload bodies go in `_scratch/` at repo root (also gitignored, with `.gitkeep` keeping the dir in the index). See `smoke-checklist.md` "Restoration discipline" + "Tempfile location" for full convention.
+
 ---
 
 ## Step 2 — `/security-review` slash command (USER-TRIGGERED)

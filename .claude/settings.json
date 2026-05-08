@@ -22,6 +22,8 @@
       "Write(C:/Users/banku/.claude/projects/c--Users-banku-Documents-Personal-Projects-GitHub-agent-teams/memory/**)",
       "Edit(C:/Users/banku/.claude/projects/c--Users-banku-Documents-Personal-Projects-GitHub-agent-teams/memory/**)",
 
+      "Write(_scratch/**)",
+      "Edit(_scratch/**)",
       "Write(C:/Users/banku/AppData/Local/Temp/**)",
       "Edit(C:/Users/banku/AppData/Local/Temp/**)",
 
@@ -50,6 +52,8 @@
       "Bash(curl --silent -X PATCH http://localhost:8456:*)",
       "Bash(curl --silent -X DELETE http://localhost:8456:*)",
 
+      "Bash(rm _scratch/:*)",
+      "Bash(rm -r _scratch/:*)",
       "Bash(rm c:/Users/banku/AppData/Local/Temp/:*)",
       "Bash(rm /c/Users/banku/AppData/Local/Temp/:*)",
       "Bash(where:*)",
