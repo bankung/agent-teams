@@ -84,8 +84,20 @@ async def create_task(
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
-        # FK violation on project_id, or CHECK constraint failure
-        raise HTTPException(status_code=400, detail=str(exc.orig)) from exc
+        # Translate well-known constraint names to stable details; mirror update_task M5.
+        # Strings pinned by test_post_task_400_detail_strings_are_pinned_in_router_source — keep the test in sync.
+        orig_text = str(exc.orig)
+        if "tasks_project_id_fkey" in orig_text:
+            detail = f"project_id {payload.project_id} does not exist"
+        elif "ck_tasks_process_status_valid" in orig_text:
+            detail = "process_status violates ck_tasks_process_status_valid"
+        elif "ck_tasks_priority_valid" in orig_text:
+            detail = "priority violates ck_tasks_priority_valid"
+        elif "ck_tasks_status_valid" in orig_text:
+            detail = "status violates ck_tasks_status_valid"
+        else:
+            detail = "Task creation violates a database constraint"
+        raise HTTPException(status_code=400, detail=detail) from exc
     await session.refresh(task)
     return task
 
@@ -118,12 +130,16 @@ async def update_task(
     # (e.g., func.now()) bypass the equality check — comparing a ClauseElement
     # with `!=` returns a SQL BinaryExpression (not a bool), so the isinstance
     # guard exists to keep the no-op detector from crashing on dynamic SQL values.
+    # N7 parity with projects.py — Kanban #120.
+    changed = False
     for field, value in updates.items():
         if isinstance(value, ClauseElement) or getattr(task, field) != value:
             setattr(task, field, value)
+            changed = True
 
     # Force `updated_at` to refresh — server_default only fires on INSERT.
-    task.updated_at = func.now()
+    if changed:
+        task.updated_at = func.now()
 
     try:
         await session.commit()
@@ -162,5 +178,7 @@ async def delete_task(
     if task.status == RecordStatus.DELETED:
         return Response(status_code=http_status.HTTP_204_NO_CONTENT)
     task.status = RecordStatus.DELETED
+    # Force `updated_at` to refresh — server_default only fires on INSERT. Kanban #120.
+    task.updated_at = func.now()
     await session.commit()
     return Response(status_code=http_status.HTTP_204_NO_CONTENT)

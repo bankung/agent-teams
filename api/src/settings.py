@@ -8,9 +8,6 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# parents[0] = src/, parents[1] = api/, parents[2] = repo root
-_DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[2]
-
 
 class Settings(BaseSettings):
     """Loaded from environment / .env file at startup."""
@@ -29,12 +26,14 @@ class Settings(BaseSettings):
     )
 
     app_env: str = Field(default="development", alias="APP_ENV")
-    app_debug: bool = Field(default=True, alias="APP_DEBUG")
+    app_debug: bool = Field(default=False, alias="APP_DEBUG")
 
     # Filesystem root of the agent-teams repo — used by project auto-scaffold
-    # to locate context/projects/<name>/. Override with REPO_ROOT env var when
-    # the API runs outside the repo (e.g., in a container with the repo bind-mounted).
-    repo_root: Path = Field(default=_DEFAULT_REPO_ROOT, alias="REPO_ROOT")
+    # to locate context/projects/<name>/. REQUIRED — pydantic-settings raises
+    # ValidationError at startup if REPO_ROOT is unset/empty. Inside docker-compose
+    # the api service sets this to /repo (the bind mount target). For local uvicorn
+    # runs, set it explicitly in .env (no implicit parents[2] fallback — refactor-brittle).
+    repo_root: Path = Field(alias="REPO_ROOT")
 
 
 @lru_cache(maxsize=1)

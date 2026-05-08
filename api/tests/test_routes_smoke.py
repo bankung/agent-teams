@@ -608,10 +608,26 @@ def test_patch_task_400_detail_strings_are_pinned_in_router_source() -> None:
     )
 
 
+# Regression: Kanban #120
 @pytest.mark.asyncio
-async def test_redelete_task_does_not_grow_audit_history(client, db_session) -> None:
-    """M9 lock (tasks): A second DELETE on an already-soft-deleted task is a
-    no-op — it must NOT write a redundant `'U'` row to `tasks_history`.
+async def test_first_delete_bumps_updated_at_redelete_does_not_for_tasks(
+    client, db_session
+) -> None:
+    """M9 lock (tasks), strengthened for Kanban #120 — mirrors the projects-side
+    canonical at `test_first_delete_bumps_updated_at_redelete_does_not`.
+
+    Three invariants:
+      1. First DELETE bumps `updated_at` strictly forward from the create
+         baseline (load-bearing — the original test passed vacuously while
+         `delete_task` never bumped `updated_at` at all). The baseline is
+         captured BEFORE the first DELETE so the `>` check actually probes the
+         router-side `task.updated_at = func.now()` write, not a vacuous tie.
+      2. Re-DELETE on an already-soft-deleted task is a true no-op:
+         `updated_at` is unchanged between the post-first-DELETE snapshot and
+         the post-second-DELETE snapshot (the early-return skip path holds).
+      3. Audit-row count stays the same on re-DELETE — the no-op skip in
+         `delete_task` must not write a redundant `'U'` row to `tasks_history`
+         (preserved from the prior `test_redelete_task_does_not_grow_audit_history`).
 
     Reads `tasks_history` directly via db_session because there is no public
     endpoint for the audit table.
@@ -627,10 +643,18 @@ async def test_redelete_task_does_not_grow_audit_history(client, db_session) -> 
     )
     assert create.status_code == 201
     task_id = create.json()["id"]
+    # Capture the create baseline BEFORE any DELETE — this is load-bearing.
+    updated_at_at_create = _parse_ts(create.json()["updated_at"])
 
-    # First DELETE — flips status=0; audit trigger writes one 'U' row.
+    # First DELETE — flips status=0; audit trigger writes one 'U' row AND the
+    # router explicitly sets `task.updated_at = func.now()`.
     first = await client.delete(f"/api/tasks/{task_id}")
     assert first.status_code == 204
+
+    # Re-fetch the row to read updated_at (detail endpoint returns soft-deleted rows).
+    detail = await client.get(f"/api/tasks/{task_id}")
+    assert detail.status_code == 200, detail.text
+    updated_at_after_first_delete = _parse_ts(detail.json()["updated_at"])
 
     # Snapshot history count after the legitimate first DELETE.
     count_after_first = await db_session.scalar(
@@ -641,14 +665,34 @@ async def test_redelete_task_does_not_grow_audit_history(client, db_session) -> 
         f"expected at least one audit row after first DELETE, got {count_after_first}"
     )
 
+    # Invariant 1: first DELETE must advance updated_at past the create baseline.
+    assert updated_at_after_first_delete > updated_at_at_create, (
+        f"first DELETE did not bump updated_at: "
+        f"create={updated_at_at_create.isoformat()} "
+        f"after_first_delete={updated_at_after_first_delete.isoformat()}"
+    )
+
     # Second DELETE — should be a no-op.
     second = await client.delete(f"/api/tasks/{task_id}")
     assert second.status_code == 204
+
+    detail2 = await client.get(f"/api/tasks/{task_id}")
+    assert detail2.status_code == 200, detail2.text
+    updated_at_after_second_delete = _parse_ts(detail2.json()["updated_at"])
 
     count_after_second = await db_session.scalar(
         text("SELECT COUNT(*) FROM tasks_history WHERE task_id = :tid"),
         {"tid": task_id},
     )
+
+    # Invariant 2: re-DELETE is a true no-op for updated_at.
+    assert updated_at_after_second_delete == updated_at_after_first_delete, (
+        f"re-DELETE on a soft-deleted task mutated updated_at: "
+        f"{updated_at_after_first_delete.isoformat()} → "
+        f"{updated_at_after_second_delete.isoformat()} (the no-op skip is broken)"
+    )
+
+    # Invariant 3: audit row count must NOT grow on re-DELETE.
     assert count_after_second == count_after_first, (
         f"re-DELETE on a soft-deleted task wrote a redundant audit row: "
         f"{count_after_first} → {count_after_second}"
@@ -800,3 +844,376 @@ async def test_patch_project_updated_at_advances_on_real_change_and_no_op_skips(
             f"PATCH ({label}) mutated created_at: "
             f"{created_at_at_create.isoformat()} → {created_at_seen.isoformat()}"
         )
+
+
+# Regression: Kanban #120 — sibling positive lock for the N7 invariant on tasks.
+# Mirrors the projects-side canonical
+# `test_patch_project_updated_at_advances_on_real_change_and_no_op_skips`.
+@pytest.mark.asyncio
+async def test_patch_task_updated_at_advances_on_real_change_and_no_op_skips(
+    client,
+) -> None:
+    """PATCH /api/tasks/{id} parity with projects:
+      1. PATCH with a real change (priority 1 → 3) advances `updated_at` past
+         the create baseline.
+      2. PATCH with the identical body (priority 3 again) is a no-op —
+         `updated_at` does NOT advance.
+      3. PATCH with a second real change (priority 3 → 4) advances
+         `updated_at` again past the post-no-op snapshot.
+      4. None of the three PATCHes mutate `created_at`.
+    """
+    active = await client.get("/api/projects/active")
+    project_id = active.json()["id"]
+
+    create = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "patch-updated-at-task probe",
+            "priority": 1,
+        },
+    )
+    assert create.status_code == 201, create.text
+    task_id = create.json()["id"]
+    updated_at_at_create = _parse_ts(create.json()["updated_at"])
+    created_at_at_create = _parse_ts(create.json()["created_at"])
+
+    try:
+        # 1) Real change — should bump updated_at.
+        first_patch = await client.patch(
+            f"/api/tasks/{task_id}",
+            json={"priority": 3},
+        )
+        assert first_patch.status_code == 200, first_patch.text
+        assert first_patch.json()["priority"] == 3
+        updated_at_after_patch = _parse_ts(first_patch.json()["updated_at"])
+        assert updated_at_after_patch > updated_at_at_create, (
+            f"PATCH with a real change did not advance updated_at: "
+            f"create={updated_at_at_create.isoformat()} "
+            f"after_patch={updated_at_after_patch.isoformat()}"
+        )
+
+        # 2) Identical body — N7 no-op skip should hold updated_at steady.
+        second_patch = await client.patch(
+            f"/api/tasks/{task_id}",
+            json={"priority": 3},
+        )
+        assert second_patch.status_code == 200, second_patch.text
+        updated_at_after_noop = _parse_ts(second_patch.json()["updated_at"])
+        assert updated_at_after_noop == updated_at_after_patch, (
+            f"PATCH with an identical body bumped updated_at (no-op skip broken): "
+            f"{updated_at_after_patch.isoformat()} → {updated_at_after_noop.isoformat()}"
+        )
+
+        # 3) Second real change — should bump again.
+        third_patch = await client.patch(
+            f"/api/tasks/{task_id}",
+            json={"priority": 4},
+        )
+        assert third_patch.status_code == 200, third_patch.text
+        assert third_patch.json()["priority"] == 4
+        updated_at_after_second_change = _parse_ts(third_patch.json()["updated_at"])
+        assert updated_at_after_second_change > updated_at_after_noop, (
+            f"second real-change PATCH did not advance updated_at: "
+            f"prev={updated_at_after_noop.isoformat()} "
+            f"after={updated_at_after_second_change.isoformat()}"
+        )
+
+        # 4) created_at must never move on PATCH.
+        for label, resp in (
+            ("first_patch", first_patch),
+            ("second_patch", second_patch),
+            ("third_patch", third_patch),
+        ):
+            created_at_seen = _parse_ts(resp.json()["created_at"])
+            assert created_at_seen == created_at_at_create, (
+                f"PATCH ({label}) mutated created_at: "
+                f"{created_at_at_create.isoformat()} → {created_at_seen.isoformat()}"
+            )
+    finally:
+        # Soft-delete the test row.
+        await client.delete(f"/api/tasks/{task_id}")
+
+
+# -----------------------------------------------------------------------------
+# Kanban #121 — projects.name path-traversal hardening
+#
+# Two-layer defence:
+#   Layer 1 — Pydantic schema regex on `ProjectCreate.name` / `ProjectUpdate.name`
+#             (api/src/schemas/project.py:53,76). HTTP requests with a malicious
+#             name short-circuit at 422 before the router or scaffold runs.
+#   Layer 2 — `scaffold_project_folder` defense-in-depth: forbidden-token guard
+#             + `is_relative_to(projects_root)` resolved-path guard, both
+#             returning False (not raising). Catches anything bypassing Pydantic.
+# -----------------------------------------------------------------------------
+
+
+# Regression: Kanban #121
+@pytest.mark.asyncio
+async def test_post_project_rejects_path_traversal_names(client) -> None:
+    """Layer 1 lock — POST /api/projects with malicious `name` → 422.
+
+    Each rejection asserts the Pydantic 422 envelope identifies the `name`
+    field via `errors[].loc == ['body', 'name']` so a future schema rename
+    can't pass this test by accident (mirrors the N8 pattern on
+    `process_status`).
+
+    Cases:
+      - "../evil"          (parent-dir token)
+      - "proj/sub"         (forward slash)
+      - "proj\\sub"        (backslash)
+      - "proj with space"  (disallowed character — space)
+      - "proj.name"        (disallowed character — dot)
+      - "a" * 65           (exceeds 64-char max from the regex)
+
+    No scaffold_cleanup needed — request is rejected at the schema layer
+    before the scaffold side-effect runs.
+    """
+    bad_names = [
+        "../evil",
+        "proj/sub",
+        "proj\\sub",
+        "proj with space",
+        "proj.name",
+        "a" * 65,
+    ]
+    for bad in bad_names:
+        payload = _project_create_payload(bad)
+        resp = await client.post("/api/projects", json=payload)
+        assert resp.status_code == 422, (
+            f"name={bad!r} expected 422, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert "detail" in body and isinstance(body["detail"], list), (
+            f"name={bad!r}: malformed 422 envelope: {body!r}"
+        )
+        assert any(err["loc"] == ["body", "name"] for err in body["detail"]), (
+            f"name={bad!r}: expected loc=['body','name'] in detail; "
+            f"got {[err['loc'] for err in body['detail']]}"
+        )
+
+
+# Regression: Kanban #121
+@pytest.mark.asyncio
+async def test_patch_project_rejects_path_traversal_names(client) -> None:
+    """Layer 1 lock — PATCH /api/projects/{id} with malicious `name` → 422.
+
+    Targets the seeded `agent-teams` project (id resolved dynamically via
+    /api/projects/active). `ProjectUpdate.name` carries the same regex as
+    `ProjectCreate.name` (schemas/project.py:76) — drift breaks this test.
+
+    Only one representative malicious name is exercised here; the create-side
+    test already covers the full charset matrix. The point of this test is to
+    confirm the PATCH path also enforces the regex (no silent contract gap
+    between POST and PATCH).
+    """
+    active = await client.get("/api/projects/active")
+    assert active.status_code == 200, active.text
+    project_id = active.json()["id"]
+
+    resp = await client.patch(
+        f"/api/projects/{project_id}", json={"name": "../evil"}
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert "detail" in body and isinstance(body["detail"], list)
+    assert any(err["loc"] == ["body", "name"] for err in body["detail"]), (
+        f"expected loc=['body','name'] in PATCH 422 detail; "
+        f"got {[err['loc'] for err in body['detail']]}"
+    )
+
+
+# Regression: Kanban #121
+def test_scaffold_service_rejects_traversal_directly() -> None:
+    """Layer 2 lock — defense-in-depth: `scaffold_project_folder` rejects
+    malicious project names directly (without going through the HTTP layer).
+
+    For each malicious case:
+      - Returns False (NOT raises — caller treats the row commit as truth and
+        keeps going; an exception would roll back unrelated work).
+      - No directory is created at the dangerous resolved path.
+
+    Cases pinned:
+      - "../evil-bf-<uniq>"    (parent-dir token — would resolve OUTSIDE
+                                <repo_root>/context/projects/, caught by both
+                                the forbidden-token short-circuit and the
+                                `is_relative_to` resolved-path guard)
+      - "evil-<uniq>/sub"      (forward slash — caught by forbidden-token guard)
+      - "evil-<uniq>\x00null"  (NUL byte — caught by forbidden-token guard;
+                                also breaks Path() on most platforms but the
+                                guard fires first)
+
+    Each case uses a unique uuid suffix so this test is repeatable without
+    cross-contamination from prior fail-before runs (which DO create the
+    scaffold output on pre-fix code — that's the whole point of the test).
+    Each dangerous path is also pre-removed via `shutil.rmtree(...,
+    ignore_errors=True)` before the call so a leaked dir from a previous
+    failed run cannot make this test pass vacuously.
+
+    Mirrors the existing test convention of importing repo_root via
+    `src.settings.get_settings()` (see
+    `test_post_project_with_novel_lead_scaffolds_novel_roster`).
+    """
+    import shutil
+    import uuid
+
+    from src.services.project_scaffold import scaffold_project_folder
+    from src.settings import get_settings
+
+    repo_root = Path(get_settings().repo_root)
+    projects_root = repo_root / "context" / "projects"
+    uniq = uuid.uuid4().hex[:8]
+
+    bad_cases = [
+        (
+            f"../evil-bf-{uniq}",
+            repo_root / "context" / f"evil-bf-{uniq}",
+        ),
+        (
+            f"evil-{uniq}/sub",
+            projects_root / f"evil-{uniq}",
+        ),
+        (
+            f"evil-{uniq}\x00null",
+            projects_root / f"evil-{uniq}\x00null",
+        ),
+    ]
+    try:
+        for project_name, dangerous_path in bad_cases:
+            # Pre-clean any stale dir at the dangerous path so a leaked dir
+            # from a prior fail-before run can't mask a regression.
+            try:
+                if dangerous_path.exists():
+                    shutil.rmtree(dangerous_path, ignore_errors=True)
+            except (OSError, ValueError):
+                pass
+
+            result = scaffold_project_folder(
+                repo_root=repo_root, project_name=project_name, lead="dev"
+            )
+            assert result is False, (
+                f"scaffold_project_folder({project_name!r}) returned {result!r}; "
+                f"expected False (defense-in-depth must reject without raising)"
+            )
+            # Verify the dangerous path was NOT created. Path.exists() raises
+            # on NUL on some platforms, so guard with try/except — the guard
+            # rejecting before any mkdir is the load-bearing assertion above.
+            try:
+                existed = dangerous_path.exists()
+            except (OSError, ValueError):
+                existed = False
+            assert not existed, (
+                f"scaffold_project_folder({project_name!r}) created "
+                f"{dangerous_path!s} despite returning False"
+            )
+    finally:
+        # Defensive cleanup if an earlier assertion raised AFTER a scaffold
+        # somehow succeeded (shouldn't happen post-fix, but keeps the working
+        # tree clean if this test ever flakes).
+        for _name, dangerous_path in bad_cases:
+            try:
+                if dangerous_path.exists():
+                    shutil.rmtree(dangerous_path, ignore_errors=True)
+            except (OSError, ValueError):
+                pass
+
+
+# Regression: Kanban #122
+def test_post_task_400_detail_strings_are_pinned_in_router_source() -> None:
+    """M5-style lock for POST /api/tasks: `create_task` translates well-known DB
+    constraint names (FK + 3 CHECKs) to stable detail strings in
+    `routers/tasks.py`. Mirrors `test_patch_task_400_detail_strings_are_pinned_in_router_source`.
+
+    The CHECK branches are unreachable from HTTP because Pydantic validators on
+    `TaskCreate` reject the same out-of-range integers at 422 first — the
+    IntegrityError handler is defense-in-depth for raw-SQL bypass / future
+    schema drift. The FK branch (`tasks_project_id_fkey`) IS reachable via the
+    HTTP wire (any non-existent project_id passes Pydantic but fails at the SQL
+    layer); test_post_task_returns_stable_detail_on_fk_violation locks that path.
+
+    Strings pinned (must remain byte-for-byte stable per `routers/tasks.py`):
+    - constraint name `tasks_project_id_fkey` AND f-string template
+      `"project_id {payload.project_id} does not exist"`
+    - constraint name `ck_tasks_process_status_valid` AND
+      `"process_status violates ck_tasks_process_status_valid"`
+    - constraint name `ck_tasks_priority_valid` AND
+      `"priority violates ck_tasks_priority_valid"`
+    - constraint name `ck_tasks_status_valid` AND
+      `"status violates ck_tasks_status_valid"`
+    - fallback `"Task creation violates a database constraint"`
+
+    Drift in any of these strings (rename / wording change / removed branch)
+    breaks the test — the wire contract stays auditable from source.
+    """
+    from pathlib import Path
+
+    from src.routers import tasks as tasks_router
+
+    source = Path(tasks_router.__file__).read_text(encoding="utf-8")
+
+    # Pair each constraint name with its stable detail string. Both must appear
+    # verbatim in the create_task block — checking the constraint name alone
+    # would miss a regression that left the `if "..." in orig_text` arm but
+    # rewrote the detail string, and checking the detail alone would miss a
+    # regression that dropped the `if`-branch entirely.
+    pinned_pairs = [
+        ('"tasks_project_id_fkey"', '"project_id {payload.project_id} does not exist"'),
+        (
+            '"ck_tasks_process_status_valid"',
+            '"process_status violates ck_tasks_process_status_valid"',
+        ),
+        ('"ck_tasks_priority_valid"', '"priority violates ck_tasks_priority_valid"'),
+        ('"ck_tasks_status_valid"', '"status violates ck_tasks_status_valid"'),
+    ]
+    fallback = '"Task creation violates a database constraint"'
+
+    missing: list[str] = []
+    for constraint, detail in pinned_pairs:
+        # The `tasks_project_id_fkey` membership check is `"tasks_project_id_fkey" in orig_text`
+        # — strip the surrounding quotes for the source-text scan since the source
+        # has the literal string with quotes around it.
+        if constraint not in source:
+            missing.append(f"constraint name {constraint}")
+        if detail not in source:
+            missing.append(f"detail string {detail}")
+    if fallback not in source:
+        missing.append(f"fallback {fallback}")
+
+    assert not missing, (
+        "Kanban #122 POST /api/tasks 400 detail strings drifted in "
+        f"routers/tasks.py — missing: {missing}"
+    )
+
+
+# Regression: Kanban #122
+@pytest.mark.asyncio
+async def test_post_task_returns_stable_detail_on_fk_violation(client) -> None:
+    """SECURITY-WARN lock for Kanban #122: POST /api/tasks with a non-existent
+    project_id surfaces a stable, hygienic 400 detail string instead of leaking
+    the raw asyncpg ForeignKeyViolationError text (class name, internal DETAIL
+    line, constraint name).
+
+    Pre-fix wire shape on the FK branch was:
+        "<class 'asyncpg.exceptions.ForeignKeyViolationError'>: insert or update
+        on table \"tasks\" violates foreign key constraint
+        \"tasks_project_id_fkey\"\\nDETAIL:  Key (project_id)=(99999999) is not
+        present in table \"projects\"."
+    — i.e., `detail=str(exc.orig)`. Post-fix shape is the byte-stable
+    `"project_id 99999999 does not exist"` (matches the f-string template
+    pinned by the source-text test above).
+
+    Status code must be 400 (NOT 422 — Pydantic accepts any positive int as
+    project_id, so the FK violation only surfaces post-Pydantic at the SQL
+    commit layer).
+    """
+    bogus_project_id = 99999999
+    resp = await client.post(
+        "/api/tasks",
+        json={"project_id": bogus_project_id, "title": "kanban-122-fk-probe"},
+    )
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body == {"detail": f"project_id {bogus_project_id} does not exist"}, (
+        f"Kanban #122: detail string drifted from the f-string template — "
+        f"got {body!r}"
+    )

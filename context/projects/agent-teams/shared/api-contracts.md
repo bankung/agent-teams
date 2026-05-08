@@ -87,7 +87,7 @@ Template for a new endpoint:
 
 **Errors:**
 - `409` — `{"detail":"Project '<name>' already exists"}` on unique-name violation
-- `422` — Pydantic validation error on missing/invalid fields, including missing `lead` or `lead` not in `{"dev","novel"}`
+- `422` — Pydantic validation error on missing/invalid fields, including missing `lead` or `lead` not in `{"dev","novel"}`. `name` must match `^[a-zA-Z0-9_-]{1,64}$` (path-traversal hardening per Kanban #121); rejection shape: `{"detail":[{"type":"string_pattern_mismatch","loc":["body","name"],...}]}`. Same regex applies to PATCH `/api/projects/{id}` `name` updates.
 
 ### PATCH /api/projects/{id}
 **Purpose:** Partial update. Setting `is_active=true` atomically clears every other row's `is_active`. Server bumps `updated_at` on any real field change; an unchanged-body PATCH is a no-op (no `updated_at` advance, no audit-row noise) — N7 no-op-skip parity with PATCH `/api/tasks/{id}`.
@@ -145,11 +145,16 @@ Template for a new endpoint:
 **Response 201:** `TaskRead`
 
 **Errors:**
-- `400` — FK violation (`project_id` does not exist) or CHECK violation (out-of-range code)
+- `400` — FK or CHECK violation. Detail strings (stable wire contract; mirror M5 PATCH pattern — CHECK branches gated by Pydantic 422 first, reachable today only via raw-SQL bypass or future schema drift):
+  - `{"detail":"project_id <n> does not exist"}` when `tasks_project_id_fkey` is violated (`<n>` substitutes the user-supplied `project_id`)
+  - `{"detail":"process_status violates ck_tasks_process_status_valid"}`
+  - `{"detail":"priority violates ck_tasks_priority_valid"}`
+  - `{"detail":"status violates ck_tasks_status_valid"}` (defensive — `status` is not a public POST field)
+  - `{"detail":"Task creation violates a database constraint"}` (fallback for unknown constraints)
 - `422` — Pydantic validation error
 
 ### PATCH /api/tasks/{id}
-**Purpose:** Partial update. Transitioning to `process_status=2` (in_progress) sets `started_at=now()` if NULL; transitioning to `process_status=5` (done) sets `completed_at=now()`. Server bumps `updated_at` on any real field change; an unchanged-body PATCH is a no-op (N7 no-op-skip — see `routers/tasks.py:117-127`).
+**Purpose:** Partial update. Transitioning to `process_status=2` (in_progress) sets `started_at=now()` if NULL; transitioning to `process_status=5` (done) sets `completed_at=now()`. Server bumps `updated_at` on any real field change; an unchanged-body PATCH is a no-op (N7 no-op-skip — `routers/tasks.py:121-130`; parity with PATCH `/api/projects/{id}`).
 **Auth:** none
 
 **Request:** any subset of `{title, description, process_status, priority, assigned_role, started_at, completed_at}`. The soft-delete `status` flag is intentionally absent — sending `{"status": 0}` is silently ignored (use `DELETE` to soft-delete).
@@ -165,7 +170,7 @@ Template for a new endpoint:
   - `{"detail":"Task update violates a database constraint"}` (fallback for unknown CHECK constraints)
 
 ### DELETE /api/tasks/{id}
-**Purpose:** Soft-delete a task — flips `status=0`. Idempotent. The audit trigger snapshots the flip as `'U'` in `tasks_history`.
+**Purpose:** Soft-delete a task — flips `status=0`. First DELETE advances `updated_at`; subsequent DELETEs on an already-deleted row are idempotent no-ops (return 204 without further `updated_at` bump — parity with DELETE `/api/projects/{id}`). The audit trigger snapshots the flip as `'U'` in `tasks_history`.
 **Auth:** none
 **Response 204:** No content
 **Errors:**

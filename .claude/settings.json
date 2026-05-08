@@ -19,17 +19,17 @@
       "Edit(.gitignore)",
       "Edit(docker-compose.yml)",
 
-      "Write(C:/Users/banku/.claude/projects/c--Users-banku-Documents-Personal-Projects-GitHub-agent-teams/memory/**)",
-      "Edit(C:/Users/banku/.claude/projects/c--Users-banku-Documents-Personal-Projects-GitHub-agent-teams/memory/**)",
+      "Write(~/.claude/projects/**/memory/**)",
+      "Edit(~/.claude/projects/**/memory/**)",
 
       "Write(_scratch/**)",
       "Edit(_scratch/**)",
-      "Write(C:/Users/banku/AppData/Local/Temp/**)",
-      "Edit(C:/Users/banku/AppData/Local/Temp/**)",
 
       "Agent(*)",
 
+      "Bash(git status)",
       "Bash(git status:*)",
+      "Bash(git diff)",
       "Bash(git diff:*)",
       "Bash(git log:*)",
       "Bash(git show:*)",
@@ -42,6 +42,13 @@
       "Bash(ls:*)",
       "Bash(cat:*)",
       "Bash(pwd)",
+      "Bash(echo:*)",
+      "Bash(cd:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
 
       "Bash(curl --silent http://localhost:8456/api/:*)",
       "Bash(curl --silent -X PATCH http://localhost:8456/api/:*)",
@@ -51,11 +58,13 @@
       "Bash(curl --silent -X POST http://localhost:8456:*)",
       "Bash(curl --silent -X PATCH http://localhost:8456:*)",
       "Bash(curl --silent -X DELETE http://localhost:8456:*)",
+      "Bash(curl --silent \"http://localhost:8456:*)",
+      "Bash(curl --silent -X POST \"http://localhost:8456:*)",
+      "Bash(curl --silent -X PATCH \"http://localhost:8456:*)",
+      "Bash(curl --silent -X DELETE \"http://localhost:8456:*)",
 
       "Bash(rm _scratch/:*)",
       "Bash(rm -r _scratch/:*)",
-      "Bash(rm c:/Users/banku/AppData/Local/Temp/:*)",
-      "Bash(rm /c/Users/banku/AppData/Local/Temp/:*)",
       "Bash(where:*)",
 
       "Bash(docker compose ps:*)",

@@ -82,7 +82,26 @@ def scaffold_project_folder(
     something failed mid-way. Never raises.
     """
     try:
+        # Defense-in-depth: schema enforces charset at the boundary, but anything
+        # bypassing Pydantic (e.g., a future internal caller) must still get caught.
+        # Reject path separators, NUL, and parent-dir tokens.
+        forbidden = {"/", "\\", "..", "\x00"}
+        if any(token in project_name for token in forbidden):
+            logger.warning(
+                "scaffold: rejected suspicious project_name=%r (path-traversal guard)",
+                project_name,
+            )
+            return False
+
         base = Path(repo_root) / "context" / "projects" / project_name
+        projects_root = (Path(repo_root) / "context" / "projects").resolve()
+        if not base.resolve().is_relative_to(projects_root):
+            logger.warning(
+                "scaffold: rejected project_name=%r — resolves outside %s",
+                project_name,
+                projects_root,
+            )
+            return False
         base.mkdir(parents=True, exist_ok=True)
 
         # shared/ + template files (dev templates regardless of lead — see module docstring)

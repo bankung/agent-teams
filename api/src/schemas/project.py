@@ -50,7 +50,7 @@ class ProjectCreate(BaseModel):
     tester/reviewer; novel=writer/editor). Unknown values reject with 422.
     """
 
-    name: str = Field(min_length=1)
+    name: str = Field(min_length=1, pattern=r"^[a-zA-Z0-9_-]{1,64}$")
     description: str | None = None
     paths: _Paths
     stack: _Stack = Field(default_factory=_Stack)
@@ -73,7 +73,7 @@ class ProjectUpdate(BaseModel):
     # can't flip it. `status` and any other unknown key drop on the floor.
     model_config = ConfigDict(extra="ignore")
 
-    name: str | None = Field(default=None, min_length=1)
+    name: str | None = Field(default=None, min_length=1, pattern=r"^[a-zA-Z0-9_-]{1,64}$")
     description: str | None = None
 
     paths_web: str | None = None

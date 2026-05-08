@@ -116,7 +116,7 @@ Security mode running on a non-release task. dev-reviewer's prompt should refuse
 docker compose exec -T api pip-audit
 ```
 
-If `pip-audit` is not installed in the api container, install it as a dev dep first (this is a one-time setup; record it in dev-devops/current-state.md and propose a `pip-audit` line in `api/requirements-dev.txt` or pyproject.toml dev section).
+`pip-audit` is a persisted dev dep in `api/pyproject.toml` (added 2026-05-08, Kanban #123) so it's available in `agent-teams-api` after every `docker compose build` without manual install. If a future image rebuild ever surfaces "command not found", verify the dev block in `api/pyproject.toml` still includes `pip-audit>=2.7,<3.0`.
 
 **Severity gate:**
 - ANY `HIGH` or `CRITICAL` CVE → wrap-up RED, must upgrade or pin before release
