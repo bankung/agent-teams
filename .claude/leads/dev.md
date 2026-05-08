@@ -63,6 +63,22 @@ These are dev-specific. Other leads define their own mapping in their own playbo
 9. **Compaction is automatic** — every subagent updates its own `current-state.md` before returning.
 10. **Multi-turn with a running subagent** — `SendMessage({to: <agent_name>, ...})`. Rarely needed.
 
+## Release wrap-up flow (Tier-2 gate before publish)
+
+Triggered when the user opens a Kanban task whose title matches `release wrap-up <version>` or `publish wrap-up <version>` (e.g., `release wrap-up v0.3.0`). This is the EXPENSIVE gate — runs maybe once per public release, not every commit. Tier-1 smoke (step 5b) catches per-task regressions; Tier-2 is the full superset.
+
+**Lead orchestration order** (sequential — do not parallelise):
+
+1. **Pre-flight queue check.** Verify no tasks in `process_status=2` (in_progress) or `=4` (blocked). `curl /api/tasks?project_id=<n>&process_status=2` and `=4` — both must return empty. If not, abort and tell the user which tasks need to close first.
+2. **Full Tier-1 smoke matrix** — spawn dev-tester with full smoke mode (every endpoint, every lifecycle path, every soft-delete + lead-bundle invariant — not scoped per task). Output: comprehensive smoke transcript, follows the same POSITIVE+NEGATIVE pair shape as Tier-1 but covers the entire API surface. Use `shared/release-checklist.md` (Lead-only writer) for the matrix.
+3. **`/security-review` slash command** — built-in Claude Code skill, **user-triggered** (Lead cannot fire it). Document the request explicitly in the wrap-up Kanban task description so the user knows when to fire it; paste the resulting findings back into the task description after the user runs it.
+4. **dev-reviewer security mode** — spawn dev-reviewer with `mode: security` in the prompt (default mode is correctness-review; security mode is a separate clause documented in `dev-reviewer.md`). Output: `context/projects/<active>/dev-reviewer/security-mode-review-<date>.md` using the SECURITY-BLOCKER / SECURITY-WARN / SECURITY-NIT scale (distinct from regular review BLOCKER/WARN/NIT to avoid mixing).
+5. **Dependency audit** — `docker compose exec -T api pip-audit` (or the equivalent for the project's lockfile). Capture verbatim output. ANY HIGH severity = wrap-up RED, must address before release.
+6. **Audit-log review** — `SELECT * FROM tasks_history WHERE created_at > <last-release-date>` to spot anomalous DELETE / soft-delete activity. Lead reads via `psql -c "SELECT ..."` or via the `/api/tasks?include_deleted=true` filter.
+7. **Wrap-up summary** — Lead `PATCH`es the wrap-up task description with sections: Tier-1 full-smoke results, `/security-review` results, security-mode-review results, dep-audit, audit-log. Mark task `process_status=5` (done) only when every section is GREEN, OR each YELLOW/RED is documented with explicit user accept.
+
+**Anti-pattern:** running release wrap-up in the same session as the last feature commit → context pollution. Open a fresh session, re-resolve the active project, dedicate the session to wrap-up only.
+
 ## Dev-specific anti-patterns
 
 - Spawning dev-frontend + dev-backend in parallel when the API contract isn't stable → **sequential: backend first**.

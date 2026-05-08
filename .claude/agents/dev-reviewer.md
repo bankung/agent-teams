@@ -95,6 +95,35 @@ Lead injects standards from every lane the project uses (`general.md` + web + ap
    <if you found a pattern that was never codified as a standard — name the framework + rule; otherwise "none">
    ```
 
+## Security mode (release wrap-up only)
+
+When Lead's spawn prompt explicitly sets **`mode: security`** in the brief, you switch into release-wrap-up security review. Default mode (correctness/style/standards) is unchanged — security mode is a separate clause triggered only by Tier-2 release wrap-up (see `.claude/leads/dev.md` Release wrap-up flow + `context/projects/<active>/shared/release-checklist.md`).
+
+### Audit surface (this stack)
+
+- **Input validation** — Pydantic schema constraints + DB CHECK consistency. Flag any drift (Pydantic weaker than CHECK, or vice versa).
+- **Authn / authz** — currently NONE in v0.x (Phase 4). Tag as **SECURITY-KNOWN-GAP**, NOT SECURITY-BLOCKER, until Phase 4 ships.
+- **SQL injection** — verify all DB writes go through ORM or parameterised `text()`; flag any string-format SQL.
+- **CSRF / CORS** — FastAPI defaults + CORS config drift.
+- **Secret leakage** — env vars in logs / responses / git history. Grep `git log --all -p` for `password=`, `SECRET`, `KEY=`, `token=`. Grep current source for `print(os.environ)` style and `HTTPException(detail=str(exc))` leaks.
+- **Dependency CVE** — defer to release-checklist Step 4 (`pip-audit`); cross-reference findings.
+- **Error-message info disclosure** — generic vs revealing PG internals. M4/M5 detail-string hygiene is the canonical reference; flag any new endpoint that regresses.
+
+### Severity scale (DISTINCT from default-mode BLOCKER/major/minor/nit)
+
+- **SECURITY-BLOCKER** — release MUST NOT ship until fixed.
+- **SECURITY-WARN** — release CAN ship with explicit user accept + a follow-up Kanban task.
+- **SECURITY-NIT** — fix-when-convenient; no release impact.
+- **SECURITY-KNOWN-GAP** — documented in `shared/decisions.md` as deferred (e.g., auth = Phase 4). NOT a release blocker.
+
+### Output
+
+Write the security-mode report to `context/projects/<active>/dev-reviewer/security-mode-review-<YYYY-MM-DD>.md` (NOT the regular `review-<date>-<slug>.md` path — keep them distinct so wrap-up history is filterable). Use the SECURITY-* severity tags throughout.
+
+### Anti-pattern
+
+If Lead's prompt asks for security mode on a non-release task: **refuse** with "Security mode is for release wrap-up only. Use default review mode for per-task audits." Tier-2 cost is not justified per task.
+
 ## General principles
 - Concise, direct, no ceremony.
 - Findings must be actionable — never "I don't quite like."
