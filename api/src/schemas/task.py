@@ -10,8 +10,8 @@ uniform 0/1 soft-delete flag — and is intentionally NOT exposed in any public
 schema; clients call `DELETE /api/tasks/{id}` to soft-delete.
 
 `assigned_role` is no longer guarded by a DB CHECK — app-layer validation against
-the active project's lead roster is the only constraint. The Pydantic validator
-still rejects values outside the dev roster (1..5) for now; widening to per-lead
+the active project's team roster is the only constraint. The Pydantic validator
+still rejects values outside the dev roster (1..5) for now; widening to per-team
 roster logic is a Phase 3 follow-up (frontend will pick from a roster picker).
 """
 

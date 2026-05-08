@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from src.constants import (
-    ProjectLead,
+    ProjectTeam,
     TaskPriority,
     TaskRole,
     TaskStatus,
@@ -42,8 +42,8 @@ def test_in_clause_uses_comma_space_separator() -> None:
     assert in_clause("foo", (1, 2)) == "foo IN (1, 2)"
 
 
-def test_in_clause_text_canonical_lead_values() -> None:
-    assert in_clause_text("lead", ProjectLead.ALL) == "lead IN ('dev', 'novel')"
+def test_in_clause_text_canonical_team_values() -> None:
+    assert in_clause_text("team", ProjectTeam.ALL) == "team IN ('dev', 'novel')"
 
 
 def test_in_clause_text_rejects_apostrophe() -> None:

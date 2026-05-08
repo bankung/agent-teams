@@ -78,23 +78,23 @@ Template for a new endpoint:
     "db": ["postgresql"]
   },
   "is_active": true,
-  "lead": "dev"
+  "team": "dev"
 }
 ```
 
-`lead` is required and must be one of `"dev"` | `"novel"` — picks the subagent roster the auto-scaffold uses.
+`team` is required and must be one of `"dev"` | `"novel"` — picks the subagent roster the auto-scaffold uses. (Renamed from `lead` by alembic revision `0004_rename_lead_to_team` — both request key and `ProjectRead` field changed atomically.)
 
 **Response 201:** `ProjectRead`
 
 **Errors:**
 - `409` — `{"detail":"Project '<name>' already exists"}` on unique-name violation
-- `422` — Pydantic validation error on missing/invalid fields, including missing `lead` or `lead` not in `{"dev","novel"}`. `name` must match `^[a-zA-Z0-9_-]{1,64}$` (path-traversal hardening per Kanban #121); rejection shape: `{"detail":[{"type":"string_pattern_mismatch","loc":["body","name"],...}]}`. Same regex applies to PATCH `/api/projects/{id}` `name` updates.
+- `422` — Pydantic validation error on missing/invalid fields, including missing `team` or `team` not in `{"dev","novel"}`. `name` must match `^[a-zA-Z0-9_-]{1,64}$` (path-traversal hardening per Kanban #121); rejection shape: `{"detail":[{"type":"string_pattern_mismatch","loc":["body","name"],...}]}`. Same regex applies to PATCH `/api/projects/{id}` `name` updates.
 
 ### PATCH /api/projects/{id}
 **Purpose:** Partial update. Setting `is_active=true` atomically clears every other row's `is_active`. Server bumps `updated_at` on any real field change; an unchanged-body PATCH is a no-op (no `updated_at` advance, no audit-row noise) — N7 no-op-skip parity with PATCH `/api/tasks/{id}`.
 **Auth:** none
 
-**Request:** any subset of `{name, description, paths_web, paths_api, paths_db, stack_web, stack_api, stack_db, config, is_active, lead}`
+**Request:** any subset of `{name, description, paths_web, paths_api, paths_db, stack_web, stack_api, stack_db, config, is_active, team}`
 
 **Response 200:** `ProjectRead`
 
@@ -104,7 +104,7 @@ Template for a new endpoint:
   - `{"detail":"Project name '<name>' already exists"}` when `ux_projects_name_active` is violated
   - `{"detail":"Project update conflicts with an existing row"}` (fallback for unknown integrity errors)
   Note: POST `/api/projects` 409 uses `"Project '<name>' already exists"` (no "name " word) — the two strings will be consolidated in a future contract revision.
-- `422` — `lead` outside `{"dev","novel"}`
+- `422` — `team` outside `{"dev","novel"}`
 - `400` — `{"detail":"Cannot activate a soft-deleted project — restore first"}` when PATCH sets `is_active=true` on a row with `status=0`. Restore is a deferred admin path (separate endpoint when UI demands it). Other fields can still be PATCHed on a soft-deleted row.
 
 ### DELETE /api/projects/{id}
@@ -186,7 +186,7 @@ Template for a new endpoint:
 
 ## Schemas
 
-**`ProjectRead`** — `{id:int, name, description, paths_web, paths_api, paths_db, stack_web, stack_api, stack_db, config:object, is_active:bool, lead:"dev"|"novel", created_at, updated_at}`
+**`ProjectRead`** — `{id:int, name, description, paths_web, paths_api, paths_db, stack_web, stack_api, stack_db, config:object, is_active:bool, team:"dev"|"novel", created_at, updated_at}`
 
 **`TaskRead`** — `{id:int, project_id:int, parent_task_id:int|null, title, description, process_status:int, priority:int, assigned_role:int|null, created_at, updated_at, started_at:datetime|null, completed_at:datetime|null}`
 

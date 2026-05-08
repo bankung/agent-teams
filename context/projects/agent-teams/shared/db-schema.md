@@ -51,7 +51,7 @@ Template for a new table:
 | stack_db      | text         | NULL                                                 |       |
 | config        | jsonb        | NOT NULL DEFAULT `'{}'`                              | houses `standards` mapping |
 | is_active     | bool         | NOT NULL DEFAULT `false`                             |       |
-| lead          | text         | NOT NULL DEFAULT `'dev'`, CHECK `lead IN ('dev','novel')` (named `ck_projects_lead_valid`) | drives subagent roster (see scaffold service + `.claude/leads/<lead>.md`) |
+| team          | text         | NOT NULL DEFAULT `'dev'`, CHECK `team IN ('dev','novel')` (named `ck_projects_team_valid`) | drives subagent roster (see scaffold service + `.claude/teams/<team>.md` once Phase 2.5b2 lands; `.claude/leads/<lead>.md` until then). Renamed from `lead` by `0004_rename_lead_to_team` (2026-05-09). |
 | status        | smallint     | NOT NULL DEFAULT 1, CHECK `status IN (0, 1)` (named `ck_projects_status_valid`) | soft-delete flag |
 | created_at    | timestamptz  | NOT NULL DEFAULT `now()`                             |       |
 | updated_at    | timestamptz  | NOT NULL DEFAULT `now()`                             |       |
@@ -73,7 +73,7 @@ Template for a new table:
 | description    | text        | NULL                                                                |       |
 | process_status | int         | NOT NULL DEFAULT 1, CHECK `process_status IN (1,2,3,4,5)` (named `ck_tasks_process_status_valid`) | TaskStatus codes (general.md). Renamed from `status` 2026-05-08. |
 | priority       | int         | NOT NULL DEFAULT 2, CHECK `priority IN (1,2,3,4)`                   | TaskPriority codes |
-| assigned_role  | int         | NULL                                                                | App-layer validates per project lead's roster (DB CHECK dropped 2026-05-08). |
+| assigned_role  | int         | NULL                                                                | App-layer validates per project team's roster (DB CHECK dropped 2026-05-08). |
 | status         | smallint    | NOT NULL DEFAULT 1, CHECK `status IN (0, 1)` (named `ck_tasks_status_valid`) | soft-delete flag |
 | created_at     | timestamptz | NOT NULL DEFAULT `now()`                                            |       |
 | updated_at     | timestamptz | NOT NULL DEFAULT `now()`                                            | bumped manually in PATCH |
@@ -135,7 +135,7 @@ FOR EACH ROW EXECUTE FUNCTION tasks_audit_fn();
 
 ## Pending migrations (generated, not yet applied)
 
-- _(none — `0001_initial` and `0002_soft_delete_and_lead` are both applied; see Migrations log below.)_
+- _(none — `0001` through `0004` all applied; see Migrations log below.)_
 
 ## Migrations log
 
@@ -147,3 +147,4 @@ Format: YYYY-MM-DD HH:MM — <migration filename> — applied by <who> in commit
 
 - 2026-05-08 09:46 — 2026_05_08_0300_soft_delete_and_lead.py — dev-devops, container apply
 - 2026-05-08 16:00 — 2026_05_08_1600_tasks_parent_task_id.py — dev-devops, container apply (Kanban #238)
+- 2026-05-09 09:00 — 2026_05_09_0900_rename_lead_to_team.py — dev-devops, container apply (Phase 2.5b1 — pure DDL rename projects.lead → projects.team)

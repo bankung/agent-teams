@@ -4,7 +4,7 @@
 process_status, priority are INTEGER columns with CHECK constraints — canonical
 codes live in `src.constants` (TaskStatus, TaskPriority). `assigned_role` no
 longer carries a DB CHECK — application code validates against the active
-project's lead roster (codes 1..5 for dev, 11..12 for novel, etc.).
+project's team roster (codes 1..5 for dev, 11..12 for novel, etc.).
 
 `TaskHistory` is an audit-only sink populated by a PG trigger on the `tasks` table
 (AFTER UPDATE OR DELETE). `task_id` is intentionally NOT a FK — when a task row
@@ -49,7 +49,7 @@ class Task(Base):
     `process_status` (1..5) holds the lifecycle code (TODO/IN_PROGRESS/REVIEW/
     BLOCKED/DONE — see TaskStatus). `status` (0/1) is the uniform soft-delete
     flag (RecordStatus). `assigned_role` is an integer with no DB CHECK — the
-    app validates per active project's lead roster.
+    app validates per active project's team roster.
 
     Lifecycle timestamps `started_at` / `completed_at` are managed by the API
     layer on process_status transitions (PATCH /api/tasks/{id}).
@@ -146,7 +146,7 @@ class Task(Base):
             in_clause("priority", TaskPriority.ALL),
             name="ck_tasks_priority_valid",
         ),
-        # No ck_tasks_assigned_role_valid — app-layer validates per project lead's
+        # No ck_tasks_assigned_role_valid — app-layer validates per project team's
         # roster (dev=1..5, novel=11..12, etc.). DB CHECK was dropped 2026-05-08.
         CheckConstraint(
             in_clause("status", RecordStatus.ALL),

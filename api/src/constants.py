@@ -64,12 +64,12 @@ class RecordStatus:
     ALL = (DELETED, ACTIVE)
 
 
-class ProjectLead:
-    """projects.lead — TEXT NOT NULL DEFAULT 'dev', CHECK lead IN ('dev','novel').
+class ProjectTeam:
+    """projects.team — TEXT NOT NULL DEFAULT 'dev', CHECK team IN ('dev','novel').
 
-    Drives subagent roster selection (see scaffold service + .claude/leads/<lead>.md).
-    Codes 1..5 reserved for dev roles; 11..12 reserved for novel; future leads pick
-    their own ranges. App-layer validates assigned_role per active lead's roster
+    Drives subagent roster selection (see scaffold service + .claude/teams/<team>.md).
+    Codes 1..5 reserved for dev roles; 11..12 reserved for novel; future teams pick
+    their own ranges. App-layer validates assigned_role per active team's roster
     (no DB CHECK on tasks.assigned_role after the soft-delete migration).
     """
 

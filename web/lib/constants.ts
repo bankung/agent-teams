@@ -1,5 +1,5 @@
 // Mirror of api/src/constants.py — keep in sync. Numbers are stable forever; never repurpose.
-// Mirrored: RecordStatus, TaskStatus, TaskPriority, TaskRole, ProjectLead.
+// Mirrored: RecordStatus, TaskStatus, TaskPriority, TaskRole, ProjectTeam.
 // Deferred: TaskHistoryOperation ('U','D') — internal audit-trigger payload, no browser-facing use.
 
 export const RecordStatus = {
@@ -34,8 +34,8 @@ export const TaskRole = {
 } as const;
 export type TaskRoleValue = typeof TaskRole[keyof typeof TaskRole];
 
-export const ProjectLead = {
+export const ProjectTeam = {
   DEV: "dev",
   NOVEL: "novel",
 } as const;
-export type ProjectLeadValue = typeof ProjectLead[keyof typeof ProjectLead];
+export type ProjectTeamValue = typeof ProjectTeam[keyof typeof ProjectTeam];

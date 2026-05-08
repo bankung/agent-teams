@@ -114,7 +114,7 @@ async def create_project(
         "stack_db": payload.stack.db,
         "config": config,
         "is_active": payload.is_active,
-        "lead": payload.lead,
+        "team": payload.team,
     }
 
     # If caller wants this project to be the active one, clear others first —
@@ -136,7 +136,7 @@ async def create_project(
 
     # Side-effect: scaffold context/projects/<name>/ — failure is non-fatal.
     settings = get_settings()
-    scaffold_project_folder(settings.repo_root, project.name, lead=project.lead)
+    scaffold_project_folder(settings.repo_root, project.name, team=project.team)
 
     return project
 

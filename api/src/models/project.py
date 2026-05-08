@@ -18,7 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from src.constants import ProjectLead, RecordStatus, in_clause, in_clause_text
+from src.constants import ProjectTeam, RecordStatus, in_clause, in_clause_text
 from src.models.base import Base
 
 if TYPE_CHECKING:
@@ -64,11 +64,11 @@ class Project(Base):
         default=False,
     )
 
-    lead: Mapped[str] = mapped_column(
+    team: Mapped[str] = mapped_column(
         Text,
         nullable=False,
-        server_default=ProjectLead.DEV,
-        default=ProjectLead.DEV,
+        server_default=ProjectTeam.DEV,
+        default=ProjectTeam.DEV,
     )
 
     status: Mapped[int] = mapped_column(
@@ -101,10 +101,10 @@ class Project(Base):
             in_clause("status", RecordStatus.ALL),
             name="ck_projects_status_valid",
         ),
-        # ProjectLead.ALL is read at class-definition time — don't mutate it post-import.
+        # ProjectTeam.ALL is read at class-definition time — don't mutate it post-import.
         CheckConstraint(
-            in_clause_text("lead", ProjectLead.ALL),
-            name="ck_projects_lead_valid",
+            in_clause_text("team", ProjectTeam.ALL),
+            name="ck_projects_team_valid",
         ),
         # Partial unique on name — only one ACTIVE row per name; soft-deleted rows
         # don't occupy the unique slot, so the name can be reused.
@@ -129,5 +129,5 @@ class Project(Base):
     def __repr__(self) -> str:  # pragma: no cover
         return (
             f"<Project id={self.id} name={self.name!r} "
-            f"active={self.is_active} status={self.status} lead={self.lead!r}>"
+            f"active={self.is_active} status={self.status} team={self.team!r}>"
         )

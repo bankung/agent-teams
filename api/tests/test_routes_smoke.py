@@ -18,7 +18,7 @@ Scope:
 - Cover the soft-delete contract: list default-filter, ?include_deleted opt-in,
   DELETE 204, re-create after soft-delete, detail-returns-regardless, PATCH
   silently ignores soft-delete `status`.
-- Cover the multi-domain `lead` contract: required on POST, rejects unknown,
+- Cover the multi-domain `team` contract: required on POST, rejects unknown,
   novel scaffold creates the right roster.
 
 Tests that create rows soft-delete them on the way out so the dev DB doesn't
@@ -56,7 +56,7 @@ def _unique_name(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
 
-def _project_create_payload(name: str, *, lead: str = "dev", is_active: bool = False) -> dict:
+def _project_create_payload(name: str, *, team: str = "dev", is_active: bool = False) -> dict:
     """Minimal valid POST /api/projects body."""
     return {
         "name": name,
@@ -65,7 +65,7 @@ def _project_create_payload(name: str, *, lead: str = "dev", is_active: bool = F
         "stack": {"web": "nextjs", "api": "fastapi", "db": "postgres"},
         "config": {},
         "is_active": is_active,
-        "lead": lead,
+        "team": team,
     }
 
 
@@ -82,10 +82,11 @@ async def test_get_active_project_returns_seeded_agent_teams(client) -> None:
     assert body["name"] == "agent-teams"
     assert body["is_active"] is True
     # ProjectRead shape sanity — these fields back the Lead bootstrap.
-    for field in ("id", "paths_web", "paths_api", "paths_db", "config", "lead"):
+    for field in ("id", "paths_web", "paths_api", "paths_db", "config", "team"):
         assert field in body, f"missing {field} in ProjectRead body"
-    # Backfill from the soft-delete-and-lead migration sets agent-teams to lead='dev'.
-    assert body["lead"] == "dev"
+    # Backfill from the soft-delete-and-lead migration sets agent-teams to team='dev'
+    # (renamed from lead by 0004_rename_lead_to_team).
+    assert body["team"] == "dev"
 
 
 @pytest.mark.asyncio
@@ -434,39 +435,39 @@ async def test_recreate_project_with_name_of_soft_deleted_one(
 
 
 # -----------------------------------------------------------------------------
-# Multi-domain lead — POST validation + scaffold dispatch
+# Multi-domain team — POST validation + scaffold dispatch
 # -----------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_post_project_requires_lead_field(client) -> None:
-    """`lead` is required on ProjectCreate; missing it -> 422.
+async def test_post_project_requires_team_field(client) -> None:
+    """`team` is required on ProjectCreate; missing it -> 422.
 
     No scaffold_cleanup needed — request is rejected at the schema layer before
     the scaffold side-effect runs.
     """
-    payload = _project_create_payload(_unique_name("proj-missing-lead"))
-    payload.pop("lead")
+    payload = _project_create_payload(_unique_name("proj-missing-team"))
+    payload.pop("team")
     resp = await client.post("/api/projects", json=payload)
     assert resp.status_code == 422, resp.text
 
 
 @pytest.mark.asyncio
-async def test_post_project_rejects_unknown_lead(client) -> None:
-    """Unknown lead value -> 422 (Pydantic Literal rejects it).
+async def test_post_project_rejects_unknown_team(client) -> None:
+    """Unknown team value -> 422 (Pydantic Literal rejects it).
 
     No scaffold_cleanup needed — request is rejected at the schema layer.
     """
-    payload = _project_create_payload(_unique_name("proj-bad-lead"), lead="manager")
+    payload = _project_create_payload(_unique_name("proj-bad-team"), team="manager")
     resp = await client.post("/api/projects", json=payload)
     assert resp.status_code == 422, resp.text
 
 
 @pytest.mark.asyncio
-async def test_post_project_with_novel_lead_scaffolds_novel_roster(
+async def test_post_project_with_novel_team_scaffolds_novel_roster(
     client, scaffold_cleanup
 ) -> None:
-    """`lead='novel'` creates novel-writer + novel-editor folders, NOT dev-*.
+    """`team='novel'` creates novel-writer + novel-editor folders, NOT dev-*.
 
     Resolves the on-disk path via settings.repo_root (same root the router uses).
     """
@@ -477,11 +478,11 @@ async def test_post_project_with_novel_lead_scaffolds_novel_roster(
 
     name = scaffold_cleanup(_unique_name("proj-novel"))
     resp = await client.post(
-        "/api/projects", json=_project_create_payload(name, lead="novel")
+        "/api/projects", json=_project_create_payload(name, team="novel")
     )
     assert resp.status_code == 201, resp.text
     body = resp.json()
-    assert body["lead"] == "novel"
+    assert body["team"] == "novel"
     project_id = body["id"]
 
     base = repo_root / "context" / "projects" / name
@@ -1052,7 +1053,7 @@ def test_scaffold_service_rejects_traversal_directly() -> None:
 
     Mirrors the existing test convention of importing repo_root via
     `src.settings.get_settings()` (see
-    `test_post_project_with_novel_lead_scaffolds_novel_roster`).
+    `test_post_project_with_novel_team_scaffolds_novel_roster`).
     """
     import shutil
     import uuid
@@ -1089,7 +1090,7 @@ def test_scaffold_service_rejects_traversal_directly() -> None:
                 pass
 
             result = scaffold_project_folder(
-                repo_root=repo_root, project_name=project_name, lead="dev"
+                repo_root=repo_root, project_name=project_name, team="dev"
             )
             assert result is False, (
                 f"scaffold_project_folder({project_name!r}) returned {result!r}; "
