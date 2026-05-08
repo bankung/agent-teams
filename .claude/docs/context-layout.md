@@ -11,6 +11,7 @@ context/
 │
 ├── leads/                                ← Bucket 3: cross-project per-lead methodology, Lead writes
 │   ├── dev/
+│   │   ├── decisions.md                  ← system/methodology decisions log (append-only)
 │   │   ├── smoke-methodology.md          ← Tier-1 probe shape, decision matrix, anti-patterns
 │   │   └── release-methodology.md        ← Tier-2 release wrap-up flow + severity scale
 │   └── <future-lead>/                    ← novel/, data-science/, etc.
