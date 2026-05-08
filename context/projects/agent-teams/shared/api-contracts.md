@@ -101,6 +101,7 @@ Template for a new endpoint:
 - `404` — project id not found
 - `409` — name conflict on rename
 - `422` — `lead` outside `{"dev","novel"}`
+- `400` — `{"detail":"Cannot activate a soft-deleted project — restore first"}` when PATCH sets `is_active=true` on a row with `status=0`. Restore is a deferred admin path (separate endpoint when UI demands it). Other fields can still be PATCHed on a soft-deleted row.
 
 ### DELETE /api/projects/{id}
 **Purpose:** Soft-delete a project — flips `status=0`. If the project was active (`is_active=true`), the same transaction also clears `is_active` so a new project can claim the slot. Idempotent (a second DELETE on an already-deleted row still returns 204). Folder under `context/projects/<name>/` is **not** removed (handled out-of-band).

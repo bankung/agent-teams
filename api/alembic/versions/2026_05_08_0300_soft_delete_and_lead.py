@@ -69,7 +69,15 @@ def _in_clause(column: str, values: tuple[int, ...]) -> str:
 
 
 def _in_clause_text(column: str, values: tuple[str, ...]) -> str:
-    return f"{column} IN ({', '.join(repr(v) for v in values)})"
+    # Kept in sync with src.constants.in_clause_text — see general.md
+    # "Helper duplication between app and migration". Migrations don't import app code.
+    _allowed = set("abcdefghijklmnopqrstuvwxyz0123456789_-")
+    for v in values:
+        if not v or any(c not in _allowed for c in v):
+            raise ValueError(
+                f"_in_clause_text only allows [a-z0-9_-]+ values; got {v!r}"
+            )
+    return f"{column} IN ({', '.join(f"'{v}'" for v in values)})"
 
 
 def upgrade() -> None:

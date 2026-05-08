@@ -8,7 +8,16 @@ ORM-side and migration-side CHECK constraints diverge.
 
 from __future__ import annotations
 
-from src.constants import TaskPriority, TaskRole, TaskStatus, in_clause
+import pytest
+
+from src.constants import (
+    ProjectLead,
+    TaskPriority,
+    TaskRole,
+    TaskStatus,
+    in_clause,
+    in_clause_text,
+)
 
 
 def test_in_clause_status_canonical() -> None:
@@ -31,3 +40,22 @@ def test_in_clause_single_value() -> None:
 def test_in_clause_uses_comma_space_separator() -> None:
     """Migration files copy this format — keep the separator stable."""
     assert in_clause("foo", (1, 2)) == "foo IN (1, 2)"
+
+
+def test_in_clause_text_canonical_lead_values() -> None:
+    assert in_clause_text("lead", ProjectLead.ALL) == "lead IN ('dev', 'novel')"
+
+
+def test_in_clause_text_rejects_apostrophe() -> None:
+    with pytest.raises(ValueError, match="only allows"):
+        in_clause_text("col", ("o'brien",))
+
+
+def test_in_clause_text_rejects_uppercase() -> None:
+    with pytest.raises(ValueError, match="only allows"):
+        in_clause_text("col", ("Dev",))
+
+
+def test_in_clause_text_rejects_empty_string() -> None:
+    with pytest.raises(ValueError, match="only allows"):
+        in_clause_text("col", ("",))

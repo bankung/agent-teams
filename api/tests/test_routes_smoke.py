@@ -451,3 +451,39 @@ async def test_post_project_with_novel_lead_scaffolds_novel_roster(
 
     # Cleanup the DB row (folder cleanup is best-effort — leaves the dir).
     await client.delete(f"/api/projects/{project_id}")
+
+
+# -----------------------------------------------------------------------------
+# M10 — PATCH cannot reactivate a soft-deleted project (contract locked here)
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_patch_cannot_reactivate_soft_deleted_project(client) -> None:
+    """Locked contract (decision 2026-05-08): PATCH may edit non-active fields
+    on a soft-deleted project (admin edit), but PATCH `{"is_active": true}` on
+    a soft-deleted row returns 400 with a stable detail string. Restore is a
+    deferred admin path (separate endpoint when UI demands it).
+    """
+    name = _unique_name("proj-reactivate-deleted")
+    create = await client.post("/api/projects", json=_project_create_payload(name))
+    assert create.status_code == 201
+    project_id = create.json()["id"]
+
+    # Soft-delete it.
+    delete = await client.delete(f"/api/projects/{project_id}")
+    assert delete.status_code == 204
+
+    # PATCH is_active=true on the soft-deleted row → 400 with the locked detail.
+    resp = await client.patch(f"/api/projects/{project_id}", json={"is_active": True})
+    assert resp.status_code == 400, resp.text
+    assert resp.json() == {
+        "detail": "Cannot activate a soft-deleted project — restore first"
+    }
+
+    # Sanity: editing a non-status field is still fine on a soft-deleted row.
+    resp = await client.patch(
+        f"/api/projects/{project_id}", json={"description": "edited after soft-delete"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["description"] == "edited after soft-delete"

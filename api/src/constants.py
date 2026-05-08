@@ -17,6 +17,24 @@ def in_clause(column: str, values: tuple[int, ...]) -> str:
     return f"{column} IN ({', '.join(str(v) for v in values)})"
 
 
+def in_clause_text(column: str, values: tuple[str, ...]) -> str:
+    """Render a SQL IN-list of single-quoted string literals.
+
+    Restricted to lowercase alnum + `_`/`-` codes — anything else raises.
+    repr() is NOT a SQL quoter; we don't want a half-baked string-quoter
+    on the SQL surface. Mirrors `in_clause` (integer variant) — kept
+    in sync with the migration's local copy per general.md
+    "Helper duplication between app and migration".
+    """
+    _allowed = set("abcdefghijklmnopqrstuvwxyz0123456789_-")
+    for v in values:
+        if not v or any(c not in _allowed for c in v):
+            raise ValueError(
+                f"in_clause_text only allows [a-z0-9_-]+ values; got {v!r}"
+            )
+    return f"{column} IN ({', '.join(f"'{v}'" for v in values)})"
+
+
 class TaskStatus:
     """tasks.process_status — INTEGER NOT NULL DEFAULT 1, CHECK IN (1..5).
 

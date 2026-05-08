@@ -18,7 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from src.constants import ProjectLead, RecordStatus, in_clause
+from src.constants import ProjectLead, RecordStatus, in_clause, in_clause_text
 from src.models.base import Base
 
 if TYPE_CHECKING:
@@ -102,7 +102,7 @@ class Project(Base):
             name="ck_projects_status_valid",
         ),
         CheckConstraint(
-            f"lead IN ({', '.join(repr(v) for v in ProjectLead.ALL)})",
+            in_clause_text("lead", ProjectLead.ALL),
             name="ck_projects_lead_valid",
         ),
         # Partial unique on name — only one ACTIVE row per name; soft-deleted rows

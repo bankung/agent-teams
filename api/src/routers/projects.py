@@ -142,6 +142,15 @@ async def update_project(
 
     updates = payload.model_dump(exclude_unset=True)
 
+    # M10: cannot reactivate a soft-deleted project via PATCH — restore is a
+    # separate (not-yet-built) admin path. Other fields ARE editable on a
+    # soft-deleted row (admin edit / metadata correction).
+    if updates.get("is_active") is True and project.status == RecordStatus.DELETED:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot activate a soft-deleted project — restore first",
+        )
+
     # Atomically flip active flag — clear other rows first (single transaction).
     if updates.get("is_active") is True:
         await _clear_other_active(session, keep_id=project.id)
