@@ -60,6 +60,22 @@ Cheap insurance against silent drift. The canonical example is `_in_clause` / `i
 
 Every business table carries a uniform `status SMALLINT 0/1` column (1=active, 0=deleted); application code never issues SQL DELETE. Authoritative file: [`standards/postgresql/soft-delete.md`](postgresql/soft-delete.md). Audit append-only tables (`*_history`) are exempt.
 
+### Multi-point user requirements MUST be propagated point-by-point
+
+When a user message bundles multiple requirements (numbered list, bullet points, or several distinct asks in one paragraph), Lead MUST before any subagent spawn or schema decision:
+
+1. Enumerate every requirement explicitly (back to the user or in the spawn prompt) — even ones that look obvious.
+2. For each, decide its disposition: **(a) in-scope this task** (acted on now), **(b) deferred → write to `shared/decisions.md`** with date + reasoning, **(c) deferred → file as a new Kanban task** with `process_status=1`, or **(d) discarded → ack with explicit reason**.
+3. If ANY requirement falls through without one of the four dispositions, that's a process violation — the requirement WILL be lost.
+
+Worked example (incident 2026-05-04 → caught 2026-05-08, 4 days + 11 commits later, Kanban #238):
+
+> User message (verbatim, session `82990dc1`, 2026-05-04 21:19): "Schema: task ให้มี parent ด้วยเพื่อทำ work break down เป็น sub task ได้"
+
+The requirement was clear, explicit, schema-level — embedded in a 5-point design message. Whoever acted as Lead addressed 4 of 5 points and quietly dropped the `parent_task_id` requirement. The initial migration `0001_initial_schema` deployed without it; no `decisions.md` entry captured it as deferred; no Kanban task was filed. The requirement vanished for 4 days until Phase 3 needed to split into slices and the user re-surfaced it ("ทำเป็น subtask ของ #3 ได้มัย"). Cost: an unplanned mid-Phase-3 schema migration (#238) that should have been part of the initial schema design.
+
+The discipline: when in doubt, write `decisions.md` with date + "deferred until <when>". An entry "user requested X on YYYY-MM-DD — deferred until Z" is dramatically better than no record. `git log decisions.md` is then the audit trail.
+
 ## Kanban schema codes (DB integer constants)
 
 ตาราง `tasks` ใน DB ใช้ INTEGER + CHECK constraint แทน ENUM — codes ต่อไปนี้คงที่ทั่วทุก project ห้ามเปลี่ยนความหมายของเลขเดิม (ขยายเลขใหม่ได้)
