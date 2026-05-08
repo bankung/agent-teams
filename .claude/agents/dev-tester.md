@@ -46,6 +46,34 @@ Every `Write` / `Edit` / `Bash` will prompt the user. The most common Bash calls
 - Mock external services the way the project already does — don't introduce a new mocking library if one is in use.
 - Tests must be deterministic — fix flaky time / order dependencies as soon as you spot them.
 
+### 2a. Regression test discipline (BLOCKER / MAJOR fixes)
+
+When Lead's spawn prompt indicates a **BLOCKER** or **MAJOR** bug fix (read the Kanban task description for severity tags), the regression test you write or strengthen MUST satisfy:
+
+> **Demonstrably FAILS on the pre-fix code AND PASSES on the post-fix code, with both pytest transcripts captured verbatim in the final report under a `## Regression demo` section.**
+
+The "fail-before" half is load-bearing — it forces you to actually exercise the bug, which catches the M9-class of vacuous-assertion bugs (e.g., Kanban #76 root cause: `actual == baseline` was trivially true because neither side mutated). Without the demo the test could pass for the wrong reason.
+
+**Naming convention** (pick one — be consistent with surrounding files):
+- `test_regression_<short_id>` (e.g., `test_regression_kanban_76_projects_updated_at_bump`), OR
+- An existing-named test with a `# Regression: Kanban #<n>` pin comment immediately above the decorator (e.g., `# Regression: Kanban #76`). The Kanban id alone is sufficient — do not embed commit SHAs that would rot.
+
+**Workflow:**
+1. Write or strengthen the regression test against the bug. Use a test shape that pairs a POSITIVE assertion ("the mutation does happen on the positive path") with the NEGATIVE assertion you're locking — never bare `actual == baseline` against a value that could vacuously match.
+2. `git stash push -m "kanban-<n>-fix-stash" -- <production-fix-paths>` — keep the test in the working tree, pull only the fix.
+3. `docker compose exec -T api pytest -k <test_name> -v` — assert FAIL. Paste the failure transcript (assertion line + file:line) verbatim into the `## Regression demo` section.
+4. `git stash pop`
+5. Re-run pytest — assert PASS. Paste the green summary line verbatim.
+6. Both transcripts are mandatory. If `git stash` was a no-op (e.g., dev-backend's fix wasn't actually in the working tree), STOP and report — the demo is meaningless without the fail-before half.
+
+**If fail-before cannot be reproduced** (e.g., the bug depends on environment / DB state / import order): document the constraint, propose an alternative proof (mutation testing, source-text lock, manual repro recipe). Do NOT silently skip. Lead decides on the alternative; dev-reviewer will flag absence as BLOCKER under the audit rule in `dev-reviewer.md` `### 2. Review`.
+
+**Anti-pattern:** assertions of shape `actual == baseline` where the baseline is suspected immutable on the broken code. Always pair with a sibling positive-path assertion (e.g., "first DELETE bumps `updated_at` past create-baseline" alongside "re-DELETE does not advance further"). The Kanban #76 lesson is canonical — see `shared/decisions.md` 2026-05-08 entries for the worked example.
+
+**Test organization:** regression tests can live alongside their feature tests OR in a flat `api/tests/regression/` folder. Pick consistency with surrounding files. The pin comment (`# Regression: Kanban #<n>`) is mandatory when not using the `test_regression_*` naming.
+
+This discipline applies only to BLOCKER / MAJOR fixes. Feature-task tests have their own coverage discipline (golden path → edges → errors → boundaries per the existing workflow).
+
 ### 2b. Tier-1 smoke probe (live API)
 
 When Lead's spawn prompt asks for **Tier-1 smoke** (lifecycle step 5b — triggered for tasks touching `api/src/routers/`, `api/alembic/versions/`, `api/src/schemas/`, `api/src/models/`, `api/src/templates/`, `docker-compose.yml`, env files, or `api/src/main.py`):
