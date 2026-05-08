@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
+from sqlalchemy.sql.elements import ClauseElement
 
 from src.constants import RecordStatus, TaskStatus
 from src.db import get_or_404, get_session
@@ -110,8 +111,16 @@ async def update_task(
         if field is not None and getattr(task, field) is None:
             updates.setdefault(field, func.now())
 
+    # Skip writes where the new value equals the existing one — reduces audit-row
+    # noise on PATCHes that touch only some fields. The lifecycle stamping above
+    # already runs only when process_status actually changes, so the no-op skip
+    # here doesn't bypass started_at / completed_at logic. SQL clause elements
+    # (e.g., func.now()) bypass the equality check — comparing them against a
+    # Python value yields a SQL BinaryExpression, not a bool, and these are
+    # always intentional writes anyway.
     for field, value in updates.items():
-        setattr(task, field, value)
+        if isinstance(value, ClauseElement) or getattr(task, field) != value:
+            setattr(task, field, value)
 
     # Force `updated_at` to refresh — server_default only fires on INSERT.
     task.updated_at = func.now()
@@ -120,7 +129,19 @@ async def update_task(
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
-        raise HTTPException(status_code=400, detail=str(exc.orig)) from exc
+        # Translate well-known CHECK names to stable details; fall through for
+        # unknown constraints so the failure is still surfaced (without leaking
+        # raw PG text into the wire response).
+        orig_text = str(exc.orig)
+        if "ck_tasks_process_status_valid" in orig_text:
+            detail = "process_status violates ck_tasks_process_status_valid"
+        elif "ck_tasks_priority_valid" in orig_text:
+            detail = "priority violates ck_tasks_priority_valid"
+        elif "ck_tasks_status_valid" in orig_text:
+            detail = "status violates ck_tasks_status_valid"
+        else:
+            detail = "Task update violates a database constraint"
+        raise HTTPException(status_code=400, detail=detail) from exc
     await session.refresh(task)
     return task
 
@@ -136,6 +157,9 @@ async def delete_task(
     task = await get_or_404(
         session, Task, detail=f"Task id={task_id} not found", id=task_id
     )
+    # Idempotent: skip the no-op UPDATE so we don't write a redundant audit row.
+    if task.status == RecordStatus.DELETED:
+        return Response(status_code=http_status.HTTP_204_NO_CONTENT)
     task.status = RecordStatus.DELETED
     await session.commit()
     return Response(status_code=http_status.HTTP_204_NO_CONTENT)

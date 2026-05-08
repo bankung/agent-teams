@@ -62,6 +62,10 @@ def _resolve_role_folders(lead: str) -> tuple[str, ...]:
     if the lead is not in LEAD_ROSTERS — should never happen because the DB
     CHECK rejects unknown leads, but defensive in case the map drifts.
     """
+    if lead not in LEAD_ROSTERS:
+        logger.warning(
+            "scaffold: unknown lead %r — falling back to dev roster", lead
+        )
     return LEAD_ROSTERS.get(lead, LEAD_ROSTERS[ProjectLead.DEV])
 
 

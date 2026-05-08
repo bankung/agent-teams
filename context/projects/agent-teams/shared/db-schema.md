@@ -144,4 +144,4 @@ Format: YYYY-MM-DD HH:MM — <migration filename> — applied by <who> in commit
 - 2026-05-04 12:30 — 2026_05_04_1230_create_users.py — devops, commit abcd123
 -->
 
-- 2026-05-08 09:46 — 2026_05_08_0300_soft_delete_and_lead.py — dev-devops, container apply (no commit yet — dev-tester verifies before commit)
+- 2026-05-08 09:46 — 2026_05_08_0300_soft_delete_and_lead.py — dev-devops, container apply

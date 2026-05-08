@@ -102,6 +102,10 @@ class TaskUpdate(BaseModel):
     distinction is enforced at the router via `model_dump(exclude_unset=True)`.
     """
 
+    # Text-lock the silent-ignore behavior so a future Pydantic default change
+    # can't flip it. `status` and any other unknown key drop on the floor.
+    model_config = ConfigDict(extra="ignore")
+
     title: str | None = Field(default=None, min_length=1)
     description: str | None = None
     process_status: int | None = None

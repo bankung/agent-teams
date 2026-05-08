@@ -101,6 +101,7 @@ class Project(Base):
             in_clause("status", RecordStatus.ALL),
             name="ck_projects_status_valid",
         ),
+        # ProjectLead.ALL is read at class-definition time — don't mutate it post-import.
         CheckConstraint(
             in_clause_text("lead", ProjectLead.ALL),
             name="ck_projects_lead_valid",

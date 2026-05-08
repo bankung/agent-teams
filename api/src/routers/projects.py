@@ -27,7 +27,15 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 
 async def _clear_other_active(session: AsyncSession, keep_id: int | None) -> None:
     """Clear is_active on every row except keep_id (if given). Called inside an open transaction."""
-    stmt = update(Project).values(is_active=False).where(Project.is_active.is_(True))
+    # We deliberately don't filter status=1 here — the partial unique index already
+    # excludes status=0 rows, so a soft-deleted is_active=true row is harmless on
+    # the index but still worth clearing if it leaks from out-of-band edits.
+    stmt = (
+        update(Project)
+        .values(is_active=False)
+        .where(Project.is_active.is_(True))
+        .execution_options(synchronize_session=False)
+    )
     if keep_id is not None:
         stmt = stmt.where(Project.id != keep_id)
     await session.execute(stmt)
@@ -162,7 +170,13 @@ async def update_project(
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail=str(exc.orig)) from exc
+        # Mirror create_project — surface a stable detail instead of leaking PG internals.
+        orig_text = str(exc.orig)
+        if "ux_projects_name_active" in orig_text:
+            detail = f"Project name {updates['name']!r} already exists"
+        else:
+            detail = "Project update conflicts with an existing row"
+        raise HTTPException(status_code=409, detail=detail) from exc
 
     await session.refresh(project)
     return project
@@ -180,6 +194,12 @@ async def delete_project(
     project = await get_or_404(
         session, Project, detail=f"Project id={project_id} not found", id=project_id
     )
+
+    # Idempotent: if already soft-deleted, skip the no-op UPDATE so we don't
+    # write a redundant audit row. The is_active clear is also unnecessary —
+    # an already-deleted row should not be active, but be defensive and skip.
+    if project.status == RecordStatus.DELETED:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     project.status = RecordStatus.DELETED
     if project.is_active:

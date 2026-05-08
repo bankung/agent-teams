@@ -99,7 +99,10 @@ Template for a new endpoint:
 
 **Errors:**
 - `404` — project id not found
-- `409` — name conflict on rename
+- `409` — name conflict on rename. Detail strings (stable wire contract):
+  - `{"detail":"Project name '<name>' already exists"}` when `ux_projects_name_active` is violated
+  - `{"detail":"Project update conflicts with an existing row"}` (fallback for unknown integrity errors)
+  Note: POST `/api/projects` 409 uses `"Project '<name>' already exists"` (no "name " word) — the two strings will be consolidated in a future contract revision.
 - `422` — `lead` outside `{"dev","novel"}`
 - `400` — `{"detail":"Cannot activate a soft-deleted project — restore first"}` when PATCH sets `is_active=true` on a row with `status=0`. Restore is a deferred admin path (separate endpoint when UI demands it). Other fields can still be PATCHed on a soft-deleted row.
 
@@ -155,7 +158,11 @@ Template for a new endpoint:
 
 **Errors:**
 - `404` — task id not found
-- `400` — CHECK violation
+- `400` — CHECK violation. Detail strings (stable wire contract; defense-in-depth — the HTTP path is gated by Pydantic 422 first, so these branches are reachable today only via raw-SQL bypass or future schema drift):
+  - `{"detail":"process_status violates ck_tasks_process_status_valid"}`
+  - `{"detail":"priority violates ck_tasks_priority_valid"}`
+  - `{"detail":"status violates ck_tasks_status_valid"}` (defensive — `status` is not a public PATCH field)
+  - `{"detail":"Task update violates a database constraint"}` (fallback for unknown CHECK constraints)
 
 ### DELETE /api/tasks/{id}
 **Purpose:** Soft-delete a task — flips `status=0`. Idempotent. The audit trigger snapshots the flip as `'U'` in `tasks_history`.

@@ -129,6 +129,9 @@ async def test_post_task_invalid_process_status_returns_422_with_validator_messa
 ) -> None:
     """Validator error message is part of the contract — the FE will eventually
     parse `errors[].msg` to render inline form errors.
+
+    N8: also assert `errors[].loc` includes the field path so a future schema
+    rename to `process_status_v2` cannot pass this test by accident.
     """
     # Resolve the active project id dynamically — never hardcode `1`.
     active = await client.get("/api/projects/active")
@@ -145,6 +148,11 @@ async def test_post_task_invalid_process_status_returns_422_with_validator_messa
     assert "detail" in body and isinstance(body["detail"], list)
     msgs = " | ".join(err["msg"] for err in body["detail"])
     assert "process_status must be one of (1, 2, 3, 4, 5), got 99" in msgs
+    # N8 — pin the field path so renames break the test.
+    assert any(err["loc"] == ["body", "process_status"] for err in body["detail"]), (
+        f"expected loc=['body','process_status'] in detail; got "
+        f"{[err['loc'] for err in body['detail']]}"
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -320,8 +328,8 @@ async def test_patch_task_silently_ignores_soft_delete_status_field(client) -> N
 
 
 @pytest.mark.asyncio
-async def test_list_projects_default_filters_active_only(client) -> None:
-    name = _unique_name("proj-list-filter")
+async def test_list_projects_default_filters_active_only(client, scaffold_cleanup) -> None:
+    name = scaffold_cleanup(_unique_name("proj-list-filter"))
     create = await client.post("/api/projects", json=_project_create_payload(name))
     assert create.status_code == 201, create.text
     project_id = create.json()["id"]
@@ -341,47 +349,61 @@ async def test_list_projects_default_filters_active_only(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_delete_project_clears_is_active_when_previously_true(client) -> None:
+async def test_delete_project_clears_is_active_when_previously_true(
+    client, scaffold_cleanup
+) -> None:
     """Deleting an active project must also flip is_active=false (same txn) so
     the partial unique index `ux_projects_active_one` doesn't block a new
     active project.
+
+    M7: the seeded agent-teams row's is_active is restored in `finally` so a
+    failed assertion above the restore step does NOT leak state to subsequent
+    tests (which all depend on /api/projects/active returning agent-teams).
     """
-    name = _unique_name("proj-delete-active")
+    name = scaffold_cleanup(_unique_name("proj-delete-active"))
     # Create as inactive first to avoid fighting the seeded agent-teams active row.
     create = await client.post("/api/projects", json=_project_create_payload(name))
     assert create.status_code == 201
     project_id = create.json()["id"]
 
-    # Flip is_active=true via PATCH (uses _clear_other_active to free the slot).
-    activate = await client.patch(f"/api/projects/{project_id}", json={"is_active": True})
-    assert activate.status_code == 200, activate.text
-    assert activate.json()["is_active"] is True
+    try:
+        # Flip is_active=true via PATCH (uses _clear_other_active to free the slot).
+        activate = await client.patch(
+            f"/api/projects/{project_id}", json={"is_active": True}
+        )
+        assert activate.status_code == 200, activate.text
+        assert activate.json()["is_active"] is True
 
-    # DELETE — should soft-delete AND clear is_active.
-    delete = await client.delete(f"/api/projects/{project_id}")
-    assert delete.status_code == 204
+        # DELETE — should soft-delete AND clear is_active.
+        delete = await client.delete(f"/api/projects/{project_id}")
+        assert delete.status_code == 204
 
-    # Re-list with include_deleted to verify both flags flipped.
-    listing = await client.get("/api/projects?include_deleted=true&limit=500")
-    rows = [p for p in listing.json() if p["id"] == project_id]
-    assert len(rows) == 1
-    assert rows[0]["is_active"] is False
-
-    # And restore the seeded agent-teams as active so other tests stay healthy.
-    seeded = await client.get("/api/projects/by-name/agent-teams")
-    if seeded.status_code == 404:
-        # Find by include_deleted=true list.
-        all_rows = (await client.get("/api/projects?include_deleted=true&limit=500")).json()
-        seeded_id = next(p["id"] for p in all_rows if p["name"] == "agent-teams")
-    else:
-        seeded_id = seeded.json()["id"]
-    await client.patch(f"/api/projects/{seeded_id}", json={"is_active": True})
+        # Re-list with include_deleted to verify both flags flipped.
+        listing = await client.get("/api/projects?include_deleted=true&limit=500")
+        rows = [p for p in listing.json() if p["id"] == project_id]
+        assert len(rows) == 1
+        assert rows[0]["is_active"] is False
+    finally:
+        # Restore agent-teams as the active project NO MATTER WHAT — every
+        # other test depends on it. Without this, an assertion failure above
+        # cascades to the rest of the suite via 404 on /api/projects/active.
+        seeded = await client.get("/api/projects/by-name/agent-teams")
+        if seeded.status_code == 404:
+            all_rows = (
+                await client.get("/api/projects?include_deleted=true&limit=500")
+            ).json()
+            seeded_id = next(p["id"] for p in all_rows if p["name"] == "agent-teams")
+        else:
+            seeded_id = seeded.json()["id"]
+        await client.patch(f"/api/projects/{seeded_id}", json={"is_active": True})
 
 
 @pytest.mark.asyncio
-async def test_recreate_project_with_name_of_soft_deleted_one(client) -> None:
+async def test_recreate_project_with_name_of_soft_deleted_one(
+    client, scaffold_cleanup
+) -> None:
     """Partial unique on `name` (status=1) lets a name be reused after soft-delete."""
-    name = _unique_name("proj-recreate")
+    name = scaffold_cleanup(_unique_name("proj-recreate"))
     first = await client.post("/api/projects", json=_project_create_payload(name))
     assert first.status_code == 201
     first_id = first.json()["id"]
@@ -406,7 +428,11 @@ async def test_recreate_project_with_name_of_soft_deleted_one(client) -> None:
 
 @pytest.mark.asyncio
 async def test_post_project_requires_lead_field(client) -> None:
-    """`lead` is required on ProjectCreate; missing it -> 422."""
+    """`lead` is required on ProjectCreate; missing it -> 422.
+
+    No scaffold_cleanup needed — request is rejected at the schema layer before
+    the scaffold side-effect runs.
+    """
     payload = _project_create_payload(_unique_name("proj-missing-lead"))
     payload.pop("lead")
     resp = await client.post("/api/projects", json=payload)
@@ -415,7 +441,10 @@ async def test_post_project_requires_lead_field(client) -> None:
 
 @pytest.mark.asyncio
 async def test_post_project_rejects_unknown_lead(client) -> None:
-    """Unknown lead value -> 422 (Pydantic Literal rejects it)."""
+    """Unknown lead value -> 422 (Pydantic Literal rejects it).
+
+    No scaffold_cleanup needed — request is rejected at the schema layer.
+    """
     payload = _project_create_payload(_unique_name("proj-bad-lead"), lead="manager")
     resp = await client.post("/api/projects", json=payload)
     assert resp.status_code == 422, resp.text
@@ -423,7 +452,7 @@ async def test_post_project_rejects_unknown_lead(client) -> None:
 
 @pytest.mark.asyncio
 async def test_post_project_with_novel_lead_scaffolds_novel_roster(
-    client, tmp_path_factory
+    client, scaffold_cleanup
 ) -> None:
     """`lead='novel'` creates novel-writer + novel-editor folders, NOT dev-*.
 
@@ -434,7 +463,7 @@ async def test_post_project_with_novel_lead_scaffolds_novel_roster(
     settings = get_settings()
     repo_root = Path(settings.repo_root)
 
-    name = _unique_name("proj-novel")
+    name = scaffold_cleanup(_unique_name("proj-novel"))
     resp = await client.post(
         "/api/projects", json=_project_create_payload(name, lead="novel")
     )
@@ -459,13 +488,15 @@ async def test_post_project_with_novel_lead_scaffolds_novel_roster(
 
 
 @pytest.mark.asyncio
-async def test_patch_cannot_reactivate_soft_deleted_project(client) -> None:
+async def test_patch_cannot_reactivate_soft_deleted_project(
+    client, scaffold_cleanup
+) -> None:
     """Locked contract (decision 2026-05-08): PATCH may edit non-active fields
     on a soft-deleted project (admin edit), but PATCH `{"is_active": true}` on
     a soft-deleted row returns 400 with a stable detail string. Restore is a
     deferred admin path (separate endpoint when UI demands it).
     """
-    name = _unique_name("proj-reactivate-deleted")
+    name = scaffold_cleanup(_unique_name("proj-reactivate-deleted"))
     create = await client.post("/api/projects", json=_project_create_payload(name))
     assert create.status_code == 201
     project_id = create.json()["id"]
@@ -487,3 +518,164 @@ async def test_patch_cannot_reactivate_soft_deleted_project(client) -> None:
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["description"] == "edited after soft-delete"
+
+
+# -----------------------------------------------------------------------------
+# Detail-string lock tests — pin the wire contract for 409/400 responses
+# (review M4, M5, M9). Drift here is a breaking change to the FE error UX.
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_patch_project_409_detail_string_is_stable(
+    client, scaffold_cleanup
+) -> None:
+    """M4 lock: PATCH /api/projects/{id} that conflicts on `name` returns 409
+    with the exact detail `Project name '<name>' already exists` (repr-quoted).
+
+    Uses a fresh pair so the seeded `agent-teams` row is never the conflicting
+    target. Both projects are inactive so the active-flag clearing path is not
+    exercised.
+    """
+    name_a = scaffold_cleanup(_unique_name("proj-409-a"))
+    name_b = scaffold_cleanup(_unique_name("proj-409-b"))
+
+    a = await client.post("/api/projects", json=_project_create_payload(name_a))
+    assert a.status_code == 201, a.text
+    b = await client.post("/api/projects", json=_project_create_payload(name_b))
+    assert b.status_code == 201, b.text
+    b_id = b.json()["id"]
+
+    # Rename b → name_a (already taken by a, status=1) → 409 with locked detail.
+    resp = await client.patch(f"/api/projects/{b_id}", json={"name": name_a})
+    assert resp.status_code == 409, resp.text
+    assert resp.json() == {
+        "detail": f"Project name '{name_a}' already exists"
+    }, resp.json()
+
+    # Cleanup DB rows (folders handled by scaffold_cleanup).
+    await client.delete(f"/api/projects/{a.json()['id']}")
+    await client.delete(f"/api/projects/{b_id}")
+
+
+def test_patch_task_400_detail_strings_are_pinned_in_router_source() -> None:
+    """M5 lock: PATCH /api/tasks/{id} translates well-known DB CHECK violations
+    to stable detail strings in `routers/tasks.py`. We can't drive these branches
+    from the HTTP layer because the Pydantic validators on `TaskUpdate` already
+    reject the same out-of-range integers at 422 — the IntegrityError handler is
+    a defense-in-depth fallback for raw-SQL bypass / schema drift.
+
+    Locking pattern: a textual assertion on the router source. Drift in any of
+    these strings (rename / wording change) breaks the test. The strings are
+    part of the wire contract once a future caller reaches the 400 branch
+    (e.g., a script that bypasses Pydantic via SQLAlchemy core, or a constraint
+    name that the validator doesn't yet cover).
+
+    Strings pinned (must remain byte-for-byte stable per `routers/tasks.py`):
+    - `"process_status violates ck_tasks_process_status_valid"`
+    - `"priority violates ck_tasks_priority_valid"`
+    - `"status violates ck_tasks_status_valid"`
+    - `"Task update violates a database constraint"`  (fallback)
+    """
+    from pathlib import Path
+
+    from src.routers import tasks as tasks_router
+
+    source = Path(tasks_router.__file__).read_text(encoding="utf-8")
+
+    pinned = [
+        '"process_status violates ck_tasks_process_status_valid"',
+        '"priority violates ck_tasks_priority_valid"',
+        '"status violates ck_tasks_status_valid"',
+        '"Task update violates a database constraint"',
+    ]
+    missing = [s for s in pinned if s not in source]
+    assert not missing, (
+        "M5-locked detail strings drifted in routers/tasks.py — "
+        f"missing: {missing}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_redelete_task_does_not_grow_audit_history(client, db_session) -> None:
+    """M9 lock (tasks): A second DELETE on an already-soft-deleted task is a
+    no-op — it must NOT write a redundant `'U'` row to `tasks_history`.
+
+    Reads `tasks_history` directly via db_session because there is no public
+    endpoint for the audit table.
+    """
+    from sqlalchemy import text
+
+    active = await client.get("/api/projects/active")
+    project_id = active.json()["id"]
+
+    create = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "m9-redelete-task probe"},
+    )
+    assert create.status_code == 201
+    task_id = create.json()["id"]
+
+    # First DELETE — flips status=0; audit trigger writes one 'U' row.
+    first = await client.delete(f"/api/tasks/{task_id}")
+    assert first.status_code == 204
+
+    # Snapshot history count after the legitimate first DELETE.
+    count_after_first = await db_session.scalar(
+        text("SELECT COUNT(*) FROM tasks_history WHERE task_id = :tid"),
+        {"tid": task_id},
+    )
+    assert count_after_first >= 1, (
+        f"expected at least one audit row after first DELETE, got {count_after_first}"
+    )
+
+    # Second DELETE — should be a no-op.
+    second = await client.delete(f"/api/tasks/{task_id}")
+    assert second.status_code == 204
+
+    count_after_second = await db_session.scalar(
+        text("SELECT COUNT(*) FROM tasks_history WHERE task_id = :tid"),
+        {"tid": task_id},
+    )
+    assert count_after_second == count_after_first, (
+        f"re-DELETE on a soft-deleted task wrote a redundant audit row: "
+        f"{count_after_first} → {count_after_second}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_redelete_project_is_observable_noop(client, scaffold_cleanup) -> None:
+    """M9 lock (projects): A second DELETE on an already-soft-deleted project
+    is a no-op. Projects don't have an audit table — the observable signal is
+    that `updated_at` does NOT change between the two DELETEs (the no-op skip
+    in `delete_project` returns early before any UPDATE fires).
+    """
+    name = scaffold_cleanup(_unique_name("proj-redelete"))
+    create = await client.post("/api/projects", json=_project_create_payload(name))
+    assert create.status_code == 201
+    project_id = create.json()["id"]
+
+    # First DELETE.
+    first = await client.delete(f"/api/projects/{project_id}")
+    assert first.status_code == 204
+
+    # Snapshot the row state after the first DELETE.
+    listing = await client.get("/api/projects?include_deleted=true&limit=500")
+    rows = [p for p in listing.json() if p["id"] == project_id]
+    assert len(rows) == 1
+    updated_at_before = rows[0]["updated_at"]
+
+    # Second DELETE — must be a no-op (skip path returns 204 without UPDATE).
+    second = await client.delete(f"/api/projects/{project_id}")
+    assert second.status_code == 204
+
+    # Re-fetch and assert updated_at did NOT advance.
+    listing = await client.get("/api/projects?include_deleted=true&limit=500")
+    rows = [p for p in listing.json() if p["id"] == project_id]
+    assert len(rows) == 1
+    updated_at_after = rows[0]["updated_at"]
+
+    assert updated_at_after == updated_at_before, (
+        f"re-DELETE on a soft-deleted project mutated updated_at: "
+        f"{updated_at_before} → {updated_at_after} (the no-op skip is broken)"
+    )

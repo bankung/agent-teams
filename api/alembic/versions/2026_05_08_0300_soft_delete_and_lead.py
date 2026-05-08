@@ -96,7 +96,7 @@ def upgrade() -> None:
 
     # Rename the existing index BEFORE creating the new soft-delete `ix_tasks_status`
     # so names don't collide mid-migration.
-    op.execute("ALTER INDEX ix_tasks_status RENAME TO ix_tasks_process_status;")
+    op.execute("ALTER INDEX IF EXISTS ix_tasks_status RENAME TO ix_tasks_process_status;")
 
     # -------------------------------------------------------------------------
     # 2. Drop ck_tasks_assigned_role_valid (app-layer validation per lead roster)
@@ -186,10 +186,13 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Reverse order of upgrade(). Use DROP ... IF EXISTS where the rollback may
-    # be re-run (idempotent recovery per standards/sqlalchemy/migrations.md).
+    # Reverse order of upgrade().
 
     # 6. lead column
+    # Use DROP ... IF EXISTS where the rollback may be re-run (idempotent
+    # recovery per standards/sqlalchemy/migrations.md). Alembic's
+    # drop_constraint(..., type_="check") doesn't take an IF EXISTS flag, so we
+    # drop down to raw SQL here and at every other named-constraint drop below.
     op.execute("ALTER TABLE projects DROP CONSTRAINT IF EXISTS ck_projects_lead_valid;")
     op.drop_column("projects", "lead")
 
