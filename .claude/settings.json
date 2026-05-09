@@ -67,6 +67,7 @@
       "Bash(curl --silent -X POST \"http://localhost:8456:*)",
       "Bash(curl --silent -X PATCH \"http://localhost:8456:*)",
       "Bash(curl --silent -X DELETE \"http://localhost:8456:*)",
+      "Bash(curl --silent --output NUL http://localhost:8456:*)",
 
       "Bash(rm _scratch/:*)",
       "Bash(rm -r _scratch/:*)",
