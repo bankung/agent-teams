@@ -21,6 +21,37 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-09 — Session-scoped active project: bootstrap asks user, supports parallel terminals
+**Scope:** team-playbook / bootstrap / multi-project safety
+**Proposed by:** user (after audit-2026-05-09 surfaced multi-terminal Gap A — "two terminals see the same global active row")
+**Decision:** Shift the "active project" abstraction from **global DB state** to **per-session user-bound state**. The new bootstrap protocol, replacing the prior `GET /api/projects/active` first-call:
+
+1. Lead's **first action** of every new session is to ask the user: "Which project are we working on?" — pinned as a literal question. Lead waits for a reply before any other tool call (no shared/* read, no API call, no spawn). If the user's first message already names a project explicitly (e.g. "ทำ task #406 ใน agent-teams"), Lead may skip the question and proceed to step 2.
+2. Lead resolves the named project via `GET /api/projects/by-name/<name>` (existing endpoint).
+3. Lead announces "Session bound to <name> (team=<team>, id=<id>)" — this is the session-bound project for every subsequent API call, file read/write, and subagent spawn brief in this session.
+4. Each Claude Code session binds independently — **multiple terminals may run in parallel against different projects**. The DB's `is_active` flag is no longer load-bearing for "which project is this session about"; the session-bound name (held in Lead's working memory + announced to user) is.
+
+**Phase 1 (immediate):** CLAUDE.md `## Bootstrap` section rewritten to enforce the ask-and-bind flow. NO code change, NO schema change, NO test change — the new behavior is purely a Lead protocol shift, and is backward-compatible with the existing `is_active`-based UI / API endpoints (those continue to work; they just stop being authoritative for session-scoped active).
+
+**Phase 2 (filed as separate Kanban task):** Drop `ux_projects_active_one` partial unique index (migration 0006); redefine `is_active` semantics from "the one focus" → "live (vs archived)"; update tests that assert uniqueness; surface standards proposals (`postgresql/soft-delete.md`, `fastapi/atomic-mutations.md`, `fastapi/routing.md`, `sqlalchemy/migrations.md` all reference the partial-unique pattern as a worked example — the example stays valid as a PG technique, but the agent-teams instance changes from "exemplar" to "former exemplar"). UI follow-up TBD.
+
+**Reasoning:** The `ux_projects_active_one` constraint was a sensible default when the system was a single-user, single-task tool — "the user's current focus" mapped 1:1 to "the one row with is_active=true." It scales poorly to (a) multi-terminal parallel work, (b) auto-pickup queue runners (Step 2 Mode A2 — see 2026-05-09 'Kanban-driven AI' entry above), and (c) the dogfood-adjacent "I'm reviewing this project AND working on that one" workflow. Audit-2026-05-09 surfaced this as Gap A: two terminals call `/api/projects/active`, both see the same row, Lead in the wrong terminal might write to the wrong project. The user's lock — "ask user at session start, require reply before working" — is the cheapest possible fix: it removes the silent-coupling between terminals without touching the DB. **The friction of typing a name IS the gate** (same UX premise as the typed-acknowledgment consent endpoint locked in #483).
+
+The phased rollout (CLAUDE.md text → Phase 2 schema/tests/standards) was chosen because Phase 1 alone delivers the user-facing benefit (parallel terminals work cleanly via Lead asking user) without touching any test, schema, or API contract. Phase 2 is cleanup to make the DB shape match the new behavior.
+
+**Implications:**
+- Bootstrap section of CLAUDE.md changes shape — first action is a question to user, not a `curl /api/projects/active`. Subagent spawn briefs continue to specify the project explicitly (no change).
+- New sessions follow the new protocol; old in-flight sessions stay bound to whatever they bootstrapped against. CLAUDE.md is loaded fresh per session, so the rollout is automatic.
+- `GET /api/projects/active` endpoint continues to exist; semantics unchanged. Future: when Phase 2 lands and the `is_active` unique constraint is dropped, this endpoint may return ambiguous results (multiple `is_active=true` rows). At that point either deprecate it or repurpose to return a list. Defer that decision to Phase 2.
+- README + CLAUDE.md anti-pattern note "Carrying context across a project switch" still applies but its meaning shifts: a "project switch" now means "the user starts a new Claude Code session with a different name" rather than "user PATCHes is_active mid-session." Explicit mid-session switches are still possible (user says "actually let's switch to myapp") and Lead must re-bootstrap from scratch.
+- Standards-zone files (`postgresql/soft-delete.md`, `fastapi/atomic-mutations.md`, `fastapi/routing.md`, `sqlalchemy/migrations.md`) currently cite agent-teams's `ux_projects_active_one` as a worked example of the partial-unique-on-soft-delete pattern. After Phase 2 lands, those references need a humans-only update — note that the example was historically valid + point at a different (still-current) project example or invent a synthetic one. Surfaced now so it doesn't ship stale.
+- Multi-project safety is now a **behavioral protocol** (CLAUDE.md text + user discipline) rather than a DB-enforced invariant. **This is context-based — vulnerable to compaction.** Mitigation considered but not implemented in Phase 1: a PreToolUse hook that detects Write/Edit paths outside the session-bound project's `repo_root` + blocks. Filed as a hardening proposal in the Phase 2 Kanban task; not a default since it adds friction.
+
+**Cross-references:**
+- Audit findings: chat 2026-05-09 (this session) "Audit 7 layers" enumerated multi-project Gap A (multi-terminal global state collision).
+- Related: `context/teams/dev/decisions.md` 2026-05-09 'Kanban-driven AI: 2-mode model + per-project consent gate' — Mode A2 / B both assume session-scoped resolution implicitly; this entry makes it explicit.
+- Phase 2 Kanban task: **#694** (drop unique constraint + redefine is_active + tests + standards proposals).
+
 ## 2026-05-09 — Kanban-driven AI: 2-mode model + per-project consent gate (Step 2 architecture, design lock — Kanban #481)
 **Scope:** team-playbook / agent-prompts / lifecycle / cross-team automation surface
 **Proposed by:** user (vision); lead (4-question design lock chat)

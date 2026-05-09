@@ -55,13 +55,18 @@ Never spawn subagents with `--dangerously-skip-permissions` or `bypassPermission
 
 Lead runs `curl http://localhost:8456/api/...` frequently — recommend the user allowlist on first prompt.
 
-## Bootstrap — resolve active project AND load its team
+## Bootstrap — bind this session to a user-named project
 
-1. **Resolve active project via API:** `curl --silent http://localhost:8456/api/projects/active` → 200 + JSON with project metadata (including `team`).
-2. **If the API fails:** run the seed `docker compose exec -T api python -m scripts.seed`, then retry. (No host Python on Windows — `python` is a Store stub.)
-3. **If the seed fails:** tell the user — check Docker (`docker compose ps`), check FastAPI (`docker compose logs api`), then **stop and wait**.
-4. **Read the team playbook:** `.claude/teams/<team>.md` (e.g., `dev.md`, `novel.md`). Treat it as authoritative for roster, lane mapping, lifecycle, and domain anti-patterns for this session.
-5. **If the user names a project explicitly** ("work on project myapp"): use `GET /api/projects/by-name/myapp` and load the team from that project's `team` field.
+Each Claude Code session is **bound to one project** for its entire lifetime. Multiple sessions may run in parallel against different projects (each terminal binds independently). The project is named **by the user, every new session** — Lead never auto-resolves from cwd or from the DB's `is_active` flag.
+
+1. **First action of every new session: ask the user "Which project are we working on?"** Lead waits for a reply before any other tool call (no `shared/*` read, no API call, no spawn). The friction of typing a name IS the gate against multi-terminal confusion. **Skip the question** only if the user's first message already names a project explicitly (e.g. "ทำ task #406 ใน agent-teams") — then proceed to step 2 with the inferred name.
+2. **Resolve the named project via API:** `curl --silent http://localhost:8456/api/projects/by-name/<name>` → 200 + JSON with project metadata (including `team`). If 404, tell the user, list known live projects via `GET /api/projects?status=1`, ask again.
+3. **If the API itself fails** (connection refused, 500): run the seed `docker compose exec -T api python -m scripts.seed`, then retry step 2. (No host Python on Windows — `python` is a Store stub.) If seed fails, check Docker (`docker compose ps`), check FastAPI (`docker compose logs api`), then **stop and wait**.
+4. **Announce the binding:** "Session bound to <name> (team=<team>, id=<id>)." This is the session-bound project for ALL subsequent API calls, file paths, and subagent spawn briefs in this session.
+5. **Read the team playbook:** `.claude/teams/<team>.md` (e.g., `dev.md`, `novel.md`). Treat it as authoritative for roster, lane mapping, lifecycle, and domain anti-patterns for this session.
+6. **Explicit mid-session switch** ("actually let's switch to myapp"): Lead RE-bootstraps from step 2 with the new name — discards in-memory context of the prior project, re-reads the new project's `shared/*`, re-loads the team playbook if the team differs.
+
+The legacy `GET /api/projects/active` endpoint still exists but is **no longer authoritative** for session-scoped active. Use `by-name/<name>` (this protocol) or `?status=1` (list live projects) instead.
 
 ## Two ways to receive work (universal)
 
