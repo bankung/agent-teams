@@ -173,10 +173,10 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 
 **Errors:**
 - `400` — FK or CHECK violation. Detail strings (stable wire contract; mirror M5 PATCH pattern — CHECK branches gated by Pydantic 422 first, reachable today only via raw-SQL bypass or future schema drift):
-  - `{"detail":"project_id <n> does not exist"}` when `tasks_project_id_fkey` is violated (`<n>` substitutes the user-supplied `project_id`)
+  - `{"detail":"project_id <n> does not exist"}` when `project_id` references a non-existent or soft-deleted project. **Run-mode-agnostic** — wire-byte-identical across all `run_mode` values. Surfaces from two paths: (a) `IntegrityError` translation in `routers/tasks.py` for `manual` / `auto_pickup` (FK violation), (b) the cross-table validator's "no active row" branch in `services/run_mode.py` for `auto_headless`. Source-text-locked in both files. (Kanban #483, refined by #690)
   - `{"detail":"parent_task_id <n> does not exist or is deleted"}` when `parent_task_id` references a missing or soft-deleted parent (Kanban #238)
   - `{"detail":"parent_task_id <n> belongs to a different project"}` when parent's `project_id` differs from payload (cross-project parent rejection — app-layer enforced; Kanban #238)
-  - `{"detail":"project <n> has not granted auto-headless consent"}` when `run_mode='auto_headless'` and the parent project has `auto_run_consent_at IS NULL`. Cross-table validator at `services/run_mode.py` — does not fire for `manual` (default) or `auto_pickup` (Mode A2 doesn't need consent). Source-text-locked. **Note:** today this string also surfaces when `project_id` references a non-existent or soft-deleted project AND `run_mode='auto_headless'` (the validator's `WHERE id=<n> AND status=1` SELECT returns no row). Wire-contract drift logged as `#483 MINOR-1` follow-up. (Kanban #483)
+  - `{"detail":"project <n> has not granted auto-headless consent"}` when `run_mode='auto_headless'` and the parent project EXISTS+ACTIVE but has `auto_run_consent_at IS NULL`. Cross-table validator at `services/run_mode.py` — does not fire for `manual` (default) or `auto_pickup` (Mode A2 doesn't need consent). Source-text-locked. (Kanban #483, refined by #690)
   - `{"detail":"process_status violates ck_tasks_process_status_valid"}`
   - `{"detail":"priority violates ck_tasks_priority_valid"}`
   - `{"detail":"run_mode violates ck_tasks_run_mode_valid"}` (defensive — Pydantic Literal gates this first)

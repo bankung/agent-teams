@@ -439,6 +439,84 @@ def test_consent_required_detail_string_pinned_in_router_and_service() -> None:
     )
 
 
+# -----------------------------------------------------------------------------
+# 3a. #690 — disambiguate "no active row" from "row exists with NULL consent"
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_post_task_auto_headless_with_missing_project_returns_project_does_not_exist(
+    client,
+) -> None:
+    """#690: validator must disambiguate 'no row' from 'row exists with NULL consent'.
+
+    Bogus project_id + run_mode='auto_headless' must surface the same FK-style
+    detail string that run_mode='manual' would surface via the IntegrityError
+    handler in routers/tasks.py — not the consent-required string."""
+    bogus_id = 999_999
+    resp = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": bogus_id,
+            "title": "smoke-690-missing-project",
+            "run_mode": "auto_headless",
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": f"project_id {bogus_id} does not exist"}
+
+
+@pytest.mark.asyncio
+async def test_post_task_auto_headless_with_softdeleted_project_returns_project_does_not_exist(
+    client, scaffold_cleanup
+) -> None:
+    """#690: soft-deleted projects are invisible to the consent validator's
+    `status == ACTIVE` filter — same FK-style detail string as a missing row."""
+    name = _unique_name("proj-690-softdeleted")
+    scaffold_cleanup(name)
+
+    create = await client.post("/api/projects", json=_project_create_payload(name))
+    assert create.status_code == 201, create.text
+    project_id = create.json()["id"]
+
+    # Soft-delete the project.
+    del_resp = await client.delete(f"/api/projects/{project_id}")
+    assert del_resp.status_code == 204
+
+    # Attempt auto_headless task creation against the now-soft-deleted project.
+    resp = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "smoke-690-softdeleted-project",
+            "run_mode": "auto_headless",
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": f"project_id {project_id} does not exist"}
+
+
+def test_missing_project_detail_string_pinned_in_service_source() -> None:
+    """#690 source-text-lock: both 400 detail templates produced by
+    services/run_mode.py are wire contract — drift breaks any FE that string-
+    matches them. Lock the FK-style template alongside the consent template."""
+    from src.services import run_mode as run_mode_service
+
+    source = Path(run_mode_service.__file__).read_text(encoding="utf-8")
+    # Strip the f"" prefix so the pin matches the f-string template form.
+    normalized = source.replace("f\"", "\"")
+    consent_pinned = '"project {project_id} has not granted auto-headless consent"'
+    missing_pinned = '"project_id {project_id} does not exist"'
+    assert consent_pinned in normalized, (
+        "consent-required detail string template drifted in services/run_mode.py"
+    )
+    assert missing_pinned in normalized, (
+        "missing-project (FK-style) detail string template drifted in "
+        "services/run_mode.py — must mirror routers/tasks.py "
+        "tasks_project_id_fkey IntegrityError translation (Kanban #690)"
+    )
+
+
 # =============================================================================
 # 4. Cross-table validator on PATCH /api/tasks/{id}
 # =============================================================================

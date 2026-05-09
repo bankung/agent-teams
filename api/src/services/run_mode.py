@@ -1,4 +1,4 @@
-"""Cross-table invariants for tasks.run_mode (Kanban #481/#483).
+"""Cross-table invariants for tasks.run_mode (Kanban #481/#483/#690).
 
 The rule `task.run_mode = 'auto_headless'` is valid only if the parent
 project has `auto_run_consent_at IS NOT NULL`. This spans two tables and
@@ -6,10 +6,18 @@ therefore does NOT live as a DB CHECK — it is enforced at the router /
 service layer per the methodology decision in
 `context/teams/dev/decisions.md` 2026-05-09 entry.
 
-Stable wire detail string (pinned by source-text-lock test in
-`tests/test_routes_smoke.py`):
+Stable wire detail strings (pinned by source-text-lock test in
+`tests/test_run_mode_consent.py`):
 
-    "project <project_id> has not granted auto-headless consent"
+    "project_id {project_id} does not exist"           # no active row
+    "project {project_id} has not granted auto-headless consent"  # NULL consent
+
+#690: the SELECT returns two columns (id + auto_run_consent_at) so that
+"no active row" (FK-style operator mistake) is disambiguated from "row
+exists but consent is NULL". Without the disambiguation, a bogus or
+soft-deleted project_id with run_mode='auto_headless' surfaces the
+consent string instead of the FK-style string the same payload would
+get with run_mode='manual' — wire-contract drift.
 """
 
 from __future__ import annotations
@@ -27,10 +35,13 @@ async def assert_consent_for_run_mode(
     project_id: int,
     run_mode: str | None,
 ) -> None:
-    """Raise 400 if `run_mode='auto_headless'` and the project lacks consent.
+    """Raise 400 if `run_mode='auto_headless'` and either:
 
-    No-op for any other mode. Reads only the consent column (not the full
-    Project row) to keep this cheap on the hot POST/PATCH path.
+    - the project does not exist (or is soft-deleted), OR
+    - the project exists but `auto_run_consent_at IS NULL`.
+
+    No-op for any other mode. Reads only id + consent column (single
+    round-trip) to keep this cheap on the hot POST/PATCH path.
 
     Caller contract:
     - POST /api/tasks: pass `payload.project_id` and `payload.run_mode`.
@@ -40,13 +51,19 @@ async def assert_consent_for_run_mode(
     """
     if run_mode != TaskRunMode.AUTO_HEADLESS:
         return
-    consent_at = await db.scalar(
-        select(Project.auto_run_consent_at).where(
+    result = await db.execute(
+        select(Project.id, Project.auto_run_consent_at).where(
             Project.id == project_id,
             Project.status == RecordStatus.ACTIVE,
         )
     )
-    if consent_at is None:
+    row = result.one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"project_id {project_id} does not exist",
+        )
+    if row.auto_run_consent_at is None:
         raise HTTPException(
             status_code=400,
             detail=f"project {project_id} has not granted auto-headless consent",
