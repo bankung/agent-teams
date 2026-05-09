@@ -1,5 +1,5 @@
 // Mirror of api/src/constants.py — keep in sync. Numbers are stable forever; never repurpose.
-// Mirrored: RecordStatus, TaskStatus, TaskPriority, TaskRole, ProjectTeam.
+// Mirrored: RecordStatus, TaskStatus, TaskPriority, TaskRole, ProjectTeam, TaskRunMode.
 // Deferred: TaskHistoryOperation ('U','D') — internal audit-trigger payload, no browser-facing use.
 
 export const RecordStatus = {
@@ -39,3 +39,12 @@ export const ProjectTeam = {
   NOVEL: "novel",
 } as const;
 export type ProjectTeamValue = typeof ProjectTeam[keyof typeof ProjectTeam];
+
+// TaskRunMode — Step 2 execution mode (Kanban #483).
+// auto_headless requires per-project consent (projects.auto_run_consent_at IS NOT NULL).
+export const TaskRunMode = {
+  MANUAL: "manual",
+  AUTO_PICKUP: "auto_pickup",
+  AUTO_HEADLESS: "auto_headless",
+} as const;
+export type TaskRunModeValue = typeof TaskRunMode[keyof typeof TaskRunMode];
