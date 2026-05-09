@@ -26,6 +26,7 @@ from sqlalchemy import (
     SmallInteger,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -34,8 +35,10 @@ from src.constants import (
     RecordStatus,
     TaskHistoryOperation,
     TaskPriority,
+    TaskRunMode,
     TaskStatus,
     in_clause,
+    in_clause_text,
 )
 from src.models.base import Base
 
@@ -101,6 +104,17 @@ class Task(Base):
         default=RecordStatus.ACTIVE,
     )
 
+    # Step 2 (Kanban #481/#483): execution mode for Kanban-driven AI.
+    # No Python-side default needed — DB DEFAULT 'manual' covers INSERT.
+    # Pydantic Literal validation gates accepted values at the API boundary.
+    # Cross-table rule (auto_headless requires project consent) lives in
+    # src/services/run_mode.py — not as a DB CHECK because it spans tables.
+    run_mode: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default=text("'manual'"),
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -151,6 +165,12 @@ class Task(Base):
         CheckConstraint(
             in_clause("status", RecordStatus.ALL),
             name="ck_tasks_status_valid",
+        ),
+        # Mirror of migration 0005's ck_tasks_run_mode_valid — keeps ORM
+        # autogenerate in lockstep with the live DDL.
+        CheckConstraint(
+            in_clause_text("run_mode", TaskRunMode.ALL),
+            name="ck_tasks_run_mode_valid",
         ),
         # No-self-parent backstop (Kanban #238). The app rejects re-parenting via
         # PATCH 422 entirely; this CHECK catches raw-SQL drift.

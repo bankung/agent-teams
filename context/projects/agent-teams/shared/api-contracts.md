@@ -114,6 +114,26 @@ Template for a new endpoint:
 **Errors:**
 - `404` — `{"detail":"Project id=<n> not found"}` when id does not exist
 
+### POST /api/projects/{id}/grant-consent
+**Purpose:** Grant per-project consent for Mode B (`run_mode='auto_headless'`) tasks (Kanban #481/#483). Typed-acknowledgment UX — `confirm_name` must match `project.name` byte-for-byte (case-sensitive). **Idempotent on re-grant:** calling again on an already-consented project returns 200 + the existing row WITHOUT re-stamping `auto_run_consent_at` OR bumping `updated_at`. The first consent is the legally / auditably significant timestamp; re-action is a no-op confirmation.
+**Auth:** none
+
+**Request:**
+```json
+{ "confirm_name": "agent-teams" }
+```
+
+Body uses `extra="forbid"` (NOT the default `extra="ignore"`) — sending any other field returns 422. Deliberate-action UX must fail loud on smuggled fields.
+
+**Response 200:** `ProjectRead` (with `auto_run_consent_at` set on first grant; unchanged on re-grant)
+
+**Errors:**
+- `400` — `{"detail":"confirm_name must match project name exactly"}` when `body.confirm_name != project.name` (case-sensitive). Source-text-locked in `routers/projects.py` per the #122 detail-string lock pattern.
+- `404` — `{"detail":"Project id=<n> not found"}` when id is missing OR soft-deleted (`status=0`).
+- `422` — Pydantic validation error: `confirm_name` missing/empty/too long, or any extra field present.
+
+A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at` back to NULL — out of scope for #481, follow-up.
+
 ### GET /api/tasks
 **Purpose:** List tasks for a project (paginated, filterable).
 **Auth:** none
@@ -140,11 +160,14 @@ Template for a new endpoint:
   "process_status": 1,
   "priority": 2,
   "assigned_role": 1,
-  "parent_task_id": null
+  "parent_task_id": null,
+  "run_mode": "manual"
 }
 ```
 
 `parent_task_id` (int, optional, ge=1, default null) — set this to the id of an existing active task in the same project to create a subtask. Omit (or pass null) for a top-level task. Added 2026-05-08 by Kanban #238.
+
+`run_mode` (`"manual"` | `"auto_pickup"` | `"auto_headless"`, optional, default `"manual"`) — Step 2 execution mode (Kanban #483). `auto_headless` requires `project.auto_run_consent_at IS NOT NULL` — see 400 below.
 
 **Response 201:** `TaskRead`
 
@@ -153,26 +176,30 @@ Template for a new endpoint:
   - `{"detail":"project_id <n> does not exist"}` when `tasks_project_id_fkey` is violated (`<n>` substitutes the user-supplied `project_id`)
   - `{"detail":"parent_task_id <n> does not exist or is deleted"}` when `parent_task_id` references a missing or soft-deleted parent (Kanban #238)
   - `{"detail":"parent_task_id <n> belongs to a different project"}` when parent's `project_id` differs from payload (cross-project parent rejection — app-layer enforced; Kanban #238)
+  - `{"detail":"project <n> has not granted auto-headless consent"}` when `run_mode='auto_headless'` and the parent project has `auto_run_consent_at IS NULL`. Cross-table validator at `services/run_mode.py` — does not fire for `manual` (default) or `auto_pickup` (Mode A2 doesn't need consent). Source-text-locked. **Note:** today this string also surfaces when `project_id` references a non-existent or soft-deleted project AND `run_mode='auto_headless'` (the validator's `WHERE id=<n> AND status=1` SELECT returns no row). Wire-contract drift logged as `#483 MINOR-1` follow-up. (Kanban #483)
   - `{"detail":"process_status violates ck_tasks_process_status_valid"}`
   - `{"detail":"priority violates ck_tasks_priority_valid"}`
+  - `{"detail":"run_mode violates ck_tasks_run_mode_valid"}` (defensive — Pydantic Literal gates this first)
   - `{"detail":"status violates ck_tasks_status_valid"}` (defensive — `status` is not a public POST field)
   - `{"detail":"Task creation violates a database constraint"}` (fallback for unknown constraints)
-- `422` — Pydantic validation error
+- `422` — Pydantic validation error (includes `run_mode` outside the literal set)
 
 ### PATCH /api/tasks/{id}
 **Purpose:** Partial update. Transitioning to `process_status=2` (in_progress) sets `started_at=now()` if NULL; transitioning to `process_status=5` (done) sets `completed_at=now()`. Server bumps `updated_at` on any real field change; an unchanged-body PATCH is a no-op (N7 no-op-skip — `routers/tasks.py:121-130`; parity with PATCH `/api/projects/{id}`).
 **Auth:** none
 
-**Request:** any subset of `{title, description, process_status, priority, assigned_role, started_at, completed_at}`. The soft-delete `status` flag is intentionally absent — sending `{"status": 0}` is silently ignored (use `DELETE` to soft-delete). `parent_task_id` is REJECTED (V1 forbids re-parenting per Kanban #238) — see 422 below.
+**Request:** any subset of `{title, description, process_status, priority, assigned_role, started_at, completed_at, run_mode}`. The soft-delete `status` flag is intentionally absent — sending `{"status": 0}` is silently ignored (use `DELETE` to soft-delete). `parent_task_id` is REJECTED (V1 forbids re-parenting per Kanban #238) — see 422 below.
 
 **Response 200:** `TaskRead`
 
 **Errors:**
 - `404` — task id not found
 - `422` — Pydantic validation error if `parent_task_id` key is **present in the body** (whether int OR null). V1 forbids re-parenting; clients must omit the key. The router uses a `model_validator` that checks `model_fields_set` membership, so explicit-null is treated identically to a non-null value. Error message substring: `parent_task_id`. (Kanban #238)
-- `400` — CHECK violation. Detail strings (stable wire contract; defense-in-depth — the HTTP path is gated by Pydantic 422 first, so these branches are reachable today only via raw-SQL bypass or future schema drift):
+- `400` — Cross-table or CHECK violation. Detail strings (stable wire contract):
+  - `{"detail":"project <n> has not granted auto-headless consent"}` when the **resolved final** `run_mode` (PATCH-supplied OR existing if not in body) is `auto_headless` AND the project lacks consent. Downgrading from `auto_headless` to `manual` always succeeds (resolved=manual → validator does not fire). Source-text-locked. (Kanban #483)
   - `{"detail":"process_status violates ck_tasks_process_status_valid"}`
   - `{"detail":"priority violates ck_tasks_priority_valid"}`
+  - `{"detail":"run_mode violates ck_tasks_run_mode_valid"}` (defensive — Pydantic Literal gates first)
   - `{"detail":"status violates ck_tasks_status_valid"}` (defensive — `status` is not a public PATCH field)
   - `{"detail":"Task update violates a database constraint"}` (fallback for unknown CHECK constraints)
 
@@ -186,9 +213,13 @@ Template for a new endpoint:
 
 ## Schemas
 
-**`ProjectRead`** — `{id:int, name, description, paths_web, paths_api, paths_db, stack_web, stack_api, stack_db, config:object, is_active:bool, team:"dev"|"novel", created_at, updated_at}`
+**`ProjectRead`** — `{id:int, name, description, paths_web, paths_api, paths_db, stack_web, stack_api, stack_db, config:object, is_active:bool, team:"dev"|"novel", created_at, updated_at, auto_run_consent_at:datetime|null}`
 
-**`TaskRead`** — `{id:int, project_id:int, parent_task_id:int|null, title, description, process_status:int, priority:int, assigned_role:int|null, created_at, updated_at, started_at:datetime|null, completed_at:datetime|null}`
+`auto_run_consent_at` (datetime ISO-8601 with timezone, or null) added 2026-05-09 by Kanban #483 — per-project consent gate for `tasks.run_mode='auto_headless'` (Mode B / Step 2 architecture). Default null = not consented; non-null = user consented at this timestamp via `POST /api/projects/{id}/grant-consent`.
+
+**`TaskRead`** — `{id:int, project_id:int, parent_task_id:int|null, title, description, process_status:int, priority:int, assigned_role:int|null, run_mode:"manual"|"auto_pickup"|"auto_headless", created_at, updated_at, started_at:datetime|null, completed_at:datetime|null}`
+
+`run_mode` added 2026-05-09 by Kanban #483 — Step 2 execution mode. Default `"manual"` (existing rows backfilled by migration `0005_run_mode_and_consent`).
 
 Integer code fields (`process_status`, `priority`, `assigned_role`) follow `context/standards/general.md` §"Kanban schema codes". Note that the `tasks` lifecycle code is named `process_status` everywhere on the wire (renamed from `status` by the 2026-05-08 migration); `status` on the wire is reserved as the internal soft-delete flag and is not exposed.
 

@@ -19,11 +19,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from src.constants import TaskPriority, TaskRole, TaskStatus
+from src.constants import TaskPriority, TaskRole, TaskRunMode, TaskStatus
+
+# Wire-level enum for tasks.run_mode. Stays in lockstep with TaskRunMode.ALL via
+# the import-time guard at the bottom of this module — same pattern as
+# schemas/project.py (TeamCode <-> ProjectTeam.ALL).
+TaskRunModeLiteral = Literal["manual", "auto_pickup", "auto_headless"]
 
 ProcessStatusCode = Annotated[
     int, Field(description="tasks.process_status — see TaskStatus.ALL")
@@ -76,6 +81,10 @@ class TaskCreate(BaseModel):
     # Optional parent for subtask creation (Kanban #238). None = top-level task.
     # Same-project + parent-exists checks happen in the router (need DB lookup).
     parent_task_id: int | None = Field(default=None, ge=1)
+    # Step 2 (Kanban #481/#483) — Kanban-driven AI execution mode. Default
+    # 'manual' matches the DB DEFAULT; cross-table consent check (auto_headless)
+    # lives in src/services/run_mode.py and fires in router POST/PATCH.
+    run_mode: TaskRunModeLiteral = TaskRunMode.MANUAL
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=True)
@@ -122,6 +131,11 @@ class TaskUpdate(BaseModel):
     # `model_fields_set` distinguishes "not provided" from "provided as None":
     # the validator only raises if the caller actually included the key.
     parent_task_id: int | None = Field(default=None, ge=1)
+    # Step 2 (Kanban #481/#483). PATCH-able — unlike parent_task_id, run_mode
+    # CAN be modified after creation (e.g., flipping a task from manual to
+    # auto_pickup once the queue runner ships). Cross-table consent check fires
+    # on the resolved final value in the router.
+    run_mode: TaskRunModeLiteral | None = None
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=False)
@@ -161,3 +175,14 @@ class TaskRead(BaseModel):
     updated_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+    run_mode: TaskRunModeLiteral
+
+
+# Sanity: the Literal stays in lockstep with src.constants.TaskRunMode.ALL.
+# Use a real exception (not `assert`) so the guard survives `python -O`.
+# Mirrors the TeamCode <-> ProjectTeam.ALL guard in schemas/project.py.
+if set(TaskRunModeLiteral.__args__) != set(TaskRunMode.ALL):  # type: ignore[attr-defined]
+    raise RuntimeError(
+        f"TaskRunModeLiteral {TaskRunModeLiteral.__args__!r} drifted from "  # type: ignore[attr-defined]
+        f"TaskRunMode.ALL {TaskRunMode.ALL!r}"
+    )

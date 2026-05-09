@@ -21,7 +21,12 @@ from sqlalchemy.sql.elements import ClauseElement
 from src.constants import RecordStatus
 from src.db import get_or_404, get_session
 from src.models.project import Project
-from src.schemas.project import ProjectCreate, ProjectRead, ProjectUpdate
+from src.schemas.project import (
+    ProjectCreate,
+    ProjectGrantConsent,
+    ProjectRead,
+    ProjectUpdate,
+)
 from src.services.project_scaffold import scaffold_project_folder
 from src.settings import get_settings
 
@@ -194,6 +199,52 @@ async def update_project(
             detail = "Project update conflicts with an existing row"
         raise HTTPException(status_code=409, detail=detail) from exc
 
+    await session.refresh(project)
+    return project
+
+
+@router.post("/{project_id}/grant-consent", response_model=ProjectRead)
+async def grant_project_consent(
+    project_id: int,
+    payload: ProjectGrantConsent,
+    session: AsyncSession = Depends(get_session),
+) -> Project:
+    """Grant per-project consent for Mode B (auto_headless) tasks (Kanban #481/#483).
+
+    Typed-acknowledgment UX — the user must type the project name verbatim
+    (case-sensitive). Idempotent: re-granting on an already-consented project
+    returns 200 + the existing row WITHOUT re-stamping `auto_run_consent_at`
+    or `updated_at`. The first consent is the legally-significant timestamp.
+
+    404 on missing/soft-deleted project (active-only — `status=1`).
+    400 on `confirm_name` mismatch — detail string pinned by source-text-lock
+    test in test_routes_smoke.py.
+    """
+    project = await get_or_404(
+        session,
+        Project,
+        detail=f"Project id={project_id} not found",
+        id=project_id,
+        status=RecordStatus.ACTIVE,
+    )
+
+    # Case-sensitive exact match — the friction is the point. Stable detail
+    # string per #122 source-text-lock pattern.
+    if payload.confirm_name != project.name:
+        raise HTTPException(
+            status_code=400,
+            detail="confirm_name must match project name exactly",
+        )
+
+    # Idempotent re-grant: return the existing row untouched.
+    if project.auto_run_consent_at is not None:
+        return project
+
+    # First grant — stamp consent + force updated_at refresh (server_default
+    # only fires on INSERT; mirror the PATCH /api/projects/{id} pattern).
+    project.auto_run_consent_at = func.now()
+    project.updated_at = func.now()
+    await session.commit()
     await session.refresh(project)
     return project
 

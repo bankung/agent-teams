@@ -89,6 +89,15 @@ class Project(Base):
         server_default=func.now(),
     )
 
+    # Step 2 (Kanban #481/#483): per-project consent gate for Mode B (auto_headless).
+    # NULL = no consent yet. The first POST /api/projects/{id}/grant-consent stamps
+    # this; re-grant is idempotent (no re-stamp). Cross-table rule lives in
+    # src/services/run_mode.py — see decisions.md 2026-05-09.
+    auto_run_consent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     tasks: Mapped[list["Task"]] = relationship(
         "Task",
         back_populates="project",

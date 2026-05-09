@@ -109,3 +109,26 @@ class TaskHistoryOperation:
     DELETE = "D"
 
     ALL = (UPDATE, DELETE)
+
+
+class TaskRunMode:
+    """tasks.run_mode — TEXT NOT NULL DEFAULT 'manual',
+    CHECK run_mode IN ('manual','auto_pickup','auto_headless').
+
+    Drives the Kanban-driven AI execution model (Step 2 — Kanban #481):
+    - MANUAL (default): no auto-pickup; tasks are advanced by humans only.
+    - AUTO_PICKUP: Mode A2 — Claude Code session polls + dispatches to Lead
+      (per-Write/Edit/Bash approval prompts stay).
+    - AUTO_HEADLESS: Mode B — separate worker service runs `claude -p` headless
+      (no per-action prompts). Cross-table validator requires
+      `projects.auto_run_consent_at IS NOT NULL`.
+
+    Mirror of the migration's `_TASK_RUN_MODE_ALL` (intentionally duplicated —
+    migrations don't import app code, see standards/sqlalchemy/migrations.md).
+    """
+
+    MANUAL = "manual"
+    AUTO_PICKUP = "auto_pickup"
+    AUTO_HEADLESS = "auto_headless"
+
+    ALL: tuple[str, ...] = (MANUAL, AUTO_PICKUP, AUTO_HEADLESS)

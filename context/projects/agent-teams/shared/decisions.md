@@ -17,6 +17,37 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-09 — #483 implementation: tasks.run_mode + grant-consent endpoint + cross-table validator (#481-B)
+**Scope:** api / tests / shared
+**Proposed by:** dev-backend (ORM + Pydantic + endpoint + validator + 31 tests) → dev-reviewer GREEN (0 BLOCKER / 0 MAJOR / 2 MINOR / 4 NIT — all defer-able) → dev-tester Tier-1 GREEN 8/8 (live API; throwaway project; agent-teams id=1 byte-identical pre/post)
+**Decision:** Wired migration 0005's columns through the stack with these implementation choices locked at the project layer (the cross-team-applicable framing lives in `context/teams/dev/decisions.md` 2026-05-09 'Kanban-driven AI: 2-mode model + per-project consent gate'):
+- **Constraint name** mirrored: `ck_tasks_run_mode_valid` in both the migration AND the ORM `CheckConstraint` declaration (pattern from `_PROJECT_TEAM_ALL` / `ck_projects_team_valid` lockstep, Phase 2.5b1).
+- **`POST /api/projects/{id}/grant-consent`** — body `{"confirm_name": "<name>"}` with Pydantic `extra="forbid"` (NOT default `extra="ignore"`). A typed-acknowledgment endpoint must fail loud on smuggled fields — `extra="ignore"` would defeat the deliberate-action UX premise. 400 on mismatch with source-text-locked detail string `"confirm_name must match project name exactly"`. 404 on missing OR soft-deleted project (parity with `get_or_404 status=ACTIVE`). 422 on extra fields.
+- **Idempotent re-grant** locked: read `project.auto_run_consent_at` and short-circuit BEFORE assigning `func.now()` if non-null. The first consent is the auditable timestamp; re-grant must not bump `auto_run_consent_at` OR `updated_at`. Verified at the wire layer by Tier-1 probe E (re-grant after `sleep 1` → both timestamps byte-identical).
+- **Cross-table validator location:** `src/services/run_mode.py::assert_consent_for_run_mode(db, project_id, run_mode)` — service-layer helper called from POST + PATCH `/api/tasks`. NOT a DB CHECK because it spans tables. Reads only `Project.auto_run_consent_at` (single-column scalar select with `Project.status == ACTIVE`) — keeps the hot POST/PATCH path cheap.
+- **PATCH resolved-final-mode rule:** the validator fires on the RESOLVED final `run_mode` — `payload.run_mode if "run_mode" in updates else task.run_mode`. Downgrading from `auto_headless` to `manual` always succeeds (resolved=manual → no fire). PATCH on an `auto_headless` row when consent is gone fails (resolved=auto_headless re-validates and rejects) — forces the operator to either downgrade run_mode first OR re-grant consent.
+- **Lockstep guard:** `TaskRunModeLiteral` ↔ `TaskRunMode.ALL` import-time guard at the bottom of `schemas/task.py`, mirroring the existing `TeamCode` ↔ `ProjectTeam.ALL` guard in `schemas/project.py:115-119`. Uses `RuntimeError` (not `assert`) so it survives `python -O`. Drift test in `tests/test_run_mode_consent.py` monkey-patches `TaskRunMode.ALL` → reloads schemas module → asserts RuntimeError.
+- **Source-text-locks:** two new lock tests pin (a) `"confirm_name must match project name exactly"` in `routers/projects.py`, (b) the consent-required template `"project {project_id} has not granted auto-headless consent"` in `services/run_mode.py`. Pattern per #122.
+- **Test count:** 31 new tests in `tests/test_run_mode_consent.py`. pytest 71 (baseline) + 31 (#483) + 2 (#482 isolation pinning) = **102 passed** against fresh `agent_teams_test` (per Issue 2). The previously-flaky `test_list_tasks_default_filters_active_only` now passes deterministically.
+- **`MINOR-1` follow-up filed** (Kanban TBD): when `POST /api/tasks` carries `run_mode='auto_headless'` AND `project_id` references a missing or soft-deleted project, the consent error masks the FK error (same operator mistake produces two different detail strings depending on `run_mode`). Wire-contract drift, not a bug. Acceptable to ship #483 as-is and disambiguate in a follow-up SELECT branch.
+- **`MINOR-2` follow-up:** `tests/test_run_mode_consent.py:54-65` `_reset_consent` helper uses direct ORM `update()` to simulate consent revocation (no public revoke-consent endpoint yet). Justified deferral; remove when `POST /api/projects/{id}/revoke-consent` ships.
+
+**Reasoning:** All five items above came up as live design questions during implementation. The idempotent-re-grant rule was specced in the team-methodology decision but the implementation needed a real short-circuit before `func.now()` — without it, re-grant would re-stamp despite the "lean toward 200-with-existing-row" wording. The PATCH resolved-mode rule was the trickiest — initial drafts asserted only on `payload.run_mode` (which would let PATCH-other-fields-on-headless-task slip past); re-reading task #483's spec made it clear the validator must consider the FINAL post-PATCH state. The 404-on-soft-deleted decision is consistent with the existing `get_or_404 status=ACTIVE` pattern on `/api/projects/by-name/{name}`; a soft-deleted project is by definition not in active use and shouldn't grant consent.
+
+**Implications:**
+- New endpoint shape locked. api-contracts.md updated atomically with this commit.
+- Frontend (#484) gets stable types: `run_mode: "manual"|"auto_pickup"|"auto_headless"` (Literal, default `"manual"`), `auto_run_consent_at: string | null` (ISO-8601). Grant-consent body `{confirm_name: string}` with `extra="forbid"` enforced at the API.
+- Live DB unchanged across the entire dev-tester probe set: agent-teams id=1 `auto_run_consent_at:null` byte-identical pre/post; throwaway project id=558 soft-deleted; 39 active projects, 0 consented.
+- Standards-propagation queue grows by four (humans-only writers): (a) `fastapi/routing.md` typed-acknowledgment endpoint pattern; (b) `fastapi/atomic-mutations.md` (or `sqlalchemy/orm.md`) idempotent-stamp endpoint pattern; (c) `fastapi/cross-table-validation.md` (or `sqlalchemy/orm.md`) cross-table-validator service-layer pattern; (d) `python/testing.md` import-time guard drift-test pattern (monkeypatch CONSTANT.ALL → reload module → assert RuntimeError → reload).
+- **Advisory items observed during Tier-1 (NOT #483 regressions; pre-existing):** (a) `GET /api/projects/{id}` direct-by-id route returns 405 — clients must use `/api/projects/by-name/{name}` or `/api/projects?…`. Either wire the by-id GET in a follow-up or document explicitly. (b) POST `/api/projects` body uses nested `paths:{web,api,db}` + nested `stack:{web,api,db}`; PATCH uses flat `paths_web`/`paths_api`/`paths_db`. The doc-gap is now closed (POST request shape was always correct in this file; advisory is just to highlight the asymmetry vs PATCH).
+
+**Cross-references:**
+- Migration: `api/alembic/versions/2026_05_09_1000_run_mode_and_consent.py` (commit `23ef38f`, Kanban #482).
+- Methodology decision: `context/teams/dev/decisions.md` 2026-05-09 'Kanban-driven AI: 2-mode model + per-project consent gate'.
+- Parent: Kanban #481.
+- Prior subtask: Kanban #482 (commit `23ef38f`).
+- Next subtask: Kanban #484 (frontend types + UI badges/banner).
+
 ## 2026-05-09 — Test-database isolation (`agent_teams_test`) — Issue 2 of incident response
 **Scope:** api / tests / dev tooling
 **Proposed by:** dev-backend (after Lead diagnosed leak source — pytest writing to live DB) → dev-reviewer GREEN (0 BLOCKER / 0 MAJOR / 0 MINOR / 2 NIT advisory)

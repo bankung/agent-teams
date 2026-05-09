@@ -108,6 +108,23 @@ class ProjectRead(BaseModel):
     team: str
     created_at: datetime
     updated_at: datetime
+    # Step 2 (Kanban #481/#483) — per-project consent gate for Mode B
+    # (auto_headless tasks). NULL = not consented. First grant via
+    # POST /api/projects/{id}/grant-consent stamps it; idempotent re-grant.
+    auto_run_consent_at: datetime | None
+
+
+class ProjectGrantConsent(BaseModel):
+    """Request body for POST /api/projects/{id}/grant-consent.
+
+    Typed-acknowledgment endpoint — the user must type the project name
+    verbatim. `extra="forbid"` is deliberate (NOT the default `extra="ignore"`):
+    a deliberate-action UX should fail loud if the client smuggles extra fields.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    confirm_name: str = Field(..., min_length=1, max_length=255)
 
 
 # Sanity: the Literal stays in lockstep with src.constants.ProjectTeam.ALL.

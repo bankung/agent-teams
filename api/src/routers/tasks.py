@@ -22,6 +22,7 @@ from src.constants import RecordStatus, TaskStatus
 from src.db import get_or_404, get_session
 from src.models.task import Task
 from src.schemas.task import TaskCreate, TaskRead, TaskUpdate
+from src.services.run_mode import assert_consent_for_run_mode
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -112,6 +113,11 @@ async def create_task(
                 detail=f"parent_task_id {payload.parent_task_id} belongs to a different project",
             )
 
+    # Cross-table consent gate (Kanban #481/#483). Only fires when run_mode is
+    # auto_headless; otherwise no-op. Detail string pinned by the source-text-lock
+    # test in test_routes_smoke.py — keep in sync with services/run_mode.py.
+    await assert_consent_for_run_mode(session, payload.project_id, payload.run_mode)
+
     task = Task(**payload.model_dump())
     session.add(task)
     try:
@@ -147,6 +153,14 @@ async def update_task(
     )
 
     updates = payload.model_dump(exclude_unset=True)
+
+    # Cross-table consent gate (Kanban #481/#483). Resolve run_mode = the
+    # value AFTER this PATCH would land — payload value if present, else the
+    # existing row's run_mode. V1 forbids re-parenting so project_id is always
+    # the existing row's. Only fires when the resolved value is auto_headless;
+    # downgrading auto_headless → manual is always allowed.
+    resolved_run_mode = updates.get("run_mode") if "run_mode" in updates else task.run_mode
+    await assert_consent_for_run_mode(session, task.project_id, resolved_run_mode)
 
     # Process-status-transition side effects — only stamp if not already set /
     # explicitly provided. We use the DB now() so the value matches the
