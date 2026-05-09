@@ -3,8 +3,8 @@
 These tests do NOT require a running Postgres. They exercise:
 - Import the FastAPI app cleanly (Project + Task ORM models register on Base.metadata).
 - /health returns 200 with the expected envelope.
-- /api/projects/active without a DB raises an error path (we don't assert the
-  exact code — just that the app accepts the route and we don't crash on import).
+- /api/projects/by-name/{name} is the canonical bootstrap endpoint
+  (post Kanban #694 Phase 2; /api/projects/active now returns 410 Gone).
 
 Full integration tests (DB-backed) arrive in the QA phase once docker-compose
 is up.

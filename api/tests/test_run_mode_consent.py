@@ -742,16 +742,22 @@ async def test_seeded_agent_teams_task_has_run_mode_manual(client) -> None:
 @pytest.mark.asyncio
 async def test_seeded_agent_teams_project_consent_is_null(client) -> None:
     """The seeded agent-teams row has not granted consent (NULL by default).
-    If a previous flaky test left consent stamped, this surfaces the leak."""
-    resp = await client.get("/api/projects/active")
+    If a previous flaky test left consent stamped, this surfaces the leak.
+
+    Kanban #694 Phase 2: switched from /api/projects/active (now 410 Gone) to
+    by-name lookup."""
+    resp = await client.get("/api/projects/by-name/agent-teams")
     assert resp.status_code == 200
     assert resp.json().get("auto_run_consent_at") is None
 
 
-# Sentinel: ensure the active project is still agent-teams (defense-in-depth
-# against a previous test failing to clean up its is_active swap).
+# Sentinel: ensure the seeded agent-teams row is still is_active=true (defense-
+# in-depth against a previous test failing to clean up its is_active swap).
+# Kanban #694 Phase 2: switched from /api/projects/active to by-name lookup.
 @pytest.mark.asyncio
-async def test_active_project_is_still_agent_teams(client) -> None:
-    resp = await client.get("/api/projects/active")
+async def test_seeded_agent_teams_is_still_active(client) -> None:
+    resp = await client.get("/api/projects/by-name/agent-teams")
     assert resp.status_code == 200
-    assert resp.json()["name"] == "agent-teams"
+    body = resp.json()
+    assert body["name"] == "agent-teams"
+    assert body["is_active"] is True

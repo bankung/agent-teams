@@ -7,7 +7,8 @@ expected to exist and be is_active=True.
 
 Scope:
 - Verify success-path response shape on the read endpoints we lean on (Lead
-  calls /api/projects/active every turn).
+  calls /api/projects/by-name/{name} on every bootstrap; legacy
+  /api/projects/active returns 410 Gone after Kanban #694 Phase 2).
 - Lock in the *exact* 404 detail strings that backend's recent refactor moved
   through `get_or_404` — drift in those strings would silently change the
   error UX the FE will eventually render.
@@ -75,8 +76,49 @@ def _project_create_payload(name: str, *, team: str = "dev", is_active: bool = F
 
 
 @pytest.mark.asyncio
-async def test_get_active_project_returns_seeded_agent_teams(client) -> None:
+async def test_get_active_project_returns_410_gone(client) -> None:
+    """Regression: Kanban #694, Phase 2 — `/api/projects/active` is deprecated.
+
+    Wire-lock: stable status_code (410) AND stable body shape. Callers must
+    migrate to `/api/projects/by-name/{name}` or `/api/projects?status=1`.
+    """
     resp = await client.get("/api/projects/active")
+    assert resp.status_code == 410, resp.text
+    assert resp.json() == {
+        "detail": (
+            "Endpoint deprecated. Use /api/projects/by-name/{name} or "
+            "/api/projects?status=1 instead."
+        )
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_active_project_410_detail_pinned_in_router_source() -> None:
+    """Regression: Kanban #694 — source-text-lock per #122 pattern.
+
+    The 410 detail string is wire contract — drift breaks any FE / shell that
+    string-matches it. Lock by scanning `routers/projects.py` source for the
+    exact substring."""
+    from src.routers import projects as projects_router
+
+    source = Path(projects_router.__file__).read_text(encoding="utf-8")
+    pinned = (
+        '"Endpoint deprecated. Use /api/projects/by-name/{name} or "\n'
+        '            "/api/projects?status=1 instead."'
+    )
+    assert pinned in source, (
+        f"410 detail string drifted in routers/projects.py — expected {pinned!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_seeded_agent_teams_by_name(client) -> None:
+    """Replacement for the legacy `/api/projects/active` smoke test.
+
+    The bootstrap convention (Kanban #694) is to look up the seeded project by
+    name. Same shape assertions, new endpoint.
+    """
+    resp = await client.get("/api/projects/by-name/agent-teams")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["name"] == "agent-teams"
@@ -153,7 +195,7 @@ async def test_post_task_invalid_process_status_returns_422_with_validator_messa
     rename to `process_status_v2` cannot pass this test by accident.
     """
     # Resolve the active project id dynamically — never hardcode `1`.
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     assert active.status_code == 200, active.text
     project_id = active.json()["id"]
 
@@ -191,7 +233,7 @@ async def test_task_process_status_transitions_stamp_lifecycle_timestamps(client
 
     The created row is soft-deleted on the way out so the dev DB stays clean.
     """
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     assert active.status_code == 200
     project_id = active.json()["id"]
 
@@ -251,7 +293,7 @@ async def test_list_tasks_default_filters_active_only(client) -> None:
     """Default-filter `WHERE status=1` — soft-deleted rows are invisible
     unless `?include_deleted=true` is passed.
     """
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     project_id = active.json()["id"]
 
     # Create a task, then soft-delete it.
@@ -289,7 +331,7 @@ async def test_get_task_returns_row_regardless_of_soft_delete_status(client) -> 
     standards/postgresql/soft-delete.md — withholding by status surprises
     consumers calling restore flows).
     """
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     project_id = active.json()["id"]
 
     headers = {"X-Project-Id": str(project_id)}
@@ -312,7 +354,7 @@ async def test_get_task_returns_row_regardless_of_soft_delete_status(client) -> 
 @pytest.mark.asyncio
 async def test_delete_task_returns_204_and_is_idempotent(client) -> None:
     """DELETE flips status=0 and returns 204. A second DELETE is a no-op (still 204)."""
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     project_id = active.json()["id"]
 
     headers = {"X-Project-Id": str(project_id)}
@@ -338,7 +380,7 @@ async def test_patch_task_silently_ignores_soft_delete_status_field(client) -> N
     `model_config = ConfigDict(extra='forbid')` on TaskUpdate, which is a
     contract change tracked by this test.
     """
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     project_id = active.json()["id"]
 
     headers = {"X-Project-Id": str(project_id)}
@@ -390,22 +432,28 @@ async def test_list_projects_default_filters_active_only(client, scaffold_cleanu
 async def test_delete_project_clears_is_active_when_previously_true(
     client, scaffold_cleanup
 ) -> None:
-    """Deleting an active project must also flip is_active=false (same txn) so
-    the partial unique index `ux_projects_active_one` doesn't block a new
-    active project.
+    """Deleting an active project flips is_active=false in the same txn.
+
+    Originally guarded the partial unique index `ux_projects_active_one`
+    (dropped in `0006_drop_active_one`, Kanban #694 Phase 2). The DELETE
+    behavior — flip is_active=false alongside status=0 — is still preserved
+    by the router as a defensive cleanup; this test now locks that behavior
+    standalone (the index is gone but the cleanup remains).
 
     M7: the seeded agent-teams row's is_active is restored in `finally` so a
     failed assertion above the restore step does NOT leak state to subsequent
-    tests (which all depend on /api/projects/active returning agent-teams).
+    tests (which all look up agent-teams by name).
     """
     name = scaffold_cleanup(_unique_name("proj-delete-active"))
-    # Create as inactive first to avoid fighting the seeded agent-teams active row.
+    # Create as inactive first; toggling via PATCH below exercises the post-694
+    # PATCH path (no atomic-clear of the seeded agent-teams row).
     create = await client.post("/api/projects", json=_project_create_payload(name))
     assert create.status_code == 201
     project_id = create.json()["id"]
 
     try:
-        # Flip is_active=true via PATCH (uses _clear_other_active to free the slot).
+        # Flip is_active=true via PATCH. Post-694 Phase 2: this no longer
+        # touches other rows' is_active.
         activate = await client.patch(
             f"/api/projects/{project_id}", json={"is_active": True}
         )
@@ -422,9 +470,8 @@ async def test_delete_project_clears_is_active_when_previously_true(
         assert len(rows) == 1
         assert rows[0]["is_active"] is False
     finally:
-        # Restore agent-teams as the active project NO MATTER WHAT — every
-        # other test depends on it. Without this, an assertion failure above
-        # cascades to the rest of the suite via 404 on /api/projects/active.
+        # Restore agent-teams's is_active=true NO MATTER WHAT — many tests
+        # assert on it via /api/projects/by-name/agent-teams.
         seeded = await client.get("/api/projects/by-name/agent-teams")
         if seeded.status_code == 404:
             all_rows = (
@@ -457,6 +504,75 @@ async def test_recreate_project_with_name_of_soft_deleted_one(
 
     # Cleanup
     await client.delete(f"/api/projects/{second_id}")
+
+
+# -----------------------------------------------------------------------------
+# Kanban #694 Phase 2 — session-scoped active: PATCH does not clear other rows
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_setting_is_active_true_does_not_clear_others(
+    client, scaffold_cleanup
+) -> None:
+    """Regression: Kanban #694, Phase 2.
+
+    Pre-694 PATCH `{"is_active": true}` atomically cleared every other row's
+    is_active (load-bearing on the now-dropped `ux_projects_active_one`
+    partial unique index). Post-694 the side-effect is gone — multiple rows
+    may legitimately carry `is_active=true` simultaneously because each
+    Claude Code session binds to a project by name.
+
+    Seed two throwaway projects, PATCH BOTH to is_active=true, then GET each
+    via /api/projects/by-name/{name} and assert both still report
+    is_active=true. Soft-delete both in `finally`.
+    """
+    name_a = scaffold_cleanup(_unique_name("proj-694a"))
+    name_b = scaffold_cleanup(_unique_name("proj-694b"))
+
+    create_a = await client.post("/api/projects", json=_project_create_payload(name_a))
+    assert create_a.status_code == 201, create_a.text
+    id_a = create_a.json()["id"]
+
+    create_b = await client.post("/api/projects", json=_project_create_payload(name_b))
+    assert create_b.status_code == 201, create_b.text
+    id_b = create_b.json()["id"]
+
+    try:
+        # PATCH both to is_active=true. Pre-694 the second PATCH would have
+        # silently cleared the first; post-694 both stick.
+        patch_a = await client.patch(f"/api/projects/{id_a}", json={"is_active": True})
+        assert patch_a.status_code == 200, patch_a.text
+        assert patch_a.json()["is_active"] is True
+
+        patch_b = await client.patch(f"/api/projects/{id_b}", json={"is_active": True})
+        assert patch_b.status_code == 200, patch_b.text
+        assert patch_b.json()["is_active"] is True
+
+        # Re-fetch both via by-name to confirm BOTH are still active (the key
+        # post-694 invariant — pre-694, this would have failed because the
+        # second PATCH atomically cleared row a).
+        check_a = await client.get(f"/api/projects/by-name/{name_a}")
+        assert check_a.status_code == 200, check_a.text
+        assert check_a.json()["is_active"] is True, (
+            f"row a (id={id_a}) was silently cleared by row b's PATCH — "
+            f"atomic-clear leaked back into update_project"
+        )
+
+        check_b = await client.get(f"/api/projects/by-name/{name_b}")
+        assert check_b.status_code == 200, check_b.text
+        assert check_b.json()["is_active"] is True
+
+        # Bonus assertion — the seeded agent-teams row was also untouched.
+        seeded = await client.get("/api/projects/by-name/agent-teams")
+        assert seeded.status_code == 200
+        assert seeded.json()["is_active"] is True, (
+            "seeded agent-teams row's is_active was cleared by a throwaway "
+            "PATCH — atomic-clear leaked back into update_project"
+        )
+    finally:
+        await client.delete(f"/api/projects/{id_a}")
+        await client.delete(f"/api/projects/{id_b}")
 
 
 # -----------------------------------------------------------------------------
@@ -660,7 +776,7 @@ async def test_first_delete_bumps_updated_at_redelete_does_not_for_tasks(
     """
     from sqlalchemy import text
 
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     project_id = active.json()["id"]
 
     headers = {"X-Project-Id": str(project_id)}
@@ -890,7 +1006,7 @@ async def test_patch_task_updated_at_advances_on_real_change_and_no_op_skips(
          `updated_at` again past the post-no-op snapshot.
       4. None of the three PATCHes mutate `created_at`.
     """
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     project_id = active.json()["id"]
 
     headers = {"X-Project-Id": str(project_id)}
@@ -1032,7 +1148,7 @@ async def test_patch_project_rejects_path_traversal_names(client) -> None:
     """Layer 1 lock — PATCH /api/projects/{id} with malicious `name` → 422.
 
     Targets the seeded `agent-teams` project (id resolved dynamically via
-    /api/projects/active). `ProjectUpdate.name` carries the same regex as
+    /api/projects/by-name/agent-teams). `ProjectUpdate.name` carries the same regex as
     `ProjectCreate.name` (schemas/project.py:76) — drift breaks this test.
 
     Only one representative malicious name is exercised here; the create-side
@@ -1040,7 +1156,7 @@ async def test_patch_project_rejects_path_traversal_names(client) -> None:
     confirm the PATCH path also enforces the regex (no silent contract gap
     between POST and PATCH).
     """
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     assert active.status_code == 200, active.text
     project_id = active.json()["id"]
 
@@ -1275,7 +1391,7 @@ async def test_post_task_returns_stable_detail_on_fk_violation(client) -> None:
 async def test_post_parent_and_child_round_trip(client) -> None:
     """Happy path: create a parent, then a child referring to parent.id; both
     succeed (201) and TaskRead exposes parent_task_id correctly on each."""
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     project_id = active.json()["id"]
 
     headers = {"X-Project-Id": str(project_id)}
@@ -1318,7 +1434,7 @@ async def test_post_child_rejects_cross_project_parent(
 ) -> None:
     """Parent in project A, child claiming project B but pointing at parent →
     400 with the locked detail string."""
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     project_a_id = active.json()["id"]
 
     # Create an inactive sibling project for the cross-project parent.
@@ -1371,7 +1487,7 @@ async def test_db_check_rejects_self_parent(client, db_session) -> None:
     from sqlalchemy import text
     from sqlalchemy.exc import IntegrityError
 
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     project_id = active.json()["id"]
 
     headers = {"X-Project-Id": str(project_id)}
@@ -1406,7 +1522,7 @@ async def test_patch_parent_task_id_rejected_with_422(client) -> None:
     Pydantic validation error mentioning the field. We don't pin the exact
     message text (Pydantic versions tweak wording); we pin the field path +
     a substring of the locked message."""
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     project_id = active.json()["id"]
 
     headers = {"X-Project-Id": str(project_id)}
@@ -1474,7 +1590,7 @@ async def test_delete_parent_with_active_children_returns_409(client) -> None:
     contract (status + detail) and the DB-state invariant. The fail-before /
     pass-after demo for this test is captured in the dev-backend session log.
     """
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     project_id = active.json()["id"]
 
     headers = {"X-Project-Id": str(project_id)}
@@ -1520,7 +1636,7 @@ async def test_delete_parent_with_active_children_returns_409(client) -> None:
 async def test_delete_parent_succeeds_after_children_soft_deleted(client) -> None:
     """Once every child is soft-deleted (status=0), DELETE parent → 204 and
     parent.status flips to 0."""
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     project_id = active.json()["id"]
 
     headers = {"X-Project-Id": str(project_id)}
@@ -1560,7 +1676,7 @@ async def test_delete_parent_succeeds_after_children_soft_deleted(client) -> Non
 async def test_list_tasks_filters_by_parent_task_id(client) -> None:
     """`?parent_task_id=N` returns only direct children of N (and excludes N itself,
     plus unrelated rows in the same project)."""
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     project_id = active.json()["id"]
 
     headers = {"X-Project-Id": str(project_id)}
@@ -1624,7 +1740,7 @@ async def test_list_tasks_filters_by_parent_task_id(client) -> None:
 async def test_list_tasks_top_level_only_filter(client) -> None:
     """`?top_level_only=true` returns only rows with parent_task_id IS NULL —
     children of a parent must be excluded."""
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     project_id = active.json()["id"]
 
     headers = {"X-Project-Id": str(project_id)}
@@ -1715,7 +1831,7 @@ async def test_list_tasks_pending_true_excludes_done(client) -> None:
     Seed one task per process_status (1..5) and confirm the shortcut returns
     exactly the four non-done rows.
     """
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     project_id = active.json()["id"]
     headers = {"X-Project-Id": str(project_id)}
 
@@ -1766,7 +1882,7 @@ async def test_list_tasks_pending_false_default_unchanged(client) -> None:
     locks the default-behavior preservation: the new param is opt-in and
     must not change existing list semantics.
     """
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     project_id = active.json()["id"]
     headers = {"X-Project-Id": str(project_id)}
 
@@ -1806,7 +1922,7 @@ async def test_list_tasks_pending_and_process_status_explicit_wins(client) -> No
     precedence rule. Explicit `process_status` is more specific and silently
     overrides `pending`. Enforced by `elif pending:` in the router.
     """
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     project_id = active.json()["id"]
     headers = {"X-Project-Id": str(project_id)}
 
@@ -1861,7 +1977,7 @@ async def test_list_tasks_pending_composes_with_assigned_role(client) -> None:
     """`?pending=true&assigned_role=2` returns only the backend non-done rows
     — locks composability with the existing `assigned_role` filter.
     """
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     project_id = active.json()["id"]
     headers = {"X-Project-Id": str(project_id)}
 
@@ -1965,7 +2081,7 @@ async def test_list_tasks_pending_with_top_level_only(client) -> None:
     parent_task_id IS NULL rows that are also non-done. One probe is enough
     to lock the `pending`-clause-doesn't-clobber-other-where-clauses guarantee.
     """
-    active = await client.get("/api/projects/active")
+    active = await client.get("/api/projects/by-name/agent-teams")
     project_id = active.json()["id"]
     headers = {"X-Project-Id": str(project_id)}
 

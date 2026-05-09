@@ -6,13 +6,19 @@ After-create-side-effect: auto-scaffolds the on-disk context/projects/<name>/ fo
 Soft-delete: list endpoints default-filter `WHERE status=1`; opt-in `?include_deleted=true`
 returns soft-deleted rows too. DELETE flips `status=0` (and clears `is_active` if true).
 Detail endpoints return rows regardless of status (per standards/postgresql/soft-delete.md).
+
+Session-scoped active (Kanban #694, Phase 2): the legacy "single active project"
+invariant is gone. `is_active` is a free boolean — multiple rows may carry
+`is_active=true` simultaneously. PATCH /api/projects/{id} no longer atomically
+clears other rows; GET /api/projects/active returns 410 Gone (use
+/api/projects/by-name/{name} or /api/projects?status=1 instead).
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi import status as http_status
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
@@ -33,22 +39,6 @@ from src.settings import get_settings
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
-async def _clear_other_active(session: AsyncSession, keep_id: int | None) -> None:
-    """Clear is_active on every row except keep_id (if given). Called inside an open transaction."""
-    # We deliberately don't filter status=1 here — the partial unique index already
-    # excludes status=0 rows, so a soft-deleted is_active=true row is harmless on
-    # the index but still worth clearing if it leaks from out-of-band edits.
-    stmt = (
-        update(Project)
-        .values(is_active=False)
-        .where(Project.is_active.is_(True))
-        .execution_options(synchronize_session=False)
-    )
-    if keep_id is not None:
-        stmt = stmt.where(Project.id != keep_id)
-    await session.execute(stmt)
-
-
 @router.get("", response_model=list[ProjectRead])
 async def list_projects(
     limit: int = Query(default=50, ge=1, le=500),
@@ -67,19 +57,35 @@ async def list_projects(
     return list(result.scalars().all())
 
 
-@router.get("/active", response_model=ProjectRead)
-async def get_active_project(
-    session: AsyncSession = Depends(get_session),
-) -> Project:
-    # The partial unique index `ux_projects_active_one` already gates is_active=true
-    # on status=1, so we don't need to filter status here — but pass it explicitly
-    # for clarity and as a safety net if the index is ever loosened.
-    return await get_or_404(
-        session,
-        Project,
-        detail="No active project",
-        is_active=True,
-        status=RecordStatus.ACTIVE,
+@router.get(
+    "/active",
+    responses={
+        410: {
+            "description": (
+                "Endpoint deprecated. Use /api/projects/by-name/{name} or "
+                "/api/projects?status=1 instead."
+            )
+        },
+    },
+)
+async def get_active_project() -> Response:
+    """Deprecated by Kanban #694 (Phase 2 of session-scoped active project shift).
+
+    The legacy "single active project" invariant is gone — each Claude Code
+    session binds to a project by name at bootstrap, and multiple rows may
+    carry `is_active=true` simultaneously. Returns 410 Gone with a stable
+    detail string pointing callers at the replacement endpoints.
+
+    Detail string source-text-locked per the #122 pattern by
+    `test_get_active_project_410_detail_pinned_in_router_source` —
+    keep in sync.
+    """
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Endpoint deprecated. Use /api/projects/by-name/{name} or "
+            "/api/projects?status=1 instead."
+        ),
     )
 
 
@@ -122,11 +128,9 @@ async def create_project(
         "team": payload.team,
     }
 
-    # If caller wants this project to be the active one, clear others first —
-    # avoids tripping the partial unique index in the same transaction.
-    if data["is_active"]:
-        await _clear_other_active(session, keep_id=None)
-
+    # Kanban #694, Phase 2: `is_active` is a free boolean — no atomic-clear of
+    # other rows. The legacy `_clear_other_active(keep_id=None)` here was
+    # load-bearing on the dropped `ux_projects_active_one` invariant.
     project = Project(**data)
     session.add(project)
     try:
@@ -167,9 +171,10 @@ async def update_project(
             detail="Cannot activate a soft-deleted project — restore first",
         )
 
-    # Atomically flip active flag — clear other rows first (single transaction).
-    if updates.get("is_active") is True:
-        await _clear_other_active(session, keep_id=project.id)
+    # Kanban #694, Phase 2: setting `is_active=true` no longer clears other
+    # rows' is_active. Multiple rows may legitimately be active simultaneously
+    # under session-scoped binding. The atomic-clear was load-bearing on the
+    # dropped `ux_projects_active_one` invariant.
 
     # Skip writes where the new value equals the existing one — keeps PATCHes
     # that touch only some fields from bumping `updated_at` (and from writing
@@ -254,9 +259,11 @@ async def delete_project(
     project_id: int,
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    """Soft-delete a project: flip status=0; if it was the active project, also
-    clear is_active so a new project can take that slot. Returns 204 No Content.
-    Idempotent — deleting an already-deleted project is a no-op (still 204).
+    """Soft-delete a project: flip status=0 and defensively clear is_active.
+
+    A soft-deleted row should not advertise itself as active in any list/by-name
+    query. Returns 204 No Content. Idempotent — deleting an already-deleted
+    project is a no-op (still 204).
     """
     project = await get_or_404(
         session, Project, detail=f"Project id={project_id} not found", id=project_id
@@ -270,7 +277,8 @@ async def delete_project(
 
     project.status = RecordStatus.DELETED
     if project.is_active:
-        # Same transaction so the partial unique index never sees a half-state.
+        # Defensive cleanup: same transaction keeps the row consistent for any
+        # concurrent reader (no window where status=0 AND is_active=true).
         project.is_active = False
 
     # Force `updated_at` to refresh — server_default only fires on INSERT.

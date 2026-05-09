@@ -36,7 +36,7 @@ Template for a new table:
 -->
 
 ### projects
-**Purpose:** Registered projects (one entry per stack on disk; at most one row may have `is_active=true AND status=1`).
+**Purpose:** Registered projects (one entry per stack on disk; `is_active` is a free boolean post-#694 Phase 2 — each Claude Code session binds to a project by name at bootstrap, so multiple live projects may simultaneously carry `is_active=true`).
 
 | column        | type         | constraints                                          | notes |
 |---------------|--------------|------------------------------------------------------|-------|
@@ -59,7 +59,7 @@ Template for a new table:
 
 **Indexes:**
 - `ux_projects_name_active` partial UNIQUE on `(name)` WHERE `status = 1` — name re-usable after soft delete
-- `ux_projects_active_one` partial UNIQUE on `(is_active)` WHERE `is_active IS TRUE AND status = 1` — at most one active live project
+- ~~`ux_projects_active_one` partial UNIQUE on `(is_active)` WHERE `is_active IS TRUE AND status = 1`~~ — DROPPED 2026-05-10 by `0006_drop_active_one` (Kanban #694 Phase 2; session-scoped active means multiple rows may now carry `is_active=true` simultaneously)
 - `ix_projects_status` on `(status)` — keeps default-filter selective
 
 ### tasks

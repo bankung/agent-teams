@@ -59,11 +59,10 @@ Template for a new endpoint:
 **Response 200:** `[ProjectRead, ...]`
 
 ### GET /api/projects/active
-**Purpose:** Get the single active project.
+**Purpose:** ~~Get the single active project.~~ **DEPRECATED 2026-05-10 (Kanban #694 Phase 2 — session-scoped active project shift).** The "single active project" invariant is gone — multiple rows may legitimately carry `is_active=true` because each Claude Code session binds to a project by name independently. Callers MUST migrate to `/api/projects/by-name/{name}` or `/api/projects?status=1`.
 **Auth:** none
-**Response 200:** `ProjectRead`
 **Errors:**
-- `404` — `{"detail":"No active project"}` when no row has `is_active=true`
+- `410` — `{"detail":"Endpoint deprecated. Use /api/projects/by-name/{name} or /api/projects?status=1 instead."}` — always returned. Source-text-locked in `routers/projects.py` per the #122 pattern. Documented in `/openapi.json` via `responses={410: {...}}` on the route decorator (FastAPI does NOT auto-document runtime `raise HTTPException(...)` codes).
 
 ### GET /api/projects/by-name/{name}
 **Purpose:** Look up a project by its unique name.
@@ -103,7 +102,7 @@ Template for a new endpoint:
 - `422` — Pydantic validation error on missing/invalid fields, including missing `team` or `team` not in `{"dev","novel"}`. `name` must match `^[a-zA-Z0-9_-]{1,64}$` (path-traversal hardening per Kanban #121); rejection shape: `{"detail":[{"type":"string_pattern_mismatch","loc":["body","name"],...}]}`. Same regex applies to PATCH `/api/projects/{id}` `name` updates.
 
 ### PATCH /api/projects/{id}
-**Purpose:** Partial update. Setting `is_active=true` atomically clears every other row's `is_active`. Server bumps `updated_at` on any real field change; an unchanged-body PATCH is a no-op (no `updated_at` advance, no audit-row noise) — N7 no-op-skip parity with PATCH `/api/tasks/{id}`.
+**Purpose:** Partial update. Setting `is_active=true` ~~atomically clears every other row's `is_active`~~ **2026-05-10 (Kanban #694 Phase 2):** no longer touches other rows — multiple projects may carry `is_active=true` simultaneously under session-scoped binding. Server bumps `updated_at` on any real field change; an unchanged-body PATCH is a no-op (no `updated_at` advance, no audit-row noise) — N7 no-op-skip parity with PATCH `/api/tasks/{id}`.
 **Auth:** none
 
 **Request:** any subset of `{name, description, paths_web, paths_api, paths_db, stack_web, stack_api, stack_db, config, is_active, team}`
@@ -120,7 +119,7 @@ Template for a new endpoint:
 - `400` — `{"detail":"Cannot activate a soft-deleted project — restore first"}` when PATCH sets `is_active=true` on a row with `status=0`. Restore is a deferred admin path (separate endpoint when UI demands it). Other fields can still be PATCHed on a soft-deleted row.
 
 ### DELETE /api/projects/{id}
-**Purpose:** Soft-delete a project — flips `status=0`. If the project was active (`is_active=true`), the same transaction also clears `is_active` so a new project can claim the slot. First DELETE advances `updated_at`; subsequent DELETEs on an already-deleted row are idempotent no-ops (return 204 without further `updated_at` bump — this is the M9 observable signal). Folder under `context/projects/<name>/` is **not** removed (handled out-of-band).
+**Purpose:** Soft-delete a project — flips `status=0`. If the project was active (`is_active=true`), the same transaction also clears `is_active` — defensive cleanup so a soft-deleted row does not advertise itself as active in any list / by-name query (post-#694 Phase 2: no longer about a unique-index slot, since the index is gone; about read-side consistency). First DELETE advances `updated_at`; subsequent DELETEs on an already-deleted row are idempotent no-ops (return 204 without further `updated_at` bump — this is the M9 observable signal). Folder under `context/projects/<name>/` is **not** removed (handled out-of-band).
 **Auth:** none
 **Response 204:** No content
 **Errors:**

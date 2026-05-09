@@ -28,8 +28,13 @@ if TYPE_CHECKING:
 class Project(Base):
     """A registered project — typically maps to one Next.js + FastAPI + DB stack on disk.
 
-    `is_active` has a partial unique index so at most one ACTIVE project can be active.
-    Soft-delete: `status=1` active, `status=0` deleted; uniqueness on `name` is also
+    `is_active` is a free boolean — multiple rows may carry `is_active=true`
+    simultaneously. Each Claude Code session binds to a project by name at
+    bootstrap (Kanban #694, session-scoped active); the legacy "single active
+    project" invariant + its partial unique index `ux_projects_active_one`
+    were dropped by `0006_drop_active_one`.
+
+    Soft-delete: `status=1` active, `status=0` deleted; uniqueness on `name` is
     partial (gated on `status=1`) so a name can be reused after a soft delete.
     """
 
@@ -123,15 +128,11 @@ class Project(Base):
             unique=True,
             postgresql_where=(status == 1),
         ),
-        # Partial unique on is_active — at most one ACTIVE project. Predicate now
-        # also gates on status=1 so a soft-deleted "active" row doesn't block a
-        # new active project from being created.
-        Index(
-            "ux_projects_active_one",
-            "is_active",
-            unique=True,
-            postgresql_where=(is_active.is_(True) & (status == 1)),
-        ),
+        # NOTE: the partial unique on is_active (`ux_projects_active_one`) was
+        # dropped by `0006_drop_active_one` — Phase 2 of the session-scoped
+        # active project shift (Kanban #694). Multiple rows may now legitimately
+        # have `is_active=true` because each Claude Code session binds to a
+        # project by name independently.
         Index("ix_projects_status", "status"),
     )
 
