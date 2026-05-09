@@ -51,7 +51,7 @@ Template for a new table:
 | stack_db      | text         | NULL                                                 |       |
 | config        | jsonb        | NOT NULL DEFAULT `'{}'`                              | houses `standards` mapping |
 | is_active     | bool         | NOT NULL DEFAULT `false`                             |       |
-| team          | text         | NOT NULL DEFAULT `'dev'`, CHECK `team IN ('dev','novel')` (named `ck_projects_team_valid`) | drives subagent roster (see scaffold service + `.claude/teams/<team>.md` once Phase 2.5b2 lands; `.claude/leads/<lead>.md` until then). Renamed from `lead` by `0004_rename_lead_to_team` (2026-05-09). |
+| team          | text         | NOT NULL DEFAULT `'dev'`, CHECK `team IN ('dev','novel')` (named `ck_projects_team_valid`) | drives subagent roster (see scaffold service + `.claude/teams/<team>.md`). Renamed from `lead` by `0004_rename_lead_to_team` (2026-05-09); the `.claude/leads/` → `.claude/teams/` directory rename followed in Phase 2.5b2 (same date). |
 | status        | smallint     | NOT NULL DEFAULT 1, CHECK `status IN (0, 1)` (named `ck_projects_status_valid`) | soft-delete flag |
 | created_at    | timestamptz  | NOT NULL DEFAULT `now()`                             |       |
 | updated_at    | timestamptz  | NOT NULL DEFAULT `now()`                             |       |

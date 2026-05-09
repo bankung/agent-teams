@@ -43,12 +43,12 @@ Instead of driving the AI step by step, you create tasks in the Kanban UI or han
               │                │  tasks_history │
               │                └────────────────┘
               │
-              │ Agent tool (subagent_type — names per active lead)
+              │ Agent tool (subagent_type — names per active team)
        ┌──────┼──────┬───────┬──────────┐
        │      │      │       │          │
    ┌───▼──┬───▼──┬───▼───┬──▼──┬────────▼────┐
-   │front │back  │devops │test │  reviewer   │   (dev lead spawns dev-* roles)
-   │ end  │ end  │       │ er  │ (read-only) │   (novel lead spawns novel-* roles)
+   │front │back  │devops │test │  reviewer   │   (dev team spawns dev-* roles)
+   │ end  │ end  │       │ er  │ (read-only) │   (novel team spawns novel-* roles)
    └───┬──┴───┬──┴───┬───┴──┬──┴──────┬──────┘
        │      │      │      │         │
        └──────┴──────┼──────┴─────────┘
@@ -73,20 +73,20 @@ The earlier design used tmux panes so multiple agents could run side by side —
 
 Trade-off: subagents are ephemeral (gone when the task ends) — so persistent context (DB + MD files) is what lets the next round pick up where the last one left off.
 
-## Multi-domain Leads
+## Multi-domain teams
 
-Every project picks **one Lead** at creation time (`projects.lead`). The Lead is a *playbook* (not a subagent — Claude Code subagents can't spawn nested subagents) that the main session loads after resolving the active project. Different leads own different rosters and lifecycles.
+Every project picks **one team** at creation time (`projects.team`). Each team is a *playbook* (not a subagent — Claude Code subagents can't spawn nested subagents) that the main session (Lead persona) loads after resolving the active project. Different teams own different rosters and lifecycles.
 
-| Lead | Domain | Playbook | Roster prefix |
+| Team | Domain | Playbook | Roster prefix |
 |---|---|---|---|
-| `dev` | software development | [.claude/leads/dev.md](.claude/leads/dev.md) | `dev-*` |
-| `novel` | novel writing (skeleton — demonstrates the multi-domain pattern) | [.claude/leads/novel.md](.claude/leads/novel.md) | `novel-*` |
+| `dev` | software development | [.claude/teams/dev.md](.claude/teams/dev.md) | `dev-*` |
+| `novel` | novel writing (skeleton — demonstrates the multi-domain pattern) | [.claude/teams/novel.md](.claude/teams/novel.md) | `novel-*` |
 
-Add new leads (`data`, `content`, etc.) by writing `.claude/leads/<name>.md`, defining its `<name>-*` agents in `.claude/agents/`, and extending the `lead` CHECK constraint on `projects` in the DB.
+Add new teams (`data`, `content`, etc.) by writing `.claude/teams/<name>.md`, defining its `<name>-*` agents in `.claude/agents/`, and extending the `team` CHECK constraint on `projects` in the DB.
 
-## Team roster — `dev` lead
+## Team roster — `dev` team
 
-The agent-teams repo itself uses `lead='dev'`.
+The agent-teams repo itself uses `team='dev'`.
 
 | Role | Stack / scope | Owns (writes only here) |
 |---|---|---|
@@ -193,7 +193,7 @@ Lead resolves it via `GET /api/projects/by-name/myapp` and uses `projects/myapp/
 
 ### Common command shapes
 
-| You say | Lead does (under `lead='dev'`) |
+| You say | Lead does (under `team='dev'`) |
 |---|---|
 | "add endpoint X" | spawn dev-backend → apply shared updates |
 | "user dashboard page" | spawn dev-frontend (reading existing api-contracts) |
@@ -267,7 +267,7 @@ context/
 
 ## Standards lane mapping
 
-Standards are injected by the **active lead's playbook** — each lead defines its own role-to-lane mapping. For `lead='dev'` (see [.claude/leads/dev.md](.claude/leads/dev.md)):
+Standards are injected by the **active team's playbook** — each team defines its own role-to-lane mapping. For `team='dev'` (see [.claude/teams/dev.md](.claude/teams/dev.md)):
 
 | Role | Lanes injected |
 |---|---|
@@ -277,7 +277,7 @@ Standards are injected by the **active lead's playbook** — each lead defines i
 | dev-tester | every lane |
 | dev-reviewer | every lane |
 
-Other leads define their own lanes (e.g., `lead='novel'` uses `voice` / `structure` / `research` / `markup`). `context/standards/general.md` is injected into every role regardless of lane and lead — it carries the universal Kanban schema codes used when updating task status.
+Other teams define their own lanes (e.g., `team='novel'` uses `voice` / `structure` / `research` / `markup`). `context/standards/general.md` is injected into every role regardless of lane and team — it carries the universal Kanban schema codes used when updating task status.
 
 ## File structure
 
@@ -328,8 +328,8 @@ Framework-specific conventions belong in `context/standards/<framework>/<topic>.
 You: add a <UserAvatar> component in web
 
 Lead:
-  → curl http://localhost:8456/api/projects/active → {name: "agent-teams", lead: "dev", paths: {...}, standards: {...}}
-  → Read .claude/leads/dev.md  (load active lead's playbook)
+  → curl http://localhost:8456/api/projects/active → {name: "agent-teams", team: "dev", paths: {...}, standards: {...}}
+  → Read .claude/teams/dev.md  (load active team's playbook)
   → Read context/projects/agent-teams/shared/decisions.md
   → Read context/projects/agent-teams/dev-frontend/current-state.md
   → Read context/standards/{general,nextjs,react,typescript,tailwind}/*.md
@@ -444,8 +444,8 @@ docker compose down -v
 
 ## Further reading
 
-- [CLAUDE.md](CLAUDE.md) — Meta-Lead playbook (universal rules, bootstrap, lead dispatch)
-- [.claude/leads/](.claude/leads/) — per-domain lead playbooks (`dev.md`, `novel.md`, ...)
+- [CLAUDE.md](CLAUDE.md) — Meta-Lead playbook (universal rules, bootstrap, team dispatch)
+- [.claude/teams/](.claude/teams/) — per-domain team playbooks (`dev.md`, `novel.md`, ...)
 - [.claude/agents/](.claude/agents/) — per-role subagent definitions (`dev-*.md`, `novel-*.md`, ...)
 - [.claude/docs/](.claude/docs/) — Lead's reference docs (spawn template, context layout, new project flow, lessons)
 - [context/standards/README.md](context/standards/README.md) — the standards system

@@ -1,7 +1,7 @@
 # Tier-2 release matrix — agent-teams
 
 > **Project-specific Tier-2 config.** Lead is the only writer.
-> **Cross-project methodology** (trigger conditions, pre-flight, Step 1-5 patterns, severity scales, wrap-up summary template) lives in `context/leads/dev/release-methodology.md`. Read both — methodology defines the flow, this file defines the agent-teams specifics.
+> **Cross-project methodology** (trigger conditions, pre-flight, Step 1-5 patterns, severity scales, wrap-up summary template) lives in `context/teams/dev/release-methodology.md`. Read both — methodology defines the flow, this file defines the agent-teams specifics.
 
 ## Step 1 — Endpoint matrix (v0.x — extend as new endpoints land)
 
@@ -11,7 +11,7 @@
 | `GET /api/projects` | list returns active rows; `?include_deleted=true` includes soft-deleted | default list excludes `status=0` rows |
 | `GET /api/projects/active` | returns the one `is_active=true` row | only one such row exists; partial unique enforced |
 | `GET /api/projects/by-name/{name}` | 200 for existing name | 404 for unknown name |
-| `POST /api/projects` | 201 + `ProjectRead` shape; auto-scaffolds `context/projects/<name>/` | 422 on missing `lead`; 422 on `lead` outside `{dev,novel}`; 409 on duplicate active name; scaffold dispatches per `lead` (dev → 5 role folders; novel → 2) |
+| `POST /api/projects` | 201 + `ProjectRead` shape; auto-scaffolds `context/projects/<name>/` | 422 on missing `team`; 422 on `team` outside `{dev,novel}`; 409 on duplicate active name; scaffold dispatches per `team` (dev → 5 role folders; novel → 2) |
 | `PATCH /api/projects/{id}` | real change advances `updated_at`; 409 detail string on rename conflict | identical body = no-op (`updated_at` unchanged); 400 `Cannot activate a soft-deleted project` when flipping `is_active=true` on `status=0` |
 | `DELETE /api/projects/{id}` | 204; `status=0`; first DELETE advances `updated_at`; clears `is_active` if true | re-DELETE returns 204 without bumping `updated_at`; folder NOT removed |
 | `GET /api/tasks?project_id=<n>` | required `project_id`; default filters `status=1` | 422 missing `project_id`; `?include_deleted=true` exposes `status=0` |

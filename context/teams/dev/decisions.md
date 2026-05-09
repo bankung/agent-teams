@@ -1,8 +1,8 @@
-# Architectural & process decisions — dev lead
+# Architectural & process decisions — dev team
 
 > **Lead is the only writer of this file.** Subagents propose updates in their final report — Lead reviews, may ask the user, then writes the entry.
 >
-> **Scope:** decisions about the **dev lead methodology / orchestration system itself** — Tier-1 smoke flow, Tier-2 release wrap-up, lifecycle steps, agent prompts, Bucket architecture. Applies to **every** `lead='dev'` project, not to any one project's data model or endpoints.
+> **Scope:** decisions about the **dev team methodology / orchestration system itself** — Tier-1 smoke flow, Tier-2 release wrap-up, lifecycle steps, agent prompts, Bucket architecture. Applies to **every** `team='dev'` project, not to any one project's data model or endpoints.
 >
 > Per-project decisions (a project's data model, endpoints, UI, migrations, deps) live in that project's `context/projects/<project>/shared/decisions.md`. When a project-specific incident produces a methodology lesson, the incident decision goes in the project file and the methodology decision goes here, cross-linked.
 >
@@ -14,12 +14,19 @@
 Template for a new entry:
 
 ## YYYY-MM-DD — <short title>
-**Scope:** lead-playbook | agent-prompts | bucket-architecture | lifecycle | other-cross-project
+**Scope:** team-playbook | agent-prompts | bucket-architecture | lifecycle | other-cross-project
 **Proposed by:** <role> (or `lead` / `user`)
 **Decision:** <what we decided to do>
 **Reasoning:** <why — constraints, tradeoffs, alternatives considered>
 **Implications:** <what changes downstream>
 -->
+
+## 2026-05-09 — Rename `.claude/leads/` → `.claude/teams/` and `context/leads/` → `context/teams/` (Phase 2.5b2)
+**Scope:** team-playbook / agent-prompts / bucket-architecture / context architecture
+**Proposed by:** lead (mechanical follow-up to Phase 2.5b1 column rename — forecasted in `agent-teams/shared/decisions.md` 2026-05-09 entry)
+**Decision:** Doc-only rename to align directory paths with the column name now that `projects.lead → projects.team` (Phase 2.5b1) made the meaning concrete: a project's `team` field selects the team of agents that owns it, and the playbook + per-team methodology folder follow the same noun. `git mv` preserves history. Live pointers updated in CLAUDE.md, README.md, `.claude/teams/{dev,novel}.md`, `.claude/agents/dev-{tester,reviewer}.md`, `.claude/docs/{context-layout,spawn-template}.md`, `context/teams/dev/decisions.md` header, `context/projects/agent-teams/shared/{decisions,db-schema,smoke-matrix,release-matrix}.md`. Historical decision-entry bodies (this file's earlier 2026-05-09 / 2026-05-08 entries; `agent-teams/shared/decisions.md` 2026-05-09 #Phase-2.5b1 + earlier 2026-05-08 entries) keep their `context/leads/` / `.claude/leads/` strings unchanged — append-only log convention; date-stamps make them readable as historical state. `.claude/settings.json` allowlist drops `Write/Edit(context/leads/**)` (added proactively in `6159983`); `Write/Edit(context/teams/**)` already present. No schema, no migration, no API contract change. Pytest 69/69 GREEN, `GET /api/projects/active` returns `team:"dev"` unchanged.
+**Reasoning:** "Lead" (the meta-orchestrator persona, capital L) and "team" (the column) were both encoded into `.claude/leads/` / `context/leads/` paths, blurring the distinction the Phase 2.5b1 rename had just clarified at the column level. Aligning paths makes the mental model crisp: capital-L Lead is a persona; lowercase team is data. The dogfood-pollution lesson held — same as smoke-checklist Phase 2 and decisions.md Phase 2.5a, the live pointer must be updated while the historical narrative stays stamped.
+**Implications:** Phase 2.5c (codify decision framework Q0-Q2 + zone names + dogfood-pollution lesson + 3-strikes anti-pattern in CLAUDE.md / context-layout.md / lessons.md) is the only MD-compaction phase remaining before Phase 3 V2 (#406 read-only Kanban board). Future leads scaffolded via `.claude/teams/<name>.md` + `context/teams/<name>/` get the renamed locations; old `leads/` paths no longer exist. Allowlist refresh: `Write/Edit(context/leads/**)` removed (the directory no longer exists; rule was a Phase 2.5b2 stopgap).
 
 ## 2026-05-09 — Split `smoke-checklist` / `release-checklist` into methodology (cross-project) + matrix (per-project) — Bucket 4 introduced
 **Scope:** bucket-architecture / shared / .claude / context architecture

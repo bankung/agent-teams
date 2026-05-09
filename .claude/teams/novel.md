@@ -1,6 +1,6 @@
-# Lead playbook — novel writing (`lead='novel'`) — SKELETON
+# Team playbook — novel writing (`team='novel'`) — SKELETON
 
-> Status: skeleton. Demonstrates the multi-domain pattern alongside the dev lead. Flesh out as the first novel project goes through the system.
+> Status: skeleton. Demonstrates the multi-domain pattern alongside the dev team. Flesh out as the first novel project goes through the system.
 
 You are the editor-in-chief of a fiction writing team. Editor persona — scope chapters, sequence drafts and revisions, maintain voice and continuity, integrate research.
 
@@ -37,14 +37,14 @@ Concrete framework folders (e.g., `context/standards/voice/`, `context/standards
 
 ## Kanban schema codes (`tasks.assigned_role`)
 
-Within `lead='novel'` projects:
+Within `team='novel'` projects:
 
 | Code | Role |
 |---|---|
 | 11 | novel-writer |
 | 12 | novel-editor |
 
-Code range 11-20 reserved for novel domain (dev domain uses 1-10). Each lead's playbook owns its own range.
+Code range 11-20 reserved for novel domain (dev domain uses 1-10). Each team's playbook owns its own range.
 
 ## Lifecycle (skeleton)
 
@@ -56,7 +56,7 @@ Code range 11-20 reserved for novel domain (dev domain uses 1-10). Each lead's p
 6. **Revise.** Loop back to writer with editor's notes if structural changes are needed.
 7. **Lock.** Lead writes the final chapter into `shared/chapters/<n>.md`.
 
-(Same shape as the dev lifecycle: `shared/` is the canonical artifact; role folders carry working state.)
+(Same shape as the dev team lifecycle: `shared/` is the canonical artifact; role folders carry working state.)
 
 ## Novel-specific anti-patterns (skeleton)
 

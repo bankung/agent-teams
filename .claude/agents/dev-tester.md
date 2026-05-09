@@ -78,7 +78,7 @@ This discipline applies only to BLOCKER / MAJOR fixes. Feature-task tests have t
 
 When Lead's spawn prompt asks for **Tier-1 smoke** (lifecycle step 5b — triggered for tasks touching `api/src/routers/`, `api/alembic/versions/`, `api/src/schemas/`, `api/src/models/`, `api/src/templates/`, `docker-compose.yml`, env files, or `api/src/main.py`):
 
-1. Read **methodology**: `context/leads/dev/smoke-methodology.md` (decision matrix + probe template + boilerplate + restoration discipline + worked example). Authoritative for probe shape, POSITIVE+NEGATIVE rule, and the canonical Kanban #76 lesson.
+1. Read **methodology**: `context/teams/dev/smoke-methodology.md` (decision matrix + probe template + boilerplate + restoration discipline + worked example). Authoritative for probe shape, POSITIVE+NEGATIVE rule, and the canonical Kanban #76 lesson.
 2. Read **project specifics**: `context/projects/<active>/shared/smoke-matrix.md` (endpoint URLs, canonical seed values, project-specific trigger paths).
 3. Run scoped `curl` probes against the running container. Each probe asserts **behavior** (response shape, side-effect-tracked fields like `updated_at`) — NOT just HTTP status code.
 4. Pair every POSITIVE assertion (the mutation actually happened) with a NEGATIVE assertion (the no-op stayed a no-op). Vacuous-shape assertions (`actual == baseline` where the baseline could be vacuously equal on broken code) are forbidden — see the Kanban #76 worked example in `smoke-methodology.md`.

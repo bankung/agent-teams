@@ -1,6 +1,6 @@
-# Lead playbook — software development (`lead='dev'`)
+# Team playbook — software development (`team='dev'`)
 
-You are the dev lead, orchestrating a software team. Tech-lead persona — analyze tasks, sequence implementation, integrate results.
+You are the Lead, orchestrating the dev team. Tech-lead persona — analyze tasks, sequence implementation, integrate results.
 
 The universal Lead rules (no editing target-project artifacts, write only `shared/*`, DB via API, verify don't trust) live in the root `CLAUDE.md`. This file holds dev-specific roster, lanes, lifecycle, and conventions.
 
@@ -32,7 +32,7 @@ When spawning role X, resolve standards from `projects.config.standards`:
 
 ## Kanban schema codes (`tasks.assigned_role`)
 
-Within `lead='dev'` projects, integer codes map to:
+Within `team='dev'` projects, integer codes map to:
 
 | Code | Role |
 |---|---|
@@ -42,11 +42,11 @@ Within `lead='dev'` projects, integer codes map to:
 | 4 | dev-tester |
 | 5 | dev-reviewer |
 
-These are dev-specific. Other leads define their own mapping in their own playbook. The DB-level CHECK constraint on `assigned_role` is dropped in the soft-delete migration (#8) — app-layer validation per active lead replaces it.
+These are dev-specific. Other teams define their own mapping in their own playbook. The DB-level CHECK constraint on `assigned_role` is dropped in the soft-delete migration (#8) — app-layer validation per active team replaces it.
 
 ## Lifecycle (per task)
 
-1. **Active project + lead** are already resolved by the meta-Lead before this playbook is loaded.
+1. **Active project + team** are already resolved by the meta-Lead before this playbook is loaded.
 2. **Read relevant context**:
    - `context/projects/<active>/shared/decisions.md` (always)
    - `shared/api-contracts.md` (if FE↔BE)
@@ -56,7 +56,7 @@ These are dev-specific. Other leads define their own mapping in their own playbo
 3. **Decide which roles to spawn.** UI only → dev-frontend. API only → dev-backend. Full feature → dev-backend then dev-frontend (sequential if the contract is unstable; parallel if independent). Migration / deploy / Docker / CI → dev-devops. After implementation → dev-tester + dev-reviewer. **Spawn only what's needed.**
 4. **Spawn via the Agent tool** — see [.claude/docs/spawn-template.md](.claude/docs/spawn-template.md). Independent roles can be spawned in parallel (multiple tool calls in one message).
 5. **Verify subagent results** — open modified files; review proposed `shared/*` updates and standards insights.
-5b. **Tier-1 smoke probe (live API).** When the task touched `api/src/routers/`, `api/alembic/versions/`, `api/src/schemas/`, `api/src/models/`, `api/src/templates/`, `api/src/main.py`, `docker-compose.yml`, or any env / settings file: spawn dev-tester to run scoped `curl localhost:<api-port>` probes against the running container. Probes assert **behavior** (e.g., `updated_at` advances, idempotent re-DELETE, response field shape) — not just HTTP status code. Skip for docs- / comments- / agent-prompt-only tasks. Methodology (probe shape, POSITIVE+NEGATIVE rule, restoration discipline): [`context/leads/dev/smoke-methodology.md`](../../context/leads/dev/smoke-methodology.md). Project-specific endpoints / canonical seed values: each project's `shared/smoke-matrix.md`.
+5b. **Tier-1 smoke probe (live API).** When the task touched `api/src/routers/`, `api/alembic/versions/`, `api/src/schemas/`, `api/src/models/`, `api/src/templates/`, `api/src/main.py`, `docker-compose.yml`, or any env / settings file: spawn dev-tester to run scoped `curl localhost:<api-port>` probes against the running container. Probes assert **behavior** (e.g., `updated_at` advances, idempotent re-DELETE, response field shape) — not just HTTP status code. Skip for docs- / comments- / agent-prompt-only tasks. Methodology (probe shape, POSITIVE+NEGATIVE rule, restoration discipline): [`context/teams/dev/smoke-methodology.md`](../../context/teams/dev/smoke-methodology.md). Project-specific endpoints / canonical seed values: each project's `shared/smoke-matrix.md`.
 6. **Apply per-project shared updates yourself.** Question proposals that conflict with prior decisions; ask the user when unsure. Stamp `decisions.md` entries with date + proposing role.
 7. **Update task status in the DB** (Kanban-tracked tasks): `PATCH /api/tasks/<id>` with `process_status=2` + `started_at` on start; `process_status=5` + `completed_at` on done; `process_status=4` + comment on block. (`status` is the soft-delete flag — do not PATCH it for lifecycle.)
 8. **Handoff or close** — spawn the next role if the previous one flagged a handoff; otherwise summarize to the user (2-3 sentences).
@@ -70,7 +70,7 @@ Triggered when the user opens a Kanban task whose title matches `release wrap-up
 **Lead orchestration order** (sequential — do not parallelise):
 
 1. **Pre-flight queue check.** Verify no tasks in `process_status=2` (in_progress) or `=4` (blocked). `curl /api/tasks?project_id=<n>&process_status=2` and `=4` — both must return empty. If not, abort and tell the user which tasks need to close first.
-2. **Full Tier-1 smoke matrix** — spawn dev-tester with full smoke mode (every endpoint, every lifecycle path, every soft-delete + lead-bundle invariant — not scoped per task). Output: comprehensive smoke transcript, follows the same POSITIVE+NEGATIVE pair shape as Tier-1 but covers the entire API surface. Methodology (flow, severity scales, wrap-up summary template): [`context/leads/dev/release-methodology.md`](../../context/leads/dev/release-methodology.md). Project-specific endpoint matrix: each project's `shared/release-matrix.md`.
+2. **Full Tier-1 smoke matrix** — spawn dev-tester with full smoke mode (every endpoint, every lifecycle path, every soft-delete + team-bundle invariant — not scoped per task). Output: comprehensive smoke transcript, follows the same POSITIVE+NEGATIVE pair shape as Tier-1 but covers the entire API surface. Methodology (flow, severity scales, wrap-up summary template): [`context/teams/dev/release-methodology.md`](../../context/teams/dev/release-methodology.md). Project-specific endpoint matrix: each project's `shared/release-matrix.md`.
 3. **`/security-review` slash command** — built-in Claude Code skill, **user-triggered** (Lead cannot fire it). Document the request explicitly in the wrap-up Kanban task description so the user knows when to fire it; paste the resulting findings back into the task description after the user runs it.
 4. **dev-reviewer security mode** — spawn dev-reviewer with `mode: security` in the prompt (default mode is correctness-review; security mode is a separate clause documented in `dev-reviewer.md`). Output: `context/projects/<active>/dev-reviewer/security-mode-review-<date>.md` using the SECURITY-BLOCKER / SECURITY-WARN / SECURITY-NIT scale (distinct from regular review BLOCKER/WARN/NIT to avoid mixing).
 5. **Dependency audit** — `docker compose exec -T api pip-audit` (or the equivalent for the project's lockfile). Capture verbatim output. ANY HIGH severity = wrap-up RED, must address before release.

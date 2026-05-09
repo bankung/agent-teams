@@ -1,7 +1,7 @@
 # Tier-1 smoke matrix — agent-teams
 
 > **Project-specific Tier-1 config.** Lead is the only writer.
-> **Cross-project methodology** (probe shape, decision matrix, POSITIVE+NEGATIVE rule, restoration discipline, output convention, worked example) lives in `context/leads/dev/smoke-methodology.md`. Read both — methodology defines the rules, this file defines the agent-teams specifics.
+> **Cross-project methodology** (probe shape, decision matrix, POSITIVE+NEGATIVE rule, restoration discipline, output convention, worked example) lives in `context/teams/dev/smoke-methodology.md`. Read both — methodology defines the rules, this file defines the agent-teams specifics.
 
 ## Endpoints / hosts
 
@@ -23,11 +23,11 @@ If a probe mutates the seeded `agent-teams` project (id=1), restore from `api/sc
 - `name = "agent-teams"`
 - `description = "Self-hosted Kanban for managing dev team tasks (dogfood)"`
 - `paths_web = "/repo/web"`, `paths_api = "/repo/api"`, `paths_db = "/repo/api/alembic/versions"`
-- `lead = "dev"`
+- `team = "dev"`
 - `is_active = true`
 
 ## Notable past escapes (cross-reference)
 
-- **Kanban #76** — `updated_at` no-op skip, vacuous-shape M9 test escape. The canonical worked example in `context/leads/dev/smoke-methodology.md` "Worked example" section is this incident.
+- **Kanban #76** — `updated_at` no-op skip, vacuous-shape M9 test escape. The canonical worked example in `context/teams/dev/smoke-methodology.md` "Worked example" section is this incident.
 - **Kanban #81** — first Tier-2 dry-run; backfill report at `shared/backfill-2026-05-08.md`. Probe artifact discipline (the `_` prefix convention) was pinned here after `backfill-<ts>` folders polluted the working tree.
 - **Kanban #120** — tasks-router `updated_at` parity bug, caught in the #81 backfill smoke matrix; led to `tasks_history` 'U' write on DELETE.

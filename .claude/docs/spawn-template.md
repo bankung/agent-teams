@@ -1,8 +1,8 @@
 # Spawn prompt template
 
-Use the `Agent` tool with `subagent_type` matching the role. Available role names depend on the active lead's roster — see `.claude/leads/<active.lead>.md`. Examples:
-- `lead='dev'` → `dev-frontend | dev-backend | dev-devops | dev-tester | dev-reviewer`
-- `lead='novel'` → `novel-writer | novel-editor`
+Use the `Agent` tool with `subagent_type` matching the role. Available role names depend on the active team's roster — see `.claude/teams/<active.team>.md`. Examples:
+- `team='dev'` → `dev-frontend | dev-backend | dev-devops | dev-tester | dev-reviewer`
+- `team='novel'` → `novel-writer | novel-editor`
 
 ```
 Agent({
