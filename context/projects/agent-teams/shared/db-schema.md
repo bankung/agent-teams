@@ -52,6 +52,7 @@ Template for a new table:
 | config        | jsonb        | NOT NULL DEFAULT `'{}'`                              | houses `standards` mapping |
 | is_active     | bool         | NOT NULL DEFAULT `false`                             |       |
 | team          | text         | NOT NULL DEFAULT `'dev'`, CHECK `team IN ('dev','novel')` (named `ck_projects_team_valid`) | drives subagent roster (see scaffold service + `.claude/teams/<team>.md`). Renamed from `lead` by `0004_rename_lead_to_team` (2026-05-09); the `.claude/leads/` → `.claude/teams/` directory rename followed in Phase 2.5b2 (same date). |
+| auto_run_consent_at | timestamptz | NULL                                          | NULL = no consent; non-null = user consented at this timestamp to auto-headless runs in this project. Required (app-layer validator, #483-B) for any task in the project to use `run_mode = 'auto_headless'`. UI-driven grant via typed-acknowledgment endpoint (see decisions.md 2026-05-09 Step-2 entry). Added by `0005_run_mode_and_consent`. |
 | status        | smallint     | NOT NULL DEFAULT 1, CHECK `status IN (0, 1)` (named `ck_projects_status_valid`) | soft-delete flag |
 | created_at    | timestamptz  | NOT NULL DEFAULT `now()`                             |       |
 | updated_at    | timestamptz  | NOT NULL DEFAULT `now()`                             |       |
@@ -74,6 +75,7 @@ Template for a new table:
 | process_status | int         | NOT NULL DEFAULT 1, CHECK `process_status IN (1,2,3,4,5)` (named `ck_tasks_process_status_valid`) | TaskStatus codes (general.md). Renamed from `status` 2026-05-08. |
 | priority       | int         | NOT NULL DEFAULT 2, CHECK `priority IN (1,2,3,4)`                   | TaskPriority codes |
 | assigned_role  | int         | NULL                                                                | App-layer validates per project team's roster (DB CHECK dropped 2026-05-08). |
+| run_mode       | text        | NOT NULL DEFAULT `'manual'`, CHECK `run_mode IN ('manual','auto_pickup','auto_headless')` (named `ck_tasks_run_mode_valid`) | Step 2 AI integration — controls how this task gets picked up by the queue runner. `manual` = user invokes Lead manually (default for backwards-compat); `auto_pickup` = Mode A2 queue runner picks it up in user's Claude Code session (per-Write approval kept); `auto_headless` = Mode B headless worker runs without approval prompts (requires `project.auto_run_consent_at IS NOT NULL` — cross-table validator at app layer, #483-B). Added by `0005_run_mode_and_consent`. |
 | status         | smallint    | NOT NULL DEFAULT 1, CHECK `status IN (0, 1)` (named `ck_tasks_status_valid`) | soft-delete flag |
 | created_at     | timestamptz | NOT NULL DEFAULT `now()`                                            |       |
 | updated_at     | timestamptz | NOT NULL DEFAULT `now()`                                            | bumped manually in PATCH |
@@ -148,3 +150,4 @@ Format: YYYY-MM-DD HH:MM — <migration filename> — applied by <who> in commit
 - 2026-05-08 09:46 — 2026_05_08_0300_soft_delete_and_lead.py — dev-devops, container apply
 - 2026-05-08 16:00 — 2026_05_08_1600_tasks_parent_task_id.py — dev-devops, container apply (Kanban #238)
 - 2026-05-09 09:00 — 2026_05_09_0900_rename_lead_to_team.py — dev-devops, container apply (Phase 2.5b1 — pure DDL rename projects.lead → projects.team)
+- 2026-05-09 10:00 — 2026_05_09_1000_run_mode_and_consent.py — dev-devops, container apply (Kanban #482 — Step 2 prep schema seam: tasks.run_mode + projects.auto_run_consent_at; round-trip up→down→up verified; 464/464 tasks DEFAULT-backfilled to `manual`; ORM/Pydantic/router wire-up deferred to #483-B)
