@@ -1690,3 +1690,361 @@ def test_kanban_238_detail_strings_are_pinned_in_router_source() -> None:
         "Kanban #238 detail strings drifted in routers/tasks.py — "
         f"missing: {missing}"
     )
+
+
+# -----------------------------------------------------------------------------
+# Kanban #697 — `?pending=true` shortcut for "list non-done tasks"
+# -----------------------------------------------------------------------------
+#
+# Convenience query param for the Lead bootstrap workflow. Lead frequently
+# wants "all tasks except done"; without this shortcut, each Lead session
+# has to either issue 4 separate `?process_status=N` calls or post-filter in
+# Python. `?pending=true` filters `process_status != 5` (TaskStatus.DONE)
+# server-side. Precedence rule: when BOTH `pending=true` and
+# `process_status=N` are supplied, the explicit `process_status` wins
+# (more specific) — `pending` is silently ignored. The router uses
+# `elif pending:` so precedence is enforced by control flow, not boolean
+# arithmetic.
+
+
+# Regression: Kanban #697
+@pytest.mark.asyncio
+async def test_list_tasks_pending_true_excludes_done(client) -> None:
+    """`?pending=true` returns only rows with process_status != 5 (DONE).
+
+    Seed one task per process_status (1..5) and confirm the shortcut returns
+    exactly the four non-done rows.
+    """
+    active = await client.get("/api/projects/active")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    created_ids: dict[int, int] = {}
+    try:
+        for ps in (1, 2, 3, 4, 5):
+            create = await client.post(
+                "/api/tasks",
+                json={
+                    "project_id": project_id,
+                    "title": f"k697-pending probe ps={ps}",
+                    "process_status": ps,
+                },
+                headers=headers,
+            )
+            assert create.status_code == 201, create.text
+            created_ids[ps] = create.json()["id"]
+
+        resp = await client.get("/api/tasks?pending=true&limit=500", headers=headers)
+        assert resp.status_code == 200, resp.text
+        rows = resp.json()
+        ids = {t["id"] for t in rows}
+        # The four non-done seeded rows must be present.
+        for ps in (1, 2, 3, 4):
+            assert created_ids[ps] in ids, (
+                f"pending=true must include process_status={ps} row "
+                f"id={created_ids[ps]}"
+            )
+        # The done row must NOT be present.
+        assert created_ids[5] not in ids, (
+            f"pending=true must exclude the done row id={created_ids[5]}"
+        )
+        # Every returned row genuinely has process_status != 5.
+        for t in rows:
+            assert t["process_status"] != 5, (
+                f"pending=true returned a row with process_status="
+                f"{t['process_status']!r} id={t['id']}"
+            )
+    finally:
+        for tid in created_ids.values():
+            await client.delete(f"/api/tasks/{tid}", headers=headers)
+
+
+# Regression: Kanban #697
+@pytest.mark.asyncio
+async def test_list_tasks_pending_false_default_unchanged(client) -> None:
+    """Without `pending` (default false), all five seeded rows are returned —
+    locks the default-behavior preservation: the new param is opt-in and
+    must not change existing list semantics.
+    """
+    active = await client.get("/api/projects/active")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    created_ids: dict[int, int] = {}
+    try:
+        for ps in (1, 2, 3, 4, 5):
+            create = await client.post(
+                "/api/tasks",
+                json={
+                    "project_id": project_id,
+                    "title": f"k697-default probe ps={ps}",
+                    "process_status": ps,
+                },
+                headers=headers,
+            )
+            assert create.status_code == 201, create.text
+            created_ids[ps] = create.json()["id"]
+
+        # Without `pending` — all five must come back.
+        resp = await client.get("/api/tasks?limit=500", headers=headers)
+        assert resp.status_code == 200, resp.text
+        ids = {t["id"] for t in resp.json()}
+        for ps in (1, 2, 3, 4, 5):
+            assert created_ids[ps] in ids, (
+                f"default list (no pending param) must include process_status={ps} "
+                f"row id={created_ids[ps]}"
+            )
+    finally:
+        for tid in created_ids.values():
+            await client.delete(f"/api/tasks/{tid}", headers=headers)
+
+
+# Regression: Kanban #697
+@pytest.mark.asyncio
+async def test_list_tasks_pending_and_process_status_explicit_wins(client) -> None:
+    """`?pending=true&process_status=5` returns the done row — locks the
+    precedence rule. Explicit `process_status` is more specific and silently
+    overrides `pending`. Enforced by `elif pending:` in the router.
+    """
+    active = await client.get("/api/projects/active")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    created_ids: dict[int, int] = {}
+    try:
+        for ps in (1, 2, 3, 4, 5):
+            create = await client.post(
+                "/api/tasks",
+                json={
+                    "project_id": project_id,
+                    "title": f"k697-precedence probe ps={ps}",
+                    "process_status": ps,
+                },
+                headers=headers,
+            )
+            assert create.status_code == 201, create.text
+            created_ids[ps] = create.json()["id"]
+
+        # Explicit process_status=5 must win over pending=true.
+        resp = await client.get(
+            "/api/tasks?pending=true&process_status=5&limit=500",
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        rows = resp.json()
+        ids = {t["id"] for t in rows}
+        # The done row MUST be present (explicit wins).
+        assert created_ids[5] in ids, (
+            "explicit process_status=5 must win over pending=true "
+            f"(done row id={created_ids[5]} missing)"
+        )
+        # Every returned row has process_status == 5.
+        for t in rows:
+            assert t["process_status"] == 5, (
+                f"explicit process_status=5 returned a row with process_status="
+                f"{t['process_status']!r} id={t['id']}"
+            )
+        # The non-done rows must NOT be present.
+        for ps in (1, 2, 3, 4):
+            assert created_ids[ps] not in ids, (
+                f"explicit process_status=5 must exclude process_status={ps} "
+                f"row id={created_ids[ps]}"
+            )
+    finally:
+        for tid in created_ids.values():
+            await client.delete(f"/api/tasks/{tid}", headers=headers)
+
+
+# Regression: Kanban #697
+@pytest.mark.asyncio
+async def test_list_tasks_pending_composes_with_assigned_role(client) -> None:
+    """`?pending=true&assigned_role=2` returns only the backend non-done rows
+    — locks composability with the existing `assigned_role` filter.
+    """
+    active = await client.get("/api/projects/active")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    # Seed 4 rows: backend-todo, backend-done, frontend-todo, frontend-done.
+    # Only backend-todo should match `pending=true&assigned_role=2`.
+    created: list[tuple[str, int]] = []
+    try:
+        be_todo = await client.post(
+            "/api/tasks",
+            json={
+                "project_id": project_id,
+                "title": "k697-compose backend todo",
+                "process_status": 1,
+                "assigned_role": 2,
+            },
+            headers=headers,
+        )
+        assert be_todo.status_code == 201, be_todo.text
+        be_todo_id = be_todo.json()["id"]
+        created.append(("be_todo", be_todo_id))
+
+        be_done = await client.post(
+            "/api/tasks",
+            json={
+                "project_id": project_id,
+                "title": "k697-compose backend done",
+                "process_status": 5,
+                "assigned_role": 2,
+            },
+            headers=headers,
+        )
+        assert be_done.status_code == 201, be_done.text
+        be_done_id = be_done.json()["id"]
+        created.append(("be_done", be_done_id))
+
+        fe_todo = await client.post(
+            "/api/tasks",
+            json={
+                "project_id": project_id,
+                "title": "k697-compose frontend todo",
+                "process_status": 1,
+                "assigned_role": 1,
+            },
+            headers=headers,
+        )
+        assert fe_todo.status_code == 201, fe_todo.text
+        fe_todo_id = fe_todo.json()["id"]
+        created.append(("fe_todo", fe_todo_id))
+
+        fe_done = await client.post(
+            "/api/tasks",
+            json={
+                "project_id": project_id,
+                "title": "k697-compose frontend done",
+                "process_status": 5,
+                "assigned_role": 1,
+            },
+            headers=headers,
+        )
+        assert fe_done.status_code == 201, fe_done.text
+        fe_done_id = fe_done.json()["id"]
+        created.append(("fe_done", fe_done_id))
+
+        resp = await client.get(
+            "/api/tasks?pending=true&assigned_role=2&limit=500",
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        rows = resp.json()
+        ids = {t["id"] for t in rows}
+        assert be_todo_id in ids, (
+            f"pending=true&assigned_role=2 must include backend-todo id={be_todo_id}"
+        )
+        assert be_done_id not in ids, (
+            f"pending=true&assigned_role=2 must EXCLUDE backend-done id={be_done_id}"
+        )
+        assert fe_todo_id not in ids, (
+            f"pending=true&assigned_role=2 must EXCLUDE frontend-todo id={fe_todo_id}"
+        )
+        assert fe_done_id not in ids, (
+            f"pending=true&assigned_role=2 must EXCLUDE frontend-done id={fe_done_id}"
+        )
+        # Every returned row has assigned_role==2 and process_status!=5.
+        for t in rows:
+            assert t["assigned_role"] == 2, (
+                f"pending+assigned_role=2 returned a row with assigned_role="
+                f"{t['assigned_role']!r} id={t['id']}"
+            )
+            assert t["process_status"] != 5, (
+                f"pending+assigned_role=2 returned a done row id={t['id']}"
+            )
+    finally:
+        for _label, tid in created:
+            await client.delete(f"/api/tasks/{tid}", headers=headers)
+
+
+# Regression: Kanban #697
+@pytest.mark.asyncio
+async def test_list_tasks_pending_with_top_level_only(client) -> None:
+    """`?pending=true&top_level_only=true` composes correctly: returns only
+    parent_task_id IS NULL rows that are also non-done. One probe is enough
+    to lock the `pending`-clause-doesn't-clobber-other-where-clauses guarantee.
+    """
+    active = await client.get("/api/projects/active")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    parent_id: int | None = None
+    child_id: int | None = None
+    done_top_id: int | None = None
+    try:
+        parent_create = await client.post(
+            "/api/tasks",
+            json={
+                "project_id": project_id,
+                "title": "k697-toplevel parent (todo)",
+                "process_status": 1,
+            },
+            headers=headers,
+        )
+        assert parent_create.status_code == 201, parent_create.text
+        parent_id = parent_create.json()["id"]
+
+        child_create = await client.post(
+            "/api/tasks",
+            json={
+                "project_id": project_id,
+                "title": "k697-toplevel child (todo)",
+                "process_status": 1,
+                "parent_task_id": parent_id,
+            },
+            headers=headers,
+        )
+        assert child_create.status_code == 201, child_create.text
+        child_id = child_create.json()["id"]
+
+        done_top_create = await client.post(
+            "/api/tasks",
+            json={
+                "project_id": project_id,
+                "title": "k697-toplevel done top-level",
+                "process_status": 5,
+            },
+            headers=headers,
+        )
+        assert done_top_create.status_code == 201, done_top_create.text
+        done_top_id = done_top_create.json()["id"]
+
+        resp = await client.get(
+            "/api/tasks?pending=true&top_level_only=true&limit=500",
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        rows = resp.json()
+        ids = {t["id"] for t in rows}
+
+        # parent_id (top-level + todo) MUST be present.
+        assert parent_id in ids, (
+            f"pending=true&top_level_only=true must include "
+            f"top-level-todo id={parent_id}"
+        )
+        # child (has parent_task_id) MUST be excluded by top_level_only.
+        assert child_id not in ids, (
+            f"top_level_only=true must exclude subtask id={child_id} "
+            "even when it's pending"
+        )
+        # done top-level MUST be excluded by pending.
+        assert done_top_id not in ids, (
+            f"pending=true must exclude done top-level id={done_top_id}"
+        )
+        # Every returned row has parent_task_id IS NULL and process_status != 5.
+        for t in rows:
+            assert t["parent_task_id"] is None, (
+                "top_level_only=true returned a row with parent_task_id="
+                f"{t['parent_task_id']!r} id={t['id']}"
+            )
+            assert t["process_status"] != 5, (
+                f"pending=true returned a done row id={t['id']}"
+            )
+    finally:
+        if child_id is not None:
+            await client.delete(f"/api/tasks/{child_id}", headers=headers)
+        if parent_id is not None:
+            await client.delete(f"/api/tasks/{parent_id}", headers=headers)
+        if done_top_id is not None:
+            await client.delete(f"/api/tasks/{done_top_id}", headers=headers)

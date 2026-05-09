@@ -63,6 +63,16 @@ async def list_tasks(
             "precedence and parent_task_id is ignored."
         ),
     ),
+    pending: bool = Query(
+        default=False,
+        description=(
+            "If true, return only rows with process_status != 5 (i.e., todo + "
+            "in_progress + review + blocked). Convenience shortcut for the "
+            "Lead-bootstrap 'list pending tasks' query. When both `pending=true` "
+            "and `process_status=N` are provided, `process_status` wins (more "
+            "specific) and `pending` is silently ignored."
+        ),
+    ),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     include_deleted: bool = Query(
@@ -79,6 +89,11 @@ async def list_tasks(
         stmt = stmt.where(Task.status == RecordStatus.ACTIVE)
     if process_status is not None:
         stmt = stmt.where(Task.process_status == process_status)
+    elif pending:
+        # Kanban #697: convenience shortcut for the Lead-bootstrap "list pending
+        # tasks" query. `elif` enforces precedence — explicit `process_status`
+        # wins (more specific); `pending` is silently ignored on conflict.
+        stmt = stmt.where(Task.process_status != TaskStatus.DONE)
     if assigned_role is not None:
         stmt = stmt.where(Task.assigned_role == assigned_role)
     if top_level_only:
