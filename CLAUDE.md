@@ -17,16 +17,33 @@ This file holds **universal** rules — they apply to every Lead regardless of d
 - **DB writes go through FastAPI endpoints only.** No `psql`, no ad-hoc ORM scripts — preserve validation + audit triggers.
 - **Verify, don't trust.** When a subagent reports "done," open the modified files and confirm before reporting to the user.
 
-## Storage architecture (four buckets — universal)
+## Storage architecture (universal)
 
-| Bucket | Storage | Used during | Writer |
-|---|---|---|---|
-| **1. Project config + tasks** | PostgreSQL (`projects` + `tasks` + `tasks_history`) | before/after task | UI via Kanban → POST /api/projects |
-| **2. Cross-project standards** | MD in `context/standards/<framework>/` | during task (subagent reads) | humans only |
-| **3. Per-team methodology** | MD in `context/teams/<team>/` | during task (Lead + subagents read) | Lead only |
-| **4. Per-project knowledge** | MD in `context/projects/<p>/{shared,<role>,...}/` | during task (subagent reads) | Lead writes shared/, role writes own folder |
+Five named zones. The zone determines (a) who may write, (b) who reads, (c) blast radius of a change. **Pick the zone by scope** — never by convenience.
 
-DB is the single source of truth for bucket 1. Bucket 3 holds **per-team methodology that applies to every project under that team** (e.g., dev-team Tier-1 smoke probe shape, Tier-2 release-wrap-up flow) — separated from per-project matrix/config so the methodology updates in one place and every project benefits. Each team has its own folder.
+| Zone | Path | Writer | Read scope | Blast radius |
+|---|---|---|---|---|
+| **DB** | PostgreSQL (`projects` + `tasks` + `tasks_history`) | UI / Lead via API | UI + Lead | per-project transactional state |
+| **Standards** | `context/standards/<framework>/` | **humans only** | Lead + subagents (per lane) | universal — every team, every project |
+| **Team methodology** | `context/teams/<team>/` | Lead | Lead + subagents of any project under that team | every project under one team |
+| **Project shared** | `context/projects/<p>/shared/` | Lead | every subagent of project p | one project, every role |
+| **Role state** | `context/projects/<p>/<role>/` | that role only | other roles in project p | one project × one role |
+
+### Q0–Q2 — where does this content go?
+
+Before writing any new file or moving a section, walk three questions in order. The first "yes" wins; stop there.
+
+- **Q0. Is this transactional state (a row in projects/tasks)?**
+  → **DB** via FastAPI. (Never write the file form yourself.)
+- **Q1. Does this rule apply to every team and every project, regardless of domain?**
+  → **Standards** (humans-only — propose, don't auto-write).
+- **Q2. Does this apply to every project under one team (methodology, lifecycle, severity scales, agent-prompt patterns)?**
+  → **Team methodology** (`context/teams/<team>/`).
+- **Otherwise:** the content is project-scoped.
+  - Multi-role within the project (decisions, contracts, schemas, project-specific matrix) → **Project shared** (`context/projects/<p>/shared/`, Lead writes).
+  - One role's working state → **Role state** (`context/projects/<p>/<role>/`, that role writes).
+
+**Anti-pattern (the dogfood-pollution trap):** writing cross-project methodology into `context/projects/<p>/shared/` because the project at hand happens to be the only one exercising it today. New projects scaffolded later won't inherit it; the methodology silently rots into project-scope. Three known strikes: smoke-checklist (Phase 2), decisions.md (Phase 2.5a), `lead → team` rename (Phase 2.5b1). When in doubt, push **up** the zone hierarchy (Standards > Team methodology > Project shared) — easier to demote later than to discover the gap mid-incident. See [.claude/docs/lessons.md](.claude/docs/lessons.md) "Dogfood-pollution: 3-strikes pattern" for the full incident chain.
 
 ## Permission model (universal)
 

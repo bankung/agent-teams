@@ -37,7 +37,7 @@ Instead of driving the AI step by step, you create tasks in the Kanban UI or han
               │                         │
               │                         ▼
               │                ┌────────────────┐
-              │                │  PostgreSQL    │  ← Bucket 1
+              │                │  PostgreSQL    │  ← DB zone
               │                │  projects      │
               │                │  tasks         │
               │                │  tasks_history │
@@ -53,11 +53,14 @@ Instead of driving the AI step by step, you create tasks in the Kanban UI or han
        │      │      │      │         │
        └──────┴──────┼──────┴─────────┘
                      │
-              ┌──────▼─────────────────────────┐
-              │  context/                      │
-              │  ├── standards/  ← Bucket 2    │
-              │  └── projects/<p>/  ← Bucket 3 │
-              └────────────────────────────────┘
+              ┌──────▼────────────────────────────────┐
+              │  context/                             │
+              │  ├── standards/  ← Standards zone     │
+              │  ├── teams/      ← Team-methodology   │
+              │  └── projects/<p>/                    │
+              │       ├── shared/ ← Project-shared    │
+              │       └── <role>/ ← Role-state        │
+              └───────────────────────────────────────┘
 ```
 
 - The user drives Lead through Claude Code (CLI / IDE / Web) **or** creates tasks in the Kanban UI.
@@ -230,25 +233,30 @@ If Lead can't reach the API:
 
 ```
 context/
-├── standards/                            ← Bucket 2: cross-project, humans only
+├── standards/                            ← Standards zone — universal, humans only
 │   ├── README.md
 │   ├── general.md                        ← rules + Kanban schema codes (status/priority/role)
 │   ├── nextjs/  react/  typescript/  tailwind/
 │   ├── fastapi/  python/  pydantic/  sqlalchemy/
 │   └── postgresql/  docker/
 │
-└── projects/                             ← Bucket 3: per-project knowledge
+├── teams/                                ← Team-methodology zone — Lead writes
+│   └── <team>/                             (e.g. dev/, novel/, ...)
+│       ├── decisions.md                  ← system / methodology decisions log
+│       └── *-methodology.md              ← cross-project flow rules per team
+│
+└── projects/                             ← Project zones (shared + role state)
     └── <project>/
-        ├── shared/                       ← Lead writes only (committed)
+        ├── shared/                       ← Project-shared zone — Lead writes only (committed)
         │   ├── decisions.md
         │   ├── api-contracts.md
         │   └── db-schema.md
-        └── <role>/                       ← role-owned (gitignored except .gitkeep)
+        └── <role>/                       ← Role-state zone — role-owned (gitignored except .gitkeep)
             ├── current-state.md
             └── session-<date>-<slug>.md
 ```
 
-(Bucket 1 = DB inside Postgres; see `api/`, not the filesystem.)
+(The fifth zone, **DB**, lives in PostgreSQL — see `api/`, not the filesystem. See [CLAUDE.md](CLAUDE.md) for the full Storage architecture table + Q0–Q2 placement framework.)
 
 **Rules:**
 - Subagents **read** `context/projects/<p>/shared/*` but **never write** — proposals go back to Lead.
@@ -302,9 +310,10 @@ agent-teams/
 │   └── tests/
 ├── web/                            # Next.js Kanban UI (Phase 3)
 ├── context/
-│   ├── standards/                  # Bucket 2 (committed)
+│   ├── standards/                  # Standards zone (committed)
+│   ├── teams/                      # Team-methodology zone (committed)
 │   └── projects/
-│       └── agent-teams/            # Bucket 3 (shared committed, role gitignored)
+│       └── agent-teams/            # Project zones (shared committed, role gitignored)
 └── .claude/
     ├── agents/                     # 5 role definitions
     ├── docs/                       # Lead's reference docs (loaded on demand)

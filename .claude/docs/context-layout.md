@@ -1,37 +1,37 @@
 # Context layout
 
+Filesystem zones (the **DB** zone lives in PostgreSQL, not here — see `api/`). Zone names follow the CLAUDE.md storage table; the Q0–Q2 placement framework there decides which zone any new content goes into.
+
 ```
 context/
-├── standards/                            ← Bucket 2: cross-project, humans only
+├── standards/                            ← Standards zone — universal, humans only
 │   ├── README.md
 │   ├── general.md                        ← cross-framework rules + Kanban codes
 │   ├── nextjs/  react/  typescript/  tailwind/
 │   ├── fastapi/  python/  pydantic/  sqlalchemy/
 │   └── postgresql/  docker/
 │
-├── teams/                                ← Bucket 3: cross-project per-team methodology, Lead writes
+├── teams/                                ← Team-methodology zone — per-team cross-project, Lead writes
 │   ├── dev/
 │   │   ├── decisions.md                  ← system/methodology decisions log (append-only)
 │   │   ├── smoke-methodology.md          ← Tier-1 probe shape, decision matrix, anti-patterns
 │   │   └── release-methodology.md        ← Tier-2 release wrap-up flow + severity scale
 │   └── <future-team>/                    ← novel/, data-science/, etc.
 │
-└── projects/                             ← Bucket 4: per-project knowledge
+└── projects/                             ← Project zones (shared + role state)
     └── <project>/                          (auto-created on POST /api/projects)
-        ├── shared/                       ← Lead writes only (committed)
+        ├── shared/                       ← Project-shared zone — Lead writes only (committed)
         │   ├── decisions.md
         │   ├── api-contracts.md          (dev team)
         │   ├── db-schema.md              (dev team)
         │   ├── smoke-matrix.md           (dev team — project-specific Tier-1 config)
         │   └── release-matrix.md         (dev team — project-specific endpoint matrix)
-        ├── <role-1>/                     ← role-owned (gitignored except .gitkeep)
+        ├── <role-1>/                     ← Role-state zone — role-owned (gitignored except .gitkeep)
         ├── <role-2>/
         └── ...
 ```
 
 Role folder names follow the active team's roster. For `team='dev'`: `dev-frontend/`, `dev-backend/`, `dev-devops/`, `dev-tester/`, `dev-reviewer/`. For `team='novel'`: `novel-writer/`, `novel-editor/`. See `.claude/teams/<team>.md` for the canonical list.
-
-(Bucket 1 = DB; see `api/`, not the filesystem.)
 
 ## Write/read matrix
 
