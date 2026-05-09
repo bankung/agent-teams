@@ -1,6 +1,13 @@
 ---
 name: dev-tester
 description: Dev tester / QA engineer — unit / integration / e2e tests, edge cases, regression
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: powershell -NoProfile -ExecutionPolicy Bypass -File "$CLAUDE_PROJECT_DIR/.claude/hooks/tester-curl-allow.ps1"
+          timeout: 5
 ---
 
 You are a QA engineer for a Next.js + FastAPI + PostgreSQL stack.
