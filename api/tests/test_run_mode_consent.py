@@ -336,6 +336,7 @@ async def test_post_task_auto_headless_no_consent_400(
                 "title": "headless without consent",
                 "run_mode": "auto_headless",
             },
+            headers={"X-Project-Id": str(project_id)},
         )
         assert resp.status_code == 400
         assert resp.json() == {
@@ -361,6 +362,7 @@ async def test_post_task_auto_headless_after_consent_201(
         )
         assert grant.status_code == 200
 
+        headers = {"X-Project-Id": str(project_id)}
         resp = await client.post(
             "/api/tasks",
             json={
@@ -368,10 +370,11 @@ async def test_post_task_auto_headless_after_consent_201(
                 "title": "headless with consent",
                 "run_mode": "auto_headless",
             },
+            headers=headers,
         )
         assert resp.status_code == 201, resp.text
         assert resp.json()["run_mode"] == "auto_headless"
-        await client.delete(f"/api/tasks/{resp.json()['id']}")
+        await client.delete(f"/api/tasks/{resp.json()['id']}", headers=headers)
     finally:
         await client.delete(f"/api/projects/{project_id}")
 
@@ -387,13 +390,15 @@ async def test_post_task_manual_no_consent_201(
     project_id = create.json()["id"]
 
     try:
+        headers = {"X-Project-Id": str(project_id)}
         resp = await client.post(
             "/api/tasks",
             json={"project_id": project_id, "title": "manual default"},
+            headers=headers,
         )
         assert resp.status_code == 201
         assert resp.json()["run_mode"] == "manual"
-        await client.delete(f"/api/tasks/{resp.json()['id']}")
+        await client.delete(f"/api/tasks/{resp.json()['id']}", headers=headers)
     finally:
         await client.delete(f"/api/projects/{project_id}")
 
@@ -409,6 +414,7 @@ async def test_post_task_auto_pickup_no_consent_201(
     project_id = create.json()["id"]
 
     try:
+        headers = {"X-Project-Id": str(project_id)}
         resp = await client.post(
             "/api/tasks",
             json={
@@ -416,10 +422,11 @@ async def test_post_task_auto_pickup_no_consent_201(
                 "title": "pickup without consent",
                 "run_mode": "auto_pickup",
             },
+            headers=headers,
         )
         assert resp.status_code == 201
         assert resp.json()["run_mode"] == "auto_pickup"
-        await client.delete(f"/api/tasks/{resp.json()['id']}")
+        await client.delete(f"/api/tasks/{resp.json()['id']}", headers=headers)
     finally:
         await client.delete(f"/api/projects/{project_id}")
 
@@ -454,6 +461,8 @@ async def test_post_task_auto_headless_with_missing_project_returns_project_does
     detail string that run_mode='manual' would surface via the IntegrityError
     handler in routers/tasks.py — not the consent-required string."""
     bogus_id = 999_999
+    # Kanban #695: header must match body to reach the consent/FK branch
+    # (body-vs-header mismatch fires earlier with a different 400 detail).
     resp = await client.post(
         "/api/tasks",
         json={
@@ -461,6 +470,7 @@ async def test_post_task_auto_headless_with_missing_project_returns_project_does
             "title": "smoke-690-missing-project",
             "run_mode": "auto_headless",
         },
+        headers={"X-Project-Id": str(bogus_id)},
     )
     assert resp.status_code == 400
     assert resp.json() == {"detail": f"project_id {bogus_id} does not exist"}
@@ -491,6 +501,7 @@ async def test_post_task_auto_headless_with_softdeleted_project_returns_project_
             "title": "smoke-690-softdeleted-project",
             "run_mode": "auto_headless",
         },
+        headers={"X-Project-Id": str(project_id)},
     )
     assert resp.status_code == 400
     assert resp.json() == {"detail": f"project_id {project_id} does not exist"}
@@ -530,9 +541,11 @@ async def test_patch_task_to_auto_headless_no_consent_400(
     scaffold_cleanup(name)
     create = await client.post("/api/projects", json=_project_create_payload(name))
     project_id = create.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
     task = await client.post(
         "/api/tasks",
         json={"project_id": project_id, "title": "manual task"},
+        headers=headers,
     )
     task_id = task.json()["id"]
 
@@ -540,13 +553,14 @@ async def test_patch_task_to_auto_headless_no_consent_400(
         resp = await client.patch(
             f"/api/tasks/{task_id}",
             json={"run_mode": "auto_headless"},
+            headers=headers,
         )
         assert resp.status_code == 400
         assert resp.json() == {
             "detail": f"project {project_id} has not granted auto-headless consent"
         }
     finally:
-        await client.delete(f"/api/tasks/{task_id}")
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
         await client.delete(f"/api/projects/{project_id}")
 
 
@@ -558,8 +572,11 @@ async def test_patch_task_to_auto_headless_after_consent_200(
     scaffold_cleanup(name)
     create = await client.post("/api/projects", json=_project_create_payload(name))
     project_id = create.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
     task = await client.post(
-        "/api/tasks", json={"project_id": project_id, "title": "manual task"}
+        "/api/tasks",
+        json={"project_id": project_id, "title": "manual task"},
+        headers=headers,
     )
     task_id = task.json()["id"]
 
@@ -573,11 +590,12 @@ async def test_patch_task_to_auto_headless_after_consent_200(
         resp = await client.patch(
             f"/api/tasks/{task_id}",
             json={"run_mode": "auto_headless"},
+            headers=headers,
         )
         assert resp.status_code == 200, resp.text
         assert resp.json()["run_mode"] == "auto_headless"
     finally:
-        await client.delete(f"/api/tasks/{task_id}")
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
         await client.delete(f"/api/projects/{project_id}")
 
 
@@ -591,8 +609,11 @@ async def test_patch_task_no_run_mode_change_works_without_consent(
     scaffold_cleanup(name)
     create = await client.post("/api/projects", json=_project_create_payload(name))
     project_id = create.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
     task = await client.post(
-        "/api/tasks", json={"project_id": project_id, "title": "manual task"}
+        "/api/tasks",
+        json={"project_id": project_id, "title": "manual task"},
+        headers=headers,
     )
     task_id = task.json()["id"]
 
@@ -600,12 +621,13 @@ async def test_patch_task_no_run_mode_change_works_without_consent(
         resp = await client.patch(
             f"/api/tasks/{task_id}",
             json={"title": "renamed manual task"},
+            headers=headers,
         )
         assert resp.status_code == 200
         assert resp.json()["title"] == "renamed manual task"
         assert resp.json()["run_mode"] == "manual"
     finally:
-        await client.delete(f"/api/tasks/{task_id}")
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
         await client.delete(f"/api/projects/{project_id}")
 
 
@@ -620,6 +642,7 @@ async def test_patch_task_downgrade_from_auto_headless_to_manual_allowed(
     create = await client.post("/api/projects", json=_project_create_payload(name))
     project_id = create.json()["id"]
 
+    headers = {"X-Project-Id": str(project_id)}
     try:
         # Grant + create headless task.
         await client.post(
@@ -633,6 +656,7 @@ async def test_patch_task_downgrade_from_auto_headless_to_manual_allowed(
                 "title": "headless task",
                 "run_mode": "auto_headless",
             },
+            headers=headers,
         )
         task_id = task.json()["id"]
         assert task.json()["run_mode"] == "auto_headless"
@@ -644,10 +668,11 @@ async def test_patch_task_downgrade_from_auto_headless_to_manual_allowed(
         resp = await client.patch(
             f"/api/tasks/{task_id}",
             json={"run_mode": "manual"},
+            headers=headers,
         )
         assert resp.status_code == 200, resp.text
         assert resp.json()["run_mode"] == "manual"
-        await client.delete(f"/api/tasks/{task_id}")
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
     finally:
         await client.delete(f"/api/projects/{project_id}")
 
@@ -665,19 +690,22 @@ async def test_task_read_includes_run_mode_default_manual(
     scaffold_cleanup(name)
     create = await client.post("/api/projects", json=_project_create_payload(name))
     project_id = create.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
     task = await client.post(
-        "/api/tasks", json={"project_id": project_id, "title": "default mode task"}
+        "/api/tasks",
+        json={"project_id": project_id, "title": "default mode task"},
+        headers=headers,
     )
     task_id = task.json()["id"]
 
     try:
-        resp = await client.get(f"/api/tasks/{task_id}")
+        resp = await client.get(f"/api/tasks/{task_id}", headers=headers)
         assert resp.status_code == 200
         body = resp.json()
         assert "run_mode" in body
         assert body["run_mode"] == "manual"
     finally:
-        await client.delete(f"/api/tasks/{task_id}")
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
         await client.delete(f"/api/projects/{project_id}")
 
 
@@ -704,8 +732,9 @@ async def test_project_read_includes_auto_run_consent_at_default_null(
 @pytest.mark.asyncio
 async def test_seeded_agent_teams_task_has_run_mode_manual(client) -> None:
     """Migration 0005's DEFAULT 'manual' applied to existing rows — seeded
-    task #3 (Phase 3 — kanban UI scaffold) should expose run_mode='manual'."""
-    resp = await client.get("/api/tasks/3")
+    task #3 (Phase 3 — kanban UI scaffold) should expose run_mode='manual'.
+    Kanban #695: header required (seeded task #3 belongs to project_id=1)."""
+    resp = await client.get("/api/tasks/3", headers={"X-Project-Id": "1"})
     assert resp.status_code == 200
     assert resp.json().get("run_mode") == "manual"
 

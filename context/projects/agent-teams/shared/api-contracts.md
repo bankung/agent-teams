@@ -15,6 +15,18 @@
 - **IDs:** `BigInteger` (positive integer; serialized as JSON number) — see [decisions.md](decisions.md) entry on BigInt vs UUID
 - **Soft delete:** business resources (`projects`, `tasks`) carry an internal `status` flag (1=active, 0=deleted) that is **NOT** exposed on Read schemas or accepted on Create/Update bodies. List endpoints default-filter to active rows. Clients soft-delete via `DELETE /api/<resource>/{id}` (204 No Content). Detail endpoints (`GET /{id}`) return rows regardless of soft-delete status. The `?include_deleted=true` query param on list endpoints is debug-only and intentionally omitted from this contract. PATCH ignores `{"status": 0}` silently (Pydantic Update schemas do not declare the field).
 
+## Headers
+
+**`X-Project-Id`** (int, **required on every `/api/tasks*` endpoint**) — locks each request to the session-bound project. The API verifies that the resource's `project_id` matches the header value; missing / non-int / mismatch → 400 with stable detail. Project endpoints (`/api/projects/*`, `/api/projects/{id}/grant-consent`) do NOT need the header — the project IS the resource.
+
+400 detail strings (source-text-locked in `services/session_project.py` per the #122 / #690 pattern):
+
+- `{"detail":"X-Project-Id header is required for task endpoints"}` — header missing.
+- `{"detail":"task <n> does not belong to project_id <h>"}` — fetched task's `project_id` differs from header value `<h>` on GET-by-id / PATCH / DELETE. Fires AFTER `get_or_404`, so a missing id still surfaces 404 first.
+- `{"detail":"X-Project-Id header <h> does not match request body project_id <b>"}` — POST body's `project_id` differs from header value `<h>`. Header wins on conflict; body's `project_id` is defense-in-depth (cross-validated, not authoritative). Header value appears FIRST in the message, body value SECOND.
+
+422 (NOT 400) on a non-int header — Pydantic `Header(int | None)` coercion. Reasoning + Phase rollout: `context/teams/dev/decisions.md` 2026-05-09 'Session-scoped active project'. (Kanban #695, Phase 3 of the session-scoped active project shift.)
+
 ## Endpoints
 
 <!--
@@ -135,21 +147,28 @@ Body uses `extra="forbid"` (NOT the default `extra="ignore"`) — sending any ot
 A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at` back to NULL — out of scope for #481, follow-up.
 
 ### GET /api/tasks
-**Purpose:** List tasks for a project (paginated, filterable).
+**Purpose:** List tasks for the session-bound project (paginated, filterable).
 **Auth:** none
-**Query:** `project_id` (required), `process_status` (1..5, optional), `assigned_role` (optional), `parent_task_id` (optional, ge=1 — return only direct children of N), `top_level_only` (bool, default false — when true, return only `parent_task_id IS NULL` rows), `limit`, `offset`. Precedence when both `parent_task_id` and `top_level_only` are provided: `top_level_only` takes precedence and `parent_task_id` is silently ignored (`routers/tasks.py` `list_tasks` `if top_level_only: ... elif parent_task_id is not None: ...`). Subtask hierarchy added 2026-05-08 by Kanban #238.
+**Headers:** `X-Project-Id: <int>` REQUIRED. List scope is taken from the header — the legacy `?project_id=<int>` query param was REMOVED by Kanban #695. (See top-level Headers section.)
+**Query:** `process_status` (1..5, optional), `assigned_role` (optional), `parent_task_id` (optional, ge=1 — return only direct children of N), `top_level_only` (bool, default false — when true, return only `parent_task_id IS NULL` rows), `limit`, `offset`. Precedence when both `parent_task_id` and `top_level_only` are provided: `top_level_only` takes precedence and `parent_task_id` is silently ignored (`routers/tasks.py` `list_tasks` `if top_level_only: ... elif parent_task_id is not None: ...`). Subtask hierarchy added 2026-05-08 by Kanban #238.
 **Response 200:** `[TaskRead, ...]`
+**Errors:**
+- `400` — `{"detail":"X-Project-Id header is required for task endpoints"}` when header missing (Kanban #695)
 
 ### GET /api/tasks/{id}
 **Purpose:** Fetch a single task.
 **Auth:** none
+**Headers:** `X-Project-Id: <int>` REQUIRED. The fetched row's `project_id` must match the header value; mismatch → 400. The header check fires AFTER `get_or_404`, so a missing id still surfaces 404. (Kanban #695)
 **Response 200:** `TaskRead`
 **Errors:**
 - `404` — task id not found
+- `400` — `{"detail":"task <n> does not belong to project_id <h>"}` when fetched row's `project_id` ≠ header (Kanban #695)
+- `400` — `{"detail":"X-Project-Id header is required for task endpoints"}` when header missing (Kanban #695)
 
 ### POST /api/tasks
 **Purpose:** Create a task.
 **Auth:** none
+**Headers:** `X-Project-Id: <int>` REQUIRED. Header value MUST equal `body.project_id`; mismatch → 400. The header is canonical; body's `project_id` is defense-in-depth (cross-validated, not authoritative). (Kanban #695)
 
 **Request:**
 ```json
@@ -172,6 +191,9 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 **Response 201:** `TaskRead`
 
 **Errors:**
+- `400` — header gate violation (Kanban #695):
+  - `{"detail":"X-Project-Id header is required for task endpoints"}` when header missing.
+  - `{"detail":"X-Project-Id header <h> does not match request body project_id <b>"}` when body's `project_id` diverges from header. Header wins on conflict.
 - `400` — FK or CHECK violation. Detail strings (stable wire contract; mirror M5 PATCH pattern — CHECK branches gated by Pydantic 422 first, reachable today only via raw-SQL bypass or future schema drift):
   - `{"detail":"project_id <n> does not exist"}` when `project_id` references a non-existent or soft-deleted project. **Run-mode-agnostic** — wire-byte-identical across all `run_mode` values. Surfaces from two paths: (a) `IntegrityError` translation in `routers/tasks.py` for `manual` / `auto_pickup` (FK violation), (b) the cross-table validator's "no active row" branch in `services/run_mode.py` for `auto_headless`. Source-text-locked in both files. (Kanban #483, refined by #690)
   - `{"detail":"parent_task_id <n> does not exist or is deleted"}` when `parent_task_id` references a missing or soft-deleted parent (Kanban #238)
@@ -187,6 +209,7 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 ### PATCH /api/tasks/{id}
 **Purpose:** Partial update. Transitioning to `process_status=2` (in_progress) sets `started_at=now()` if NULL; transitioning to `process_status=5` (done) sets `completed_at=now()`. Server bumps `updated_at` on any real field change; an unchanged-body PATCH is a no-op (N7 no-op-skip — `routers/tasks.py:121-130`; parity with PATCH `/api/projects/{id}`).
 **Auth:** none
+**Headers:** `X-Project-Id: <int>` REQUIRED. The fetched row's `project_id` must match the header value; mismatch → 400. (Kanban #695)
 
 **Request:** any subset of `{title, description, process_status, priority, assigned_role, started_at, completed_at, run_mode}`. The soft-delete `status` flag is intentionally absent — sending `{"status": 0}` is silently ignored (use `DELETE` to soft-delete). `parent_task_id` is REJECTED (V1 forbids re-parenting per Kanban #238) — see 422 below.
 
@@ -195,6 +218,9 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 **Errors:**
 - `404` — task id not found
 - `422` — Pydantic validation error if `parent_task_id` key is **present in the body** (whether int OR null). V1 forbids re-parenting; clients must omit the key. The router uses a `model_validator` that checks `model_fields_set` membership, so explicit-null is treated identically to a non-null value. Error message substring: `parent_task_id`. (Kanban #238)
+- `400` — header gate violation (Kanban #695):
+  - `{"detail":"X-Project-Id header is required for task endpoints"}` when header missing.
+  - `{"detail":"task <n> does not belong to project_id <h>"}` when fetched row's `project_id` ≠ header.
 - `400` — Cross-table or CHECK violation. Detail strings (stable wire contract):
   - `{"detail":"project <n> has not granted auto-headless consent"}` when the **resolved final** `run_mode` (PATCH-supplied OR existing if not in body) is `auto_headless` AND the project lacks consent. Downgrading from `auto_headless` to `manual` always succeeds (resolved=manual → validator does not fire). Source-text-locked. (Kanban #483)
   - `{"detail":"process_status violates ck_tasks_process_status_valid"}`
@@ -206,9 +232,12 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 ### DELETE /api/tasks/{id}
 **Purpose:** Soft-delete a task — flips `status=0`. First DELETE advances `updated_at`; subsequent DELETEs on an already-deleted row are idempotent no-ops (return 204 without further `updated_at` bump — parity with DELETE `/api/projects/{id}`). The audit trigger snapshots the flip as `'U'` in `tasks_history`. Blocked when active subtasks reference the row (Kanban #238).
 **Auth:** none
+**Headers:** `X-Project-Id: <int>` REQUIRED. The fetched row's `project_id` must match the header value; mismatch → 400. (Kanban #695)
 **Response 204:** No content
 **Errors:**
 - `404` — `{"detail":"Task id=<n> not found"}` when id does not exist
+- `400` — `{"detail":"task <n> does not belong to project_id <h>"}` when fetched row's `project_id` ≠ header (Kanban #695)
+- `400` — `{"detail":"X-Project-Id header is required for task endpoints"}` when header missing (Kanban #695)
 - `409` — `{"detail":"Cannot delete task — <n> active subtask(s) reference this task"}` when at least one row has `parent_task_id=<id> AND status=1`. Soft-delete the children first, then retry the parent. Idempotent re-DELETE on an already soft-deleted parent still returns 204 (the active-children check runs only on the first delete; per `routers/tasks.py` `delete_task`). (Kanban #238)
 
 ## Schemas

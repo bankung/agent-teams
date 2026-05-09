@@ -23,6 +23,11 @@ from src.db import get_or_404, get_session
 from src.models.task import Task
 from src.schemas.task import TaskCreate, TaskRead, TaskUpdate
 from src.services.run_mode import assert_consent_for_run_mode
+from src.services.session_project import (
+    assert_body_matches_session,
+    assert_task_belongs_to_session,
+    require_project_id_header,
+)
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -37,7 +42,7 @@ _STATUS_TIMESTAMP_FIELDS: dict[int, str] = {
 
 @router.get("", response_model=list[TaskRead])
 async def list_tasks(
-    project_id: int = Query(..., description="Required — scope tasks to one project"),
+    session_project_id: int = Depends(require_project_id_header),
     process_status: int | None = Query(
         default=None, description="Filter by tasks.process_status (1..5)"
     ),
@@ -66,7 +71,10 @@ async def list_tasks(
     ),
     session: AsyncSession = Depends(get_session),
 ) -> list[Task]:
-    stmt = select(Task).where(Task.project_id == project_id)
+    # Kanban #695: project scoping comes from the X-Project-Id header (session-
+    # bound). The legacy `?project_id=` query param was removed — header is the
+    # canonical channel; missing/non-int → 400 via require_project_id_header.
+    stmt = select(Task).where(Task.project_id == session_project_id)
     if not include_deleted:
         stmt = stmt.where(Task.status == RecordStatus.ACTIVE)
     if process_status is not None:
@@ -85,18 +93,30 @@ async def list_tasks(
 @router.get("/{task_id}", response_model=TaskRead)
 async def get_task(
     task_id: int,
+    session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
 ) -> Task:
-    return await get_or_404(
+    task = await get_or_404(
         session, Task, detail=f"Task id={task_id} not found", id=task_id
     )
+    # Kanban #695: cross-check the session-bound project against the row.
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+    return task
 
 
 @router.post("", response_model=TaskRead, status_code=http_status.HTTP_201_CREATED)
 async def create_task(
     payload: TaskCreate,
+    session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
 ) -> Task:
+    # Kanban #695: header is the canonical session-bound project. Body's
+    # project_id is defense-in-depth — must match the header (header wins on
+    # conflict; mismatch → 400 with locked detail). This fires BEFORE the
+    # parent-task / consent / FK validations so a stale body is rejected
+    # immediately.
+    assert_body_matches_session(payload.project_id, session_project_id)
+
     # Subtask parent validation (Kanban #238). Same-project enforcement is
     # app-layer (no DB trigger). Stable detail strings are pinned by
     # test_post_task_400_detail_strings_are_pinned_in_router_source — keep in sync.
@@ -146,11 +166,14 @@ async def create_task(
 async def update_task(
     task_id: int,
     payload: TaskUpdate,
+    session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
 ) -> Task:
     task = await get_or_404(
         session, Task, detail=f"Task id={task_id} not found", id=task_id
     )
+    # Kanban #695: cross-check the session-bound project against the row.
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
 
     updates = payload.model_dump(exclude_unset=True)
 
@@ -214,6 +237,7 @@ async def update_task(
 @router.delete("/{task_id}", status_code=http_status.HTTP_204_NO_CONTENT)
 async def delete_task(
     task_id: int,
+    session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     """Soft-delete a task: flip status=0. Returns 204 No Content. Idempotent —
@@ -222,6 +246,8 @@ async def delete_task(
     task = await get_or_404(
         session, Task, detail=f"Task id={task_id} not found", id=task_id
     )
+    # Kanban #695: cross-check the session-bound project against the row.
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
     # Idempotent: skip the no-op UPDATE so we don't write a redundant audit row.
     if task.status == RecordStatus.DELETED:
         return Response(status_code=http_status.HTTP_204_NO_CONTENT)

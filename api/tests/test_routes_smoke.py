@@ -119,14 +119,20 @@ async def test_patch_project_404_exact_detail(client) -> None:
 
 @pytest.mark.asyncio
 async def test_get_task_404_exact_detail(client) -> None:
-    resp = await client.get("/api/tasks/9999999")
+    # Kanban #695: header required even for 404 — gate fires at dependency
+    # injection but `get_or_404` still raises 404 before the cross-check.
+    resp = await client.get(
+        "/api/tasks/9999999", headers={"X-Project-Id": "1"}
+    )
     assert resp.status_code == 404
     assert resp.json() == {"detail": "Task id=9999999 not found"}
 
 
 @pytest.mark.asyncio
 async def test_patch_task_404_exact_detail(client) -> None:
-    resp = await client.patch("/api/tasks/9999999", json={})
+    resp = await client.patch(
+        "/api/tasks/9999999", json={}, headers={"X-Project-Id": "1"}
+    )
     assert resp.status_code == 404
     assert resp.json() == {"detail": "Task id=9999999 not found"}
 
@@ -154,6 +160,7 @@ async def test_post_task_invalid_process_status_returns_422_with_validator_messa
     resp = await client.post(
         "/api/tasks",
         json={"project_id": project_id, "title": "smoke", "process_status": 99},
+        headers={"X-Project-Id": str(project_id)},
     )
     assert resp.status_code == 422, resp.text
     body = resp.json()
@@ -189,6 +196,7 @@ async def test_task_process_status_transitions_stamp_lifecycle_timestamps(client
     project_id = active.json()["id"]
 
     # 1. Create
+    headers = {"X-Project-Id": str(project_id)}
     create_resp = await client.post(
         "/api/tasks",
         json={
@@ -196,6 +204,7 @@ async def test_task_process_status_transitions_stamp_lifecycle_timestamps(client
             "title": "qa-smoke-lifecycle (test row, safe to delete)",
             "description": "Created by tests/test_routes_smoke.py — verifies process_status -> timestamp transitions.",
         },
+        headers=headers,
     )
     assert create_resp.status_code == 201, create_resp.text
     task = create_resp.json()
@@ -206,7 +215,7 @@ async def test_task_process_status_transitions_stamp_lifecycle_timestamps(client
 
     # 2. -> in_progress should stamp started_at
     in_progress = await client.patch(
-        f"/api/tasks/{task_id}", json={"process_status": 2}
+        f"/api/tasks/{task_id}", json={"process_status": 2}, headers=headers,
     )
     assert in_progress.status_code == 200, in_progress.text
     body = in_progress.json()
@@ -216,7 +225,9 @@ async def test_task_process_status_transitions_stamp_lifecycle_timestamps(client
     started_at_snapshot = body["started_at"]
 
     # 3. -> done should stamp completed_at and leave started_at intact
-    done = await client.patch(f"/api/tasks/{task_id}", json={"process_status": 5})
+    done = await client.patch(
+        f"/api/tasks/{task_id}", json={"process_status": 5}, headers=headers
+    )
     assert done.status_code == 200, done.text
     body = done.json()
     assert body["process_status"] == 5
@@ -226,7 +237,7 @@ async def test_task_process_status_transitions_stamp_lifecycle_timestamps(client
     assert body["completed_at"] is not None, "done transition must stamp completed_at"
 
     # Cleanup: soft-delete the test row.
-    cleanup = await client.delete(f"/api/tasks/{task_id}")
+    cleanup = await client.delete(f"/api/tasks/{task_id}", headers=headers)
     assert cleanup.status_code == 204
 
 
@@ -244,25 +255,28 @@ async def test_list_tasks_default_filters_active_only(client) -> None:
     project_id = active.json()["id"]
 
     # Create a task, then soft-delete it.
+    headers = {"X-Project-Id": str(project_id)}
     create = await client.post(
         "/api/tasks",
         json={"project_id": project_id, "title": "soft-delete-list-filter probe"},
+        headers=headers,
     )
     assert create.status_code == 201
     task_id = create.json()["id"]
 
-    delete = await client.delete(f"/api/tasks/{task_id}")
+    delete = await client.delete(f"/api/tasks/{task_id}", headers=headers)
     assert delete.status_code == 204
 
-    # Default list — must NOT include the soft-deleted row.
-    default_list = await client.get(f"/api/tasks?project_id={project_id}&limit=500")
+    # Default list — must NOT include the soft-deleted row. Kanban #695:
+    # project scoping moved from `?project_id=` to the X-Project-Id header.
+    default_list = await client.get("/api/tasks?limit=500", headers=headers)
     assert default_list.status_code == 200
     ids = {t["id"] for t in default_list.json()}
     assert task_id not in ids, "default list must hide soft-deleted rows"
 
     # ?include_deleted=true — must include it.
     with_deleted = await client.get(
-        f"/api/tasks?project_id={project_id}&include_deleted=true&limit=500"
+        "/api/tasks?include_deleted=true&limit=500", headers=headers
     )
     assert with_deleted.status_code == 200
     ids_with_deleted = {t["id"] for t in with_deleted.json()}
@@ -278,16 +292,19 @@ async def test_get_task_returns_row_regardless_of_soft_delete_status(client) -> 
     active = await client.get("/api/projects/active")
     project_id = active.json()["id"]
 
+    headers = {"X-Project-Id": str(project_id)}
     create = await client.post(
-        "/api/tasks", json={"project_id": project_id, "title": "detail-after-soft-delete"}
+        "/api/tasks",
+        json={"project_id": project_id, "title": "detail-after-soft-delete"},
+        headers=headers,
     )
     task_id = create.json()["id"]
 
-    delete = await client.delete(f"/api/tasks/{task_id}")
+    delete = await client.delete(f"/api/tasks/{task_id}", headers=headers)
     assert delete.status_code == 204
 
     # Detail endpoint must still return the row.
-    detail = await client.get(f"/api/tasks/{task_id}")
+    detail = await client.get(f"/api/tasks/{task_id}", headers=headers)
     assert detail.status_code == 200, detail.text
     assert detail.json()["id"] == task_id
 
@@ -298,15 +315,18 @@ async def test_delete_task_returns_204_and_is_idempotent(client) -> None:
     active = await client.get("/api/projects/active")
     project_id = active.json()["id"]
 
+    headers = {"X-Project-Id": str(project_id)}
     create = await client.post(
-        "/api/tasks", json={"project_id": project_id, "title": "delete-idempotent probe"}
+        "/api/tasks",
+        json={"project_id": project_id, "title": "delete-idempotent probe"},
+        headers=headers,
     )
     task_id = create.json()["id"]
 
-    first = await client.delete(f"/api/tasks/{task_id}")
+    first = await client.delete(f"/api/tasks/{task_id}", headers=headers)
     assert first.status_code == 204
 
-    second = await client.delete(f"/api/tasks/{task_id}")
+    second = await client.delete(f"/api/tasks/{task_id}", headers=headers)
     assert second.status_code == 204
 
 
@@ -321,23 +341,28 @@ async def test_patch_task_silently_ignores_soft_delete_status_field(client) -> N
     active = await client.get("/api/projects/active")
     project_id = active.json()["id"]
 
+    headers = {"X-Project-Id": str(project_id)}
     create = await client.post(
-        "/api/tasks", json={"project_id": project_id, "title": "patch-ignore-status probe"}
+        "/api/tasks",
+        json={"project_id": project_id, "title": "patch-ignore-status probe"},
+        headers=headers,
     )
     assert create.status_code == 201
     task_id = create.json()["id"]
 
     # PATCH with `status: 0` in the body — should NOT soft-delete the task.
-    resp = await client.patch(f"/api/tasks/{task_id}", json={"status": 0})
+    resp = await client.patch(
+        f"/api/tasks/{task_id}", json={"status": 0}, headers=headers
+    )
     assert resp.status_code == 200, resp.text
 
     # Detail still appears in the default list (i.e., status=1).
-    listing = await client.get(f"/api/tasks?project_id={project_id}&limit=500")
+    listing = await client.get("/api/tasks?limit=500", headers=headers)
     ids = {t["id"] for t in listing.json()}
     assert task_id in ids, "PATCH {status:0} must NOT soft-delete (silent-ignore contract)"
 
     # Cleanup
-    await client.delete(f"/api/tasks/{task_id}")
+    await client.delete(f"/api/tasks/{task_id}", headers=headers)
 
 
 @pytest.mark.asyncio
@@ -638,9 +663,11 @@ async def test_first_delete_bumps_updated_at_redelete_does_not_for_tasks(
     active = await client.get("/api/projects/active")
     project_id = active.json()["id"]
 
+    headers = {"X-Project-Id": str(project_id)}
     create = await client.post(
         "/api/tasks",
         json={"project_id": project_id, "title": "m9-redelete-task probe"},
+        headers=headers,
     )
     assert create.status_code == 201
     task_id = create.json()["id"]
@@ -649,11 +676,11 @@ async def test_first_delete_bumps_updated_at_redelete_does_not_for_tasks(
 
     # First DELETE — flips status=0; audit trigger writes one 'U' row AND the
     # router explicitly sets `task.updated_at = func.now()`.
-    first = await client.delete(f"/api/tasks/{task_id}")
+    first = await client.delete(f"/api/tasks/{task_id}", headers=headers)
     assert first.status_code == 204
 
     # Re-fetch the row to read updated_at (detail endpoint returns soft-deleted rows).
-    detail = await client.get(f"/api/tasks/{task_id}")
+    detail = await client.get(f"/api/tasks/{task_id}", headers=headers)
     assert detail.status_code == 200, detail.text
     updated_at_after_first_delete = _parse_ts(detail.json()["updated_at"])
 
@@ -674,10 +701,10 @@ async def test_first_delete_bumps_updated_at_redelete_does_not_for_tasks(
     )
 
     # Second DELETE — should be a no-op.
-    second = await client.delete(f"/api/tasks/{task_id}")
+    second = await client.delete(f"/api/tasks/{task_id}", headers=headers)
     assert second.status_code == 204
 
-    detail2 = await client.get(f"/api/tasks/{task_id}")
+    detail2 = await client.get(f"/api/tasks/{task_id}", headers=headers)
     assert detail2.status_code == 200, detail2.text
     updated_at_after_second_delete = _parse_ts(detail2.json()["updated_at"])
 
@@ -866,6 +893,7 @@ async def test_patch_task_updated_at_advances_on_real_change_and_no_op_skips(
     active = await client.get("/api/projects/active")
     project_id = active.json()["id"]
 
+    headers = {"X-Project-Id": str(project_id)}
     create = await client.post(
         "/api/tasks",
         json={
@@ -873,6 +901,7 @@ async def test_patch_task_updated_at_advances_on_real_change_and_no_op_skips(
             "title": "patch-updated-at-task probe",
             "priority": 1,
         },
+        headers=headers,
     )
     assert create.status_code == 201, create.text
     task_id = create.json()["id"]
@@ -884,6 +913,7 @@ async def test_patch_task_updated_at_advances_on_real_change_and_no_op_skips(
         first_patch = await client.patch(
             f"/api/tasks/{task_id}",
             json={"priority": 3},
+            headers=headers,
         )
         assert first_patch.status_code == 200, first_patch.text
         assert first_patch.json()["priority"] == 3
@@ -898,6 +928,7 @@ async def test_patch_task_updated_at_advances_on_real_change_and_no_op_skips(
         second_patch = await client.patch(
             f"/api/tasks/{task_id}",
             json={"priority": 3},
+            headers=headers,
         )
         assert second_patch.status_code == 200, second_patch.text
         updated_at_after_noop = _parse_ts(second_patch.json()["updated_at"])
@@ -910,6 +941,7 @@ async def test_patch_task_updated_at_advances_on_real_change_and_no_op_skips(
         third_patch = await client.patch(
             f"/api/tasks/{task_id}",
             json={"priority": 4},
+            headers=headers,
         )
         assert third_patch.status_code == 200, third_patch.text
         assert third_patch.json()["priority"] == 4
@@ -933,7 +965,7 @@ async def test_patch_task_updated_at_advances_on_real_change_and_no_op_skips(
             )
     finally:
         # Soft-delete the test row.
-        await client.delete(f"/api/tasks/{task_id}")
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
 
 
 # -----------------------------------------------------------------------------
@@ -1208,9 +1240,12 @@ async def test_post_task_returns_stable_detail_on_fk_violation(client) -> None:
     commit layer).
     """
     bogus_project_id = 99999999
+    # Kanban #695: header must match body to reach the FK-violation branch
+    # (body-vs-header mismatch fires earlier with a different 400 detail).
     resp = await client.post(
         "/api/tasks",
         json={"project_id": bogus_project_id, "title": "kanban-122-fk-probe"},
+        headers={"X-Project-Id": str(bogus_project_id)},
     )
     assert resp.status_code == 400, resp.text
     body = resp.json()
@@ -1243,9 +1278,11 @@ async def test_post_parent_and_child_round_trip(client) -> None:
     active = await client.get("/api/projects/active")
     project_id = active.json()["id"]
 
+    headers = {"X-Project-Id": str(project_id)}
     parent_resp = await client.post(
         "/api/tasks",
         json={"project_id": project_id, "title": "k238-a parent probe"},
+        headers=headers,
     )
     assert parent_resp.status_code == 201, parent_resp.text
     parent = parent_resp.json()
@@ -1260,6 +1297,7 @@ async def test_post_parent_and_child_round_trip(client) -> None:
                 "title": "k238-a child probe",
                 "parent_task_id": parent_id,
             },
+            headers=headers,
         )
         assert child_resp.status_code == 201, child_resp.text
         child = child_resp.json()
@@ -1268,9 +1306,9 @@ async def test_post_parent_and_child_round_trip(client) -> None:
             f"{child['parent_task_id']!r}"
         )
         # Cleanup child first (parent has active child otherwise → 409).
-        await client.delete(f"/api/tasks/{child['id']}")
+        await client.delete(f"/api/tasks/{child['id']}", headers=headers)
     finally:
-        await client.delete(f"/api/tasks/{parent_id}")
+        await client.delete(f"/api/tasks/{parent_id}", headers=headers)
 
 
 # Regression: Kanban #238 (b)
@@ -1291,14 +1329,20 @@ async def test_post_child_rejects_cross_project_parent(
     assert proj_b_resp.status_code == 201, proj_b_resp.text
     project_b_id = proj_b_resp.json()["id"]
 
+    headers_a = {"X-Project-Id": str(project_a_id)}
+    headers_b = {"X-Project-Id": str(project_b_id)}
     parent_resp = await client.post(
         "/api/tasks",
         json={"project_id": project_a_id, "title": "k238-b parent in A"},
+        headers=headers_a,
     )
     assert parent_resp.status_code == 201
     parent_id = parent_resp.json()["id"]
 
     try:
+        # Body claims B → header must also be B (Kanban #695). Parent is in A,
+        # so the cross-project parent rejection still fires AFTER the header
+        # gate passes (header == body == B).
         bad_child = await client.post(
             "/api/tasks",
             json={
@@ -1306,13 +1350,14 @@ async def test_post_child_rejects_cross_project_parent(
                 "title": "k238-b child claiming B but referencing parent in A",
                 "parent_task_id": parent_id,
             },
+            headers=headers_b,
         )
         assert bad_child.status_code == 400, bad_child.text
         assert bad_child.json() == {
             "detail": f"parent_task_id {parent_id} belongs to a different project"
         }, bad_child.json()
     finally:
-        await client.delete(f"/api/tasks/{parent_id}")
+        await client.delete(f"/api/tasks/{parent_id}", headers=headers_a)
         await client.delete(f"/api/projects/{project_b_id}")
 
 
@@ -1329,9 +1374,11 @@ async def test_db_check_rejects_self_parent(client, db_session) -> None:
     active = await client.get("/api/projects/active")
     project_id = active.json()["id"]
 
+    headers = {"X-Project-Id": str(project_id)}
     create = await client.post(
         "/api/tasks",
         json={"project_id": project_id, "title": "k238-c self-parent probe"},
+        headers=headers,
     )
     assert create.status_code == 201
     task_id = create.json()["id"]
@@ -1349,7 +1396,7 @@ async def test_db_check_rejects_self_parent(client, db_session) -> None:
             f"{excinfo.value!s}"
         )
     finally:
-        await client.delete(f"/api/tasks/{task_id}")
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
 
 
 # Regression: Kanban #238 (d)
@@ -1362,21 +1409,28 @@ async def test_patch_parent_task_id_rejected_with_422(client) -> None:
     active = await client.get("/api/projects/active")
     project_id = active.json()["id"]
 
+    headers = {"X-Project-Id": str(project_id)}
     parent_create = await client.post(
-        "/api/tasks", json={"project_id": project_id, "title": "k238-d parent"}
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k238-d parent"},
+        headers=headers,
     )
     assert parent_create.status_code == 201
     parent_id = parent_create.json()["id"]
 
     target_create = await client.post(
-        "/api/tasks", json={"project_id": project_id, "title": "k238-d target"}
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k238-d target"},
+        headers=headers,
     )
     assert target_create.status_code == 201
     target_id = target_create.json()["id"]
 
     try:
         resp = await client.patch(
-            f"/api/tasks/{target_id}", json={"parent_task_id": parent_id}
+            f"/api/tasks/{target_id}",
+            json={"parent_task_id": parent_id},
+            headers=headers,
         )
         assert resp.status_code == 422, resp.text
         body = resp.json()
@@ -1386,7 +1440,7 @@ async def test_patch_parent_task_id_rejected_with_422(client) -> None:
             f"expected 'parent_task_id' in 422 envelope msgs; got {msgs!r}"
         )
         # Sanity: the row was NOT mutated.
-        detail = await client.get(f"/api/tasks/{target_id}")
+        detail = await client.get(f"/api/tasks/{target_id}", headers=headers)
         assert detail.json()["parent_task_id"] is None
 
         # Explicit-null PATCH must ALSO 422 — locked semantic uses
@@ -1395,7 +1449,9 @@ async def test_patch_parent_task_id_rejected_with_422(client) -> None:
         # relaxing the validator to `if self.parent_task_id is not None:`
         # which would silently let the null case through. (Kanban #238 W1.)
         resp_null = await client.patch(
-            f"/api/tasks/{target_id}", json={"parent_task_id": None}
+            f"/api/tasks/{target_id}",
+            json={"parent_task_id": None},
+            headers=headers,
         )
         assert resp_null.status_code == 422, resp_null.text
         msgs_null = " | ".join(err["msg"] for err in resp_null.json()["detail"])
@@ -1403,8 +1459,8 @@ async def test_patch_parent_task_id_rejected_with_422(client) -> None:
             f"explicit-null PATCH must also 422; got {msgs_null!r}"
         )
     finally:
-        await client.delete(f"/api/tasks/{target_id}")
-        await client.delete(f"/api/tasks/{parent_id}")
+        await client.delete(f"/api/tasks/{target_id}", headers=headers)
+        await client.delete(f"/api/tasks/{parent_id}", headers=headers)
 
 
 # Regression: Kanban #238 (e) — fail-before / pass-after demo target
@@ -1421,8 +1477,11 @@ async def test_delete_parent_with_active_children_returns_409(client) -> None:
     active = await client.get("/api/projects/active")
     project_id = active.json()["id"]
 
+    headers = {"X-Project-Id": str(project_id)}
     parent_create = await client.post(
-        "/api/tasks", json={"project_id": project_id, "title": "k238-e parent"}
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k238-e parent"},
+        headers=headers,
     )
     assert parent_create.status_code == 201
     parent_id = parent_create.json()["id"]
@@ -1434,25 +1493,26 @@ async def test_delete_parent_with_active_children_returns_409(client) -> None:
             "title": "k238-e child",
             "parent_task_id": parent_id,
         },
+        headers=headers,
     )
     assert child_create.status_code == 201
     child_id = child_create.json()["id"]
 
     try:
-        block = await client.delete(f"/api/tasks/{parent_id}")
+        block = await client.delete(f"/api/tasks/{parent_id}", headers=headers)
         assert block.status_code == 409, block.text
         assert block.json() == {
             "detail": "Cannot delete task — 1 active subtask(s) reference this task"
         }, block.json()
 
         # Parent still active in the default listing (status=1 proxy).
-        listing = await client.get(f"/api/tasks?project_id={project_id}&limit=500")
+        listing = await client.get("/api/tasks?limit=500", headers=headers)
         ids = {t["id"] for t in listing.json()}
         assert parent_id in ids, "parent must still be active after blocked DELETE"
         assert child_id in ids, "child must still be active after blocked DELETE"
     finally:
-        await client.delete(f"/api/tasks/{child_id}")
-        await client.delete(f"/api/tasks/{parent_id}")
+        await client.delete(f"/api/tasks/{child_id}", headers=headers)
+        await client.delete(f"/api/tasks/{parent_id}", headers=headers)
 
 
 # Regression: Kanban #238 (f)
@@ -1463,8 +1523,11 @@ async def test_delete_parent_succeeds_after_children_soft_deleted(client) -> Non
     active = await client.get("/api/projects/active")
     project_id = active.json()["id"]
 
+    headers = {"X-Project-Id": str(project_id)}
     parent_create = await client.post(
-        "/api/tasks", json={"project_id": project_id, "title": "k238-f parent"}
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k238-f parent"},
+        headers=headers,
     )
     parent_id = parent_create.json()["id"]
     child_create = await client.post(
@@ -1474,19 +1537,20 @@ async def test_delete_parent_succeeds_after_children_soft_deleted(client) -> Non
             "title": "k238-f child",
             "parent_task_id": parent_id,
         },
+        headers=headers,
     )
     child_id = child_create.json()["id"]
 
     # Soft-delete child first.
-    delete_child = await client.delete(f"/api/tasks/{child_id}")
+    delete_child = await client.delete(f"/api/tasks/{child_id}", headers=headers)
     assert delete_child.status_code == 204
 
     # Now parent DELETE should succeed.
-    delete_parent = await client.delete(f"/api/tasks/{parent_id}")
+    delete_parent = await client.delete(f"/api/tasks/{parent_id}", headers=headers)
     assert delete_parent.status_code == 204, delete_parent.text
 
     # Verify parent is gone from default listing (status=1 filter).
-    listing = await client.get(f"/api/tasks?project_id={project_id}&limit=500")
+    listing = await client.get("/api/tasks?limit=500", headers=headers)
     ids = {t["id"] for t in listing.json()}
     assert parent_id not in ids, "parent must be soft-deleted (status=0) after success"
 
@@ -1499,12 +1563,17 @@ async def test_list_tasks_filters_by_parent_task_id(client) -> None:
     active = await client.get("/api/projects/active")
     project_id = active.json()["id"]
 
+    headers = {"X-Project-Id": str(project_id)}
     parent_create = await client.post(
-        "/api/tasks", json={"project_id": project_id, "title": "k238-g parent"}
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k238-g parent"},
+        headers=headers,
     )
     parent_id = parent_create.json()["id"]
     other_create = await client.post(
-        "/api/tasks", json={"project_id": project_id, "title": "k238-g unrelated top-level"}
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k238-g unrelated top-level"},
+        headers=headers,
     )
     other_id = other_create.json()["id"]
 
@@ -1515,6 +1584,7 @@ async def test_list_tasks_filters_by_parent_task_id(client) -> None:
             "title": "k238-g child A",
             "parent_task_id": parent_id,
         },
+        headers=headers,
     )
     child_a_id = child_a.json()["id"]
     child_b = await client.post(
@@ -1524,12 +1594,14 @@ async def test_list_tasks_filters_by_parent_task_id(client) -> None:
             "title": "k238-g child B",
             "parent_task_id": parent_id,
         },
+        headers=headers,
     )
     child_b_id = child_b.json()["id"]
 
     try:
         resp = await client.get(
-            f"/api/tasks?project_id={project_id}&parent_task_id={parent_id}&limit=500"
+            f"/api/tasks?parent_task_id={parent_id}&limit=500",
+            headers=headers,
         )
         assert resp.status_code == 200, resp.text
         ids = {t["id"] for t in resp.json()}
@@ -1541,10 +1613,10 @@ async def test_list_tasks_filters_by_parent_task_id(client) -> None:
         for t in resp.json():
             assert t["parent_task_id"] == parent_id
     finally:
-        await client.delete(f"/api/tasks/{child_a_id}")
-        await client.delete(f"/api/tasks/{child_b_id}")
-        await client.delete(f"/api/tasks/{parent_id}")
-        await client.delete(f"/api/tasks/{other_id}")
+        await client.delete(f"/api/tasks/{child_a_id}", headers=headers)
+        await client.delete(f"/api/tasks/{child_b_id}", headers=headers)
+        await client.delete(f"/api/tasks/{parent_id}", headers=headers)
+        await client.delete(f"/api/tasks/{other_id}", headers=headers)
 
 
 # Regression: Kanban #238 (h)
@@ -1555,8 +1627,11 @@ async def test_list_tasks_top_level_only_filter(client) -> None:
     active = await client.get("/api/projects/active")
     project_id = active.json()["id"]
 
+    headers = {"X-Project-Id": str(project_id)}
     parent_create = await client.post(
-        "/api/tasks", json={"project_id": project_id, "title": "k238-h parent"}
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k238-h parent"},
+        headers=headers,
     )
     parent_id = parent_create.json()["id"]
     child_create = await client.post(
@@ -1566,12 +1641,14 @@ async def test_list_tasks_top_level_only_filter(client) -> None:
             "title": "k238-h child",
             "parent_task_id": parent_id,
         },
+        headers=headers,
     )
     child_id = child_create.json()["id"]
 
     try:
         resp = await client.get(
-            f"/api/tasks?project_id={project_id}&top_level_only=true&limit=500"
+            "/api/tasks?top_level_only=true&limit=500",
+            headers=headers,
         )
         assert resp.status_code == 200, resp.text
         rows = resp.json()
@@ -1587,8 +1664,8 @@ async def test_list_tasks_top_level_only_filter(client) -> None:
                 f"top_level_only=true returned a row with parent_task_id={t['parent_task_id']!r}"
             )
     finally:
-        await client.delete(f"/api/tasks/{child_id}")
-        await client.delete(f"/api/tasks/{parent_id}")
+        await client.delete(f"/api/tasks/{child_id}", headers=headers)
+        await client.delete(f"/api/tasks/{parent_id}", headers=headers)
 
 
 # Regression: Kanban #238 — source-text pin for the new POST/DELETE detail strings

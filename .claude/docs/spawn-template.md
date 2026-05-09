@@ -65,6 +65,31 @@ Read `<absolute path>/context/projects/<active>/<role>/current-state.md` (if pre
 - Every Write/Edit/Bash will prompt the user; if denied, stop and report with the reason.
 - Do only what was asked. No refactors or features outside scope.
 
+# X-Project-Id header on task endpoints (Kanban #695, mandatory)
+
+Subagents inherit the session-bound project from Lead's spawn brief. Every Bash
+`curl http://localhost:8456/api/tasks*` call MUST include
+`-H "X-Project-Id: <id>"` matching the project Lead bound at session start.
+Forgetting it 400s — the gate is intentional. Examples:
+
+```bash
+# List tasks for the session-bound project
+curl --silent -H "X-Project-Id: <id>" http://localhost:8456/api/tasks
+
+# Detail / PATCH / DELETE
+curl --silent -H "X-Project-Id: <id>" http://localhost:8456/api/tasks/<task_id>
+curl --silent -X PATCH -H "X-Project-Id: <id>" -H "Content-Type: application/json" \
+  -d '{"process_status": 2}' http://localhost:8456/api/tasks/<task_id>
+curl --silent -X DELETE -H "X-Project-Id: <id>" http://localhost:8456/api/tasks/<task_id>
+
+# POST — body project_id MUST equal the header (header wins on conflict).
+curl --silent -X POST -H "X-Project-Id: <id>" -H "Content-Type: application/json" \
+  -d '{"project_id": <id>, "title": "..."}' http://localhost:8456/api/tasks
+```
+
+Project endpoints (`/api/projects/*`) do NOT need the header — the project IS
+the resource. Only task endpoints are gated.
+
 # Compact step
 Before returning:
 1. Update `context/projects/<active>/<role>/current-state.md`.
