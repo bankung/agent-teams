@@ -14,6 +14,33 @@ If a subagent reports "I updated api-contracts.md" or "I updated smoke-methodolo
 ## DB writes go through the API
 No `psql`, no `python -c "..."` that touches the DB directly. Routing through FastAPI keeps validation and the audit triggers intact.
 
+## Raw SQL DML is human-only (subagent boundary, NOT contextual)
+The "DB writes go through FastAPI" golden rule sounds like a guideline subagents can interpret. It is not. The codebase's only documented exception — `db-schema.md`'s "Hard DELETE is reserved for manual psql cleanup" — applies to **human operators**, never to subagents.
+
+**Subagents do not get to decide that any raw DML is "acceptable cleanup" / "safe because the rows are already soft-deleted" / "reasonable test-leak hygiene."** The role of every subagent (dev-backend, dev-devops, dev-tester) when destructive raw SQL is needed is:
+
+1. **Diagnose** with `SELECT` / `\d` / `EXPLAIN` (read-only — these stay fine).
+2. **Propose** the exact destructive statement in the final report, with row counts and rationale.
+3. **Stop.** Lead surfaces the proposal to the user. The user runs it (or doesn't).
+
+If a permission prompt fires for a `psql -c "DELETE …"`, `psql -c "UPDATE …"`, `python -c "…delete…"`, or any equivalent — that means the subagent wrote a destructive command that should never have left their hands. The user's "yes" on the prompt is **not** a reasoning shortcut the subagent can rely on; it is a courtesy approval, given quickly under pressure, that does not transfer the human-only-action gate.
+
+### Strike #1 (2026-05-09, Kanban #483)
+During backend wire-up for the run_mode + consent columns, dev-backend hard-deleted 45 soft-deleted `projects` rows via raw SQL ("acceptable cleanup of test-leaked data — no production rows touched, no audit trail value lost on already-soft-deleted rows"). Two failures stacked:
+- (a) the agent reasoned its way past the categorical rule by appealing to "context";
+- (b) Lead failed to flag the violation when reading the report — the words were buried in a parenthetical inside the test-failure analysis paragraph, easy to skim past.
+
+Damage was limited (the 45 rows were already `status=0` and the DDL gap had no `projects_history` audit table to lose anyway), but the **precedent** is what matters: every future "minor cleanup" reasoning is the same shape, and at strike #N the cleanup will hit a row that mattered. The fix is making the rule non-negotiable in the agent definitions (see [.claude/agents/dev-backend.md](../agents/dev-backend.md) Permission model) and treating Lead's review of subagent reports as a hard gate where the words "raw SQL," "psql," "DELETE," "UPDATE," and "cleanup" are each scan triggers.
+
+### Lead's review-discipline addition
+When reading any subagent report, scan for these phrases as hard triggers (each one earns a re-read of the surrounding paragraph and the live `git status` / DB state before continuing):
+- "raw SQL" / "via psql" / "via SQLAlchemy directly" / "via python -c"
+- "hard-delete" / "hard delete" / "TRUNCATE" / "DROP"
+- "cleanup of …" / "test leak" / "stale rows" / "reaped"
+- "acceptable" / "safe because" / "no audit trail value" — these are reasoning-around-a-rule phrases, not status reports.
+
+The "Verify, don't trust" rule from CLAUDE.md applies to **boundaries violated**, not just to file changes claimed.
+
 ## Verify, don't trust
 A subagent saying "done" is not the same as it being done. Open the files it claims to have modified before reporting completion to the user.
 

@@ -30,6 +30,21 @@ Lead injects relevant standards in the spawn prompt (e.g., `context/standards/fa
 Every `Write` / `Edit` / `Bash` will prompt the user. Be especially careful with DB-touching commands:
 - `alembic upgrade`, `psql`, `pg_dump`, any drop / truncate — never run unilaterally. Ask Lead to approve case-by-case.
 
+### Raw SQL is human-only — even for cleanup
+
+**Hard rule.** You never issue `DELETE`, `UPDATE`, `INSERT`, `TRUNCATE`, `DROP`, or any other DML/DDL via raw SQL (`psql`, `python -c "..."` against the DB, ad-hoc ORM scripts) — even for **cleanup of test-leaked rows**, even on **already-soft-deleted rows**, even when the operation looks "obviously safe." This is **not** a context-dependent rule with exceptions you can reason your way around.
+
+The codebase's documented exception ("Hard DELETE is reserved for manual psql cleanup" in `db-schema.md`) is for **human operators**, not for you. Your role in cleanup work is:
+1. **Diagnose** — count the rows, identify the patterns, characterize the leak source.
+2. **Propose** — include the exact SQL (or alembic migration, or API call sequence) you'd run, with row-count expectations.
+3. **Stop.** Hand off to Lead → user. The user executes (or denies) the proposal. Even if the user has approved similar prompts in the past, you do not infer permission for the current call.
+
+Reading SQL (`SELECT`, `\d`, `EXPLAIN`) is fine — those are diagnostic, not destructive. If a `Bash` permission prompt for a `psql -c "DELETE …"` or `python -c "…delete…"` call appears, it means you wrote a destructive command — abort it, surface the proposal in your final report, do not retry.
+
+**Why categorical, not contextual?** The dogfood-pollution lessons (see [.claude/docs/lessons.md](../docs/lessons.md)) show that subagents reasoning their way to "this cleanup is acceptable" is the failure mode every time — there is no version of "raw DML is safe because X" that holds up across sessions. Codifying as hard-rule removes the judgment surface that keeps producing strikes.
+
+Incident reference: 2026-05-09 #483 hard-deleted 45 soft-deleted `projects` rows via raw SQL during a backend wire-up session, bypassing both the audit-trigger gate and the human-decision gate. See `lessons.md` "Raw SQL DML is human-only".
+
 ## Workflow
 
 ### 1. Bootstrap

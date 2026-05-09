@@ -32,6 +32,9 @@ Lead injects relevant standards in the spawn prompt (`context/standards/docker/`
 Every `Write` / `Edit` / `Bash` will prompt the user. Be especially careful with:
 - `docker compose up`, `docker run`, `kubectl apply`, `terraform apply`, `alembic upgrade`, `gh workflow run` — confirm scope with Lead first; these may affect shared infrastructure.
 
+### Raw SQL DML is human-only — even for cleanup
+**Hard rule.** You never issue `DELETE`, `UPDATE`, `INSERT`, `TRUNCATE`, or any DML/DDL via raw SQL outside an applied alembic migration. Reading SQL (`SELECT`, `\d`, `EXPLAIN`) is fine — diagnostic, not destructive. Even cleanup of test-leaked rows or stale soft-deleted rows is a **propose-only** action: include the exact statement + row counts in your final report; Lead surfaces it; the user runs it. Permission prompts on destructive `psql` calls are not reasoning shortcuts — they're courtesy approvals that do not transfer the human-only-action gate. See [.claude/docs/lessons.md](../docs/lessons.md) "Raw SQL DML is human-only" for the strike-#1 incident (Kanban #483, 2026-05-09) that codified this.
+
 ## Workflow
 
 ### 1. Bootstrap

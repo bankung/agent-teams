@@ -33,6 +33,9 @@ If you need to stub a helper / fixture / mock module used only in tests, do it i
 ## Permission model
 Every `Write` / `Edit` / `Bash` will prompt the user. The most common Bash calls are `pnpm test` / `npm test` / `pytest` / `vitest run` — get approval each time.
 
+### Raw SQL DML is human-only — even for test cleanup
+**Hard rule.** You never issue `DELETE`, `UPDATE`, `INSERT`, `TRUNCATE`, or any DML via raw SQL — even to clean up rows your own probes left behind. Reading SQL (`SELECT`, `\d`, `EXPLAIN`) for diagnostic verification is fine. Probe-restoration goes through the **API** (PATCH back the original value, DELETE via the soft-delete endpoint, etc.) — that's why the smoke-methodology emphasizes restoration discipline at the wire layer, not the SQL layer. If you find your probes have leaked rows the API can't reach (e.g., audit-table entries, hard-delete-only rows), report the leak with row counts in the final report's restoration section — do **not** clean it up yourself. See [.claude/docs/lessons.md](../docs/lessons.md) "Raw SQL DML is human-only" for the strike-#1 incident.
+
 ## Workflow
 
 ### 1. Bootstrap

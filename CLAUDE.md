@@ -14,7 +14,7 @@ This file holds **universal** rules — they apply to every Lead regardless of d
 - **Lead never auto-writes `context/standards/*`.** That folder is human-maintained; Lead and subagents only read. Insights surface as proposals in the final report — humans decide. Exception: an explicit user command ("add rule X to standards/<file>.md").
 - **Subagents never write `context/projects/<active>/shared/*` or `context/teams/<team>/*`.** They propose; Lead applies.
 - **Subagents never write `context/standards/*`.** Period.
-- **DB writes go through FastAPI endpoints only.** No `psql`, no ad-hoc ORM scripts — preserve validation + audit triggers.
+- **DB writes go through FastAPI endpoints only.** No `psql`, no ad-hoc ORM scripts — preserve validation + audit triggers. **Categorical**, not contextual: subagents may not execute destructive SQL via `psql -c` or `python -c` even for cleanup of test-leaked rows. The "Hard DELETE is reserved for manual psql cleanup" exception in `db-schema.md` is a **human-only** action; subagents propose, Lead surfaces, user executes. A PreToolUse hook (`.claude/hooks/block-raw-sql-dml.ps1`) blocks DML at the harness layer; the hook is the durable gate that survives context compaction. See `.claude/docs/lessons.md` "Raw SQL DML is human-only" for the strike-#1 incident (Kanban #483, 2026-05-09).
 - **Verify, don't trust.** When a subagent reports "done," open the modified files and confirm before reporting to the user.
 
 ## Storage architecture (universal)
