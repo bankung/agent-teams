@@ -9,11 +9,13 @@
       "Write(api/**)",
       "Write(web/**)",
       "Write(context/projects/**)",
+      "Write(**/context/projects/**)",
       "Write(context/teams/**)",
       "Write(.claude/**)",
       "Edit(api/**)",
       "Edit(web/**)",
       "Edit(context/projects/**)",
+      "Edit(**/context/projects/**)",
       "Edit(context/teams/**)",
       "Edit(.claude/**)",
       "Edit(CLAUDE.md)",
@@ -23,6 +25,9 @@
 
       "Write(~/.claude/projects/**/memory/**)",
       "Edit(~/.claude/projects/**/memory/**)",
+
+      "Write(**/context/projects/**/current-state.md)",
+      "Edit(**/context/projects/**/current-state.md)",
 
       "Write(_scratch/**)",
       "Edit(_scratch/**)",
@@ -100,7 +105,15 @@
     "ask": [
       "Write(*)",
       "Edit(*)",
-      "Bash(*)"
+      "Bash(*)",
+      "Write(context/projects/*/shared/**)",
+      "Write(**/context/projects/*/shared/**)",
+      "Edit(context/projects/*/shared/**)",
+      "Edit(**/context/projects/*/shared/**)",
+      "Write(context/teams/**)",
+      "Write(**/context/teams/**)",
+      "Edit(context/teams/**)",
+      "Edit(**/context/teams/**)"
     ]
   },
   "hooks": {
