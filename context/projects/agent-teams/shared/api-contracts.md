@@ -187,6 +187,18 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 
 `run_mode` (`"manual"` | `"auto_pickup"` | `"auto_headless"`, optional, default `"manual"`) — Step 2 execution mode (Kanban #483). `auto_headless` requires `project.auto_run_consent_at IS NOT NULL` — see 400 below.
 
+`task_kind` (`"ai"` | `"human"`, optional, default `"human"`) — V3+ scope-lock 2026-05-10 (Kanban #706). Discriminates AI-runner-driven work from human work. Cross-table rule: `task_kind='human'` MUST pair with `run_mode='manual'`; mismatch → 400 (see Errors below). Validator at `services/task_kind.py` fires BEFORE the consent gate (cheaper pure-function check first).
+
+`is_template` (bool, optional, default false) — recurrence template flag. When true, `recurrence_rule` AND `next_fire_at` are required (Pydantic 422; DB CHECK 400 fallback).
+
+`recurrence_rule` (str, optional, max 255, default null) — cron expression. Pydantic field validator runs `croniter.is_valid()`; invalid → 422 with `recurrence_rule` in the error loc.
+
+`recurrence_timezone` (str, optional, max 64, default `"UTC"`) — IANA TZ name. Pydantic field validator checks `zoneinfo.available_timezones()`; unknown → 422 with `recurrence_timezone` in the error loc.
+
+`next_fire_at` (datetime ISO-8601 with timezone, optional, default null) — scheduler hot-path target. Datetimes serialize as trailing `Z` form on output (Pydantic v2 default).
+
+`spawned_from_task_id` (int, optional ge=1, default null) — system-managed lineage pointer. Set by the T2 scheduler on spawn from a template; user-driven POSTs default to null. NEVER editable on PATCH (V1 forbids re-parenting lineage; same model_fields_set membership pattern as `parent_task_id`).
+
 **Response 201:** `TaskRead`
 
 **Errors:**
@@ -202,29 +214,35 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
   - `{"detail":"priority violates ck_tasks_priority_valid"}`
   - `{"detail":"run_mode violates ck_tasks_run_mode_valid"}` (defensive — Pydantic Literal gates this first)
   - `{"detail":"status violates ck_tasks_status_valid"}` (defensive — `status` is not a public POST field)
+  - `{"detail":"task_kind 'human' is incompatible with run_mode '<run_mode>'"}` when `task_kind='human'` AND `run_mode != 'manual'`. Cross-table validator at `services/task_kind.py`. Source-text-locked. Fires BEFORE the consent gate (cheaper pure-function check). (Kanban #706)
+  - `{"detail":"task_kind violates ck_tasks_task_kind_valid"}` (defensive — Pydantic Literal gates first)
+  - `{"detail":"template fields incomplete violates ck_tasks_template_recurrence_complete"}` (defensive — Pydantic model_validator catches at 422 first)
   - `{"detail":"Task creation violates a database constraint"}` (fallback for unknown constraints)
-- `422` — Pydantic validation error (includes `run_mode` outside the literal set)
+- `422` — Pydantic validation error. Includes `run_mode` outside the literal set; `task_kind` outside `{"ai","human"}` (Kanban #706); invalid cron in `recurrence_rule`; unknown IANA TZ in `recurrence_timezone`; `is_template=true` without both `recurrence_rule` AND `next_fire_at` (Kanban #706).
 
 ### PATCH /api/tasks/{id}
 **Purpose:** Partial update. Transitioning to `process_status=2` (in_progress) sets `started_at=now()` if NULL; transitioning to `process_status=5` (done) sets `completed_at=now()`. Server bumps `updated_at` on any real field change; an unchanged-body PATCH is a no-op (N7 no-op-skip — `routers/tasks.py:121-130`; parity with PATCH `/api/projects/{id}`).
 **Auth:** none
 **Headers:** `X-Project-Id: <int>` REQUIRED. The fetched row's `project_id` must match the header value; mismatch → 400. (Kanban #695)
 
-**Request:** any subset of `{title, description, process_status, priority, assigned_role, started_at, completed_at, run_mode}`. The soft-delete `status` flag is intentionally absent — sending `{"status": 0}` is silently ignored (use `DELETE` to soft-delete). `parent_task_id` is REJECTED (V1 forbids re-parenting per Kanban #238) — see 422 below.
+**Request:** any subset of `{title, description, process_status, priority, assigned_role, started_at, completed_at, run_mode, task_kind, is_template, recurrence_rule, recurrence_timezone, next_fire_at}`. The soft-delete `status` flag is intentionally absent — sending `{"status": 0}` is silently ignored (use `DELETE` to soft-delete). `parent_task_id` AND `spawned_from_task_id` are BOTH REJECTED (V1 forbids re-parenting subtask hierarchy per Kanban #238 AND recurrence lineage per Kanban #706) — see 422 below.
 
 **Response 200:** `TaskRead`
 
 **Errors:**
 - `404` — task id not found
-- `422` — Pydantic validation error if `parent_task_id` key is **present in the body** (whether int OR null). V1 forbids re-parenting; clients must omit the key. The router uses a `model_validator` that checks `model_fields_set` membership, so explicit-null is treated identically to a non-null value. Error message substring: `parent_task_id`. (Kanban #238)
+- `422` — Pydantic validation error if `parent_task_id` OR `spawned_from_task_id` is **present in the body** (whether int OR null). V1 forbids re-parenting both subtask hierarchy (#238) AND recurrence lineage (#706); clients must omit both keys. The router's `model_validator` checks `model_fields_set` membership, so explicit-null is treated identically to a non-null value. Error message substring: the field name. (Kanban #238 + #706)
 - `400` — header gate violation (Kanban #695):
   - `{"detail":"X-Project-Id header is required for task endpoints"}` when header missing.
   - `{"detail":"task <n> does not belong to project_id <h>"}` when fetched row's `project_id` ≠ header.
 - `400` — Cross-table or CHECK violation. Detail strings (stable wire contract):
+  - `{"detail":"task_kind 'human' is incompatible with run_mode '<run_mode>'"}` when the **resolved final** task_kind/run_mode pair (PATCH-supplied OR existing if not in body) is `'human' + non-manual`. Asymmetric drift fails (PATCH only `task_kind='human'` on existing `auto_pickup` row → 400); bundled downgrade `{task_kind:'human', run_mode:'manual'}` succeeds. Resolved-final pattern mirrors the consent validator. Validator at `services/task_kind.py` fires BEFORE consent gate. Source-text-locked. (Kanban #706)
   - `{"detail":"project <n> has not granted auto-headless consent"}` when the **resolved final** `run_mode` (PATCH-supplied OR existing if not in body) is `auto_headless` AND the project lacks consent. Downgrading from `auto_headless` to `manual` always succeeds (resolved=manual → validator does not fire). Source-text-locked. (Kanban #483)
   - `{"detail":"process_status violates ck_tasks_process_status_valid"}`
   - `{"detail":"priority violates ck_tasks_priority_valid"}`
   - `{"detail":"run_mode violates ck_tasks_run_mode_valid"}` (defensive — Pydantic Literal gates first)
+  - `{"detail":"task_kind violates ck_tasks_task_kind_valid"}` (defensive — Pydantic Literal gates first; Kanban #706)
+  - `{"detail":"template fields incomplete violates ck_tasks_template_recurrence_complete"}` (defensive — Pydantic model_validator catches at 422 first; Kanban #706)
   - `{"detail":"status violates ck_tasks_status_valid"}` (defensive — `status` is not a public PATCH field)
   - `{"detail":"Task update violates a database constraint"}` (fallback for unknown CHECK constraints)
 
@@ -245,9 +263,11 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 
 `auto_run_consent_at` (datetime ISO-8601 with timezone, or null) added 2026-05-09 by Kanban #483 — per-project consent gate for `tasks.run_mode='auto_headless'` (Mode B / Step 2 architecture). Default null = not consented; non-null = user consented at this timestamp via `POST /api/projects/{id}/grant-consent`.
 
-**`TaskRead`** — `{id:int, project_id:int, parent_task_id:int|null, title, description, process_status:int, priority:int, assigned_role:int|null, run_mode:"manual"|"auto_pickup"|"auto_headless", created_at, updated_at, started_at:datetime|null, completed_at:datetime|null}`
+**`TaskRead`** — `{id:int, project_id:int, parent_task_id:int|null, title, description, process_status:int, priority:int, assigned_role:int|null, run_mode:"manual"|"auto_pickup"|"auto_headless", task_kind:"ai"|"human", is_template:bool, recurrence_rule:str|null, recurrence_timezone:str, next_fire_at:datetime|null, spawned_from_task_id:int|null, created_at, updated_at, started_at:datetime|null, completed_at:datetime|null}`
 
 `run_mode` added 2026-05-09 by Kanban #483 — Step 2 execution mode. Default `"manual"` (existing rows backfilled by migration `0005_run_mode_and_consent`).
+
+`task_kind` + recurrence template fields (`is_template`, `recurrence_rule`, `recurrence_timezone`, `next_fire_at`, `spawned_from_task_id`) added 2026-05-10 by Kanban #706 (V3+ T1 / scope-lock). Defaults backfilled by migration `0007_task_kind_and_recurrence`: `task_kind='human'`, `is_template=false`, `recurrence_timezone='UTC'`, NULLs on the remaining nullable fields. `recurrence_rule` is a cron expression validated by `croniter.is_valid()`; `recurrence_timezone` is an IANA TZ name validated by `zoneinfo.available_timezones()`. `spawned_from_task_id` is system-managed lineage — settable on POST by the T2 scheduler when it spawns a child from a template; NEVER editable on PATCH. Datetime fields with UTC offset serialize as trailing `Z` form on output (Pydantic v2 default) regardless of input form — FE round-trip comparisons must use `Date.parse()`/`new Date(s)`, not string `===`.
 
 Integer code fields (`process_status`, `priority`, `assigned_role`) follow `context/standards/general.md` §"Kanban schema codes". Note that the `tasks` lifecycle code is named `process_status` everywhere on the wire (renamed from `status` by the 2026-05-08 migration); `status` on the wire is reserved as the internal soft-delete flag and is not exposed.
 

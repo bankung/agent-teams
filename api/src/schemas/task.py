@@ -13,22 +13,33 @@ schema; clients call `DELETE /api/tasks/{id}` to soft-delete.
 the active project's team roster is the only constraint. The Pydantic validator
 still rejects values outside the dev roster (1..5) for now; widening to per-team
 roster logic is a Phase 3 follow-up (frontend will pick from a roster picker).
+
+V3+ T1 (Kanban #706, 2026-05-10): added `task_kind` + recurrence template
+fields. Cross-table validators (cron syntax, IANA TZ, template completeness)
+fire at the schema layer; the kind/run_mode constraint is in
+`src/services/task_kind.py` (cross-table → service layer).
 """
 
 from __future__ import annotations
 
+import zoneinfo
 from collections.abc import Callable
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
+from croniter import croniter
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from src.constants import TaskPriority, TaskRole, TaskRunMode, TaskStatus
+from src.constants import TaskKind, TaskPriority, TaskRole, TaskRunMode, TaskStatus
 
 # Wire-level enum for tasks.run_mode. Stays in lockstep with TaskRunMode.ALL via
 # the import-time guard at the bottom of this module — same pattern as
 # schemas/project.py (TeamCode <-> ProjectTeam.ALL).
 TaskRunModeLiteral = Literal["manual", "auto_pickup", "auto_headless"]
+
+# V3+ T1 (Kanban #706): wire-level enum for tasks.task_kind. Stays in lockstep
+# with TaskKind.ALL via the import-time guard at the bottom of this module.
+TaskKindLiteral = Literal["ai", "human"]
 
 ProcessStatusCode = Annotated[
     int, Field(description="tasks.process_status — see TaskStatus.ALL")
@@ -69,6 +80,26 @@ def _make_code_validator(
     return _validate
 
 
+def _validate_cron_rule(v: str | None) -> str | None:
+    """Validate that v parses as a cron string. None is allowed (only required
+    when is_template=true — enforced by the model_validator below)."""
+    if v is None:
+        return None
+    if not croniter.is_valid(v):
+        raise ValueError(f"recurrence_rule is not a valid cron expression: {v!r}")
+    return v
+
+
+def _validate_timezone(v: str | None) -> str | None:
+    """Validate that v is a known IANA timezone. None is allowed (the column is
+    NOT NULL with DEFAULT 'UTC' — Pydantic only sees user-supplied values)."""
+    if v is None:
+        return None
+    if v not in zoneinfo.available_timezones():
+        raise ValueError(f"recurrence_timezone is not a valid IANA timezone: {v!r}")
+    return v
+
+
 class TaskCreate(BaseModel):
     """Request body for POST /api/tasks."""
 
@@ -85,6 +116,22 @@ class TaskCreate(BaseModel):
     # 'manual' matches the DB DEFAULT; cross-table consent check (auto_headless)
     # lives in src/services/run_mode.py and fires in router POST/PATCH.
     run_mode: TaskRunModeLiteral = TaskRunMode.MANUAL
+    # V3+ T1 (Kanban #706) — task_kind discriminates AI vs human work. Default
+    # 'human' matches the DB DEFAULT; cross-table validator (HUMAN ↔ MANUAL)
+    # lives in src/services/task_kind.py.
+    task_kind: TaskKindLiteral = TaskKind.HUMAN
+    # V3+ T1 (Kanban #706) — recurrence template fields. is_template=true
+    # requires both recurrence_rule + next_fire_at (model_validator below).
+    is_template: bool = False
+    recurrence_rule: str | None = Field(default=None, max_length=255)
+    recurrence_timezone: str = Field(default="UTC", max_length=64)
+    next_fire_at: datetime | None = None
+    # System-managed lineage pointer — set by the T2 scheduler when it spawns
+    # a child from a template. ACCEPTED on POST (so the scheduler can use the
+    # public endpoint for audit-trail consistency); REJECTED on PATCH (V1
+    # forbids re-parenting lineage). Optional + ge=1 so regular user POSTs
+    # default to None.
+    spawned_from_task_id: int | None = Field(default=None, ge=1)
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=True)
@@ -97,6 +144,24 @@ class TaskCreate(BaseModel):
             "assigned_role", TaskRole.ALL, required=False, null_phrase="NULL or "
         )
     )
+    _check_recurrence_rule = field_validator("recurrence_rule")(_validate_cron_rule)
+    _check_recurrence_timezone = field_validator("recurrence_timezone")(
+        _validate_timezone
+    )
+
+    @model_validator(mode="after")
+    def _check_template_completeness(self) -> "TaskCreate":
+        """A template (is_template=true) MUST carry both a cron rule and a
+        next_fire_at. DB CHECK ck_tasks_template_recurrence_complete enforces
+        the same invariant — this validator gives the friendly 422 ahead of the
+        IntegrityError 400 fallback."""
+        if self.is_template and (
+            self.recurrence_rule is None or self.next_fire_at is None
+        ):
+            raise ValueError(
+                "is_template=true requires recurrence_rule and next_fire_at"
+            )
+        return self
 
 
 class TaskUpdate(BaseModel):
@@ -136,6 +201,22 @@ class TaskUpdate(BaseModel):
     # auto_pickup once the queue runner ships). Cross-table consent check fires
     # on the resolved final value in the router.
     run_mode: TaskRunModeLiteral | None = None
+    # V3+ T1 (Kanban #706). PATCH-able — task_kind can flip post-creation
+    # (e.g., reclassifying ai → human). Cross-table validator (HUMAN ↔ MANUAL)
+    # fires on the resolved final values in the router.
+    task_kind: TaskKindLiteral | None = None
+    # V3+ T1 (Kanban #706). Recurrence template fields PATCH-able for now —
+    # T2 scheduler may need to advance next_fire_at programmatically. Cron +
+    # TZ field validators reuse the TaskCreate ones.
+    is_template: bool | None = None
+    recurrence_rule: str | None = Field(default=None, max_length=255)
+    recurrence_timezone: str | None = Field(default=None, max_length=64)
+    next_fire_at: datetime | None = None
+    # spawned_from_task_id is NOT modifiable post-creation — V1 forbids
+    # re-parenting lineage (mirror of parent_task_id rejection). The field is
+    # declared so we can REJECT it explicitly; explicit-null is treated
+    # identically to a non-null value.
+    spawned_from_task_id: int | None = Field(default=None, ge=1)
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=False)
@@ -148,12 +229,28 @@ class TaskUpdate(BaseModel):
             "assigned_role", TaskRole.ALL, required=False, null_phrase="NULL or "
         )
     )
+    _check_recurrence_rule = field_validator("recurrence_rule")(_validate_cron_rule)
+    _check_recurrence_timezone = field_validator("recurrence_timezone")(
+        _validate_timezone
+    )
 
     @model_validator(mode="after")
     def _reject_parent_task_id(self) -> "TaskUpdate":
         if "parent_task_id" in self.model_fields_set:
             raise ValueError(
                 "parent_task_id cannot be modified — re-parenting is not supported in V1"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_spawned_from_task_id(self) -> "TaskUpdate":
+        """V3+ T1 (Kanban #706): spawned_from_task_id is a system-managed
+        lineage pointer — settable by the T2 scheduler on POST, NEVER editable
+        post-creation. Mirror of parent_task_id rejection."""
+        if "spawned_from_task_id" in self.model_fields_set:
+            raise ValueError(
+                "spawned_from_task_id cannot be modified — re-parenting lineage "
+                "is not supported in V1"
             )
         return self
 
@@ -176,6 +273,15 @@ class TaskRead(BaseModel):
     started_at: datetime | None
     completed_at: datetime | None
     run_mode: TaskRunModeLiteral
+    # V3+ T1 (Kanban #706) — new fields added 2026-05-10. Migration 0007's
+    # server_defaults backfill existing rows: task_kind='human', is_template=false,
+    # recurrence_timezone='UTC'; nullable fields default to None.
+    task_kind: TaskKindLiteral
+    is_template: bool
+    recurrence_rule: str | None
+    recurrence_timezone: str
+    next_fire_at: datetime | None
+    spawned_from_task_id: int | None
 
 
 # Sanity: the Literal stays in lockstep with src.constants.TaskRunMode.ALL.
@@ -185,4 +291,11 @@ if set(TaskRunModeLiteral.__args__) != set(TaskRunMode.ALL):  # type: ignore[att
     raise RuntimeError(
         f"TaskRunModeLiteral {TaskRunModeLiteral.__args__!r} drifted from "  # type: ignore[attr-defined]
         f"TaskRunMode.ALL {TaskRunMode.ALL!r}"
+    )
+
+# V3+ T1 (Kanban #706) — same lockstep guard for TaskKindLiteral.
+if set(TaskKindLiteral.__args__) != set(TaskKind.ALL):  # type: ignore[attr-defined]
+    raise RuntimeError(
+        f"TaskKindLiteral {TaskKindLiteral.__args__!r} drifted from "  # type: ignore[attr-defined]
+        f"TaskKind.ALL {TaskKind.ALL!r}"
     )

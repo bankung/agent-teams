@@ -23,6 +23,7 @@ from src.db import get_or_404, get_session
 from src.models.task import Task
 from src.schemas.task import TaskCreate, TaskRead, TaskUpdate
 from src.services.run_mode import assert_consent_for_run_mode
+from src.services.task_kind import assert_run_mode_for_kind
 from src.services.session_project import (
     assert_body_matches_session,
     assert_task_belongs_to_session,
@@ -148,6 +149,14 @@ async def create_task(
                 detail=f"parent_task_id {payload.parent_task_id} belongs to a different project",
             )
 
+    # V3+ T1 (Kanban #706) cross-table validator: task_kind='human' is
+    # incompatible with run_mode != 'manual'. Pure function (no DB I/O) so
+    # fires BEFORE the consent gate (cheaper check first; both are app-layer
+    # cross-validators on the resolved final values). Detail string pinned by
+    # source-text-lock test in test_task_kind_recurrence.py — keep in sync with
+    # services/task_kind.py.
+    assert_run_mode_for_kind(payload.task_kind, payload.run_mode)
+
     # Cross-table consent gate (Kanban #481/#483). Only fires when run_mode is
     # auto_headless; otherwise no-op. Detail string pinned by the source-text-lock
     # test in test_routes_smoke.py — keep in sync with services/run_mode.py.
@@ -170,6 +179,13 @@ async def create_task(
             detail = "priority violates ck_tasks_priority_valid"
         elif "ck_tasks_status_valid" in orig_text:
             detail = "status violates ck_tasks_status_valid"
+        elif "ck_tasks_task_kind_valid" in orig_text:
+            detail = "task_kind violates ck_tasks_task_kind_valid"
+        elif "ck_tasks_template_recurrence_complete" in orig_text:
+            detail = (
+                "template fields incomplete violates "
+                "ck_tasks_template_recurrence_complete"
+            )
         else:
             detail = "Task creation violates a database constraint"
         raise HTTPException(status_code=400, detail=detail) from exc
@@ -198,6 +214,17 @@ async def update_task(
     # the existing row's. Only fires when the resolved value is auto_headless;
     # downgrading auto_headless → manual is always allowed.
     resolved_run_mode = updates.get("run_mode") if "run_mode" in updates else task.run_mode
+
+    # V3+ T1 (Kanban #706) cross-table validator on RESOLVED final values:
+    # task_kind='human' is incompatible with run_mode != 'manual'. Resolve
+    # task_kind the same way as run_mode. Fires BEFORE the consent check
+    # (cheaper — pure function, no DB I/O). Detail string source-text-locked
+    # in services/task_kind.py.
+    resolved_task_kind = (
+        updates.get("task_kind") if "task_kind" in updates else task.task_kind
+    )
+    assert_run_mode_for_kind(resolved_task_kind, resolved_run_mode)
+
     await assert_consent_for_run_mode(session, task.project_id, resolved_run_mode)
 
     # Process-status-transition side effects — only stamp if not already set /
@@ -242,6 +269,13 @@ async def update_task(
             detail = "priority violates ck_tasks_priority_valid"
         elif "ck_tasks_status_valid" in orig_text:
             detail = "status violates ck_tasks_status_valid"
+        elif "ck_tasks_task_kind_valid" in orig_text:
+            detail = "task_kind violates ck_tasks_task_kind_valid"
+        elif "ck_tasks_template_recurrence_complete" in orig_text:
+            detail = (
+                "template fields incomplete violates "
+                "ck_tasks_template_recurrence_complete"
+            )
         else:
             detail = "Task update violates a database constraint"
         raise HTTPException(status_code=400, detail=detail) from exc

@@ -17,6 +17,70 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-10 — V3+ T1 closed: migration 0007 + task_kind/recurrence wire-up landed (Kanban #706)
+**Scope:** schema / api / shared
+**Proposed by:** dev-backend (migration 0007 + ORM/Pydantic/router/service + 32 tests; pytest 124 → 156) → dev-reviewer GREEN (0 BLOCKER / 0 MAJOR / 4 MIN / 3 NIT; 156/156 reproduced; round-trip exactly inverse; lockstep guard fires under monkeypatch) → dev-devops GREEN (build api with croniter dep + scratch round-trip up→down→up + alembic upgrade head live; 53/53 rows backfilled; agent-teams id=1 byte-identical pre/post) → dev-tester GREEN (14 probes — P1-P5 + N1-N7 + cleanup + byte-identity; locked detail strings byte-equal to spec)
+**Decision:** Worked the V3+ scope-lock direction verbatim. Implementation choices ratified at the project layer:
+- **Validator-firing order pinned by tester N2:** `routers/tasks.py` POST + PATCH call `assert_run_mode_for_kind` (pure function) BEFORE `assert_consent_for_run_mode` (DB read). Cheaper check first; the unhappy `task_kind='human' + run_mode != 'manual'` path skips the DB read entirely. Sentinel: dev-tester probe N2 verifies the response body is the kind 400 (`task_kind 'human' is incompatible with run_mode 'auto_headless'`), NOT the consent 400, on a no-consent project — flipping the order will diverge this byte-equal assertion.
+- **PATCH resolved-final cross-validator** mirrors `services/run_mode.py` consent pattern: `payload.field if 'field' in updates else task.field`. Asymmetric drift (PATCH only `task_kind='human'` on existing `auto_pickup` row) → 400. Bundled downgrade `{task_kind:'human', run_mode:'manual'}` → 200.
+- **Two-key PATCH rejection pattern:** `parent_task_id` (Kanban #238) and `spawned_from_task_id` (Kanban #706) both use `model_fields_set` membership — explicit-null is treated identically to a non-null value. V1 forbids re-parenting any lineage column. Future lineage columns (recurrence-of-recurrence, fork) inherit this pattern.
+- **`spawned_from_task_id` settable on POST, rejected on PATCH.** Reasoning: T2 scheduler will call POST to spawn children (per "audit trail via FastAPI" rule); making it settable preserves "all writes through public service layer." Children point back to template via FK ON DELETE SET NULL — defense-in-depth against hard-delete corruption.
+- **Adjacency-list pattern hardening:** ORM relationships `parent` and `subtasks` now require `foreign_keys=lambda: [Task.parent_task_id]` because a SECOND self-FK (`spawned_from_task_id`) landed. Without the lambda, SQLAlchemy raises `AmbiguousForeignKeysError` at first ORM access. Lambda is required (not bare class reference) — class isn't fully defined at relationship-declaration time. Codify in `context/standards/sqlalchemy/` for the next contributor.
+- **`croniter>=2.0,<7.0` added to `api/pyproject.toml`** — dev-devops MUST `docker compose build api` before applying any future migration that touches recurrence (and re-bake on dep upgrades). Documented as part of the apply playbook.
+
+**Implications:**
+- pytest 124 → 156 (+32 new in `test_task_kind_recurrence.py`; +0 net in `test_run_mode_consent.py` — 8 tests updated to add `task_kind='ai'` so the new validator fires AFTER the consent path under test).
+- 3 dev-reviewer MINs filed as separate follow-up (Kanban #714, parent=#706): MIN-1 add TaskUpdate template-completeness model_validator; MIN-2 Literal type narrowing on `services/{task_kind,run_mode}.py` in lockstep; MIN-3 explicit-null on `recurrence_timezone` with locked 400. None blocking T2/T3/T4.
+- Standards-propagation queue grows (humans-only): validator-firing-order rule (pure-function before DB-read), multi-self-FK `foreign_keys=lambda` pattern, Pydantic external-library field validators (croniter / zoneinfo). All proposed for `context/standards/{sqlalchemy,fastapi,pydantic}/`.
+- T1 unblocks T2 #707 (apscheduler scheduler), T3 #708 (FE read-only badges), T4 #709 (FE drag-drop). Sequencing per V3+ scope-lock entry: T2 + T3 parallel after T1.
+- **Live agent-teams DB:** id=1 byte-identical pre/post (`updated_at:2026-05-09T12:03:27.939263Z`, `auto_run_consent_at:null`); alembic head=`0007_task_kind_and_recurrence`; 53 task rows backfilled to default values (`task_kind='human'`, `is_template=false`, `recurrence_timezone='UTC'`, NULLs elsewhere). `\d tasks` shows 6 new columns + 2 new CHECKs + 1 new partial index + 1 new self-FK exactly as spec.
+- **Operational note:** scratch DB `agent_teams_scratch` left on the dev PG instance after dev-devops round-trip (block-raw-sql-dml.ps1 hook correctly denied `DROP DATABASE`). Cleanup is human-only — Kanban #715 (parent=#706) filed for the next propose-only manual step. Lesson: scratch-DB lifecycle (CREATE + DROP) is propose-only for subagents; don't loosen the hook.
+- **Datetime serialization gotcha** (dev-tester P3): Pydantic v2 normalizes `+00:00` → `Z` on serialize. FE round-trip comparisons must use `Date.parse()`/`new Date(s)`, not string `===`. Surface to `nextjs/typography.md` standards proposal (or a new `general.md` Datetime section).
+
+**Files:** `api/alembic/versions/2026_05_10_1100_task_kind_and_recurrence.py` (new); `api/src/constants.py` (TaskKind class); `api/src/models/task.py` (6 cols + 2 CHECK + 1 Index + foreign_keys lambda); `api/src/schemas/task.py` (Literal + lockstep + 6 fields + cron/TZ validators + template-completeness model_validator + spawn-rejection on Update); `api/src/services/task_kind.py` (new); `api/src/routers/tasks.py` (validator wire-up + 2 IntegrityError fallbacks); `api/tests/test_task_kind_recurrence.py` (new, 32 tests); `api/tests/test_run_mode_consent.py` (8 tests updated); `api/pyproject.toml` (croniter dep). `api-contracts.md` (TaskRead/Create/Update + 4 new 400 detail strings) + `db-schema.md` (tasks-table extension + 0007 migration log) updated atomically.
+
+## 2026-05-10 — V3+ scope-lock: 4 features added (recurring + task_kind + drag-drop + theme)
+**Scope:** schema / api / frontend / shared
+**Proposed by:** user (4-point requirement); Lead surfaced 4 design questions; user locked all 4 directions in one round.
+**Decision:** Lock direction for 4 cross-cutting features; file 5 Kanban tasks (T1-T5 = #706-#710); patch #407 V3 description to reflect dependencies.
+
+| # | Feature | Locked direction |
+|---|---|---|
+| 1 | Recurring tasks | **Cron string** in `recurrence_rule TEXT` + `recurrence_timezone VARCHAR(64)` (IANA TZ — cron is timezone-sensitive) + `next_fire_at TIMESTAMPTZ`. Templates flagged `is_template=true`. Spawned children carry `spawned_from_task_id` pointing back to template. Fire creates a NEW row, never modifies the template. |
+| 2 | task_kind | New column `task_kind VARCHAR(8) NOT NULL DEFAULT 'human'` with CHECK `task_kind IN ('ai','human')`. Default `'human'` so existing 38 rows backfill cleanly. |
+| 3 | Drag-drop | Restricted to `task_kind=human` cards only. AI cards' lifecycle is runner-driven; user must not override. `@dnd-kit/core` library; PATCH process_status with optimistic update + rollback. |
+| 4 | Theme (light/dark/system) | **Deferred entirely** until T1-T4 + #407 V3 are GREEN. Reason: V2 polish locked the light palette only; dark-mode pass touches every component, unhelpful churn while V3 mutations + drag-drop still landing. |
+
+**Cross-cutting decision: task_kind ↔ run_mode constraint (locked option from Q3).** App-layer cross-table validator at `services/task_kind.py`: `task_kind == 'human' AND run_mode != 'manual'` → 400. Source-text-locked detail `task_kind 'human' is incompatible with run_mode '<r>'`. Fires on POST + PATCH /api/tasks against the RESOLVED final values (mirror `services/run_mode.py` consent pattern). Implication: human-kind cards are guaranteed `run_mode=manual`, so drag-drop's safety check (`task_kind === 'human'`) is sufficient — no need to also check `run_mode`.
+
+**Cross-cutting decision: scheduler runtime (locked option from Q2).** **FastAPI background task + apscheduler `AsyncIOScheduler`** integrated into the FastAPI lifespan. NOT a separate worker service; NOT pg_cron. Single instance per api container — single-process deploy; horizontal scale needs a future Redis/pg-advisory lock. Scheduler ticks every 60s by default (configurable via `APP_SCHEDULER_TICK_SECONDS` env var). Single-fire-on-resume catch-up policy (a daily template that misses 3 days fires ONCE, advances to next future slot — does not spawn 3 children). Same scheduler will host **#481 Mode B** auto-headless execution in a follow-up; the worker-host design question 2 from #481 is now answered (FastAPI bg task) but actual `claude -p` subprocess.Popen integration remains a separate slice — not bundled into T2.
+
+**Reasoning:**
+- Cron string over RRULE / simple-enum / next_fire_at+interval — best balance of expressiveness vs Pydantic-validatable string vs library availability (`croniter`). Compatible with apscheduler + pg_cron if we ever migrate.
+- FastAPI bg task over separate worker — ops simplicity; agent-teams is single-process; #481 Mode B can share the same scheduler. Trade-off: api restart pauses fire (acceptable for V1; document the "single-fire-on-resume" semantics).
+- Constrained kind/run_mode over independent or replace — keeps the existing run_mode wire contract stable (no breaking change to V2 clients) while adding the new kind dimension cleanly. Drag-drop's enable predicate becomes a simple `task_kind === 'human'` check; no compound logic needed.
+- Theme deferred — V2 polish baseline locked the light palette 2026-05-10 (commit 8a28a6f). Dark-mode pass is a full visual pass over every component; bundling with V3 mutation work risks visual regressions. Better as a focused slice after V3+recurring landed.
+
+**Implications:**
+- **Filed Kanban tasks (under #3 Phase 3 umbrella):**
+  - **#706 (T1)** — Schema migration 0007: task_kind + recurrence columns + cross-table validator. Foundation; BLOCKS T2/T3/T4. priority=3.
+  - **#707 (T2)** — apscheduler subsystem + spawn loop + POST /api/tasks/{id}/fire-now. Depends on T1. priority=2.
+  - **#708 (T3)** — FE read-only badges (TaskKindBadge, RecurrenceIndicator) on V2 board. Depends on T1; T2 optional for live recurrence indicator. priority=2.
+  - **#709 (T4)** — FE drag-drop for human tasks. Depends on T1+T3 + #407 V3 mutation infra. priority=2.
+  - **#710 (T5)** — Theme picker. DEFERRED placeholder. priority=1.
+- **#407 V3 description PATCHed** to reflect: drop `/api/projects/active` references; add T3 dependency note (sequence T3 → V3 to avoid card-layout reflow); add consent grant flow (POST /api/projects/{id}/grant-consent typed-ack UX) as the second V3 feature; out-of-scope drag-drop (now T4 #709).
+- **Standards-propagation queue** (humans-only writers) gains:
+  - `context/standards/fastapi/scheduler.md` — apscheduler `AsyncIOScheduler` integration in FastAPI lifespan; single-fire-on-resume catch-up policy; `APP_SCHEDULER_TICK_SECONDS` env-var convention; partial index on `next_fire_at` for hot-path scans.
+  - `context/standards/sqlalchemy/migrations.md` — partial-index pattern (`WHERE is_template = TRUE`) for sparse-flag columns; pair DB CHECK + app-layer cross-validator (DB is defense-in-depth, app validator is the friendly error).
+  - `context/standards/pydantic/v2-conventions.md` — `croniter.is_valid()` + `zoneinfo.available_timezones()` validators; mirror to api-contracts.md detail-string locks.
+- **Sequencing recommendation (proposed; user picks):**
+  1. **T1 (#706) FIRST** — schema foundation. dev-backend + dev-reviewer + dev-devops (apply migration) + dev-tester.
+  2. **T2 (#707) AND T3 (#708) PARALLEL** after T1 — backend scheduler can run alongside FE badge work; T3 read-only display works without T2 live (just renders nulls until template exists).
+  3. **#407 V3 + T4 (#709) BUNDLED** — first FE mutation surface (project switcher + consent grant + drag-drop) in one slice. Avoids wiring `@dnd-kit` + the URL-routed switcher in two separate FE PRs.
+  4. **T5 (#710) THEME** — last; isolated visual pass.
+
+**Files:** none from this entry alone (it's a scope-lock); subsequent entries land per-task as they close.
+
 ## 2026-05-10 — V2 visual baseline: Linear-style minimalism (post-#406 polish)
 **Scope:** frontend / shared
 **Proposed by:** dev-frontend (visual polish slice driven by Lead's `ui-ux-pro-max` consultation; user picked Linear-style minimalism over bento-dark / IBM Plex editorial). Lead applied; dev-tester / dev-reviewer skipped — visual-only slice, no API/router/migration touched (per `context/teams/dev/smoke-methodology.md` "skip for docs- / comments- / agent-prompt-only tasks" rule, extended to non-functional UI polish).

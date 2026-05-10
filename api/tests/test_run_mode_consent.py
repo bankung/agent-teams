@@ -334,6 +334,7 @@ async def test_post_task_auto_headless_no_consent_400(
             json={
                 "project_id": project_id,
                 "title": "headless without consent",
+                "task_kind": "ai",
                 "run_mode": "auto_headless",
             },
             headers={"X-Project-Id": str(project_id)},
@@ -368,6 +369,7 @@ async def test_post_task_auto_headless_after_consent_201(
             json={
                 "project_id": project_id,
                 "title": "headless with consent",
+                "task_kind": "ai",
                 "run_mode": "auto_headless",
             },
             headers=headers,
@@ -420,6 +422,7 @@ async def test_post_task_auto_pickup_no_consent_201(
             json={
                 "project_id": project_id,
                 "title": "pickup without consent",
+                "task_kind": "ai",
                 "run_mode": "auto_pickup",
             },
             headers=headers,
@@ -463,11 +466,14 @@ async def test_post_task_auto_headless_with_missing_project_returns_project_does
     bogus_id = 999_999
     # Kanban #695: header must match body to reach the consent/FK branch
     # (body-vs-header mismatch fires earlier with a different 400 detail).
+    # Kanban #706: task_kind='ai' so the new task_kind/run_mode validator
+    # doesn't fire BEFORE the consent branch under test.
     resp = await client.post(
         "/api/tasks",
         json={
             "project_id": bogus_id,
             "title": "smoke-690-missing-project",
+            "task_kind": "ai",
             "run_mode": "auto_headless",
         },
         headers={"X-Project-Id": str(bogus_id)},
@@ -494,11 +500,14 @@ async def test_post_task_auto_headless_with_softdeleted_project_returns_project_
     assert del_resp.status_code == 204
 
     # Attempt auto_headless task creation against the now-soft-deleted project.
+    # Kanban #706: task_kind='ai' so the kind/run_mode validator doesn't fire
+    # BEFORE the consent branch under test.
     resp = await client.post(
         "/api/tasks",
         json={
             "project_id": project_id,
             "title": "smoke-690-softdeleted-project",
+            "task_kind": "ai",
             "run_mode": "auto_headless",
         },
         headers={"X-Project-Id": str(project_id)},
@@ -542,9 +551,17 @@ async def test_patch_task_to_auto_headless_no_consent_400(
     create = await client.post("/api/projects", json=_project_create_payload(name))
     project_id = create.json()["id"]
     headers = {"X-Project-Id": str(project_id)}
+    # Kanban #706: existing task starts as task_kind='ai' so PATCHing run_mode
+    # to auto_headless does NOT trip the kind/run_mode validator (which runs
+    # BEFORE the consent gate).
     task = await client.post(
         "/api/tasks",
-        json={"project_id": project_id, "title": "manual task"},
+        json={
+            "project_id": project_id,
+            "title": "ai pickup task",
+            "task_kind": "ai",
+            "run_mode": "auto_pickup",
+        },
         headers=headers,
     )
     task_id = task.json()["id"]
@@ -573,9 +590,15 @@ async def test_patch_task_to_auto_headless_after_consent_200(
     create = await client.post("/api/projects", json=_project_create_payload(name))
     project_id = create.json()["id"]
     headers = {"X-Project-Id": str(project_id)}
+    # Kanban #706: task_kind='ai' so the kind/run_mode validator doesn't fire.
     task = await client.post(
         "/api/tasks",
-        json={"project_id": project_id, "title": "manual task"},
+        json={
+            "project_id": project_id,
+            "title": "ai pickup task",
+            "task_kind": "ai",
+            "run_mode": "auto_pickup",
+        },
         headers=headers,
     )
     task_id = task.json()["id"]
@@ -645,6 +668,8 @@ async def test_patch_task_downgrade_from_auto_headless_to_manual_allowed(
     headers = {"X-Project-Id": str(project_id)}
     try:
         # Grant + create headless task.
+        # Kanban #706: task_kind='ai' so the kind/run_mode validator
+        # doesn't reject the auto_headless creation.
         await client.post(
             f"/api/projects/{project_id}/grant-consent",
             json={"confirm_name": name},
@@ -654,6 +679,7 @@ async def test_patch_task_downgrade_from_auto_headless_to_manual_allowed(
             json={
                 "project_id": project_id,
                 "title": "headless task",
+                "task_kind": "ai",
                 "run_mode": "auto_headless",
             },
             headers=headers,
@@ -665,6 +691,8 @@ async def test_patch_task_downgrade_from_auto_headless_to_manual_allowed(
         await _reset_consent(db_session, project_id)
 
         # Downgrade to manual — must succeed despite the revoked consent.
+        # Note: resolved task_kind='ai' (existing) + run_mode='manual' (new) is
+        # a valid pairing; ai+manual passes the cross-validator.
         resp = await client.patch(
             f"/api/tasks/{task_id}",
             json={"run_mode": "manual"},

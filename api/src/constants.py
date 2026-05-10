@@ -132,3 +132,24 @@ class TaskRunMode:
     AUTO_HEADLESS = "auto_headless"
 
     ALL: tuple[str, ...] = (MANUAL, AUTO_PICKUP, AUTO_HEADLESS)
+
+
+class TaskKind:
+    """tasks.task_kind — VARCHAR(8) NOT NULL DEFAULT 'human',
+    CHECK task_kind IN ('ai','human').
+
+    Added 2026-05-10 (Kanban #706 / V3+ scope-lock T1). Distinguishes runner-
+    driven AI work from human work:
+    - HUMAN (default): drag-droppable on the FE board; lifecycle is user-driven;
+      MUST pair with run_mode='manual' (cross-table validator at services/task_kind.py).
+    - AI: lifecycle is queue-runner-driven (Kanban #481 / Step 2); not drag-droppable;
+      may carry run_mode IN ('auto_pickup','auto_headless') in addition to 'manual'.
+
+    Mirror of migration 0007's `_TASK_KIND_ALL` (intentionally duplicated —
+    migrations don't import app code, see standards/sqlalchemy/migrations.md).
+    """
+
+    AI = "ai"
+    HUMAN = "human"
+
+    ALL: tuple[str, ...] = (AI, HUMAN)

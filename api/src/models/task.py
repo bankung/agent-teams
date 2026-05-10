@@ -18,12 +18,14 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
     Integer,
     SmallInteger,
+    String,
     Text,
     func,
     text,
@@ -34,6 +36,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.constants import (
     RecordStatus,
     TaskHistoryOperation,
+    TaskKind,
     TaskPriority,
     TaskRunMode,
     TaskStatus,
@@ -115,6 +118,48 @@ class Task(Base):
         server_default=text("'manual'"),
     )
 
+    # V3+ T1 (Kanban #706): task_kind discriminates AI vs human work.
+    # DB DEFAULT 'human' covers existing rows + INSERT-without-explicit. The
+    # cross-table rule (HUMAN must pair with MANUAL) lives in
+    # src/services/task_kind.py — spans the run_mode column at the app layer.
+    task_kind: Mapped[str] = mapped_column(
+        String(8),
+        nullable=False,
+        server_default="human",
+    )
+
+    # V3+ T1 (Kanban #706): recurrence template fields. A "template" row carries
+    # is_template=true + a cron rule + a next_fire_at; the scheduler (T2) reads
+    # the partial index on next_fire_at WHERE is_template=TRUE, spawns child
+    # rows pointing back via spawned_from_task_id, and advances the template's
+    # next_fire_at. The template itself is never modified by lifecycle PATCHes
+    # — it's a recipe, not a task.
+    is_template: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    )
+    recurrence_rule: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    recurrence_timezone: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default="UTC",
+    )
+    next_fire_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    # Self-ref FK: spawned children point at the template they came from.
+    # ON DELETE SET NULL — defense-in-depth; app never hard-deletes templates.
+    spawned_from_task_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("tasks.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -139,16 +184,21 @@ class Task(Base):
     # Self-referential adjacency-list (SQLAlchemy "Adjacency List" pattern).
     # `remote_side="Task.id"` disambiguates which side is the parent; without
     # it SQLAlchemy can't tell parent.id from children.parent_task_id.
+    # `foreign_keys=` is required since V3+ T1 (Kanban #706) added a SECOND
+    # self-FK column (spawned_from_task_id) — without an explicit selector
+    # SQLAlchemy raises AmbiguousForeignKeysError.
     parent: Mapped["Task | None"] = relationship(
         "Task",
         remote_side="Task.id",
         back_populates="subtasks",
         lazy="select",
+        foreign_keys=lambda: [Task.parent_task_id],
     )
     subtasks: Mapped[list["Task"]] = relationship(
         "Task",
         back_populates="parent",
         lazy="select",
+        foreign_keys=lambda: [Task.parent_task_id],
     )
 
     __table_args__ = (
@@ -178,11 +228,30 @@ class Task(Base):
             "parent_task_id IS NULL OR parent_task_id <> id",
             name="ck_tasks_parent_task_id_not_self",
         ),
+        # V3+ T1 (Kanban #706): mirror of migration 0007's CHECKs. task_kind
+        # values + template completeness — DB defense-in-depth alongside the
+        # Pydantic model_validator on TaskCreate.
+        CheckConstraint(
+            in_clause_text("task_kind", TaskKind.ALL),
+            name="ck_tasks_task_kind_valid",
+        ),
+        CheckConstraint(
+            "is_template = false OR (recurrence_rule IS NOT NULL "
+            "AND next_fire_at IS NOT NULL)",
+            name="ck_tasks_template_recurrence_complete",
+        ),
         Index("ix_tasks_project_id", "project_id"),
         Index("ix_tasks_process_status", "process_status"),
         Index("ix_tasks_assigned_role", "assigned_role"),
         Index("ix_tasks_status", "status"),
         Index("ix_tasks_parent_task_id", "parent_task_id"),
+        # Partial index — scheduler hot path scans only the sparse template
+        # subset. Mirror of migration 0007's postgresql_where predicate.
+        Index(
+            "ix_tasks_next_fire_at_template",
+            "next_fire_at",
+            postgresql_where=text("is_template = TRUE"),
+        ),
     )
 
     def __repr__(self) -> str:  # pragma: no cover
