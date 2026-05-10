@@ -126,6 +126,9 @@ class TaskCreate(BaseModel):
     recurrence_rule: str | None = Field(default=None, max_length=255)
     recurrence_timezone: str = Field(default="UTC", max_length=64)
     next_fire_at: datetime | None = None
+    # V3+ T1 audit follow-up (Kanban #723) — one-shot scheduling. Mutually
+    # exclusive with is_template=true (model_validator below + DB CHECK).
+    scheduled_at: datetime | None = None
     # System-managed lineage pointer — set by the T2 scheduler when it spawns
     # a child from a template. ACCEPTED on POST (so the scheduler can use the
     # public endpoint for audit-trail consistency); REJECTED on PATCH (V1
@@ -160,6 +163,20 @@ class TaskCreate(BaseModel):
         ):
             raise ValueError(
                 "is_template=true requires recurrence_rule and next_fire_at"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_scheduled_xor_template(self) -> "TaskCreate":
+        """Kanban #723: scheduled_at (one-shot) and is_template=true are
+        mutually exclusive. DB CHECK ck_tasks_scheduled_xor_template enforces
+        the same invariant — this validator gives the friendly 422 ahead of
+        the IntegrityError 400 fallback. Detail message MUST mention BOTH
+        scheduled_at AND is_template (testable wire contract)."""
+        if self.is_template and self.scheduled_at is not None:
+            raise ValueError(
+                "scheduled_at is incompatible with is_template=true "
+                "(use recurrence_rule for templates)"
             )
         return self
 
@@ -212,6 +229,11 @@ class TaskUpdate(BaseModel):
     recurrence_rule: str | None = Field(default=None, max_length=255)
     recurrence_timezone: str | None = Field(default=None, max_length=64)
     next_fire_at: datetime | None = None
+    # V3+ T1 audit follow-up (Kanban #723) — PATCH-able. Set null to un-schedule;
+    # set a new datetime to reschedule. Resolved-final XOR (is_template AND
+    # scheduled_at) is enforced router-side because the validator alone can't
+    # see the existing row's state on a one-field PATCH.
+    scheduled_at: datetime | None = None
     # spawned_from_task_id is NOT modifiable post-creation — V1 forbids
     # re-parenting lineage (mirror of parent_task_id rejection). The field is
     # declared so we can REJECT it explicitly; explicit-null is treated
@@ -254,6 +276,20 @@ class TaskUpdate(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _check_scheduled_xor_template_in_payload(self) -> "TaskUpdate":
+        """Kanban #723: catch the both-fields-set-in-the-same-PATCH case at
+        422. The resolved-final XOR (where the patch interacts with the
+        existing row's state) is enforced in the router because the validator
+        can't see the existing row on a one-field PATCH. Detail mentions BOTH
+        scheduled_at AND is_template (testable wire contract)."""
+        if self.is_template is True and self.scheduled_at is not None:
+            raise ValueError(
+                "scheduled_at is incompatible with is_template=true "
+                "(use recurrence_rule for templates)"
+            )
+        return self
+
 
 class TaskRead(BaseModel):
     """Full task row as returned by the API."""
@@ -282,6 +318,8 @@ class TaskRead(BaseModel):
     recurrence_timezone: str
     next_fire_at: datetime | None
     spawned_from_task_id: int | None
+    # V3+ T1 audit follow-up (Kanban #723) — backfilled to NULL on existing rows.
+    scheduled_at: datetime | None
 
 
 # Sanity: the Literal stays in lockstep with src.constants.TaskRunMode.ALL.

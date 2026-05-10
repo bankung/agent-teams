@@ -32,6 +32,17 @@ from src.services.session_project import (
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
+# Source-text-locked detail string (#122 pattern). Wire contract — drift
+# breaks any FE that string-matches it. Used by both:
+#  - the IntegrityError fallback for `ck_tasks_scheduled_xor_template` (POST + PATCH)
+#  - the resolved-final XOR application-layer guard on PATCH
+# Pinned by test_post_task_400_detail_strings_are_pinned_in_router_source +
+# the new tests in test_tasks_scheduled_at.py.
+_DETAIL_SCHEDULED_XOR_TEMPLATE = (
+    "scheduled_at is incompatible with is_template=true "
+    "(use recurrence_rule for templates)"
+)
+
 # Process-status transitions that auto-stamp a lifecycle timestamp (when not
 # already set). Order doesn't matter — at most one entry fires per PATCH
 # (process_status is a single value).
@@ -186,6 +197,8 @@ async def create_task(
                 "template fields incomplete violates "
                 "ck_tasks_template_recurrence_complete"
             )
+        elif "ck_tasks_scheduled_xor_template" in orig_text:
+            detail = _DETAIL_SCHEDULED_XOR_TEMPLATE
         else:
             detail = "Task creation violates a database constraint"
         raise HTTPException(status_code=400, detail=detail) from exc
@@ -224,6 +237,25 @@ async def update_task(
         updates.get("task_kind") if "task_kind" in updates else task.task_kind
     )
     assert_run_mode_for_kind(resolved_task_kind, resolved_run_mode)
+
+    # Kanban #723 resolved-final XOR: scheduled_at and is_template are mutually
+    # exclusive. The Pydantic validator catches the both-fields-in-payload case;
+    # this app-layer check catches the cross-state case (PATCH one field on a
+    # row where the other is already set). Returns 422 with the same locked
+    # detail before the DB CHECK trips the IntegrityError 400 fallback.
+    resolved_is_template = (
+        updates["is_template"] if "is_template" in updates else task.is_template
+    )
+    resolved_scheduled_at = (
+        updates["scheduled_at"]
+        if "scheduled_at" in updates
+        else task.scheduled_at
+    )
+    if resolved_is_template is True and resolved_scheduled_at is not None:
+        raise HTTPException(
+            status_code=422,
+            detail=_DETAIL_SCHEDULED_XOR_TEMPLATE,
+        )
 
     await assert_consent_for_run_mode(session, task.project_id, resolved_run_mode)
 
@@ -276,6 +308,8 @@ async def update_task(
                 "template fields incomplete violates "
                 "ck_tasks_template_recurrence_complete"
             )
+        elif "ck_tasks_scheduled_xor_template" in orig_text:
+            detail = _DETAIL_SCHEDULED_XOR_TEMPLATE
         else:
             detail = "Task update violates a database constraint"
         raise HTTPException(status_code=400, detail=detail) from exc

@@ -152,6 +152,14 @@ class Task(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    # V3+ T1 audit follow-up (Kanban #723): one-shot scheduling path. Mutually
+    # exclusive with is_template=true — enforced by ck_tasks_scheduled_xor_template
+    # + Pydantic model_validators on TaskCreate / TaskUpdate. T2 scheduler scans
+    # ix_tasks_scheduled_at_pending and transitions matching rows to in_progress.
+    scheduled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     # Self-ref FK: spawned children point at the template they came from.
     # ON DELETE SET NULL — defense-in-depth; app never hard-deletes templates.
     spawned_from_task_id: Mapped[int | None] = mapped_column(
@@ -240,6 +248,12 @@ class Task(Base):
             "AND next_fire_at IS NOT NULL)",
             name="ck_tasks_template_recurrence_complete",
         ),
+        # V3+ T1 audit follow-up (Kanban #723): scheduled_at and is_template are
+        # mutually exclusive. Mirror of migration 0010.
+        CheckConstraint(
+            "NOT (scheduled_at IS NOT NULL AND is_template = TRUE)",
+            name="ck_tasks_scheduled_xor_template",
+        ),
         Index("ix_tasks_project_id", "project_id"),
         Index("ix_tasks_process_status", "process_status"),
         Index("ix_tasks_assigned_role", "assigned_role"),
@@ -251,6 +265,16 @@ class Task(Base):
             "ix_tasks_next_fire_at_template",
             "next_fire_at",
             postgresql_where=text("is_template = TRUE"),
+        ),
+        # V3+ T1 audit follow-up (Kanban #723): one-shot fire path. Mirror of
+        # migration 0010's postgresql_where — keeps the index sparse so the
+        # scheduler scan stays cheap.
+        Index(
+            "ix_tasks_scheduled_at_pending",
+            "scheduled_at",
+            postgresql_where=text(
+                "scheduled_at IS NOT NULL AND process_status = 1 AND status = 1"
+            ),
         ),
     )
 
