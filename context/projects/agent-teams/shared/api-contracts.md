@@ -327,13 +327,27 @@ Session-based context store. Hybrid storage: DB rows for metadata + queryability
 - `404` — session id not found.
 
 #### PATCH /api/session_runs/{id}
-**Purpose:** Update a run's status / totals / cost. Transitioning `status` to a terminal state (`done`/`error`/`timeout`) auto-stamps `finished_at=now()` if NULL. **CTX-1 caveat:** `total_cost_usd` is currently accepted from the client with NO validation — CTX-3 (#718) will replace with server-authoritative cost computation from a pricing table.
+**Purpose:** Update a run's status / totals / cost. Transitioning `status` to a terminal state (`done`/`error`/`timeout`) auto-stamps `finished_at=now()` if NULL. **`total_cost_usd` is server-authoritative since CTX-3 (#718, 2026-05-10)** — see "Cost computation" below.
 **Auth:** none
-**Request:** any subset of `{status, finished_at, total_input_tokens, total_output_tokens, total_context_chars, total_cost_usd, budget_warning}`.
+**Request:** any subset of `{status, finished_at, total_input_tokens, total_output_tokens, total_context_chars, total_cost_usd, budget_warning, provider, model}`.
 **Response 200:** `SessionRunRead`.
 **Errors:**
 - `404` — `{"detail":"Session run id=<n> not found"}`.
-- `422` — bad status literal / negative token total.
+- `422` — bad status literal / negative token total / `provider` or `model` over 64 chars.
+
+**Cost computation (CTX-3 #718):** When all 4 fields (`total_input_tokens`, `total_output_tokens`, `provider`, `model`) are present in the body, server computes `session_runs.total_cost_usd` from the locked PRICING table and stamps the column. Client-supplied `total_cost_usd` is **silently ignored** (not 422 — `extra="ignore"` retained per #721 deferral). `provider` + `model` are pricing-table inputs only — NOT persisted on the run row (per-run provenance deferred to a future task).
+
+**Pricing table (USD per 1M tokens):**
+
+| provider | model | input | output |
+|---|---|---|---|
+| `anthropic` | `claude-opus-4-7` | 15.0 | 75.0 |
+| `anthropic` | `claude-sonnet-4-6` | 3.0 | 15.0 |
+| `anthropic` | `claude-haiku-4-5-20251001` | 0.8 | 4.0 |
+
+Unknown `(provider, model)` pair → cost compute SKIPPED, WARNING logged (`session_runs cost lookup failed: run_id=<n> provider='<p>' model='<m>' err=...`), `total_cost_usd` column unchanged, PATCH still 200. Tester live-verified with `(openai, gpt-4o)` — log captured verbatim.
+
+**Soft-warn budget (CTX-3 #718):** When `total_input_tokens` is present in the body AND `sessions.token_budget_per_run IS NOT NULL` AND `total_input_tokens > token_budget_per_run`, server sets `session_runs.budget_warning=true` AND emits `WARNING` log: `"session_runs.budget_warning fired: session_id=<n> run_id=<n> current=<n> budget=<n> over_by=<n>"`. Never blocks (soft enforcement contract). Status-only PATCHes do NOT re-fire the warning.
 
 #### GET /api/sessions/{id}/runs
 **Purpose:** List runs in a session.
@@ -357,7 +371,9 @@ Filesystem service layer. Writes / reads `_sessions/<id>/session.md` (Recent Act
 **Purpose:** Append a structured entry to the session's `## Recent Activity` section. Atomic under `filelock`.
 **Auth:** none
 **Request:** `{task_id?: int>=1, summary: str(1..4000), role?: str(<=64), kind?: str(<=64)}`. `task_id` (when given) must reference an active task in the **same project** as the session.
-**Response 201:** `{appended_block: str, section_preview: str, section_chars: int}`. `section_chars` is the post-append total length of the Recent Activity section, NOT the new block size.
+**Response 201:** `{appended_block: str, section_preview: str, section_chars: int, compact_recommended: bool|null, current_recent_tokens: int|null, recent_ceiling_tokens: int|null}`. `section_chars` is the post-append total length of the Recent Activity section, NOT the new block size.
+
+**Advisory fields (CTX-3 #718, additive):** `compact_recommended` is `true` when `current_recent_tokens > recent_ceiling_tokens`. The 3 advisory fields are typed `Optional` for forward-compat (preserves the #717 contract for callers that don't care) but the V1 router ALWAYS sets them. `current_recent_tokens` uses the chars/4 heuristic (locked direction; ~10-20% inaccuracy English; worse on code/CJK). Caller (Lead/master agent) reads `compact_recommended` and may trigger CTX-4 compact (#719). Status remains 201 either way — advisory only, never blocks.
 **Errors:**
 - `400` — `{"detail":"Session id=<n> is closed; cannot append activity"}` — closed-session lock. Source-text-locked. (Kanban #717)
 - `400` — `{"detail":"task_id <n> does not exist or is deleted"}` — task lookup miss (active rows only). Source-text-locked.
@@ -404,13 +420,13 @@ Integer code fields (`process_status`, `priority`, `assigned_role`) follow `cont
 
 **`SessionRead`** — `{id:int, project_id:int, process_label:str|null, status:"active"|"compacting"|"closed", token_budget_per_run:int|null, compacted_history_ceiling_tokens:int, recent_activity_ceiling_tokens:int, card_detail_ceiling_tokens:int, output_budget_tokens:int, session_root_path:str, started_at, closed_at:datetime|null, created_at, updated_at, runs_count:int, compacts_count:int}` — added 2026-05-10 by Kanban #716 (CTX-1); `card_detail_ceiling_tokens` + `output_budget_tokens` added 2026-05-10 by Kanban #722 (migration 0009, audit follow-up). `runs_count` / `compacts_count` are 0 on list responses; populated on detail GET only (avoids N+1).
 
-**`SessionRunRead`** — `{id:int, session_id:int, task_id:int|null, status:"running"|"done"|"error"|"timeout", started_at, finished_at:datetime|null, total_input_tokens:int, total_output_tokens:int, total_context_chars:int, total_cost_usd:Decimal, budget_warning:bool, card_log_path:str|null, created_at, updated_at}` — added 2026-05-10 by Kanban #716. Server-stamps `finished_at` when transitioning to terminal status (`done`/`error`/`timeout`). `total_cost_usd` is client-supplied in CTX-1; CTX-3 (#718) replaces with server-authoritative computation.
+**`SessionRunRead`** — `{id:int, session_id:int, task_id:int|null, status:"running"|"done"|"error"|"timeout", started_at, finished_at:datetime|null, total_input_tokens:int, total_output_tokens:int, total_context_chars:int, total_cost_usd:Decimal, budget_warning:bool, card_log_path:str|null, created_at, updated_at}` — added 2026-05-10 by Kanban #716. Server-stamps `finished_at` when transitioning to terminal status (`done`/`error`/`timeout`). `total_cost_usd` became server-authoritative 2026-05-10 by Kanban #718 (CTX-3) — see `PATCH /api/session_runs/{id}` Cost computation block. `provider` + `model` are PATCH inputs only; not persisted on the row.
 
 **`SessionCompactRead`** — `{id:int, session_id:int, trigger_kind:"size"|"manual"|"run_count", archive_path:str, before_tokens:int, after_tokens:int, compact_model:str, compact_cost_usd:Decimal, compacted_at:datetime}` — added 2026-05-10 by Kanban #716. Read-only in CTX-1; POST/compact action ships in CTX-4 (#719).
 
 **`SessionActivityCreate`** — `{task_id?:int>=1, summary:str(1..4000), role?:str(<=64), kind?:str(<=64)}` — added 2026-05-10 by Kanban #717 (CTX-2). `extra="ignore"` in CTX-2; #721 will tighten to `extra="forbid"` for parity with `ConsentGrant`.
 
-**`SessionActivityRead`** — `{appended_block:str, section_preview:str, section_chars:int}` — added 2026-05-10 by Kanban #717. `section_chars` is post-append total length of Recent Activity section, not the new block size.
+**`SessionActivityRead`** — `{appended_block:str, section_preview:str, section_chars:int, compact_recommended:bool|null, current_recent_tokens:int|null, recent_ceiling_tokens:int|null}` — `appended_block`/`section_preview`/`section_chars` added 2026-05-10 by Kanban #717 (CTX-2); 3 advisory fields added 2026-05-10 by Kanban #718 (CTX-3). Advisory fields are `Optional` on the schema (forward-compat) but V1 router always sets them; tighten to required in a future hardening task if FE strict-typing demands.
 
 **`SessionPromptRead`** — `{markdown:str, char_count:int}` — added 2026-05-10 by Kanban #717. `char_count` is `len(markdown)` (code points). Token count deferred to CTX-3 #718.
 

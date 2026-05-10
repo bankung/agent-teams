@@ -17,6 +17,44 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-10 — Kanban #718 closed: CTX-3 token counter + soft-warn budget + server-authoritative cost
+**Scope:** backend / api / shared
+**Proposed by:** dev-backend (NEW `services/token_counter.py` 165 lines + NEW `services/cost_tracker.py` 50 lines + `SessionRunUpdate` +2 fields + `SessionActivityRead` +3 advisory fields + router cost compute + budget warn log + 24 new tests; pytest 237→261 GREEN) → dev-reviewer GO (0 BLOCKER / 0 MAJ / 2 MIN / 3 NIT — all stylistic/design-judgment, none blocking) → dev-tester GREEN (10/10 Tier-1 probes — under-ceiling activity advisory + 1M+1M opus cost ($90 verbatim) + haiku 100K+50K cost ($0.28 verbatim) + client cost override silently overwritten + unknown model logs WARNING+200 with verbatim docker log capture + over-ceiling activity `compact_recommended=true` + Pydantic guards on negative tokens + overlong provider).
+
+**Decision:** Worked the CTX-3 spec with one Lead-locked direction override. Implementation choices ratified at the project layer:
+
+- **Lead-lock: chars/4 LOCAL HEURISTIC, NO real tokenizer.** User explicitly picked this path 2026-05-10 after Lead surfaced 3 options (chars/4 vs tiktoken vs Anthropic SDK). Rationale: api container has no `ANTHROPIC_API_KEY` and no `anthropic` SDK; soft-warn budget tolerates ~10-20% inaccuracy on English (worse on code/CJK); CTX-4 Haiku compact is the only place that needs real token counting (the LLM itself does that). Module-level docstring + locked snapshot test (`count_tokens("hello world") == 2`) defend against silent drift; future tokenizer swap is a single-module change.
+
+- **Server-authoritative cost: client value silently overwritten, NOT 422.** When all 4 fields (`total_input_tokens`, `total_output_tokens`, `provider`, `model`) are present on PATCH, server computes `total_cost_usd` from the locked PRICING table and stamps. Client-supplied `total_cost_usd` is silently ignored — no 422 surprise for legacy clients. `extra="ignore"` retained on `SessionRunUpdate` per #721 deferral. Tester live-verified: PATCH with `total_cost_usd:"999.99"` + opus 1M+0 → server returned `total_cost_usd:"15.0000"`.
+
+- **`provider` + `model` NOT persisted.** Pure inputs to `compute_cost`. Per-run provenance (which model billed this run?) deferred to a future task that needs a column add. Backend deliberately did not leave a half-implementation; reviewer verified.
+
+- **Pricing table (USD per 1M tokens):**
+  - `('anthropic', 'claude-opus-4-7')`: 15.0 / 75.0
+  - `('anthropic', 'claude-sonnet-4-6')`: 3.0 / 15.0
+  - `('anthropic', 'claude-haiku-4-5-20251001')`: 0.8 / 4.0
+  
+  Unknown `(provider, model)` → cost compute SKIPPED, WARNING logged with structured fields, `total_cost_usd` column unchanged, PATCH still 200. Tester captured the verbatim docker log: `"session_runs cost lookup failed: run_id=7 provider='openai' model='gpt-4o' err=unknown (provider, model) pair: 'openai', 'gpt-4o'"`. Logger DOES propagate to docker logs (no smoke gap).
+
+- **Soft-warn budget: log + flip column, never block.** When `total_input_tokens` is present AND `sessions.token_budget_per_run IS NOT NULL` AND `total_input_tokens > token_budget_per_run`, server sets `session_runs.budget_warning=true` AND emits `WARNING` log: `"session_runs.budget_warning fired: session_id=N run_id=N current=N budget=N over_by=N"`. Status-only PATCHes do NOT re-fire the warning (gated on `total_input_tokens` presence). Caplog tests assert the 4 structured fields parseable from the message.
+
+- **Activity endpoint advisory (additive, not breaking):** `POST /api/sessions/{id}/activity` response gains 3 advisory fields — `compact_recommended:bool`, `current_recent_tokens:int`, `recent_ceiling_tokens:int`. Typed `Optional` on the schema (`bool | None = None`) for forward-compat (preserves #717 contract for callers that don't care); V1 router always sets them. Reviewer flagged the optional-but-always-set typing-vs-runtime gap as M2; defensible as forward-compat — defer tightening unless FE consumers demand strict typing.
+
+- **PEP 8 logger placement (M1) deferred** — `logging.getLogger(__name__)` placed between import groups in `routers/sessions.py:38` (PEP 8 prefers all imports first, then module-level statements). Trivial cleanup; will fix opportunistically when next slice touches that file.
+
+**Reasoning:** CTX-2 #717 shipped the writer/reader; CTX-3 wires the runtime measurement layer. No DB schema change — reuses `session_runs.total_cost_usd` and `budget_warning` columns from #716. Soft-warn semantics locked at design: never block; emit warning + log; let the LLM provider error if context truly exceeds the model window. The chars/4 lock is intentionally honest about its imprecision — the snapshot test (`count_tokens("hello world") == 2`) defends against any future "let me sneak in a real tokenizer" silent drift.
+
+**Implications:**
+- 2 modules added: `token_counter.py` (count_tokens / measure_session_prompt / check_budget) + `cost_tracker.py` (PRICING + compute_cost).
+- `PATCH /api/session_runs/{id}` accepts 4 NEW input fields (`provider`, `model`, plus token totals already there). `total_cost_usd` is NOW server-authoritative — clients sending it get silently overwritten.
+- `POST /api/sessions/{id}/activity` response gains 3 advisory fields. Existing FE/clients that ignore them work unchanged.
+- WARNING log emitted on (a) unknown pricing pair (b) budget over — both with structured fields parseable from the formatted message.
+- CTX-4 #719 (Haiku compact runner) is unblocked: it'll use `measure_session_prompt` to read 4-bucket counts + `check_budget` for size triggers, plus CTX-2's `replace_section` to swap Recent Activity → Compacted History post-compact.
+- T2 #707 (apscheduler) is unblocked.
+- Future tasks: per-run model provenance (column add); FE surface for `compact_recommended`; real tokenizer swap if accuracy demands grow (single-module change).
+
+---
+
 ## 2026-05-10 — Kanban #717 closed: CTX-2 session_store.py + 3 endpoints (filesystem service layer)
 **Scope:** backend / api / shared
 **Proposed by:** dev-backend (NEW `services/session_store.py` 332 lines + `services/session_files.py` collapsed to 20-line shim + 5 new Pydantic schemas + 3 new endpoints + `filelock>=3.13,<4.0` pin + 30 new tests; pytest 207→237 GREEN) → dev-reviewer GO (0 BLOCKER / 0 MAJ / 4 MIN / 4 NIT — all non-blocking; ratified the shim + filelock + section-marker contract) → dev-backend M1+M2+N1 follow-up (`bytes_written` → `total_bytes` rename for honest semantics + reader takes lock for symmetry + 2 byte-equal cross-project constants consolidated to one `_DETAIL_CROSS_PROJECT_TEMPLATE`; 237 still GREEN) → dev-tester GREEN (18/18 endpoint probes + 3/3 filesystem checks; all 5 source-text-locked detail strings captured byte-equal; cross-project probe skipped — only 1 active project on this DB).

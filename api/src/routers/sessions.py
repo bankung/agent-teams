@@ -26,12 +26,16 @@ Source-text-locked detail strings (per #122 / #690 pattern, pinned by tests):
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi import status as http_status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
 from sqlalchemy.sql.elements import ClauseElement
+
+logger = logging.getLogger(__name__)
 
 from src.constants import RecordStatus
 from src.db import get_or_404, get_session
@@ -59,6 +63,7 @@ from src.services.session_files import (
     create_card_log_skeleton,
     create_session_skeleton,
 )
+from src.services.cost_tracker import compute_cost
 from src.services.session_store import (
     SECTION_RECENT_ACTIVITY,
     append_recent_activity,
@@ -66,6 +71,7 @@ from src.services.session_store import (
     read_session_for_prompt,
     write_card_log,
 )
+from src.services.token_counter import count_tokens
 from src.settings import get_settings
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -372,6 +378,36 @@ async def update_session_run(
     if not updates:
         return run
 
+    # CTX-3 (#718): server-authoritative cost. Capture provider/model + drop
+    # them (not persisted columns), and DROP any client-supplied
+    # total_cost_usd (server overwrites). When all 4 cost-inputs present,
+    # compute via cost_tracker and stamp the column.
+    provider = updates.pop("provider", None)
+    model = updates.pop("model", None)
+    updates.pop("total_cost_usd", None)  # server-managed; client value ignored.
+
+    input_tokens = updates.get("total_input_tokens")
+    output_tokens = updates.get("total_output_tokens")
+    if (
+        provider is not None
+        and model is not None
+        and input_tokens is not None
+        and output_tokens is not None
+    ):
+        try:
+            updates["total_cost_usd"] = compute_cost(
+                provider, model, input_tokens, output_tokens
+            )
+        except ValueError as exc:
+            # Unknown (provider, model). Don't fail the PATCH — log + leave column.
+            logger.warning(
+                "session_runs cost lookup failed: run_id=%d provider=%r model=%r err=%s",
+                run_id,
+                provider,
+                model,
+                exc,
+            )
+
     # Auto-stamp `finished_at` when status transitions to a terminal state.
     new_status = updates.get("status")
     terminal_states: set[str] = {"done", "error", "timeout"}
@@ -388,6 +424,25 @@ async def update_session_run(
         if isinstance(value, ClauseElement) or getattr(run, field) != value:
             setattr(run, field, value)
             changed = True
+
+    # CTX-3 soft-warn: if post-update input tokens exceed
+    # sessions.token_budget_per_run, set budget_warning=true + log WARNING.
+    # Never fails the PATCH (soft enforcement).
+    if input_tokens is not None:
+        sess = await db.get(SessionModel, run.session_id)
+        if sess is not None and sess.token_budget_per_run is not None:
+            if input_tokens > sess.token_budget_per_run:
+                if not run.budget_warning:
+                    run.budget_warning = True
+                    changed = True
+                logger.warning(
+                    "session_runs.budget_warning fired: session_id=%d run_id=%d current=%d budget=%d over_by=%d",
+                    sess.id,
+                    run_id,
+                    input_tokens,
+                    sess.token_budget_per_run,
+                    input_tokens - sess.token_budget_per_run,
+                )
 
     if changed:
         run.updated_at = func.now()
@@ -485,10 +540,19 @@ async def append_session_activity(
         session_id, SECTION_RECENT_ACTIVITY, repo_root
     )
     preview = section_body[-_ACTIVITY_PREVIEW_CHARS:]
+
+    # CTX-3 (#718): advisory token-budget signal. Recent Activity vs ceiling.
+    recent_tokens = count_tokens(section_body)
+    recent_ceiling = int(sess.recent_activity_ceiling_tokens)
+    compact_recommended = recent_tokens > recent_ceiling
+
     return SessionActivityRead(
         appended_block=block,
         section_preview=preview,
         section_chars=len(section_body),
+        compact_recommended=compact_recommended,
+        current_recent_tokens=recent_tokens,
+        recent_ceiling_tokens=recent_ceiling,
     )
 
 

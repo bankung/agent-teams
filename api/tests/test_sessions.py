@@ -1278,6 +1278,327 @@ def test_ctx2_locked_detail_strings_pinned_in_router_source() -> None:
     assert '"Session id={id} is closed; cannot write heartbeat"' in source
 
 
+# =============================================================================
+# 8. CTX-3 (#718) — token measure on activity + cost compute on PATCH +
+#    soft-warn budget log.
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_activity_response_carries_token_advisory_under_ceiling(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    """CTX-3: small activity → compact_recommended=False, current < ceiling."""
+    name = _unique_name("act-token-under")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        r = await client.post(
+            f"/api/sessions/{sid}/activity",
+            json={"summary": "tiny entry"},
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["compact_recommended"] is False
+        assert body["recent_ceiling_tokens"] == 15000
+        assert body["current_recent_tokens"] >= 1
+        assert body["current_recent_tokens"] < body["recent_ceiling_tokens"]
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_activity_response_flags_compact_recommended_over_ceiling(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    """Lower the recent_activity_ceiling, append a big entry → compact_recommended=True."""
+    name = _unique_name("act-token-over")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        # Tight ceiling: 10 tokens. summary=4000 chars (max) → ~1000 tokens.
+        s = await client.post(
+            "/api/sessions",
+            json={"project_id": pid, "recent_activity_ceiling_tokens": 10},
+        )
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        r = await client.post(
+            f"/api/sessions/{sid}/activity",
+            json={"summary": "x" * 4000},
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["compact_recommended"] is True
+        assert body["recent_ceiling_tokens"] == 10
+        assert body["current_recent_tokens"] > 10
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_patch_run_with_provider_model_computes_total_cost(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    """PATCH with 1M+1M tokens + opus → server computes ~$90."""
+    from decimal import Decimal
+
+    name = _unique_name("run-cost-opus")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+        run = await client.post(f"/api/sessions/{sid}/runs", json={})
+        rid = run.json()["id"]
+
+        r = await client.patch(
+            f"/api/session_runs/{rid}",
+            json={
+                "status": "done",
+                "total_input_tokens": 1_000_000,
+                "total_output_tokens": 1_000_000,
+                "provider": "anthropic",
+                "model": "claude-opus-4-7",
+            },
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert Decimal(str(body["total_cost_usd"])) == Decimal("90.0000")
+        assert body["total_input_tokens"] == 1_000_000
+        assert body["total_output_tokens"] == 1_000_000
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_patch_run_client_total_cost_usd_silently_ignored(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    """Client-supplied total_cost_usd is dropped — server overwrites or leaves
+    column at default. Sending bogus `999.99` + valid token/provider/model →
+    server computes the real value, NOT the client's number."""
+    from decimal import Decimal
+
+    name = _unique_name("run-cost-override")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+        run = await client.post(f"/api/sessions/{sid}/runs", json={})
+        rid = run.json()["id"]
+
+        r = await client.patch(
+            f"/api/session_runs/{rid}",
+            json={
+                "total_input_tokens": 1_000_000,
+                "total_output_tokens": 1_000_000,
+                "provider": "anthropic",
+                "model": "claude-opus-4-7",
+                "total_cost_usd": "999.99",  # ← attempted client override.
+            },
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert Decimal(str(body["total_cost_usd"])) == Decimal("90.0000")
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_patch_run_without_provider_model_leaves_cost_at_default(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    """No provider/model → no cost computation. Column stays at default (0)."""
+    from decimal import Decimal
+
+    name = _unique_name("run-cost-no-provider")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+        run = await client.post(f"/api/sessions/{sid}/runs", json={})
+        rid = run.json()["id"]
+
+        r = await client.patch(
+            f"/api/session_runs/{rid}",
+            json={"total_input_tokens": 500, "total_output_tokens": 500},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert Decimal(str(body["total_cost_usd"])) == Decimal("0.0000")
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_patch_run_unknown_model_logs_warning_and_succeeds(
+    client, scaffold_cleanup, session_fs_cleanup, caplog
+) -> None:
+    """Unknown (provider, model) → ValueError caught, WARNING log emitted, PATCH 200."""
+    import logging
+    from decimal import Decimal
+
+    name = _unique_name("run-cost-unknown")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+        run = await client.post(f"/api/sessions/{sid}/runs", json={})
+        rid = run.json()["id"]
+
+        with caplog.at_level(logging.WARNING, logger="src.routers.sessions"):
+            r = await client.patch(
+                f"/api/session_runs/{rid}",
+                json={
+                    "total_input_tokens": 1000,
+                    "total_output_tokens": 1000,
+                    "provider": "anthropic",
+                    "model": "claude-mythical-99",
+                },
+            )
+        assert r.status_code == 200
+        body = r.json()
+        # Cost stays at default — unknown lookup didn't stamp.
+        assert Decimal(str(body["total_cost_usd"])) == Decimal("0.0000")
+        assert any(
+            "cost lookup failed" in rec.message and rec.levelno == logging.WARNING
+            for rec in caplog.records
+        )
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_patch_run_over_budget_sets_warning_and_logs(
+    client, scaffold_cleanup, session_fs_cleanup, caplog
+) -> None:
+    """Set token_budget_per_run=1000 → PATCH with input=1500 → budget_warning=true,
+    WARNING log with the 4 structured fields parseable from the message."""
+    import logging
+
+    name = _unique_name("run-budget-warn")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post(
+            "/api/sessions",
+            json={"project_id": pid, "token_budget_per_run": 1000},
+        )
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+        run = await client.post(f"/api/sessions/{sid}/runs", json={})
+        rid = run.json()["id"]
+
+        with caplog.at_level(logging.WARNING, logger="src.routers.sessions"):
+            r = await client.patch(
+                f"/api/session_runs/{rid}",
+                json={"total_input_tokens": 1500, "total_output_tokens": 200},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["budget_warning"] is True
+
+        budget_logs = [
+            rec for rec in caplog.records
+            if rec.levelno == logging.WARNING
+            and "session_runs.budget_warning fired" in rec.message
+        ]
+        assert len(budget_logs) >= 1
+        msg = budget_logs[-1].message
+        # 4 structured fields parseable from the formatted message.
+        assert f"session_id={sid}" in msg
+        assert f"run_id={rid}" in msg
+        assert "current=1500" in msg
+        assert "budget=1000" in msg
+        assert "over_by=500" in msg
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_patch_run_under_budget_does_not_set_warning(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    """input=500 vs budget=1000 → budget_warning stays False."""
+    name = _unique_name("run-budget-under")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post(
+            "/api/sessions",
+            json={"project_id": pid, "token_budget_per_run": 1000},
+        )
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+        run = await client.post(f"/api/sessions/{sid}/runs", json={})
+        rid = run.json()["id"]
+
+        r = await client.patch(
+            f"/api/session_runs/{rid}",
+            json={"total_input_tokens": 500},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["budget_warning"] is False
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_patch_run_null_budget_never_sets_warning(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    """token_budget_per_run NULL → no budget check, even on huge input."""
+    name = _unique_name("run-budget-null")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+        run = await client.post(f"/api/sessions/{sid}/runs", json={})
+        rid = run.json()["id"]
+
+        r = await client.patch(
+            f"/api/session_runs/{rid}",
+            json={"total_input_tokens": 999_999_999},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["budget_warning"] is False
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
 @pytest.mark.asyncio
 async def test_existing_seeded_tasks_untouched(client) -> None:
     """CTX-1 must not perturb the seeded `agent-teams` project's tasks. Spot-

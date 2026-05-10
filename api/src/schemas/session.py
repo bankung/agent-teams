@@ -126,9 +126,14 @@ class SessionRunCreate(BaseModel):
 class SessionRunUpdate(BaseModel):
     """PATCH /api/session_runs/{id} request body.
 
-    CTX-1 accepts client-supplied `total_cost_usd` with no validation. CTX-3
-    will replace this with a server-authoritative cost computation derived
-    from token totals + the model's price card.
+    CTX-3 (Kanban #718): `total_cost_usd` is server-authoritative. The field
+    stays on the schema for forward-compat (clients sending it get no 422),
+    but the router DROPS it from updates and recomputes from token totals +
+    `(provider, model)` via `services.cost_tracker.compute_cost`.
+
+    `provider` / `model` (also CTX-3) are accepted for cost lookup but NOT
+    persisted to the row — we don't model per-run provider/model on
+    `session_runs` in V1. They are pure inputs to `compute_cost`.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -140,6 +145,9 @@ class SessionRunUpdate(BaseModel):
     total_context_chars: int | None = Field(default=None, ge=0)
     total_cost_usd: Decimal | None = None
     budget_warning: bool | None = None
+    # CTX-3: cost lookup inputs. Not persisted; consumed by compute_cost only.
+    provider: str | None = Field(default=None, max_length=64)
+    model: str | None = Field(default=None, max_length=64)
 
 
 class SessionRunRead(BaseModel):
@@ -217,11 +225,21 @@ class SessionActivityCreate(BaseModel):
 
 
 class SessionActivityRead(BaseModel):
-    """Response shape for POST /api/sessions/{id}/activity."""
+    """Response shape for POST /api/sessions/{id}/activity.
+
+    CTX-3 (Kanban #718) added 3 ADDITIVE advisory fields — caller
+    (Lead / master agent) reads them to decide whether to trigger a
+    CTX-4 compact. Defaults (None) preserve the #717 contract for
+    callers that don't care about token budgets.
+    """
 
     appended_block: str
     section_preview: str
     section_chars: int
+    # CTX-3: token-budget advisories.
+    compact_recommended: bool | None = None
+    current_recent_tokens: int | None = None
+    recent_ceiling_tokens: int | None = None
 
 
 class SessionPromptRead(BaseModel):
