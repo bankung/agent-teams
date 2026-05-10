@@ -22,6 +22,7 @@ from src.constants import RecordStatus, TaskStatus
 from src.db import get_or_404, get_session
 from src.models.task import Task
 from src.schemas.task import TaskCreate, TaskRead, TaskUpdate
+from src.services.recurrence import fire_template, next_cron_fire
 from src.services.run_mode import assert_consent_for_run_mode
 from src.services.task_kind import assert_run_mode_for_kind
 from src.services.session_project import (
@@ -41,6 +42,13 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 _DETAIL_SCHEDULED_XOR_TEMPLATE = (
     "scheduled_at is incompatible with is_template=true "
     "(use recurrence_rule for templates)"
+)
+
+# Source-text-locked detail string for POST /api/tasks/{id}/fire-now (Kanban
+# #707, T2). Wire contract — drift breaks any FE/CLI that string-matches it.
+# Pinned by test_fire_now_detail_string_pinned_in_router_source.
+_DETAIL_FIRE_NOW_NOT_TEMPLATE_TEMPLATE = (
+    "Task id={task_id} is not a template; fire-now only applies to is_template=true"
 )
 
 # Process-status transitions that auto-stamp a lifecycle timestamp (when not
@@ -259,6 +267,29 @@ async def update_task(
 
     await assert_consent_for_run_mode(session, task.project_id, resolved_run_mode)
 
+    # V3+ T2 (Kanban #707): if a template's recurrence_rule or timezone changes,
+    # recompute next_fire_at from now() unless the client explicitly supplied
+    # one in the same PATCH (cron is TZ-sensitive — even a TZ-only flip means
+    # the next slot moves). Recompute only when the resolved row is/will be a
+    # template — otherwise the recurrence fields are noise.
+    if (
+        resolved_is_template is True
+        and ("recurrence_rule" in updates or "recurrence_timezone" in updates)
+        and "next_fire_at" not in updates
+    ):
+        resolved_rule = (
+            updates["recurrence_rule"]
+            if "recurrence_rule" in updates
+            else task.recurrence_rule
+        )
+        resolved_tz = (
+            updates["recurrence_timezone"]
+            if "recurrence_timezone" in updates
+            else task.recurrence_timezone
+        )
+        if resolved_rule:
+            updates["next_fire_at"] = next_cron_fire(resolved_rule, resolved_tz or "UTC")
+
     # Process-status-transition side effects — only stamp if not already set /
     # explicitly provided. We use the DB now() so the value matches the
     # audit-trigger snapshot.
@@ -315,6 +346,49 @@ async def update_task(
         raise HTTPException(status_code=400, detail=detail) from exc
     await session.refresh(task)
     return task
+
+
+@router.post(
+    "/{task_id}/fire-now",
+    response_model=TaskRead,
+    status_code=http_status.HTTP_200_OK,
+)
+async def fire_now(
+    task_id: int,
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+) -> Task:
+    """Manual trigger for a recurrence template (Kanban #707, T2).
+
+    Bypasses the `next_fire_at <= now()` check. Spawns a child row + advances
+    the template's `next_fire_at` to the next future cron slot. Returns the new
+    child as `TaskRead` (200, not 201, since the template existed; the child is
+    a side-effect resource).
+
+    404 if id not found / soft-deleted. 400 if not is_template=true. 400 on
+    cross-project header mismatch.
+    """
+    task = await get_or_404(
+        session, Task, detail=f"Task id={task_id} not found", id=task_id
+    )
+    if task.status == RecordStatus.DELETED:
+        # 404 vs 400: get_or_404 returns soft-deleted rows by id (per
+        # standards/postgresql/soft-delete.md detail endpoint convention). For
+        # fire-now, treat soft-deleted as "not found" — a hard cousin of the
+        # is-template check below.
+        raise HTTPException(
+            status_code=404, detail=f"Task id={task_id} not found"
+        )
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+
+    if not task.is_template:
+        raise HTTPException(
+            status_code=400,
+            detail=_DETAIL_FIRE_NOW_NOT_TEMPLATE_TEMPLATE.format(task_id=task_id),
+        )
+
+    child = await fire_template(session, task)
+    return child
 
 
 @router.delete("/{task_id}", status_code=http_status.HTTP_204_NO_CONTENT)

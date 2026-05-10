@@ -37,6 +37,11 @@ _TEST_URL = (
     + "/agent_teams_test"
 )
 _os.environ["DATABASE_URL"] = _TEST_URL
+# Kanban #707 (T2): disable the apscheduler tick during pytest. The lifespan
+# context still enters/exits cleanly (smoke-tested explicitly), but no
+# background job fires. Avoids flakiness from time-sensitive ticks racing
+# fixtures and per-test test-DB resets.
+_os.environ.setdefault("APP_SCHEDULER_DISABLE", "true")
 # ----------------------------------------------------------------------------
 
 import os

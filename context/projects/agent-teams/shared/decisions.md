@@ -17,6 +17,49 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-10 — Kanban #707 closed: T2 recurrence subsystem (apscheduler + 2-path scheduler + fire-now)
+**Scope:** backend / api / devops / shared
+**Proposed by:** dev-backend (NEW `services/recurrence.py` 165 lines + lifespan AsyncIOScheduler in `main.py` + `POST /api/tasks/{id}/fire-now` endpoint + PATCH recompute on rule/tz change + `apscheduler>=3.10,<4.0` pyproject pin + 19 new tests; pytest 261→280 GREEN) → dev-reviewer GO (0 BLOCKER / 0 MAJ / 3 MIN / 1 NIT — recommended pre-merge fix on M1 docstring drift) → dev-backend M1 landed (recurrence.py module + `fire_template` docstrings corrected: trigger is UPDATE/DELETE only, child INSERT not audited until first mutation; 280 still GREEN) → dev-devops GREEN (container rebuilt with apscheduler 3.11.2 baked in; scheduler proven LIVE on the live `agent_teams` DB at 60s tick cadence via DB-query-pair observation at startup+60s; pytest 280/280 in rebuilt image) → dev-tester GREEN (16/16 Tier-1 probes — fire-now happy + 4 negative paths with verbatim locked details + scheduler-tick Path A spawn + Path B in-place transition + catch-up single-fire on 3-days-overdue + idle-tick non-disruption across 5 baseline tasks; 9 smoke rows soft-deleted via API).
+
+**Decision:** Worked the T2 spec verbatim with one critical extension. Implementation choices ratified at the project layer:
+
+- **Scope extended for #723: 2-path scheduler.** Original #707 spec was filed BEFORE #723 added `tasks.scheduled_at` for one-shot scheduling. Lead briefed dev-backend on the extension at spawn. Each `tick_once` invocation now runs BOTH paths in two independent sessions:
+  - **Path A (templates)** — `is_template=true AND next_fire_at <= now()` → spawn child + advance.
+  - **Path B (one-shots)** — `scheduled_at <= now() AND process_status=1 AND is_template=false` → transition row in place (ps 1→2, stamp `started_at`, clear `scheduled_at` to NULL per #723 contract).
+  - Path A failure does NOT roll back Path B's progress (separate sessions). Per-row try/except + `logger.exception` + `db.rollback()` on each row to avoid one bad row killing the tick.
+
+- **Catch-up policy: single-fire on resume.** `fire_template` advances `next_fire_at = next_cron_fire(rule, tz)` with anchor=`now()`, NOT the stale `template.next_fire_at`. So a template with `next_fire_at` 3 days ago + daily cron spawns ONE child and advances straight to the next future slot — NOT 3 children. Tier-1 live-verified: tester created `next_fire_at=2026-05-07T09:00:00Z` (3 days back) on a `0 9 * * *` template; observed exactly 1 child + `next_fire_at:"2026-05-11T09:00:00Z"` (next future 9am UTC, NOT intermediate dates).
+
+- **Lifespan integration.** Used `@asynccontextmanager` lifespan (NOT deprecated `@app.on_event`). `AsyncIOScheduler(timezone="UTC")` with `IntervalTrigger(seconds=APP_SCHEDULER_TICK_SECONDS)` + `max_instances=1, coalesce=True` (defends against tick overlap and burst-on-resume). Job ID `"recurrence_tick"`. `APP_SCHEDULER_DISABLE=true` env knob for pytest (set in `conftest.py` before app import).
+
+- **Audit trail through ORM commits.** Both paths write via SQLAlchemy attribute assignment + `commit()` — fires the same `tasks_audit_trg AFTER UPDATE OR DELETE` as the manual PATCH path. NO direct INSERT/UPDATE bypassing the session. Reviewer M1 corrected docstrings: child INSERT in Path A does NOT generate a `tasks_history` row (trigger is UPDATE/DELETE only); only the template's `next_fire_at` UPDATE is audited. Path B's row transition IS audited (UPDATE on existing row).
+
+- **Server-side default for missing `next_fire_at` on POST: REJECTED.** dev-backend considered auto-filling `next_fire_at = next_cron_fire(rule, tz)` when client posts `is_template=true + recurrence_rule + no next_fire_at`. Decision: keep T1's strict 422 (`_check_template_completeness` raises). Reasoning: auto-fill silently weakens the contract from 422 → 201 and breaks `test_task_create_template_with_rule_only_rejected`. PATCH path is where automatic recomputation makes sense (T1 didn't pin against it) — added there only.
+
+- **PATCH recompute** — changing `recurrence_rule` (with or without `recurrence_timezone`) re-computes `next_fire_at` from now. Changing only `recurrence_timezone` ALSO recomputes (cron is TZ-sensitive). Honors explicit `next_fire_at` in same payload (does NOT override).
+
+- **fire-now endpoint** — `POST /api/tasks/{id}/fire-now` for manual trigger. Bypasses `next_fire_at <= now()` check. 404 on missing/soft-deleted, 400 on non-template (locked detail `"Task id=<n> is not a template; fire-now only applies to is_template=true"`), X-Project-Id header gate (Kanban #695), 200 + new child `TaskRead`. Source-text-locked test pinned.
+
+- **uvicorn reloader+worker behavior** — uvicorn `--reload` creates reloader-process + worker-process; lifespan only fires in the worker, so scheduler starts ONCE per logical container restart. dev-devops verified: tick cadence shows ONE extra DB query pair every 60s, not duplicated.
+
+- **Visibility gap (known follow-up): uvicorn swallows non-uvicorn INFO logs.** `logger.info("recurrence scheduler started")` + future `logger.exception(...)` from tick errors are silently swallowed by uvicorn's default logging config. Scheduler liveness IS provable via tick-cadence DB query observation, but ops-level visibility is broken. Fix in a follow-up: add `logging.basicConfig(level=INFO)` to `src/main.py` import OR pass `--log-config` to uvicorn in `docker-compose.yml`. Filed as a follow-up task.
+
+- **Spawn copies `parent_task_id` from template.** If a template is itself a subtask, every child becomes a subtask of the same parent — semantically reasonable (per spec: "copy parent_task_id"); ratified.
+
+**Reasoning:** T2 wires the T1 schema (#706) AND the #723 schema into a working scheduler. Dependencies: croniter (already pinned from T1), apscheduler 3.x (NEW, image rebuild required). Lifecycle followed `feedback_review_before_devops` — dev-reviewer ran read-only BEFORE dev-devops rebuild; M1 docstring fix landed BEFORE rebuild for accuracy. Live smoke confirmed both fire paths + catch-up + idle-tick non-disruption on the actual production-shape `agent_teams` DB (NOT a test DB).
+
+**Implications:**
+- Scheduler is now LIVE on `docker compose up` with default 60s tick. Templates with due `next_fire_at` and one-shots with due `scheduled_at` will fire automatically.
+- 1 new endpoint: `POST /api/tasks/{id}/fire-now` (templates only, requires X-Project-Id).
+- 1 new locked detail string: `"Task id=<n> is not a template; fire-now only applies to is_template=true"`.
+- `apscheduler` baked into image (3.11.2 installed; pyproject pin `>=3.10,<4.0`).
+- `APP_SCHEDULER_TICK_SECONDS` (default 60) + `APP_SCHEDULER_DISABLE=true` env knobs available.
+- Visibility gap follow-up (uvicorn logging) — separate task.
+- T3 #708 (FE recurrence badges) cosmetically depends on this slice for `next_fire_at` accuracy; can ship in parallel.
+- Phase 2 Backend layer is 75% complete. Next: CTX-4 #719 (Haiku compact runner) closes the layer.
+
+---
+
 ## 2026-05-10 — Kanban #718 closed: CTX-3 token counter + soft-warn budget + server-authoritative cost
 **Scope:** backend / api / shared
 **Proposed by:** dev-backend (NEW `services/token_counter.py` 165 lines + NEW `services/cost_tracker.py` 50 lines + `SessionRunUpdate` +2 fields + `SessionActivityRead` +3 advisory fields + router cost compute + budget warn log + 24 new tests; pytest 237→261 GREEN) → dev-reviewer GO (0 BLOCKER / 0 MAJ / 2 MIN / 3 NIT — all stylistic/design-judgment, none blocking) → dev-tester GREEN (10/10 Tier-1 probes — under-ceiling activity advisory + 1M+1M opus cost ($90 verbatim) + haiku 100K+50K cost ($0.28 verbatim) + client cost override silently overwritten + unknown model logs WARNING+200 with verbatim docker log capture + over-ceiling activity `compact_recommended=true` + Pydantic guards on negative tokens + overlong provider).

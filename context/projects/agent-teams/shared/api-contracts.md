@@ -261,6 +261,38 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 - `400` — `{"detail":"X-Project-Id header is required for task endpoints"}` when header missing (Kanban #695)
 - `409` — `{"detail":"Cannot delete task — <n> active subtask(s) reference this task"}` when at least one row has `parent_task_id=<id> AND status=1`. Soft-delete the children first, then retry the parent. Idempotent re-DELETE on an already soft-deleted parent still returns 204 (the active-children check runs only on the first delete; per `routers/tasks.py` `delete_task`). (Kanban #238)
 
+### POST /api/tasks/{id}/fire-now (Kanban #707, T2, 2026-05-10)
+**Purpose:** Manual trigger for a recurrence template. Bypasses the `next_fire_at <= now()` check. Spawns a child row + advances the template's `next_fire_at` to the next future cron slot. Useful for "test fire" / "run now" UX without waiting for the scheduler tick.
+**Auth:** none
+**Headers:** `X-Project-Id: <int>` REQUIRED. The row's `project_id` must match (Kanban #695).
+**Request:** body NONE (path parameter only).
+**Response 200:** `TaskRead` of the newly-spawned child row. Side effect: template's `next_fire_at` advances; visible on a follow-up GET.
+**Errors:**
+- `404` — `{"detail":"Task id=<n> not found"}` when id does not exist OR is soft-deleted (status=0).
+- `400` — `{"detail":"Task id=<n> is not a template; fire-now only applies to is_template=true"}` when row exists + active but `is_template=false`. Source-text-locked per #122 pattern.
+- `400` — `{"detail":"X-Project-Id header is required for task endpoints"}` when header missing (Kanban #695).
+- `400` — `{"detail":"task <n> does not belong to project_id <h>"}` when row's `project_id` ≠ header (Kanban #695).
+
+### Recurrence scheduler runtime (Kanban #707, T2, 2026-05-10)
+
+The FastAPI `lifespan` boots `AsyncIOScheduler` (apscheduler 3.x) with one job `recurrence_tick` firing every `APP_SCHEDULER_TICK_SECONDS` (default 60s). `max_instances=1, coalesce=True` defends against tick overlap. Each tick runs both fire paths in two independent sessions:
+
+**Path A — Templates (#706 T1).** SELECT `is_template=true AND next_fire_at IS NOT NULL AND next_fire_at <= now() AND status=1` ORDER BY `next_fire_at` LIMIT 50. For each: spawn child row (copy `title`, `description`, `priority`, `assigned_role`, `run_mode`, `task_kind`, `parent_task_id`; set `is_template=false`, `spawned_from_task_id=<template>`, `process_status=1`); advance template's `next_fire_at = croniter(rule, now(tz=recurrence_timezone)).get_next(datetime)` (anchored at NOW, not stale `next_fire_at`).
+
+**Path B — One-shot scheduled tasks (#723).** SELECT `scheduled_at IS NOT NULL AND scheduled_at <= now() AND process_status=1 AND status=1 AND is_template=false` ORDER BY `scheduled_at` LIMIT 50. For each: transition the existing row in place (NOT spawn a child) — `process_status` 1→2, stamp `started_at=now()` if NULL, **clear `scheduled_at` to NULL** (prevents re-fire on a manual ps→1 flip later).
+
+**Catch-up policy: single-fire on resume.** A template with `next_fire_at` 3 days ago + daily cron spawns ONE child and advances `next_fire_at` straight to the next future slot — NOT 3 children. Tier-1 live-verified.
+
+**Audit trail.** Both paths write via SQLAlchemy ORM commits; the existing `tasks_audit_trg AFTER UPDATE OR DELETE` captures Path A's template advance + Path B's row transition. Newly-INSERTed children in Path A do NOT generate `tasks_history` rows until first mutation (matches project-wide audit policy — UPDATE/DELETE only).
+
+**Concurrency scope.** Single-process V1 (no Redis lock, no `FOR UPDATE SKIP LOCKED`). Multi-replica deploys would need a distributed lock — out of scope per #707.
+
+**Env knobs:**
+- `APP_SCHEDULER_TICK_SECONDS` — interval seconds (default 60).
+- `APP_SCHEDULER_DISABLE=true` — skip the scheduler entirely (used by pytest via `conftest.py`).
+
+**Visibility gap (known, follow-up filed):** uvicorn's default logging config does NOT propagate non-uvicorn INFO loggers to stdout. The `"recurrence scheduler started"` log line + future `logger.exception(...)` from tick errors are silently swallowed. Liveness is provable via tick-cadence DB queries (extra `SELECT tasks` pair every `APP_SCHEDULER_TICK_SECONDS`). Fix planned: `--log-config` for uvicorn OR `logging.basicConfig(level=INFO)` at `src/main.py` import.
+
 ### Sessions (CTX-1, Kanban #716, 2026-05-10)
 
 Session-based context store. Hybrid storage: DB rows for metadata + queryability; markdown content lives at `<repo_root>/_sessions/<id>/` (gitignored). Sessions are scoped per-project × per-Claude-Code-instance — multiple `status='active'` rows per project are allowed (multi-instance support; partial index `ix_sessions_project_id_active` is an accelerator NOT a uniqueness gate). NO audit trigger on `sessions` / `session_runs` / `session_compacts` tables — sessions self-audit via `session_compacts` archive history. **All `/api/sessions/*` and `/api/session_runs/*` endpoints follow the project-endpoint convention: NO `X-Project-Id` header required.**
