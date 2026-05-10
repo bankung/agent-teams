@@ -47,20 +47,26 @@ class SessionCreate(BaseModel):
     """POST /api/sessions request body.
 
     Server computes `session_root_path` post-INSERT (`_sessions/<id>/`); it is
-    NOT accepted from the client. Compact ceilings use DB defaults
-    (compacted_history=13000, recent_activity=15000).
+    NOT accepted from the client. The four ceilings use DB defaults when
+    omitted (compacted_history=13000, recent_activity=15000,
+    card_detail=6000, output_budget=4000); explicit overrides are accepted.
     """
 
     project_id: int = Field(ge=1)
     process_label: str | None = Field(default=None, max_length=64)
     token_budget_per_run: int | None = Field(default=None, ge=1)
+    compacted_history_ceiling_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
+    recent_activity_ceiling_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
+    card_detail_ceiling_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
+    output_budget_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
 
 
 class SessionUpdate(BaseModel):
     """PATCH /api/sessions/{id} — narrow update surface for CTX-1.
 
-    Only three fields are exposed for client mutation. Setting `status='closed'`
-    is terminal — router 400s any subsequent PATCH on a closed row.
+    Setting `status='closed'` is terminal — router 400s any subsequent PATCH
+    on a closed row. The four ceilings are mutable mid-session (operator may
+    bump on a misbehaving long-context run).
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -68,6 +74,10 @@ class SessionUpdate(BaseModel):
     process_label: str | None = Field(default=None, max_length=64)
     token_budget_per_run: int | None = Field(default=None, ge=1)
     status: SessionStatusLiteral | None = None
+    compacted_history_ceiling_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
+    recent_activity_ceiling_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
+    card_detail_ceiling_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
+    output_budget_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
 
 
 class SessionRead(BaseModel):
@@ -82,6 +92,8 @@ class SessionRead(BaseModel):
     token_budget_per_run: int | None
     compacted_history_ceiling_tokens: int
     recent_activity_ceiling_tokens: int
+    card_detail_ceiling_tokens: int
+    output_budget_tokens: int
     session_root_path: str
     started_at: datetime
     closed_at: datetime | None

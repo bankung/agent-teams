@@ -270,7 +270,15 @@ Session-based context store. Hybrid storage: DB rows for metadata + queryability
 { "project_id": 1, "process_label": "term-1", "token_budget_per_run": null }
 ```
 
-`process_label` (str, optional, max 64) — human hint (terminal id, branch name). `token_budget_per_run` (int, optional, ge=1, default null) — soft budget; null = no budget. Compact ceilings use server defaults (`compacted_history_ceiling_tokens=13000`, `recent_activity_ceiling_tokens=15000`).
+`process_label` (str, optional, max 64) — human hint (terminal id, branch name). `token_budget_per_run` (int, optional, ge=1, default null) — soft budget; null = no budget.
+
+**Ceilings (all 4 optional on POST, default to server values when omitted; bounds `ge=1, le=1_000_000` on each):**
+- `compacted_history_ceiling_tokens` (default 13000)
+- `recent_activity_ceiling_tokens` (default 15000)
+- `card_detail_ceiling_tokens` (default 6000) — added 2026-05-10 by Kanban #722, migration 0009
+- `output_budget_tokens` (default 4000) — added 2026-05-10 by Kanban #722, migration 0009
+
+**4-bucket token model** (per Agent Orchestration doc §1.3): `system prompt ~2k (fixed) + session.md ~28k (compacted_history 13k + recent_activity 15k) + card_detail ~6k + output_budget ~4k = ~40k total per run`. Schema-level since migration 0009; CTX-3 (#718) wires the runtime token counter and reads the 4 ceiling columns. `le=1_000_000` cap (Kanban #722 M2) guards against operator typos with soft-warn semantics.
 
 **Pydantic extra-policy note:** `SessionCreate` currently uses default `extra="ignore"` — smuggled fields (e.g., `{"status":"weird"}`) are silently dropped; server applies its defaults. Filed as #721 follow-up to tighten to `extra="forbid"` for parity with `ConsentGrant` (deliberate-action UX must fail loud). Until #721 lands, FE must NOT rely on 422 for unknown fields on Session POST.
 
@@ -294,9 +302,9 @@ Session-based context store. Hybrid storage: DB rows for metadata + queryability
 - `404` — `{"detail":"Session id=<n> not found"}` (source-text-locked).
 
 #### PATCH /api/sessions/{id}
-**Purpose:** Partial update — narrow surface (`process_label` / `token_budget_per_run` / `status`). Setting `status='closed'` server-stamps `closed_at=now()`. **`status='closed'` is terminal** — any subsequent PATCH on a closed row → 400.
+**Purpose:** Partial update — narrow surface (`process_label` / `token_budget_per_run` / `status` / 4 ceilings). Setting `status='closed'` server-stamps `closed_at=now()`. **`status='closed'` is terminal** — any subsequent PATCH on a closed row → 400. All 4 ceilings are mutable mid-session (operator may bump on a misbehaving long-context run; soft-warn only). Bounds `ge=1, le=1_000_000` enforced.
 **Auth:** none
-**Request:** any subset of `{process_label, token_budget_per_run, status}`.
+**Request:** any subset of `{process_label, token_budget_per_run, status, compacted_history_ceiling_tokens, recent_activity_ceiling_tokens, card_detail_ceiling_tokens, output_budget_tokens}`.
 **Response 200:** `SessionRead`.
 **Errors:**
 - `400` — `{"detail":"Session id=<n> already closed"}` when attempting to mutate a closed session. Source-text-locked per #122 pattern. (Kanban #716)
@@ -351,7 +359,7 @@ Session-based context store. Hybrid storage: DB rows for metadata + queryability
 
 Integer code fields (`process_status`, `priority`, `assigned_role`) follow `context/standards/general.md` §"Kanban schema codes". Note that the `tasks` lifecycle code is named `process_status` everywhere on the wire (renamed from `status` by the 2026-05-08 migration); `status` on the wire is reserved as the internal soft-delete flag and is not exposed.
 
-**`SessionRead`** — `{id:int, project_id:int, process_label:str|null, status:"active"|"compacting"|"closed", token_budget_per_run:int|null, compacted_history_ceiling_tokens:int, recent_activity_ceiling_tokens:int, session_root_path:str, started_at, closed_at:datetime|null, created_at, updated_at, runs_count:int, compacts_count:int}` — added 2026-05-10 by Kanban #716 (CTX-1). `runs_count` / `compacts_count` are 0 on list responses; populated on detail GET only (avoids N+1).
+**`SessionRead`** — `{id:int, project_id:int, process_label:str|null, status:"active"|"compacting"|"closed", token_budget_per_run:int|null, compacted_history_ceiling_tokens:int, recent_activity_ceiling_tokens:int, card_detail_ceiling_tokens:int, output_budget_tokens:int, session_root_path:str, started_at, closed_at:datetime|null, created_at, updated_at, runs_count:int, compacts_count:int}` — added 2026-05-10 by Kanban #716 (CTX-1); `card_detail_ceiling_tokens` + `output_budget_tokens` added 2026-05-10 by Kanban #722 (migration 0009, audit follow-up). `runs_count` / `compacts_count` are 0 on list responses; populated on detail GET only (avoids N+1).
 
 **`SessionRunRead`** — `{id:int, session_id:int, task_id:int|null, status:"running"|"done"|"error"|"timeout", started_at, finished_at:datetime|null, total_input_tokens:int, total_output_tokens:int, total_context_chars:int, total_cost_usd:Decimal, budget_warning:bool, card_log_path:str|null, created_at, updated_at}` — added 2026-05-10 by Kanban #716. Server-stamps `finished_at` when transitioning to terminal status (`done`/`error`/`timeout`). `total_cost_usd` is client-supplied in CTX-1; CTX-3 (#718) replaces with server-authoritative computation.
 

@@ -752,6 +752,136 @@ async def test_closing_session_preserves_filesystem_content(
         await client.delete(f"/api/projects/{pid}")
 
 
+# =============================================================================
+# 6. Session ceilings extension (Kanban #722, migration 0009)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_create_session_defaults_card_detail_and_output_budget(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    """POST /api/sessions without ceiling overrides → response carries the
+    DB-default 6000 / 4000 for the two new buckets (and 13000 / 15000 for
+    the existing two)."""
+    name = _unique_name("sess-ceilings-default")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        resp = await client.post("/api/sessions", json={"project_id": pid})
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        sid = body["id"]
+        session_fs_cleanup(sid)
+
+        assert body["compacted_history_ceiling_tokens"] == 13000
+        assert body["recent_activity_ceiling_tokens"] == 15000
+        assert body["card_detail_ceiling_tokens"] == 6000
+        assert body["output_budget_tokens"] == 4000
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_create_session_accepts_explicit_ceiling_overrides(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    """POST with explicit overrides for the two new buckets → response
+    reflects the supplied values (proves the wire-through path)."""
+    name = _unique_name("sess-ceilings-override")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        resp = await client.post(
+            "/api/sessions",
+            json={
+                "project_id": pid,
+                "card_detail_ceiling_tokens": 3000,
+                "output_budget_tokens": 2000,
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        sid = body["id"]
+        session_fs_cleanup(sid)
+
+        assert body["card_detail_ceiling_tokens"] == 3000
+        assert body["output_budget_tokens"] == 2000
+        # Untouched buckets keep DB defaults.
+        assert body["compacted_history_ceiling_tokens"] == 13000
+        assert body["recent_activity_ceiling_tokens"] == 15000
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_patch_session_updates_card_detail_and_output_budget(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    """PATCH /api/sessions/{id} with new ceiling values → updated."""
+    name = _unique_name("sess-ceilings-patch")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        r = await client.patch(
+            f"/api/sessions/{sid}",
+            json={
+                "card_detail_ceiling_tokens": 7500,
+                "output_budget_tokens": 5500,
+            },
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["card_detail_ceiling_tokens"] == 7500
+        assert body["output_budget_tokens"] == 5500
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+def test_session_create_ceilings_default_to_none() -> None:
+    """Schema-level: SessionCreate without ceiling fields → all four are
+    None (signal the router to fall through to DB server_default)."""
+    from src.schemas.session import SessionCreate
+
+    s = SessionCreate(project_id=1)
+    assert s.compacted_history_ceiling_tokens is None
+    assert s.recent_activity_ceiling_tokens is None
+    assert s.card_detail_ceiling_tokens is None
+    assert s.output_budget_tokens is None
+
+
+@pytest.mark.asyncio
+async def test_create_session_rejects_zero_card_detail_ceiling(
+    client, scaffold_cleanup
+) -> None:
+    """POST /api/sessions with card_detail_ceiling_tokens=0 → 422 (Pydantic
+    `ge=1`). One field is enough — the type system enforces the same bound on
+    the other three ceilings."""
+    name = _unique_name("sess-ceiling-zero")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        resp = await client.post(
+            "/api/sessions",
+            json={"project_id": pid, "card_detail_ceiling_tokens": 0},
+        )
+        assert resp.status_code == 422
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
 @pytest.mark.asyncio
 async def test_existing_seeded_tasks_untouched(client) -> None:
     """CTX-1 must not perturb the seeded `agent-teams` project's tasks. Spot-

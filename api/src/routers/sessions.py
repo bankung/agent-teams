@@ -137,12 +137,24 @@ async def create_session(
         )
 
     # Placeholder root path — overwritten with the real `_sessions/<id>/`
-    # after the row gets its identity-generated id.
+    # after the row gets its identity-generated id. Ceilings: only forward
+    # explicit overrides (None → let the DB `server_default` apply).
+    optional_ceilings = {
+        k: v
+        for k, v in {
+            "compacted_history_ceiling_tokens": payload.compacted_history_ceiling_tokens,
+            "recent_activity_ceiling_tokens": payload.recent_activity_ceiling_tokens,
+            "card_detail_ceiling_tokens": payload.card_detail_ceiling_tokens,
+            "output_budget_tokens": payload.output_budget_tokens,
+        }.items()
+        if v is not None
+    }
     row = SessionModel(
         project_id=payload.project_id,
         process_label=payload.process_label,
         token_budget_per_run=payload.token_budget_per_run,
         session_root_path="_sessions/pending/",
+        **optional_ceilings,
     )
     db.add(row)
     await db.flush()  # populates row.id without committing

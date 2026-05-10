@@ -17,6 +17,28 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-10 — Kanban #722 closed: migration 0009 + sessions ceilings extension (CTX-1 audit follow-up)
+**Scope:** schema / api / shared
+**Proposed by:** dev-backend (migration 0009 + ORM 2 cols + Pydantic Create/Update/Read all 4 ceilings + router non-None override `**`-splat + 4 new tests; pytest 190 → 194 GREEN) → dev-reviewer GO (0 BLOCKER / 0 MAJ / 3 MIN / 2 NIT; M2 + M3 recommended pre-merge) → dev-backend M2 + M3 landed (`le=1_000_000` upper-cap on all 4 ceilings × Create+Update + 422-on-zero negative test; 194 → 195 GREEN with `test_create_session_rejects_zero_card_detail_ceiling`) → dev-devops GREEN (scratch round-trip + alembic upgrade head live; 3 pre-existing session rows backfilled to 6000/4000; smoke POST returns all 4 ceilings) → dev-tester GREEN (8/8 Tier-1 probes — defaults, explicit override, PATCH, GET round-trip, 422-on-zero, 422-on-overcap, 422-on-negative, backfill confirmation across 6 rows).
+
+**Decision:** Closed the 4-bucket-doc-vs-2-bucket-schema gap surfaced by the 2026-05-10 CTX scope-lock audit. Implementation choices ratified at the project layer:
+- **All 4 ceilings exposed on `SessionCreate` + `SessionUpdate`, not just the 2 new ones.** Spec said "extend SessionRead + SessionUpdate with the 2 fields. (SessionCreate: optional with defaults — same as the existing 2 ceilings.)" — ambiguous. dev-backend lifted the existing 2 (`compacted_history_ceiling_tokens`, `recent_activity_ceiling_tokens`) to optional Create/Update fields too, matching the new 2. Reviewer ratified: pre-#722 the existing 2 were DB-default-only on Create by accident of #716 ordering, not by design; same column kind / same constraint shape / different client-control surface = asymmetry. The narrower interpretation (only expose the 2 new) would force CTX-3 #718 or any future CLI bootstrap that wants a non-default `compacted_history` to file a follow-up for zero behavioural cost. Symmetric exposure is the cleaner end-state.
+- **`le=1_000_000` operator-typo guard (M2).** Reviewer flagged: with soft-warn semantics only, a typo like `output_budget_tokens=60_000_000` (missed underscore) would persist silently until CTX-3's runtime token counter starts comparing. Doc spec's 4-bucket total is ~40k; 25× headroom (1M) is well above any legitimate value, so anything above is a typo by definition. Cheap, additive, no behavioural change for normal traffic.
+- **Router wire-through pattern: dict-comprehension over non-None overrides + `**`-splat.** Passing explicit `kwarg=None` to `SessionModel(...)` would override `server_default` and set NULL — SQLAlchemy treats explicit kwargs as INSERT-list members, defaults apply only to absent columns. The dict-comp keeps `server_default` authoritative on omit and is more readable for future maintainers than `model_dump(exclude_none=True, include={...})`'s flag semantics.
+- **PATCH-mutability of all 4 ceilings is harmless.** Soft-warn semantics only; mutating mid-session shifts the warn threshold for subsequent runs. No integrity risk (no enforcement, no derived state). Operators can bump on a misbehaving long-context run.
+
+**Reasoning:** Audit found doc §1.3 spec'd 4 buckets (`system prompt ~2k + session.md ~28k {compacted+recent} + card_detail ~6k + output_budget ~4k = ~40k total`) but CTX-1 schema only modeled 2. Filed as #722 audit follow-up; lands BEFORE CTX-3 #718 spawns so the runtime token counter can read the 4 ceilings from the row instead of hardcoding them. Schema-additive — `server_default` backfills 3 pre-existing CTX-1 rows; no data migration needed. Lifecycle followed the `feedback_review_before_devops` rule: dev-reviewer ran read-only BEFORE dev-devops apply; M2+M3 follow-up landed before live apply per reviewer recommendation.
+
+**Implications:**
+- `sessions` table now has 4 ceiling columns. CTX-3 #718 token counter MUST report 4 buckets (`compacted_history_tokens` vs ceiling, `recent_activity_tokens` vs ceiling, `card_detail_tokens` vs `card_detail_ceiling_tokens`, `output_estimate_tokens` (= LLM `max_tokens` param) vs `output_budget_tokens`).
+- `SessionCreate` / `SessionUpdate` now accept all 4 ceilings as optional client overrides (bounds `ge=1, le=1_000_000`); FE may PATCH any of them mid-session.
+- `SessionRead` now exposes 4 ceiling fields (was 2).
+- `api-contracts.md` Sessions H3 + SessionRead schema updated. `db-schema.md` sessions table block + Migrations log updated.
+- N6 #721 (tighten `SessionCreate` to `extra="forbid"`) still pending — orthogonal to this task.
+- CTX-3 #718 is now unblocked.
+
+---
+
 ## 2026-05-10 — CTX-1 closed: migration 0008 + sessions/session_runs/session_compacts wire-up landed (Kanban #716)
 **Scope:** schema / api / shared
 **Proposed by:** dev-backend (migration 0008 + 3 ORM classes + 3 Pydantic schemas + 3 lockstep guards + minimal FS helper + 8 endpoints across 2 routers + 34 tests; pytest 156 → 190 GREEN) → dev-reviewer GREEN (0 BLOCKER / 1 MAJ / 5 MIN / 3 NIT; 190/190 reproduced; round-trip walk by inspection confirmed exactly inverse) → dev-backend MAJ-1 closed (Base.metadata registration: `models/__init__.py` + `alembic/env.py` imports added; pytest 190 unchanged; `Base.metadata.tables` probe shows 6 tables incl. all 3 new) → dev-devops GREEN (scratch round-trip up→down→up + alembic upgrade head live; 0 audit triggers on session* tables; partial index `ix_sessions_project_id_active` confirmed btree NOT UNIQUE; `_sessions/` writable inside api container; agent-teams id=1 byte-identical pre/post; tasks count 62 unchanged) → dev-tester GREEN (17 probes — P1-P9 + N1-N7 + cleanup + byte-identity; all 4 source-text-locked detail strings byte-equal to spec).

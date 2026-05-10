@@ -81,6 +81,18 @@ class Session(Base):
         nullable=False,
         server_default=text("15000"),
     )
+    # CTX-1 audit follow-up (Kanban #722, migration 0009): doc 4-bucket
+    # breakdown's two remaining ceilings. CTX-3 token counter reads these.
+    card_detail_ceiling_tokens: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        server_default=text("6000"),
+    )
+    output_budget_tokens: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        server_default=text("4000"),
+    )
 
     # Filesystem root — set by router post-INSERT (`_sessions/<id>/`).
     session_root_path: Mapped[str] = mapped_column(Text, nullable=False)
