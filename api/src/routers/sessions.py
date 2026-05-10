@@ -47,6 +47,7 @@ from src.schemas.session import (
     SessionActivityCreate,
     SessionActivityRead,
     SessionCompactRead,
+    SessionCompactRequest,
     SessionCreate,
     SessionPromptRead,
     SessionRead,
@@ -58,6 +59,14 @@ from src.schemas.session import (
     SessionRunUpdate,
     SessionStatusLiteral,
     SessionUpdate,
+)
+from src.services.compact_runner import (
+    AnthropicCallFailed,
+    MissingApiKey,
+    SessionAlreadyCompacting,
+    SessionClosed as CompactSessionClosed,
+    SessionNotFound as CompactSessionNotFound,
+    run_compact,
 )
 from src.services.session_files import (
     create_card_log_skeleton,
@@ -99,6 +108,19 @@ _DETAIL_HEARTBEAT_ON_RUNLESS_TEMPLATE = (
 )
 _DETAIL_HEARTBEAT_ON_CLOSED_SESSION_TEMPLATE = (
     "Session id={id} is closed; cannot write heartbeat"
+)
+# CTX-4 (Kanban #719) — locked detail strings for POST /sessions/{id}/compact.
+_DETAIL_COMPACT_ON_CLOSED_SESSION_TEMPLATE = (
+    "Session id={id} is closed; cannot compact"
+)
+_DETAIL_COMPACT_ALREADY_RUNNING_TEMPLATE = (
+    "Session id={id} is already compacting"
+)
+_DETAIL_COMPACT_API_KEY_MISSING = (
+    "compact runner unavailable: ANTHROPIC_API_KEY not configured"
+)
+_DETAIL_COMPACT_PROVIDER_FAILED = (
+    "compact runner: Anthropic API call failed"
 )
 
 _ACTIVITY_PREVIEW_CHARS = 2000
@@ -626,6 +648,68 @@ async def write_run_heartbeat(
         card_log_path=str(card_path.relative_to(repo_root)).replace("\\", "/"),
         total_bytes=card_path.stat().st_size,
     )
+
+
+@router.post(
+    "/{session_id}/compact",
+    response_model=SessionCompactRead,
+    status_code=http_status.HTTP_201_CREATED,
+)
+async def compact_session(
+    session_id: int,
+    payload: SessionCompactRequest,
+    db: AsyncSession = Depends(get_session),
+) -> SessionCompact:
+    """Run the LLM compact pipeline (CTX-4, Kanban #719).
+
+    Body: `{trigger_kind: 'size'|'manual'|'run_count' = 'manual'}`. Default
+    'manual' for direct human callers; size + run_count come from server-side
+    automation. The runner returns the inserted `session_compacts` row.
+
+    Errors:
+    - 404 if session not found.
+    - 400 if session is closed.
+    - 409 if another compact is already running for this session.
+    - 503 if `ANTHROPIC_API_KEY` is not configured on the server.
+    - 502 if the Anthropic API call itself fails (network or provider).
+    """
+    repo_root = get_settings().repo_root
+    try:
+        return await run_compact(
+            session_id,
+            trigger_kind=payload.trigger_kind,
+            db=db,
+            repo_root=repo_root,
+        )
+    except CompactSessionNotFound:
+        raise HTTPException(
+            status_code=404,
+            detail=_DETAIL_SESSION_NOT_FOUND_TEMPLATE.format(id=session_id),
+        )
+    except CompactSessionClosed:
+        raise HTTPException(
+            status_code=400,
+            detail=_DETAIL_COMPACT_ON_CLOSED_SESSION_TEMPLATE.format(
+                id=session_id
+            ),
+        )
+    except SessionAlreadyCompacting:
+        raise HTTPException(
+            status_code=409,
+            detail=_DETAIL_COMPACT_ALREADY_RUNNING_TEMPLATE.format(
+                id=session_id
+            ),
+        )
+    except MissingApiKey:
+        raise HTTPException(
+            status_code=503, detail=_DETAIL_COMPACT_API_KEY_MISSING
+        )
+    except AnthropicCallFailed:
+        # Underlying exception is already logged inside the runner; do not
+        # leak provider error text to the client.
+        raise HTTPException(
+            status_code=502, detail=_DETAIL_COMPACT_PROVIDER_FAILED
+        )
 
 
 @router.get("/{session_id}/compacts", response_model=list[SessionCompactRead])

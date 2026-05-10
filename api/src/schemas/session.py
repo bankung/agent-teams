@@ -175,10 +175,11 @@ class SessionRunRead(BaseModel):
 
 
 class SessionCompactCreate(BaseModel):
-    """POST /api/sessions/{id}/compacts — INTERNAL only (CTX-4 calls).
+    """INTERNAL — full audit-row insert payload used by the compact runner.
 
-    CTX-1 declares the schema but does NOT expose a public POST endpoint;
-    CTX-4 wires the compact runner and the router slot.
+    Not bound to any HTTP route. The public POST endpoint accepts only
+    `SessionCompactRequest` (trigger_kind); every other field is computed
+    server-side by `services.compact_runner.run_compact`.
     """
 
     trigger_kind: SessionCompactTriggerLiteral
@@ -187,6 +188,20 @@ class SessionCompactCreate(BaseModel):
     after_tokens: int = Field(ge=0)
     compact_model: str = Field(min_length=1, max_length=64)
     compact_cost_usd: Decimal = Decimal("0")
+
+
+class SessionCompactRequest(BaseModel):
+    """POST /api/sessions/{id}/compact request body (CTX-4, Kanban #719).
+
+    `trigger_kind` defaults to 'manual' for direct human callers; size /
+    run_count are passed by server-side automation. Every other audit
+    field is computed by the runner — never accepted from the client.
+    `extra='ignore'` is intentionally ABSENT here pending #721's project-wide
+    locked decision; we keep Pydantic's default ('extra=ignore' at v2 default
+    behavior is `ignore`, so silently drops unknown keys without raising).
+    """
+
+    trigger_kind: SessionCompactTriggerLiteral = "manual"
 
 
 class SessionCompactRead(BaseModel):

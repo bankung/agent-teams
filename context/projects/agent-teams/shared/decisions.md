@@ -17,6 +17,53 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-10 — Kanban #719 closed: CTX-4 Haiku 4.5 compact runner + POST /compact endpoint
+**Scope:** backend / api / devops / shared
+**Proposed by:** dev-backend (NEW `services/compact_runner.py` ~290 lines + `POST /api/sessions/{id}/compact` endpoint + 5 source-text-locked detail strings + `SessionCompactRequest` schema + `anthropic>=0.40,<1.0` runtime pin + `respx>=0.20,<1.0` dev pin + 13 new tests with respx HTTPX-transport stubs; pytest 280→293 GREEN) → dev-reviewer GO (0 BLOCKER / 1 MAJ / 3 MIN / 4 NIT — recommended pre-deploy fix on M1 archive content) → dev-backend M1+MI1 landed (archive now captures `## Prior Compacted History` as a 3rd verbatim section; trigger-kind literal single-sourced via `from src.schemas.session import SessionCompactTriggerLiteral as CompactTriggerKind`; runtime defensive check uses `SessionCompactTrigger.ALL` from constants; 293 still GREEN; ordinal-increment test now asserts compact_002 archive embeds compact_001 LLM summary as its prior — verifies the inter-compact forensic chain) → dev-devops GREEN (container rebuilt with `anthropic-0.100.0` + `respx-0.23.1` baked in; T2 scheduler still ticking 60s post-rebuild; pytest 293/293 in fresh image) → dev-tester GREEN (7/7 Tier-1 probes — 503 no-key path is the realistic live state; lock-acquire-then-rollback observed at SQL layer (`UPDATE sessions SET status='compacting'` followed immediately by reverse `UPDATE sessions SET status='active'`); 4 negative paths with verbatim locked details; ordering 404 → 400 → 422 → 503 confirmed correct; default `trigger_kind='manual'` applied on empty body; no archive/audit/status-stuck side-effect leak).
+
+**Decision:** Worked the CTX-4 spec verbatim with key Lead locks. Implementation choices ratified at the project layer:
+
+- **Run-count trigger DEFERRED to V2.** Spec said "manual + size triggers ship V1; run_count V2." No `sessions.compact_every_n_runs` migration in this slice. V1 = manual via POST /compact; size-flag invocation comes through the same POST endpoint with `trigger_kind='size'`.
+
+- **Compacted History strategy: REPLACE, NOT concat.** LLM gets prior Compacted History as input context in the prompt; concatenating output with existing would double-count. Reviewer M1 surfaced the data-loss risk: if LLM produces a degraded summary, prior history is permanently lost from `session.md`. **Mitigation landed pre-merge**: archive file now captures the prior Compacted History verbatim as a 3rd section (alongside original Recent Activity + LLM summary). Archive is the immutable forensic record; replay is fully reconstructible. Section ordering: header → prior Compacted History → original Recent Activity → LLM summary.
+
+- **Atomic status lock via single-UPDATE.** `UPDATE sessions SET status='compacting' WHERE id=:sid AND status='active' RETURNING id` — atomic; no SELECT-then-UPDATE race. If `RETURNING` is empty, 409 (already compacting). Lock release via `try/finally` — every failure path (LLM error, file write error, DB insert error) returns status to `'active'`. Live SQL log proves the cleanup: tester observed `UPDATE → 'compacting'` immediately followed by reverse `UPDATE → 'active'` when the API key check failed inside the runner.
+
+- **Anthropic SDK lazy-import.** `from anthropic import AsyncAnthropic` inside the function (NOT module-top). Allows `import compact_runner` to succeed in test environments where the SDK might be absent and lets `MissingApiKey` surface first as a typed app exception.
+
+- **respx HTTPX-transport-layer stub** (test-only). Anthropic SDK is built on httpx; `respx.mock().post('https://api.anthropic.com/v1/messages')` works for both `Anthropic` and `AsyncAnthropic` clients without per-SDK shim. One stub fixture covers sync + async paths. Tests never hit the real API — verified by reviewer.
+
+- **Cost from SDK-reported `usage`, not chars/4.** Anthropic response carries authoritative `input_tokens` / `output_tokens` (including system + cache effects). CTX-3's chars/4 heuristic is fine for soft-warn estimation but underspecifies actual costs by ~10-20% on English / worse on code/CJK. CTX-4 uses SDK-authoritative tokens for the audit row's `compact_cost_usd`.
+
+- **Provider exception wrapping at the boundary.** `_call_anthropic` catches every exception from `client.messages.create`, logs with `exc_info=True`, raises a typed `AnthropicCallFailed`. Router translates to uniform 502 with locked detail. Underlying provider error text NOT leaked to client (security — could include API key fragments in some error paths).
+
+- **5 source-text-locked detail strings introduced** (all pinned via `_DETAIL_*_TEMPLATE` constants):
+  - 404 `"Session id={id} not found"` (reused from CTX-1)
+  - 400 `"Session id={id} is closed; cannot compact"` — mirrors CTX-2 closed-session pattern
+  - 409 `"Session id={id} is already compacting"`
+  - 503 `"compact runner unavailable: ANTHROPIC_API_KEY not configured"`
+  - 502 `"compact runner: Anthropic API call failed"`
+
+- **Trigger-kind literal: single source of truth.** `SessionCompactTriggerLiteral` lives in `schemas/session.py`; `compact_runner.py` imports it as `CompactTriggerKind`; runtime defensive check uses `SessionCompactTrigger.ALL` from `src/constants.py`. Lockstep drift test in `test_sessions.py` already covers it (CTX-1 #716 wired this).
+
+- **Archive ordinal: max(existing)+1, NOT len(existing)+1.** Handles gaps from hand-deletion (e.g. `compact_001.md` + `compact_003.md` → next is `compact_004.md`, NOT `compact_003.md` collision).
+
+- **`ANTHROPIC_API_KEY` not provisioned today.** 503 path is the realistic live state. Live POST returns the locked 503 detail; no archive file, no audit row, no stuck status. Provisioning is a separate slice (Mode B / Step 2 prep) — flagged in `api-contracts.md` and decisions.md.
+
+**Reasoning:** CTX-4 closes the context-management subsystem (CTX-1 schema → CTX-2 filesystem → CTX-3 measurement → CTX-4 compaction). Without it, `## Recent Activity` would grow unboundedly. Anthropic Haiku 4.5 is the cheap dedicated agent for compaction (~10× cheaper than Sonnet/Opus per CTX-3 PRICING). Lifecycle: dev-backend → dev-reviewer → dev-backend (M1+MI1 follow-up) → dev-devops (rebuild for new dep) → dev-tester (live 503 smoke). Reviewer's M1 (archive data-loss risk) was a genuinely important finding — landed pre-deploy, with bonus inter-compact chain test.
+
+**Implications:**
+- Phase 2 Backend layer COMPLETE. CTX series + T2 all green.
+- 1 new endpoint: `POST /api/sessions/{id}/compact` (no `X-Project-Id`).
+- 5 new source-text-locked detail strings.
+- Container has `anthropic-0.100.0` + `respx-0.23.1` baked in (rebuild applied by devops). Image versioned as new layer.
+- `ANTHROPIC_API_KEY` env var still NOT configured — POST will 503 until provisioned. Provisioning belongs to a future Mode B / ops slice.
+- `session.md` Compacted History is REPLACE-only post-compact; prior history is preserved ONLY in `_sessions/<sid>/archive/compact_NNN.md` (forensic record).
+- Visibility gap from #739 confirmed in smoke (no application-level WARN/ERROR log for the 503 path; only wire access log shows it). Reinforces #739 priority.
+- Ready for Phase 3 (API layer follow-ups: #714 T1 MINs, #721 SessionCreate forbid, #691 GET /api/projects 405) or Phase 4 (Frontend — T3/T4/V3/T5).
+
+---
+
 ## 2026-05-10 — Kanban #707 closed: T2 recurrence subsystem (apscheduler + 2-path scheduler + fire-now)
 **Scope:** backend / api / devops / shared
 **Proposed by:** dev-backend (NEW `services/recurrence.py` 165 lines + lifespan AsyncIOScheduler in `main.py` + `POST /api/tasks/{id}/fire-now` endpoint + PATCH recompute on rule/tz change + `apscheduler>=3.10,<4.0` pyproject pin + 19 new tests; pytest 261→280 GREEN) → dev-reviewer GO (0 BLOCKER / 0 MAJ / 3 MIN / 1 NIT — recommended pre-merge fix on M1 docstring drift) → dev-backend M1 landed (recurrence.py module + `fire_template` docstrings corrected: trigger is UPDATE/DELETE only, child INSERT not audited until first mutation; 280 still GREEN) → dev-devops GREEN (container rebuilt with apscheduler 3.11.2 baked in; scheduler proven LIVE on the live `agent_teams` DB at 60s tick cadence via DB-query-pair observation at startup+60s; pytest 280/280 in rebuilt image) → dev-tester GREEN (16/16 Tier-1 probes — fire-now happy + 4 negative paths with verbatim locked details + scheduler-tick Path A spawn + Path B in-place transition + catch-up single-fire on 3-days-overdue + idle-tick non-disruption across 5 baseline tasks; 9 smoke rows soft-deleted via API).

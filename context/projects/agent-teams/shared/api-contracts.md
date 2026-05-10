@@ -389,11 +389,36 @@ Unknown `(provider, model)` pair → cost compute SKIPPED, WARNING logged (`sess
 **Errors:** `404` — session id not found.
 
 #### GET /api/sessions/{id}/compacts
-**Purpose:** List compact events for a session. CTX-1 read-only; CTX-4 (#719) owns the POST/compact action.
+**Purpose:** List compact events for a session. CTX-4 (#719) owns the POST/compact action.
 **Auth:** none
 **Query:** `limit`, `offset`.
 **Response 200:** `[SessionCompactRead, ...]`.
 **Errors:** `404` — session id not found.
+
+#### POST /api/sessions/{id}/compact (CTX-4, Kanban #719, 2026-05-10)
+**Purpose:** Run the LLM compact pipeline. Reads `## Recent Activity` + existing `## Compacted History` from session.md; calls Anthropic Haiku 4.5 to summarize; writes `_sessions/<sid>/archive/compact_NNN.md` (full forensic record — prior Compacted History + original Recent Activity + LLM summary, in that order); REPLACES `## Compacted History` with the LLM summary; CLEARS `## Recent Activity`; INSERTs a `session_compacts` audit row; returns 201.
+**Auth:** none. **Header:** NO `X-Project-Id` (sessions endpoint convention).
+**Request:** `{"trigger_kind": "size"|"manual"|"run_count"}` — default `"manual"` if body empty/omitted.
+**Response 201:** `SessionCompactRead`.
+
+**Errors (source-text-locked per #122):**
+- `404` — `{"detail":"Session id=<n> not found"}` — missing or soft-deleted session.
+- `400` — `{"detail":"Session id=<n> is closed; cannot compact"}` — closed-session lock; mirrors CTX-2 closed-session pattern.
+- `409` — `{"detail":"Session id=<n> is already compacting"}` — atomic status lock prevents concurrent compacts. Set via `UPDATE sessions SET status='compacting' WHERE id=:sid AND status='active' RETURNING id` (single-statement atomicity).
+- `503` — `{"detail":"compact runner unavailable: ANTHROPIC_API_KEY not configured"}` — server missing the env var. **Realistic live state today** (key not provisioned). Status lock acquires THEN releases cleanly via `try/finally`; no archive file or audit row written. Tier-1 smoke verified the rollback at SQL layer (`UPDATE sessions SET status='compacting'` followed immediately by reverse `UPDATE sessions SET status='active'`).
+- `502` — `{"detail":"compact runner: Anthropic API call failed"}` — provider/network failure. Underlying exception logged server-side (visibility gap per #739); details NOT leaked to client.
+- `422` — Pydantic guard on bad `trigger_kind` (outside Literal); error loc `["body", "trigger_kind"]`.
+
+**Side effects on success:**
+- `_sessions/<sid>/archive/compact_NNN.md` written (NNN = next ordinal, zero-padded 3 digits, scanned via `max(existing)+1` to handle gaps). Format: header line (`# Compact NNN — <ts> — trigger=<kind>`) + `## Prior Compacted History (verbatim — input context to this compact)` + `## Original Recent Activity (verbatim)` + `## LLM Summary`.
+- `session.md` `## Compacted History` body REPLACED by LLM summary (NOT concatenated — LLM saw prior context as input). Prior history is preserved ONLY in the archive file.
+- `session.md` `## Recent Activity` body CLEARED to single blank line.
+- `session_compacts` row INSERTed: `{trigger_kind, archive_path, before_tokens, after_tokens, compact_model='claude-haiku-4-5-20251001', compact_cost_usd}`.
+- `sessions.status` flips `'active'` → `'compacting'` for the duration; releases to `'active'` on completion (success OR failure).
+
+**Cost computation:** uses `usage.input_tokens` + `usage.output_tokens` from the Anthropic SDK response (more accurate than chars/4) × `cost_tracker.PRICING['anthropic', 'claude-haiku-4-5-20251001']` (input $0.8/M, output $4/M); quantized to `numeric(10,4)`.
+
+**Concurrency:** atomic status lock via single UPDATE. Concurrent compacts on the same session: one wins (200 + audit), one loses (409). Tested via `asyncio.gather` + slow-stub respx fixture in pytest. Live testing of the 409 path requires an API key — covered in pytest only.
 
 ### Sessions — CTX-2 (Kanban #717, 2026-05-10)
 
