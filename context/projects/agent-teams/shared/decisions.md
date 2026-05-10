@@ -17,6 +17,54 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-10 — Context-management scope-lock: session-based store with hybrid DB+filesystem layout
+**Scope:** schema / api / shared
+**Proposed by:** user (architecture doc shared from `Downloads/Agent Orchestration Architecture.txt`, section 1: Context Packaging); Lead surfaced 4 design questions; user locked all 4.
+**Decision:** Adopt the doc's session-based context model with project-specific adaptations. Lock 4 cross-cutting decisions; file 4 Kanban tasks (CTX-1..CTX-4 = #716..#719) under #3 Phase 3 umbrella.
+
+| # | Question | Locked direction |
+|---|---|---|
+| 1 | Session storage backend | **Hybrid** — DB (`sessions`, `session_runs`, `session_compacts` tables) for metadata + queryability; filesystem (`_sessions/<id>/{session.md, archive/, cards/}`) for markdown content. Audit query speed of DB + flexibility/legibility of markdown. |
+| 2 | Session boundary | **Per project + per Claude Code instance** — 1 session = 1 project × 1 process. Match CLAUDE.md bootstrap (each Lead `claude` invocation creates a new session row). Multi-instance support: multiple active sessions per project allowed. Future enhancement may add explicit resume-by-id. |
+| 3 | Token budget enforcement | **Soft** — measure + warn + log; never block. Pre-flight count at prompt-build time; surface `compact_recommended=true` in API response when over ceiling. Provider error if context truly exceeds model window — soft-warn is the friendly upstream gate. Pairs naturally with Soft + CTX-4 size-trigger compact. |
+| 4 | Compact runner | **Claude Haiku 4.5 dedicated cheap agent** (`claude-haiku-4-5-20251001`) — batch summarization doesn't need reasoning model; ~10x cheaper than Sonnet/Opus. Reads `ANTHROPIC_API_KEY` from env (matching #481 deferred Mode B story). Provider abstraction (doc section: BaseProvider) deferred — Anthropic-only V1. |
+
+**Cross-cutting integration with existing zone architecture:**
+- Sessions are a NEW persistence layer — orthogonal to (not replacing) the existing five zones (DB / Standards / Team methodology / Project shared / Role state). The Q0-Q2 framework still applies for design decisions; sessions live in their OWN zone (DB+filesystem hybrid, per-project-process scope).
+- `_sessions/` at repo root, `.gitignore`-ed, dev-only (V1). Production migration to a named Docker volume deferred until Mode B headless ships.
+- `session.md` is read-time context for a master agent / Lead / future Mode B subprocess. Distinct from `current-state.md` (role's hand-edited snapshot, persisted in `context/projects/<p>/<role>/`).
+- Audit trail: `session_runs` complements `tasks_history` — `tasks_history` captures per-row OLD snapshots (audit trigger); `session_runs` captures per-run cost + token + status. Different granularity, different purpose.
+
+**Cross-cutting integration with existing recurrence + Mode work:**
+- T2 #707 apscheduler will eventually fire recurring tasks via Mode B headless. THAT's where session.md becomes load-bearing — each headless `claude -p` subprocess reads session.md for context. CTX-* lands the schema + storage + compact loop **independently** of T2 to keep slices small.
+- Until Mode B is wired, sessions can be created by Lead (this Claude Code instance) on bootstrap and append Recent Activity via API per turn. Useful for cost tracking + conversation audit even before headless. Lead-side hooks deferred (separate slice).
+- Provider abstraction (doc's BaseProvider / SubAgentSpawner / Master Agent harness) is **explicitly out of CTX scope** — those are downstream features when Mode B headless ships. CTX is the foundational data layer; harness layer rides on top later.
+
+**Reasoning:**
+- **Hybrid storage** over filesystem-only: queryability matters once `sessions` rows exceed ~50 (filtering active by project, summing cost over date range). Filesystem-only forces grep + awk + parse, which doesn't scale. DB-only forces TEXT columns to hold large markdown, blowing up `tasks_history` snapshots. Hybrid splits cleanly: DB = audit + index; FS = content + diff-friendly review.
+- **Per project × per process** boundary: matches existing Lead bootstrap (each terminal binds to a project, process IS session). "Per project only" introduces cross-process file-lock complexity for V1; "per task run" loses the doc's cross-card session benefit; "per umbrella" is too abstract. Process-bound sessions = matches the unit of work that already exists.
+- **Soft budget**: hard enforcement creates a fail-loop where compact must succeed before any further work — compact failures cascade. Soft budget surfaces the warning + lets the next layer (Lead / master agent) decide; aligns with "never block on observability" principle.
+- **Haiku 4.5 compact runner**: compact is summarization, not reasoning. Cost matters because compact runs frequently (size-triggered). Haiku 4.5 is the cheapest production-grade model in the Claude family. Provider abstraction deferred until OpenAI / others actually need to plug in (premature abstraction risk per CLAUDE.md anti-patterns).
+
+**Implications:**
+- **Filed Kanban tasks (under #3 Phase 3 umbrella):**
+  - **#716 (CTX-1)** — schema migration 0008: `sessions` + `session_runs` + `session_compacts` tables + ORM + Pydantic + 7 endpoints + filesystem layout. priority=2. BLOCKS CTX-2/3/4.
+  - **#717 (CTX-2)** — `services/session_store.py`: session.md writer/reader, heartbeat helper, read-for-prompt builder. Depends on CTX-1. priority=2.
+  - **#718 (CTX-3)** — `services/token_counter.py` + `services/cost_tracker.py` + soft-warn integration on activity append + cost on PATCH session_runs. Depends on CTX-1+CTX-2. priority=2.
+  - **#719 (CTX-4)** — `services/compact_runner.py`: Haiku 4.5 LLM-summarize loop + manual + size triggers + audit row. Depends on CTX-1+CTX-2+CTX-3. priority=2.
+- **Standards-propagation queue grows (humans-only writers):**
+  - `context/standards/fastapi/sessions.md` — pattern for session-bound state in FastAPI (DB metadata + filesystem content; per-process boundary; soft budget signaling).
+  - `context/standards/python/file-locking.md` — single-process advisory lock pattern (`fcntl` / `filelock`); document multi-process limitations and migration path.
+  - `context/standards/anthropic/sdk.md` (NEW lane?) — Haiku-as-cheap-summarizer pattern; ANTHROPIC_API_KEY env discovery; 503 fail-soft on missing key (don't break unrelated APIs).
+- **Sequencing across active scope:**
+  - **Track A (recurrence):** T2 #707 → done before recurring fires can use sessions. Independent of CTX track.
+  - **Track B (FE):** T3 #708 → #407 V3 → T4 #709. Independent of CTX track.
+  - **Track C (CTX, NEW):** CTX-1 → CTX-2 + CTX-3 parallel → CTX-4. Independent of T2 + FE; can land in any order relative to them.
+  - **Recommended next:** CTX-1 first (data foundation; mirrors T1's role for the recurrence track). After CTX-1, Track A and Track B can resume in parallel with CTX-2/3/4.
+- **#481 Mode B story update:** the doc's master-agent/spawner/queue/Redis architecture is a substantially DIFFERENT direction from #481's "FastAPI bg task + apscheduler" lock. CTX-* sessions are designed to work with EITHER approach. Decision on master-agent runtime (FastAPI bg task vs separate agent-runner container vs Redis queue) remains open and is NOT locked in this entry. When Mode B starts (post-CTX), revisit #481's deferred 4 design questions in light of the doc's recommendations.
+
+**Files:** none from this entry alone (it's a scope-lock); subsequent entries land per-task as they close.
+
 ## 2026-05-10 — V3+ T1 closed: migration 0007 + task_kind/recurrence wire-up landed (Kanban #706)
 **Scope:** schema / api / shared
 **Proposed by:** dev-backend (migration 0007 + ORM/Pydantic/router/service + 32 tests; pytest 124 → 156) → dev-reviewer GREEN (0 BLOCKER / 0 MAJOR / 4 MIN / 3 NIT; 156/156 reproduced; round-trip exactly inverse; lockstep guard fires under monkeypatch) → dev-devops GREEN (build api with croniter dep + scratch round-trip up→down→up + alembic upgrade head live; 53/53 rows backfilled; agent-teams id=1 byte-identical pre/post) → dev-tester GREEN (14 probes — P1-P5 + N1-N7 + cleanup + byte-identity; locked detail strings byte-equal to spec)
