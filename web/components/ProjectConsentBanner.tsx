@@ -1,5 +1,4 @@
-// Read-only consent state surface (#481-C / #484). Grant/revoke flow is V3+.
-// V2 (#406) will derive hasHeadlessTask from the task list.
+// Read-only banner. Consent grant flow is V3+ (POST /api/projects/{id}/grant-consent).
 import type { ProjectRead } from "@/lib/api";
 
 type Props = {

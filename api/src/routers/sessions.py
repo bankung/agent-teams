@@ -33,7 +33,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
 from sqlalchemy.sql.elements import ClauseElement
 
+from src.constants import RecordStatus
 from src.db import get_or_404, get_session
+from src.models.project import Project
 from src.models.session import Session as SessionModel
 from src.models.session import SessionCompact, SessionRun
 from src.models.task import Task
@@ -122,9 +124,6 @@ async def create_session(
     """
     # Validate project FK BEFORE INSERT — friendlier 400 than waiting for the
     # IntegrityError. Mirror of how routers/tasks.py validates parent_task_id.
-    from src.constants import RecordStatus
-    from src.models.project import Project
-
     proj_exists = await db.scalar(
         select(Project.id).where(
             Project.id == payload.project_id,

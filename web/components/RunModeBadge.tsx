@@ -1,5 +1,3 @@
-// Tailwind tokens chosen so V2 (#406) visual pass can swap centrally:
-//   manual=text-zinc-500 (low weight), auto_pickup=blue-50/700, auto_headless=amber-50/700.
 import type { TaskRunModeValue } from "@/lib/constants";
 
 type Props = { mode: TaskRunModeValue };

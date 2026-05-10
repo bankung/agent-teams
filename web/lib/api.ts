@@ -51,19 +51,9 @@ export type ProjectGrantConsent = {
   confirm_name: string;
 };
 
-// ---------------------------------------------------------------------------
-// Fetch helpers (V2 / Kanban #406)
-// ---------------------------------------------------------------------------
-//
-// Base URL split:
-//   - BROWSER_API_URL  — what Client Components / browser fetch hit. The browser runs on the
-//                         host (not inside the compose network) and cannot DNS-resolve `api`.
-//                         Inlined into the JS bundle at build time via NEXT_PUBLIC_*.
-//   - SERVER_API_URL   — what Server Components hit. When this Next.js server runs inside the
-//                         `web` Docker container, dev-devops sets INTERNAL_API_URL=http://api:8456
-//                         so SSR fetches stay on the compose network. Falls back to the browser URL
-//                         for local non-Docker dev.
-// Selection: typeof window === 'undefined' picks server-side, else browser-side.
+// Base URL split: BROWSER_API_URL for client-bundle fetches; SERVER_API_URL for SSR
+// inside the web container (set INTERNAL_API_URL=http://api:8456 — see
+// shared/api-contracts.md "Conventions"). Selection: typeof window === 'undefined'.
 
 const BROWSER_API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8456";

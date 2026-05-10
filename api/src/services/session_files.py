@@ -7,16 +7,8 @@ Hybrid storage layout (Kanban #716 scope-lock):
         archive/                      compact_001.md, compact_002.md, ...
         cards/                        <task_id>.md per-run heartbeat logs
 
-CTX-1 ONLY creates the directory tree + skeleton `session.md` + an empty
-per-task card file when a run is created with `task_id`. The rich
-read/write/heartbeat API lives in CTX-2 (`services/session_store.py`,
-not yet shipped).
-
-`_sessions/` is gitignored; never committed. Production migration to a
-named Docker volume is deferred (see decisions.md 2026-05-10 entry).
-
-All paths derive from `settings.repo_root` (NEVER hardcoded `/repo`); the
-test suite's `repo_root` fixture points at a tmpdir.
+The rich read/write/heartbeat API lives in CTX-2 (not yet shipped).
+All paths derive from `settings.repo_root` (NEVER hardcoded `/repo`).
 """
 
 from __future__ import annotations
@@ -40,19 +32,9 @@ _CARD_MD_SKELETON_TEMPLATE = (
 )
 
 
-def _session_dir(session_id: int, repo_root: Path) -> Path:
-    """Return `<repo_root>/_sessions/<session_id>/`. Pure path math — does
-    NOT touch the filesystem. Used by tests as a probe target."""
-    return Path(repo_root) / "_sessions" / str(session_id)
-
-
 def create_session_skeleton(session_id: int, repo_root: Path) -> Path:
-    """Create `<repo_root>/_sessions/<session_id>/{session.md, archive/, cards/}`.
-
-    Idempotent — re-call is a no-op (existing files are NOT overwritten;
-    existing dirs are NOT removed). Returns the session directory `Path`.
-    """
-    session_dir = _session_dir(session_id, repo_root)
+    """Create `<repo_root>/_sessions/<session_id>/{session.md, archive/, cards/}`. Idempotent."""
+    session_dir = Path(repo_root) / "_sessions" / str(session_id)
     session_dir.mkdir(parents=True, exist_ok=True)
 
     archive_dir = session_dir / "archive"
@@ -71,16 +53,10 @@ def create_session_skeleton(session_id: int, repo_root: Path) -> Path:
 def create_card_log_skeleton(
     session_id: int, task_id: int, repo_root: Path
 ) -> Path:
-    """Create `<session_dir>/cards/<task_id>.md` if not exists. Idempotent.
-
-    Returns the card file `Path`. The caller is responsible for ensuring the
-    session skeleton exists first (the router calls `create_session_skeleton`
-    on session creation; this function adds the per-task card on run create).
-    """
-    session_dir = _session_dir(session_id, repo_root)
+    """Create `<session_dir>/cards/<task_id>.md` if not exists. Idempotent."""
+    session_dir = Path(repo_root) / "_sessions" / str(session_id)
     cards_dir = session_dir / "cards"
-    # Defensive — the parent session skeleton MAY have been removed manually.
-    # `parents=True` lets us land cleanly if cards/ is missing.
+    # Defensive — `parents=True` lets us land cleanly if cards/ is missing.
     cards_dir.mkdir(parents=True, exist_ok=True)
 
     card_path = cards_dir / f"{task_id}.md"
