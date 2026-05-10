@@ -882,6 +882,402 @@ async def test_create_session_rejects_zero_card_detail_ceiling(
         await client.delete(f"/api/projects/{pid}")
 
 
+# =============================================================================
+# 7. CTX-2 — POST /activity, GET /prompt, POST /heartbeat (Kanban #717)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_post_activity_appends_to_recent_activity_section(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    name = _unique_name("act-happy")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        r = await client.post(
+            f"/api/sessions/{sid}/activity",
+            json={
+                "summary": "first activity entry",
+                "role": "dev-backend",
+                "kind": "spawn",
+            },
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert "first activity entry" in body["appended_block"]
+        assert "dev-backend:spawn" in body["appended_block"]
+        assert body["section_chars"] >= len(body["appended_block"])
+
+        # File on disk has the entry.
+        from src.settings import get_settings
+
+        sess_md = (
+            Path(get_settings().repo_root)
+            / "_sessions"
+            / str(sid)
+            / "session.md"
+        )
+        content = sess_md.read_text(encoding="utf-8")
+        assert "first activity entry" in content
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_post_activity_on_closed_session_returns_400_locked(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    name = _unique_name("act-closed")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+        await client.patch(f"/api/sessions/{sid}", json={"status": "closed"})
+
+        r = await client.post(
+            f"/api/sessions/{sid}/activity", json={"summary": "x"}
+        )
+        assert r.status_code == 400
+        assert r.json() == {
+            "detail": f"Session id={sid} is closed; cannot append activity"
+        }
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_post_activity_cross_project_task_returns_400_locked(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    name_a = _unique_name("act-cross-a")
+    name_b = _unique_name("act-cross-b")
+    scaffold_cleanup(name_a)
+    scaffold_cleanup(name_b)
+    pa = await client.post(
+        "/api/projects", json=_project_create_payload(name_a)
+    )
+    pb = await client.post(
+        "/api/projects", json=_project_create_payload(name_b)
+    )
+    pid_a = pa.json()["id"]
+    pid_b = pb.json()["id"]
+    headers_b = {"X-Project-Id": str(pid_b)}
+
+    try:
+        t = await client.post(
+            "/api/tasks",
+            json={"project_id": pid_b, "title": "wrong project"},
+            headers=headers_b,
+        )
+        tid = t.json()["id"]
+
+        s = await client.post("/api/sessions", json={"project_id": pid_a})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        r = await client.post(
+            f"/api/sessions/{sid}/activity",
+            json={"task_id": tid, "summary": "leaks across project"},
+        )
+        assert r.status_code == 400
+        assert r.json() == {
+            "detail": (
+                f"task {tid} belongs to project {pid_b}, "
+                f"session belongs to project {pid_a}"
+            )
+        }
+
+        await client.delete(f"/api/tasks/{tid}", headers=headers_b)
+    finally:
+        await client.delete(f"/api/projects/{pid_a}")
+        await client.delete(f"/api/projects/{pid_b}")
+
+
+@pytest.mark.asyncio
+async def test_get_prompt_returns_concatenated_markdown(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    name = _unique_name("prompt-happy")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        await client.post(
+            f"/api/sessions/{sid}/activity",
+            json={"summary": "appended-via-http"},
+        )
+
+        r = await client.get(f"/api/sessions/{sid}/prompt")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["markdown"].startswith("# Session context")
+        assert "## Recent Activity" in body["markdown"]
+        assert "appended-via-http" in body["markdown"]
+        assert body["char_count"] == len(body["markdown"])
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_get_prompt_with_include_card_id_appends_card(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    name = _unique_name("prompt-card")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+    headers = {"X-Project-Id": str(pid)}
+
+    try:
+        t = await client.post(
+            "/api/tasks",
+            json={"project_id": pid, "title": "card task"},
+            headers=headers,
+        )
+        tid = t.json()["id"]
+
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        run = await client.post(
+            f"/api/sessions/{sid}/runs", json={"task_id": tid}
+        )
+        rid = run.json()["id"]
+
+        await client.post(
+            f"/api/session_runs/{rid}/heartbeat",
+            json={"content": "card body content"},
+        )
+
+        r = await client.get(
+            f"/api/sessions/{sid}/prompt?include_card_id={tid}"
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert f"## Current card detail (task #{tid})" in body["markdown"]
+        assert "card body content" in body["markdown"]
+
+        await client.delete(f"/api/tasks/{tid}", headers=headers)
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_post_heartbeat_appends_five_blocks_in_order(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    name = _unique_name("hb-five")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+    headers = {"X-Project-Id": str(pid)}
+
+    try:
+        t = await client.post(
+            "/api/tasks",
+            json={"project_id": pid, "title": "hb task"},
+            headers=headers,
+        )
+        tid = t.json()["id"]
+
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        run = await client.post(
+            f"/api/sessions/{sid}/runs", json={"task_id": tid}
+        )
+        rid = run.json()["id"]
+
+        for i in range(5):
+            r = await client.post(
+                f"/api/session_runs/{rid}/heartbeat",
+                json={"content": f"beat-{i}"},
+            )
+            assert r.status_code == 201, r.text
+
+        from src.settings import get_settings
+
+        card = (
+            Path(get_settings().repo_root)
+            / "_sessions"
+            / str(sid)
+            / "cards"
+            / f"{tid}.md"
+        ).read_text(encoding="utf-8")
+        positions = [card.find(f"beat-{i}") for i in range(5)]
+        assert all(p >= 0 for p in positions)
+        assert positions == sorted(positions)
+
+        await client.delete(f"/api/tasks/{tid}", headers=headers)
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_post_heartbeat_replace_overwrites_card(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    name = _unique_name("hb-replace")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+    headers = {"X-Project-Id": str(pid)}
+
+    try:
+        t = await client.post(
+            "/api/tasks",
+            json={"project_id": pid, "title": "task"},
+            headers=headers,
+        )
+        tid = t.json()["id"]
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+        run = await client.post(
+            f"/api/sessions/{sid}/runs", json={"task_id": tid}
+        )
+        rid = run.json()["id"]
+
+        await client.post(
+            f"/api/session_runs/{rid}/heartbeat",
+            json={"content": "first append"},
+        )
+        await client.post(
+            f"/api/session_runs/{rid}/heartbeat",
+            json={"content": "snapshot final", "mode": "replace"},
+        )
+
+        from src.settings import get_settings
+
+        card = (
+            Path(get_settings().repo_root)
+            / "_sessions"
+            / str(sid)
+            / "cards"
+            / f"{tid}.md"
+        ).read_text(encoding="utf-8")
+        assert card == "snapshot final"
+        assert "first append" not in card
+
+        await client.delete(f"/api/tasks/{tid}", headers=headers)
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_post_heartbeat_on_runless_returns_400(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    """Run with no task_id → 400 (no card log to write to)."""
+    name = _unique_name("hb-runless")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+        run = await client.post(f"/api/sessions/{sid}/runs", json={})
+        rid = run.json()["id"]
+
+        r = await client.post(
+            f"/api/session_runs/{rid}/heartbeat", json={"content": "x"}
+        )
+        assert r.status_code == 400
+        assert r.json() == {
+            "detail": (
+                f"Session run id={rid} has no task_id; heartbeat requires a card log"
+            )
+        }
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_post_heartbeat_on_closed_session_returns_400_locked(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    name = _unique_name("hb-closed")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+    headers = {"X-Project-Id": str(pid)}
+
+    try:
+        t = await client.post(
+            "/api/tasks",
+            json={"project_id": pid, "title": "task"},
+            headers=headers,
+        )
+        tid = t.json()["id"]
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+        run = await client.post(
+            f"/api/sessions/{sid}/runs", json={"task_id": tid}
+        )
+        rid = run.json()["id"]
+
+        await client.patch(f"/api/sessions/{sid}", json={"status": "closed"})
+
+        r = await client.post(
+            f"/api/session_runs/{rid}/heartbeat", json={"content": "x"}
+        )
+        assert r.status_code == 400
+        assert r.json() == {
+            "detail": f"Session id={sid} is closed; cannot write heartbeat"
+        }
+
+        await client.delete(f"/api/tasks/{tid}", headers=headers)
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_post_heartbeat_404_on_missing_run(client) -> None:
+    r = await client.post(
+        "/api/session_runs/999999/heartbeat", json={"content": "x"}
+    )
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_prompt_404_on_missing_session(client) -> None:
+    r = await client.get("/api/sessions/999999/prompt")
+    assert r.status_code == 404
+
+
+def test_ctx2_locked_detail_strings_pinned_in_router_source() -> None:
+    from src.routers import sessions as sessions_router
+
+    source = Path(sessions_router.__file__).read_text(encoding="utf-8")
+    assert '"Session id={id} is closed; cannot append activity"' in source
+    assert (
+        '"Session run id={id} has no task_id; heartbeat requires a card log"'
+        in source
+    )
+    assert '"Session id={id} is closed; cannot write heartbeat"' in source
+
+
 @pytest.mark.asyncio
 async def test_existing_seeded_tasks_untouched(client) -> None:
     """CTX-1 must not perturb the seeded `agent-teams` project's tasks. Spot-

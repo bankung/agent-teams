@@ -349,6 +349,43 @@ Session-based context store. Hybrid storage: DB rows for metadata + queryability
 **Response 200:** `[SessionCompactRead, ...]`.
 **Errors:** `404` — session id not found.
 
+### Sessions — CTX-2 (Kanban #717, 2026-05-10)
+
+Filesystem service layer. Writes / reads `_sessions/<id>/session.md` (Recent Activity section) + `_sessions/<id>/cards/<task_id>.md` (per-task heartbeat log). Pure-Python helpers in `services/session_store.py`; per-session advisory file lock at `_sessions/<id>/.lock`. Single-process FastAPI is V1; multi-process (gunicorn workers) deferred.
+
+#### POST /api/sessions/{id}/activity
+**Purpose:** Append a structured entry to the session's `## Recent Activity` section. Atomic under `filelock`.
+**Auth:** none
+**Request:** `{task_id?: int>=1, summary: str(1..4000), role?: str(<=64), kind?: str(<=64)}`. `task_id` (when given) must reference an active task in the **same project** as the session.
+**Response 201:** `{appended_block: str, section_preview: str, section_chars: int}`. `section_chars` is the post-append total length of the Recent Activity section, NOT the new block size.
+**Errors:**
+- `400` — `{"detail":"Session id=<n> is closed; cannot append activity"}` — closed-session lock. Source-text-locked. (Kanban #717)
+- `400` — `{"detail":"task_id <n> does not exist or is deleted"}` — task lookup miss (active rows only). Source-text-locked.
+- `400` — `{"detail":"task <t> belongs to project <p>, session belongs to project <q>"}` — cross-project rejection. Mirrors the run cross-project detail VERBATIM (consolidated to a single `_DETAIL_CROSS_PROJECT_TEMPLATE` constant per N1 follow-up).
+- `404` — `{"detail":"Session id=<n> not found"}`.
+- `422` — Pydantic validation (missing `summary`, `summary` length out of 1..4000, `role`/`kind` over 64 chars).
+
+#### GET /api/sessions/{id}/prompt
+**Purpose:** Return prompt-ready markdown for LLM injection. Concatenates `## Compacted History` + `## Recent Activity` from session.md, optionally appending `## Current card detail (task #<id>)` from `cards/<id>.md`.
+**Auth:** none
+**Query:** `include_card_id` (int>=1, optional). Missing card file → silently omitted (NOT 404). 404 only fires if the session itself is missing.
+**Response 200:** `{markdown: str, char_count: int}`. `char_count = len(markdown)` — code-point count, not byte / token count. CTX-3 (#718) wires the real token counter.
+**Errors:**
+- `404` — `{"detail":"Session id=<n> not found"}`.
+
+Reader takes the per-session lock (V1 — serializes reads behind writes; avoids torn observations from concurrent appenders).
+
+#### POST /api/session_runs/{run_id}/heartbeat
+**Purpose:** Write to a run's per-task card log (`_sessions/<sid>/cards/<task_id>.md`). Append-mode for periodic heartbeats from a long-running run; replace-mode for snapshot rewrites.
+**Auth:** none
+**Request:** `{content: str(1..20000), mode: "append"|"replace"}`. Append writes `content + "\n"`; replace writes `content` verbatim with no trailing newline (so a same-content replace gets `total_bytes = len(content)`, not `len(content)+1`).
+**Response 201:** `{card_log_path: str, total_bytes: int}`. **`total_bytes` is the total card file size after this write** (`card_path.stat().st_size`) — NOT bytes appended in this single call. (Renamed from `bytes_written` per #717 reviewer M1 — the old name was misleading on append.)
+**Errors:**
+- `400` — `{"detail":"Session id=<n> is closed; cannot write heartbeat"}` — closed-session lock. Source-text-locked. (Kanban #717)
+- `400` — `{"detail":"Session run id=<n> has no task_id; heartbeat requires a card log"}` — runless run rejection. Heartbeats need a card log path; runs created without `task_id` (e.g. master-agent bookkeeping runs) cannot heartbeat. Source-text-locked.
+- `404` — `{"detail":"Session run id=<n> not found"}`.
+- `422` — Pydantic validation (missing `content`, length out of 1..20000, `mode` outside Literal).
+
 ## Schemas
 
 **`ProjectRead`** — `{id:int, name, description, paths_web, paths_api, paths_db, stack_web, stack_api, stack_db, config:object, is_active:bool, team:"dev"|"novel", created_at, updated_at, auto_run_consent_at:datetime|null}`
@@ -370,5 +407,15 @@ Integer code fields (`process_status`, `priority`, `assigned_role`) follow `cont
 **`SessionRunRead`** — `{id:int, session_id:int, task_id:int|null, status:"running"|"done"|"error"|"timeout", started_at, finished_at:datetime|null, total_input_tokens:int, total_output_tokens:int, total_context_chars:int, total_cost_usd:Decimal, budget_warning:bool, card_log_path:str|null, created_at, updated_at}` — added 2026-05-10 by Kanban #716. Server-stamps `finished_at` when transitioning to terminal status (`done`/`error`/`timeout`). `total_cost_usd` is client-supplied in CTX-1; CTX-3 (#718) replaces with server-authoritative computation.
 
 **`SessionCompactRead`** — `{id:int, session_id:int, trigger_kind:"size"|"manual"|"run_count", archive_path:str, before_tokens:int, after_tokens:int, compact_model:str, compact_cost_usd:Decimal, compacted_at:datetime}` — added 2026-05-10 by Kanban #716. Read-only in CTX-1; POST/compact action ships in CTX-4 (#719).
+
+**`SessionActivityCreate`** — `{task_id?:int>=1, summary:str(1..4000), role?:str(<=64), kind?:str(<=64)}` — added 2026-05-10 by Kanban #717 (CTX-2). `extra="ignore"` in CTX-2; #721 will tighten to `extra="forbid"` for parity with `ConsentGrant`.
+
+**`SessionActivityRead`** — `{appended_block:str, section_preview:str, section_chars:int}` — added 2026-05-10 by Kanban #717. `section_chars` is post-append total length of Recent Activity section, not the new block size.
+
+**`SessionPromptRead`** — `{markdown:str, char_count:int}` — added 2026-05-10 by Kanban #717. `char_count` is `len(markdown)` (code points). Token count deferred to CTX-3 #718.
+
+**`SessionRunHeartbeat`** — `{content:str(1..20000), mode:"append"|"replace"}` — added 2026-05-10 by Kanban #717. `extra="ignore"` in CTX-2; #721 will tighten to `extra="forbid"`.
+
+**`SessionRunHeartbeatRead`** — `{card_log_path:str, total_bytes:int}` — added 2026-05-10 by Kanban #717. `total_bytes` is the total card file size after this write (renamed from `bytes_written` per CTX-2 reviewer M1).
 
 <!-- No endpoints documented yet. First endpoint goes above this line. -->

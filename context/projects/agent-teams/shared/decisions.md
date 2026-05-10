@@ -17,6 +17,45 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-10 — Kanban #717 closed: CTX-2 session_store.py + 3 endpoints (filesystem service layer)
+**Scope:** backend / api / shared
+**Proposed by:** dev-backend (NEW `services/session_store.py` 332 lines + `services/session_files.py` collapsed to 20-line shim + 5 new Pydantic schemas + 3 new endpoints + `filelock>=3.13,<4.0` pin + 30 new tests; pytest 207→237 GREEN) → dev-reviewer GO (0 BLOCKER / 0 MAJ / 4 MIN / 4 NIT — all non-blocking; ratified the shim + filelock + section-marker contract) → dev-backend M1+M2+N1 follow-up (`bytes_written` → `total_bytes` rename for honest semantics + reader takes lock for symmetry + 2 byte-equal cross-project constants consolidated to one `_DETAIL_CROSS_PROJECT_TEMPLATE`; 237 still GREEN) → dev-tester GREEN (18/18 endpoint probes + 3/3 filesystem checks; all 5 source-text-locked detail strings captured byte-equal; cross-project probe skipped — only 1 active project on this DB).
+
+**Decision:** Worked the CTX-2 spec verbatim. Implementation choices ratified at the project layer:
+
+- **Module structure: `session_store.py` is canonical; `session_files.py` is a 20-line back-compat shim.** dev-backend kept the existing CTX-1 module name as a re-export to avoid touching CTX-1 router import sites; the new module owns all 8 public functions (skeleton + append + heartbeat + section read/replace + prompt builder). Reviewer ratified the deferred-cleanup approach. Future small task: migrate the 2 router callsites to import from `session_store` directly and delete the shim.
+
+- **File locking: `filelock` (cross-platform), per-session at `_sessions/<sid>/.lock`.** Picked over POSIX `fcntl` for cross-platform portability (api container is Linux but the host is Windows; future Windows-test option matters). `filelock 3.29.0` was already installed in the container as a transitive dep — pinning explicitly in `pyproject.toml` was just contract-tightening; **no container rebuild needed**. Single-process FastAPI is V1; multi-process (gunicorn workers) deferred to V2+ with a documented assumption.
+
+- **Reader symmetry (M2 follow-up): `read_session_for_prompt` and `get_section_text` ALSO acquire the per-session lock.** Initial implementation only wrote-locked; readers skipped. Reviewer flagged the asymmetry — concurrent appender mid-write could surface a torn page (rare in single-process FastAPI, but the asymmetry should be deliberate). Decision: take the lock on read; FileLock is exclusive-only so reads serialize behind writes — acceptable for V1. Adds a one-line comment at the lock acquisition site explaining the V1 trade-off.
+
+- **`bytes_written` → `total_bytes` rename (M1 follow-up).** Heartbeat response originally returned `card_path.stat().st_size` under the field name `bytes_written` — total file size, NOT bytes appended this call. Misleading on append mode (caller reading "bytes_written" would assume "size of the block I just wrote" and be wrong by the cumulative size of every prior heartbeat). Renamed at the schema layer (`SessionRunHeartbeatRead.total_bytes`) + router + tests. Cheaper than recomputing append-block size; honest field name avoids future confusion.
+
+- **Cross-project rejection detail consolidated (N1 follow-up).** Original implementation had 2 byte-equal `_DETAIL_*_CROSS_PROJECT_TEMPLATE` constants on the router (one for `POST /runs`, one for `POST /activity`). Consolidated to a single `_DETAIL_CROSS_PROJECT_TEMPLATE` referenced from both call-sites. Source-text-lock test still passes (asserts substring presence). Prevents future drift if someone tunes the wording on one path and forgets the other.
+
+- **5 source-text-locked detail strings introduced this slice** (all pinned via `_DETAIL_*_TEMPLATE` constants + `test_ctx2_locked_detail_strings_pinned_in_router_source`):
+  - `"Session id=<n> not found"` (404 — already existed from CTX-1; reused)
+  - `"task_id <n> does not exist or is deleted"` (400 — task lookup miss)
+  - `"Session id=<n> is closed; cannot append activity"` (400 — closed-session lock for /activity)
+  - `"Session id=<n> is closed; cannot write heartbeat"` (400 — closed-session lock for /heartbeat)
+  - `"Session run id=<n> has no task_id; heartbeat requires a card log"` (400 — runless run rejection)
+
+- **Section markers exact-match contract**: `## Compacted History` and `## Recent Activity`. `_split_sections` does byte-equal find with newline-boundary check. `replace_section` and `get_section_text` rely on this. CTX-4 #719 will write to both sections via `replace_section`.
+
+- **Markdown round-trip behavior** (live-verified by tester): append writes `content + "\n"`; replace writes `content` verbatim with no trailing newline. So same-content replace yields `total_bytes = len(content)`, NOT `len(content) + 1`. Documented in `api-contracts.md`.
+
+**Reasoning:** CTX-1 #716 shipped the DB schema + filesystem skeleton; CTX-2 ships the runtime service layer that future master-agent / Mode B integration will call. Filesystem-only (no DB schema change) — `_sessions/<sid>/{session.md, cards/<task_id>.md, archive/}` — backed by the per-session advisory lock. 4 minors flagged by reviewer; Lead landed M1+M2+N1 pre-tester (cheap, defensive, improves wire-contract honesty); deferred M3 (`extra="forbid"` parity) to #721 which already owns the Session schema tightening; deferred M4 (stronger threading test), N2 (lockstep tuple for 2-element heartbeat mode), N3 (delete shim), N4 (`# pragma: no cover` annotation) as low-impact polish.
+
+**Implications:**
+- 3 new endpoints on `/api/sessions/{id}/activity`, `/api/sessions/{id}/prompt`, `/api/session_runs/{run_id}/heartbeat`.
+- 5 new Pydantic schemas (`SessionActivityCreate`, `SessionActivityRead`, `SessionPromptRead`, `SessionRunHeartbeat`, `SessionRunHeartbeatRead`) — all default `extra="ignore"`. **#721 scope expands**: was 2 schemas (`SessionCreate`, `SessionUpdate`); now 4 (+ `SessionActivityCreate`, `SessionRunHeartbeat`).
+- `filelock>=3.13,<4.0` pinned (no rebuild — already transitively installed).
+- CTX-3 #718 unblocked: token counter hooks into `read_session_for_prompt` (returns char count today; CTX-3 wires real token counter).
+- CTX-4 #719 unblocked: compact runner uses `get_section_text` + `replace_section` to summarize Recent Activity → archive.
+- Cleanup follow-up (informal — not filed): migrate 2 router callsites to import skeleton helpers from `session_store` directly; delete `session_files.py` shim. Small, can land alongside any future CTX-2 surface change.
+
+---
+
 ## 2026-05-10 — Kanban #723 closed: migration 0010 + tasks.scheduled_at one-shot fire path (V3+ T1 audit follow-up)
 **Scope:** schema / api / shared
 **Proposed by:** dev-backend (migration 0010 + ORM `scheduled_at` + `__table_args__` CHECK + partial index + Pydantic XOR validators on TaskCreate+TaskUpdate + router resolved-final check + IntegrityError translation + 12 new tests; pytest 207/207 GREEN) → dev-reviewer GO (0 BLOCKER / 0 MAJ / 3 MIN / 4 NIT — all non-blocking; ratified the 3-layer defense-in-depth and the placement-before-consent ordering) → dev-devops GREEN (scratch round-trip up→down→up + alembic upgrade head live; 67/67 existing rows backfilled NULL; column + partial index `ix_tasks_scheduled_at_pending` + CHECK `ck_tasks_scheduled_xor_template` all confirmed via `\d+ tasks` + pg_constraint; 2 wire smokes — XOR rejection 422 + happy-path 201 with cleanup) → dev-tester GREEN (10/10 Tier-1 probes — POST/GET/PATCH happy paths + `+07:00` → UTC `Z` round-trip (closing reviewer NIT-2) + 3 XOR rejection paths (Pydantic same-payload + resolved-final direction-A + resolved-final direction-B, the symmetric case reviewer flagged as not pytest-covered) + backfill confirmation across 67 NULL rows + partial-index visibility via EXPLAIN; 4 smoke rows soft-deleted via API).

@@ -40,10 +40,15 @@ from src.models.session import Session as SessionModel
 from src.models.session import SessionCompact, SessionRun
 from src.models.task import Task
 from src.schemas.session import (
+    SessionActivityCreate,
+    SessionActivityRead,
     SessionCompactRead,
     SessionCreate,
+    SessionPromptRead,
     SessionRead,
     SessionRunCreate,
+    SessionRunHeartbeat,
+    SessionRunHeartbeatRead,
     SessionRunRead,
     SessionRunStatusLiteral,
     SessionRunUpdate,
@@ -54,6 +59,13 @@ from src.services.session_files import (
     create_card_log_skeleton,
     create_session_skeleton,
 )
+from src.services.session_store import (
+    SECTION_RECENT_ACTIVITY,
+    append_recent_activity,
+    get_section_text,
+    read_session_for_prompt,
+    write_card_log,
+)
 from src.settings import get_settings
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -61,7 +73,9 @@ runs_router = APIRouter(prefix="/session_runs", tags=["sessions"])
 
 # Source-text-locked detail strings (#122 / #690 pattern).
 _DETAIL_SESSION_CLOSED_TEMPLATE = "Session id={id} already closed"
-_DETAIL_RUN_CROSS_PROJECT_TEMPLATE = (
+# Shared by /runs (POST) and /activity (POST) — both reject when the supplied
+# task_id belongs to a different project than the session.
+_DETAIL_CROSS_PROJECT_TEMPLATE = (
     "task {task_id} belongs to project {task_project_id}, "
     "session belongs to project {session_project_id}"
 )
@@ -70,6 +84,18 @@ _DETAIL_RUN_NOT_FOUND_TEMPLATE = "Session run id={id} not found"
 _DETAIL_RUN_ON_CLOSED_SESSION_TEMPLATE = (
     "Session id={id} is closed; cannot create runs"
 )
+# CTX-2 (Kanban #717) — locked detail strings for the 3 new endpoints.
+_DETAIL_ACTIVITY_ON_CLOSED_SESSION_TEMPLATE = (
+    "Session id={id} is closed; cannot append activity"
+)
+_DETAIL_HEARTBEAT_ON_RUNLESS_TEMPLATE = (
+    "Session run id={id} has no task_id; heartbeat requires a card log"
+)
+_DETAIL_HEARTBEAT_ON_CLOSED_SESSION_TEMPLATE = (
+    "Session id={id} is closed; cannot write heartbeat"
+)
+
+_ACTIVITY_PREVIEW_CHARS = 2000
 
 
 async def _runs_count(db: AsyncSession, session_id: int) -> int:
@@ -303,7 +329,7 @@ async def create_session_run(
         if task.project_id != sess.project_id:
             raise HTTPException(
                 status_code=400,
-                detail=_DETAIL_RUN_CROSS_PROJECT_TEMPLATE.format(
+                detail=_DETAIL_CROSS_PROJECT_TEMPLATE.format(
                     task_id=payload.task_id,
                     task_project_id=task.project_id,
                     session_project_id=sess.project_id,
@@ -397,6 +423,145 @@ async def list_session_runs(
     stmt = stmt.order_by(SessionRun.id.asc()).limit(limit).offset(offset)
     result = await db.execute(stmt)
     return list(result.scalars().all())
+
+
+# =============================================================================
+# CTX-2 — activity append + prompt read + run heartbeat (Kanban #717)
+# =============================================================================
+
+
+@router.post(
+    "/{session_id}/activity",
+    response_model=SessionActivityRead,
+    status_code=http_status.HTTP_201_CREATED,
+)
+async def append_session_activity(
+    session_id: int,
+    payload: SessionActivityCreate,
+    db: AsyncSession = Depends(get_session),
+) -> SessionActivityRead:
+    """Append a Recent Activity entry to the session.md on disk."""
+    sess = await get_or_404(
+        db,
+        SessionModel,
+        detail=_DETAIL_SESSION_NOT_FOUND_TEMPLATE.format(id=session_id),
+        id=session_id,
+    )
+    if sess.status == "closed":
+        raise HTTPException(
+            status_code=400,
+            detail=_DETAIL_ACTIVITY_ON_CLOSED_SESSION_TEMPLATE.format(
+                id=session_id
+            ),
+        )
+
+    if payload.task_id is not None:
+        task = await db.get(Task, payload.task_id)
+        if task is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"task_id {payload.task_id} does not exist or is deleted",
+            )
+        if task.project_id != sess.project_id:
+            raise HTTPException(
+                status_code=400,
+                detail=_DETAIL_CROSS_PROJECT_TEMPLATE.format(
+                    task_id=payload.task_id,
+                    task_project_id=task.project_id,
+                    session_project_id=sess.project_id,
+                ),
+            )
+
+    repo_root = get_settings().repo_root
+    block = append_recent_activity(
+        session_id,
+        summary=payload.summary,
+        task_id=payload.task_id,
+        role=payload.role,
+        kind=payload.kind,
+        repo_root=repo_root,
+    )
+    section_body = get_section_text(
+        session_id, SECTION_RECENT_ACTIVITY, repo_root
+    )
+    preview = section_body[-_ACTIVITY_PREVIEW_CHARS:]
+    return SessionActivityRead(
+        appended_block=block,
+        section_preview=preview,
+        section_chars=len(section_body),
+    )
+
+
+@router.get("/{session_id}/prompt", response_model=SessionPromptRead)
+async def get_session_prompt(
+    session_id: int,
+    include_card_id: int | None = Query(default=None, ge=1),
+    db: AsyncSession = Depends(get_session),
+) -> SessionPromptRead:
+    """Return the prompt-ready markdown + char count for LLM injection."""
+    await get_or_404(
+        db,
+        SessionModel,
+        detail=_DETAIL_SESSION_NOT_FOUND_TEMPLATE.format(id=session_id),
+        id=session_id,
+    )
+    repo_root = get_settings().repo_root
+    markdown, chars = read_session_for_prompt(
+        session_id, repo_root, include_card_id=include_card_id
+    )
+    return SessionPromptRead(markdown=markdown, char_count=chars)
+
+
+@runs_router.post(
+    "/{run_id}/heartbeat",
+    response_model=SessionRunHeartbeatRead,
+    status_code=http_status.HTTP_201_CREATED,
+)
+async def write_run_heartbeat(
+    run_id: int,
+    payload: SessionRunHeartbeat,
+    db: AsyncSession = Depends(get_session),
+) -> SessionRunHeartbeatRead:
+    """Append (or replace) a heartbeat block in the run's card log file."""
+    run = await get_or_404(
+        db,
+        SessionRun,
+        detail=_DETAIL_RUN_NOT_FOUND_TEMPLATE.format(id=run_id),
+        id=run_id,
+    )
+    if run.task_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail=_DETAIL_HEARTBEAT_ON_RUNLESS_TEMPLATE.format(id=run_id),
+        )
+    sess = await db.get(SessionModel, run.session_id)
+    if sess is None:
+        # Defensive — session_runs.session_id has ON DELETE CASCADE so this
+        # path is unreachable in practice; surface a 404 if it ever happens.
+        raise HTTPException(
+            status_code=404,
+            detail=_DETAIL_SESSION_NOT_FOUND_TEMPLATE.format(id=run.session_id),
+        )
+    if sess.status == "closed":
+        raise HTTPException(
+            status_code=400,
+            detail=_DETAIL_HEARTBEAT_ON_CLOSED_SESSION_TEMPLATE.format(
+                id=sess.id
+            ),
+        )
+
+    repo_root = get_settings().repo_root
+    card_path = write_card_log(
+        run.session_id,
+        run.task_id,
+        payload.content,
+        mode=payload.mode,
+        repo_root=repo_root,
+    )
+    return SessionRunHeartbeatRead(
+        card_log_path=str(card_path.relative_to(repo_root)).replace("\\", "/"),
+        total_bytes=card_path.stat().st_size,
+    )
 
 
 @router.get("/{session_id}/compacts", response_model=list[SessionCompactRead])

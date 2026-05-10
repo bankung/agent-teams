@@ -196,6 +196,67 @@ class SessionCompactRead(BaseModel):
 
 
 # =============================================================================
+# CTX-2 — Recent Activity append + card heartbeat (Kanban #717)
+# =============================================================================
+
+
+class SessionActivityCreate(BaseModel):
+    """POST /api/sessions/{id}/activity request body.
+
+    `summary` is the only required field; `task_id` / `role` / `kind` enrich
+    the entry header. `task_id` (when given) must belong to the same project
+    as the session — router 400s on mismatch (mirror of run cross-project).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    task_id: int | None = Field(default=None, ge=1)
+    summary: str = Field(min_length=1, max_length=4000)
+    role: str | None = Field(default=None, max_length=64)
+    kind: str | None = Field(default=None, max_length=64)
+
+
+class SessionActivityRead(BaseModel):
+    """Response shape for POST /api/sessions/{id}/activity."""
+
+    appended_block: str
+    section_preview: str
+    section_chars: int
+
+
+class SessionPromptRead(BaseModel):
+    """Response shape for GET /api/sessions/{id}/prompt."""
+
+    markdown: str
+    char_count: int
+
+
+class SessionRunHeartbeat(BaseModel):
+    """POST /api/session_runs/{id}/heartbeat request body.
+
+    `mode='append'` (default) writes a timestamped block to the card log;
+    `mode='replace'` overwrites the file verbatim (end-of-run snapshot).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    content: str = Field(min_length=1, max_length=20000)
+    mode: Literal["append", "replace"] = "append"
+
+
+class SessionRunHeartbeatRead(BaseModel):
+    """Response shape for POST /api/session_runs/{id}/heartbeat.
+
+    `total_bytes` is the total size of the card log file after this write
+    (i.e. `card_path.stat().st_size`), NOT the number of bytes appended
+    during this single heartbeat call.
+    """
+
+    card_log_path: str
+    total_bytes: int
+
+
+# =============================================================================
 # Lockstep guards — drift between Literal args and the constants ALL tuples
 # raises RuntimeError at import time. Mirrors the TaskRunModeLiteral /
 # TaskKindLiteral guards in `schemas/task.py`.
