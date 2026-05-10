@@ -64,7 +64,7 @@ Instead of driving the AI step by step, you create tasks in the Kanban UI or han
 ```
 
 - The user drives Lead through Claude Code (CLI / IDE / Web) **or** creates tasks in the Kanban UI.
-- Lead resolves the active project from the **API** (`GET /api/projects/active`) — there is no `projects.json`.
+- Lead binds each session to a user-named project via `GET /api/projects/by-name/<name>` — there is no `projects.json`. (The legacy `/api/projects/active` is `410 Gone` since #694; use `?status=1` to list live projects or `by-name/<name>` for direct lookup.)
 - Lead **does not edit code itself** — it delegates to subagents through the `Agent` tool.
 - Subagents do the work → write state back to their own `context/projects/<active>/<role>/` → return a summary → terminate.
 - Cross-role decisions / API contracts / DB schema live in `context/projects/<active>/shared/` (Lead writes only) — **per-project**.
@@ -130,11 +130,13 @@ docker compose exec api alembic upgrade head
 docker compose exec api python -m scripts.seed
 # Seed creates the default agent-teams project + sample tasks.
 
-# 5. Smoke test
-curl http://localhost:8456/api/projects/active
+# 5. Smoke test — list live projects (replaces legacy /active endpoint)
+curl http://localhost:8456/api/projects?status=1
+# Or look up the seeded project directly:
+curl http://localhost:8456/api/projects/by-name/agent-teams
 
-# 6. (optional) Open the Kanban UI — Phase 3
-# cd web && pnpm dev
+# 6. (optional) Open the Kanban UI
+cd web && pnpm dev
 # Open http://localhost:3000
 
 # 7. Open Claude Code at the agent-teams repo root
@@ -150,11 +152,25 @@ CLAUDE.md is loaded automatically — Claude is ready to act as Lead.
 
 | Service | Container | Port | Notes |
 |---|---|---|---|
-| `db` | `agent-teams-db` | `${POSTGRES_PORT:-5432}` | Postgres 16, named volume `agent-teams-pgdata` |
-| `api` | `agent-teams-api` | `${API_PORT:-8456}` | bind-mounts the repo at `/repo` so newly scaffolded projects are writable |
-| `web` | (Phase 3) | `3000` | placeholder in `docker-compose.yml` |
+| `db` | `agent-teams-db` | `${POSTGRES_PORT:-5432}` | Postgres 16, UTF8 encoding (full Unicode incl. emoji), named volume `agent-teams-pgdata` |
+| `api` | `agent-teams-api` | `${API_PORT:-8456}` | bind-mounts the repo at `/repo`; runs apscheduler in-process for the recurrence subsystem |
+| `web` | `agent-teams-web` | `3000` | Next.js 14 App Router; Linear-style minimalist Kanban board (V2 read-only landed; V3 project switcher pending) |
 
-`docker-compose.yml` sets the api's `DATABASE_URL` to the `db` service hostname automatically — host `.env` only matters when running `uvicorn` outside compose.
+`docker-compose.yml` sets the api's `DATABASE_URL` to the `db` service hostname automatically — host `.env` only matters when running `uvicorn` outside compose. The api container also runs an `AsyncIOScheduler` background job (60s default tick) — see "Built-in subsystems" below.
+
+## Built-in subsystems
+
+The api ships several background subsystems beyond CRUD task storage:
+
+| Subsystem | Wired by | What it does |
+|---|---|---|
+| **Audit trigger** | migration `0001_initial_schema` | `tasks_audit_trg AFTER UPDATE OR DELETE` writes every mutation into `tasks_history` (newly INSERTed rows are audited only on first mutation, by design). |
+| **Soft-delete** | universal `status` flag | `DELETE` flips `status=0`; idempotent re-DELETE returns 204; subtask + lineage references stay queryable. |
+| **Recurrence (T1+T2)** | migration `0007` + `services/recurrence.py` + `apscheduler` | Two fire paths run every `APP_SCHEDULER_TICK_SECONDS` (default 60s): templates spawn child rows + advance `next_fire_at`; `scheduled_at` one-shots transition in place. Single-fire on resume (no replay storms). `POST /api/tasks/{id}/fire-now` for manual trigger. |
+| **Cross-table validators** | `services/run_mode.py` + `services/task_kind.py` | Pure-function gates fire BEFORE DB-hitting checks (cheaper short-circuit on the failure path). Resolved-final pattern catches PATCH-induced state violations across direction-A and direction-B. |
+| **Context-management (CTX 1–4)** | migrations `0008` / `0009` + `services/session_store.py` / `token_counter.py` / `cost_tracker.py` / `compact_runner.py` | Per-session context store: hybrid DB row + filesystem (`_sessions/<id>/`). Activity append, heartbeat per-card log, prompt-ready string, soft-warn token budget, 4-bucket ceiling model, server-authoritative cost (Anthropic pricing table), Haiku 4.5 LLM compactor with full forensic archive (prior history + original activity + LLM summary). Compactor returns 503 until `ANTHROPIC_API_KEY` is provisioned. |
+| **Project consent gate** | migration `0005` + `services/run_mode.py` | `tasks.run_mode='auto_headless'` requires `projects.auto_run_consent_at IS NOT NULL` (granted via `POST /api/projects/{id}/grant-consent` — typed-acknowledgment Pydantic schema). Mode B / Step 2 architecture. |
+| **Source-text-locked detail strings** | `_DETAIL_*_TEMPLATE` constants on routers | Wire-error strings pinned via constants + byte-equality tests so `git grep` finds every consumer. Pattern from #122. |
 
 ## Day-to-day usage
 
@@ -172,7 +188,7 @@ add a login feature with API
 ```
 
 Lead will:
-1. resolve the active project via `curl http://localhost:8456/api/projects/active`,
+1. ask which project this session is for, then resolve via `curl http://localhost:8456/api/projects/by-name/<name>`,
 2. (optional) create a parent task with `POST /api/tasks` for Kanban tracking,
 3. read `context/projects/<active>/shared/*` (decisions, api-contracts, db-schema),
 4. choose which standards to inject per the lane mapping,
@@ -308,7 +324,7 @@ agent-teams/
 │   ├── scripts/
 │   │   └── seed.py                 # initial seed (agent-teams project + sample tasks)
 │   └── tests/
-├── web/                            # Next.js Kanban UI (Phase 3)
+├── web/                            # Next.js 14 App Router — Linear-style Kanban board (V2 read-only; V3 switcher pending)
 ├── context/
 │   ├── standards/                  # Standards zone (committed)
 │   ├── teams/                      # Team-methodology zone (committed)
@@ -337,7 +353,7 @@ Framework-specific conventions belong in `context/standards/<framework>/<topic>.
 You: add a <UserAvatar> component in web
 
 Lead:
-  → curl http://localhost:8456/api/projects/active → {name: "agent-teams", team: "dev", paths: {...}, standards: {...}}
+  → curl http://localhost:8456/api/projects/by-name/agent-teams → {name: "agent-teams", team: "dev", paths: {...}, standards: {...}}
   → Read .claude/teams/dev.md  (load active team's playbook)
   → Read context/projects/agent-teams/shared/decisions.md
   → Read context/projects/agent-teams/dev-frontend/current-state.md
