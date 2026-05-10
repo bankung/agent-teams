@@ -1,0 +1,769 @@
+"""Tests for sessions / session_runs / session_compacts (CTX-1, Kanban #716).
+
+Covers six surfaces:
+
+1. Schema-level (Pydantic): SessionCreate / SessionUpdate / SessionRunCreate /
+   SessionRunUpdate accept/reject. Lockstep guard tests for the 3 new Literals.
+2. Sessions HTTP — create/list/detail/patch/close happy paths + filesystem
+   skeleton creation + multi-instance support.
+3. SessionRuns HTTP — create/update/list happy paths + cross-project rejection +
+   closed-session rejection + auto finished_at stamp.
+4. Source-text-locks for the 2 new locked detail strings.
+5. Behavioral: closing a session preserves filesystem; existing tables
+   untouched.
+6. Negative paths: 404 on missing ids, 422 on bad literal, 400 on closed-session
+   PATCH.
+"""
+
+from __future__ import annotations
+
+import importlib
+import shutil
+import uuid
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+
+
+def _unique_name(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+def _project_create_payload(
+    name: str, *, team: str = "dev", is_active: bool = False
+) -> dict:
+    return {
+        "name": name,
+        "description": f"test fixture for {name}",
+        "paths": {"web": "/tmp/x/web", "api": "/tmp/x/api", "db": "/tmp/x/db"},
+        "stack": {"web": "nextjs", "api": "fastapi", "db": "postgres"},
+        "config": {},
+        "is_active": is_active,
+        "team": team,
+    }
+
+
+@pytest.fixture
+def session_fs_cleanup():
+    """Remove `_sessions/<id>/` dirs created during a test.
+
+    Why: routes call `services.session_files.create_session_skeleton(...)`
+    which writes to `<repo_root>/_sessions/<id>/`. Tests close their DB rows
+    via PATCH but the FS dirs are not auto-removed (CTX-1 deliberately
+    preserves them for audit). This fixture removes them per-test so the
+    working tree stays clean.
+    """
+    from src.settings import get_settings
+
+    repo_root = Path(get_settings().repo_root)
+    ids: list[int] = []
+
+    def register(session_id: int) -> int:
+        ids.append(session_id)
+        return session_id
+
+    yield register
+
+    for sid in ids:
+        target = repo_root / "_sessions" / str(sid)
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
+
+
+# =============================================================================
+# 1. Schema-level (Pydantic) tests
+# =============================================================================
+
+
+def test_session_create_minimal() -> None:
+    from src.schemas.session import SessionCreate
+
+    s = SessionCreate(project_id=1)
+    assert s.project_id == 1
+    assert s.process_label is None
+    assert s.token_budget_per_run is None
+
+
+def test_session_create_rejects_zero_project_id() -> None:
+    from src.schemas.session import SessionCreate
+
+    with pytest.raises(ValidationError):
+        SessionCreate(project_id=0)
+
+
+def test_session_update_status_literal_accepts_each() -> None:
+    from src.schemas.session import SessionUpdate
+
+    for s in ("active", "compacting", "closed"):
+        upd = SessionUpdate(status=s)
+        assert upd.status == s
+
+
+def test_session_update_rejects_unknown_status() -> None:
+    from src.schemas.session import SessionUpdate
+
+    with pytest.raises(ValidationError):
+        SessionUpdate(status="weird")  # type: ignore[arg-type]
+
+
+def test_session_run_create_default_status_is_running() -> None:
+    from src.schemas.session import SessionRunCreate
+
+    r = SessionRunCreate()
+    assert r.status == "running"
+    assert r.task_id is None
+
+
+def test_session_run_update_status_literal_accepts_each() -> None:
+    from src.schemas.session import SessionRunUpdate
+
+    for s in ("running", "done", "error", "timeout"):
+        upd = SessionRunUpdate(status=s)
+        assert upd.status == s
+
+
+def test_session_run_update_rejects_unknown_status() -> None:
+    from src.schemas.session import SessionRunUpdate
+
+    with pytest.raises(ValidationError):
+        SessionRunUpdate(status="zombie")  # type: ignore[arg-type]
+
+
+def test_session_status_literal_lockstep_guard_holds() -> None:
+    """Positive case — Literal args == constants ALL tuple → import succeeds."""
+    from src.constants import (
+        SessionCompactTrigger,
+        SessionRunStatus,
+        SessionStatus,
+    )
+    from src.schemas.session import (
+        SessionCompactTriggerLiteral,
+        SessionRunStatusLiteral,
+        SessionStatusLiteral,
+    )
+
+    assert set(SessionStatusLiteral.__args__) == set(SessionStatus.ALL)  # type: ignore[attr-defined]
+    assert set(SessionRunStatusLiteral.__args__) == set(SessionRunStatus.ALL)  # type: ignore[attr-defined]
+    assert set(SessionCompactTriggerLiteral.__args__) == set(  # type: ignore[attr-defined]
+        SessionCompactTrigger.ALL
+    )
+
+
+def test_session_status_literal_drift_raises_at_import(monkeypatch) -> None:
+    """Force drift between SessionStatus.ALL and the Literal — the guard at
+    the bottom of schemas/session.py must raise RuntimeError on reload."""
+    import src.constants as constants_mod
+    import src.schemas.session as session_schema_mod
+
+    monkeypatch.setattr(
+        constants_mod.SessionStatus, "ALL", ("active", "wrong_extra")
+    )
+    with pytest.raises(RuntimeError, match="drifted"):
+        importlib.reload(session_schema_mod)
+    monkeypatch.undo()
+    importlib.reload(session_schema_mod)
+
+
+def test_session_run_status_literal_drift_raises_at_import(monkeypatch) -> None:
+    import src.constants as constants_mod
+    import src.schemas.session as session_schema_mod
+
+    monkeypatch.setattr(
+        constants_mod.SessionRunStatus, "ALL", ("running", "wrong_extra")
+    )
+    with pytest.raises(RuntimeError, match="drifted"):
+        importlib.reload(session_schema_mod)
+    monkeypatch.undo()
+    importlib.reload(session_schema_mod)
+
+
+def test_session_compact_trigger_literal_drift_raises_at_import(monkeypatch) -> None:
+    import src.constants as constants_mod
+    import src.schemas.session as session_schema_mod
+
+    monkeypatch.setattr(
+        constants_mod.SessionCompactTrigger, "ALL", ("size", "wrong_extra")
+    )
+    with pytest.raises(RuntimeError, match="drifted"):
+        importlib.reload(session_schema_mod)
+    monkeypatch.undo()
+    importlib.reload(session_schema_mod)
+
+
+# =============================================================================
+# 2. Sessions HTTP — create / list / detail / patch / close
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_create_session_201_stamps_root_path_and_creates_fs_skeleton(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    """POST /api/sessions on a real project — 201 + DB row + filesystem
+    skeleton (`session.md`, `archive/`, `cards/`) all present."""
+    name = _unique_name("sess-happy")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        resp = await client.post("/api/sessions", json={"project_id": pid})
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        sid = body["id"]
+        session_fs_cleanup(sid)
+
+        assert body["project_id"] == pid
+        assert body["status"] == "active"
+        assert body["session_root_path"] == f"_sessions/{sid}/"
+        assert body["closed_at"] is None
+        assert body["compacted_history_ceiling_tokens"] == 13000
+        assert body["recent_activity_ceiling_tokens"] == 15000
+        assert body["runs_count"] == 0
+        assert body["compacts_count"] == 0
+
+        # Filesystem skeleton present.
+        from src.settings import get_settings
+
+        sess_dir = Path(get_settings().repo_root) / "_sessions" / str(sid)
+        assert sess_dir.is_dir()
+        assert (sess_dir / "session.md").is_file()
+        assert (sess_dir / "archive").is_dir()
+        assert (sess_dir / "cards").is_dir()
+        # Skeleton header is present in session.md.
+        content = (sess_dir / "session.md").read_text(encoding="utf-8")
+        assert "## Compacted History" in content
+        assert "## Recent Activity" in content
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_create_session_400_when_project_missing(client) -> None:
+    resp = await client.post(
+        "/api/sessions", json={"project_id": 999_999_999}
+    )
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": "project_id 999999999 does not exist"}
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_filters_by_project_and_status(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    name = _unique_name("sess-list")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        a = await client.post("/api/sessions", json={"project_id": pid})
+        sid_a = a.json()["id"]
+        session_fs_cleanup(sid_a)
+
+        # Filter by project_id.
+        r = await client.get(f"/api/sessions?project_id={pid}")
+        assert r.status_code == 200
+        ids = [row["id"] for row in r.json()]
+        assert sid_a in ids
+
+        # Filter by project + status=active.
+        r2 = await client.get(f"/api/sessions?project_id={pid}&status=active")
+        assert r2.status_code == 200
+        ids2 = [row["id"] for row in r2.json()]
+        assert sid_a in ids2
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_get_session_detail_returns_counts(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    name = _unique_name("sess-detail")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        r = await client.get(f"/api/sessions/{sid}")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["id"] == sid
+        assert body["runs_count"] == 0
+        assert body["compacts_count"] == 0
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_get_session_404_on_missing_id(client) -> None:
+    r = await client.get("/api/sessions/999999")
+    assert r.status_code == 404
+    assert r.json() == {"detail": "Session id=999999 not found"}
+
+
+@pytest.mark.asyncio
+async def test_patch_session_close_stamps_closed_at(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    name = _unique_name("sess-close")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        r = await client.patch(
+            f"/api/sessions/{sid}", json={"status": "closed"}
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "closed"
+        assert body["closed_at"] is not None
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_patch_session_after_close_returns_400_locked_detail(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    name = _unique_name("sess-reopen")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        await client.patch(f"/api/sessions/{sid}", json={"status": "closed"})
+
+        # Try to mutate the closed session — must 400 with locked detail.
+        r2 = await client.patch(
+            f"/api/sessions/{sid}", json={"status": "active"}
+        )
+        assert r2.status_code == 400
+        assert r2.json() == {"detail": f"Session id={sid} already closed"}
+
+        r3 = await client.patch(
+            f"/api/sessions/{sid}", json={"process_label": "rewrite"}
+        )
+        assert r3.status_code == 400
+        assert r3.json() == {"detail": f"Session id={sid} already closed"}
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_patch_session_404_on_missing_id(client) -> None:
+    r = await client.patch(
+        "/api/sessions/999999", json={"process_label": "x"}
+    )
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_multi_instance_two_active_sessions_per_project(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    """The partial unique index `ux_projects_active_one` is dropped (Kanban
+    #694 Phase 2). Sessions inherit the same multi-instance freedom — two
+    active rows for the same project must coexist."""
+    name = _unique_name("sess-multi")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        a = await client.post("/api/sessions", json={"project_id": pid})
+        b = await client.post("/api/sessions", json={"project_id": pid})
+        assert a.status_code == 201
+        assert b.status_code == 201
+        sid_a = a.json()["id"]
+        sid_b = b.json()["id"]
+        session_fs_cleanup(sid_a)
+        session_fs_cleanup(sid_b)
+        assert sid_a != sid_b
+        assert a.json()["status"] == "active"
+        assert b.json()["status"] == "active"
+
+        # Both visible via the active filter.
+        r = await client.get(f"/api/sessions?project_id={pid}&status=active")
+        ids = [row["id"] for row in r.json()]
+        assert sid_a in ids and sid_b in ids
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_patch_session_bad_status_literal_returns_422(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    name = _unique_name("sess-422")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        r = await client.patch(
+            f"/api/sessions/{sid}", json={"status": "weird"}
+        )
+        assert r.status_code == 422
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+# =============================================================================
+# 3. SessionRuns HTTP — create / update / list
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_create_run_with_task_writes_card_log(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    """POST /api/sessions/{sid}/runs with task_id → 201 + card_log_path set
+    + `_sessions/<sid>/cards/<task_id>.md` exists on disk."""
+    name = _unique_name("run-card")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+    headers = {"X-Project-Id": str(pid)}
+
+    try:
+        # Create a task in the same project.
+        t = await client.post(
+            "/api/tasks",
+            json={"project_id": pid, "title": "card task"},
+            headers=headers,
+        )
+        tid = t.json()["id"]
+
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        r = await client.post(
+            f"/api/sessions/{sid}/runs", json={"task_id": tid}
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["session_id"] == sid
+        assert body["task_id"] == tid
+        assert body["status"] == "running"
+        assert body["card_log_path"] == f"_sessions/{sid}/cards/{tid}.md"
+
+        # Filesystem card present.
+        from src.settings import get_settings
+
+        card_path = (
+            Path(get_settings().repo_root)
+            / "_sessions"
+            / str(sid)
+            / "cards"
+            / f"{tid}.md"
+        )
+        assert card_path.is_file()
+        assert f"task {tid}" in card_path.read_text(encoding="utf-8")
+
+        # Cleanup task.
+        await client.delete(f"/api/tasks/{tid}", headers=headers)
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_create_run_without_task_id_201_no_card_path(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    name = _unique_name("run-notask")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        r = await client.post(f"/api/sessions/{sid}/runs", json={})
+        assert r.status_code == 201
+        body = r.json()
+        assert body["task_id"] is None
+        assert body["card_log_path"] is None
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_create_run_cross_project_task_returns_400_locked(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    """POST run where task.project_id != session.project_id → 400 with
+    locked detail string."""
+    name_a = _unique_name("run-cross-a")
+    name_b = _unique_name("run-cross-b")
+    scaffold_cleanup(name_a)
+    scaffold_cleanup(name_b)
+
+    pa = await client.post(
+        "/api/projects", json=_project_create_payload(name_a)
+    )
+    pb = await client.post(
+        "/api/projects", json=_project_create_payload(name_b)
+    )
+    pid_a = pa.json()["id"]
+    pid_b = pb.json()["id"]
+    headers_b = {"X-Project-Id": str(pid_b)}
+
+    try:
+        # task in project B.
+        t = await client.post(
+            "/api/tasks",
+            json={"project_id": pid_b, "title": "wrong project"},
+            headers=headers_b,
+        )
+        tid = t.json()["id"]
+
+        # session in project A.
+        s = await client.post("/api/sessions", json={"project_id": pid_a})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        r = await client.post(
+            f"/api/sessions/{sid}/runs", json={"task_id": tid}
+        )
+        assert r.status_code == 400
+        assert r.json() == {
+            "detail": (
+                f"task {tid} belongs to project {pid_b}, "
+                f"session belongs to project {pid_a}"
+            )
+        }
+
+        await client.delete(f"/api/tasks/{tid}", headers=headers_b)
+    finally:
+        await client.delete(f"/api/projects/{pid_a}")
+        await client.delete(f"/api/projects/{pid_b}")
+
+
+@pytest.mark.asyncio
+async def test_create_run_on_closed_session_returns_400(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    name = _unique_name("run-closed")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+        await client.patch(f"/api/sessions/{sid}", json={"status": "closed"})
+
+        r = await client.post(f"/api/sessions/{sid}/runs", json={})
+        assert r.status_code == 400
+        assert "closed" in r.json()["detail"]
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_create_run_on_missing_session_returns_404(client) -> None:
+    r = await client.post("/api/sessions/999999/runs", json={})
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_patch_run_done_stamps_finished_at_and_takes_totals(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    name = _unique_name("run-patch")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+        run = await client.post(f"/api/sessions/{sid}/runs", json={})
+        rid = run.json()["id"]
+        assert run.json()["finished_at"] is None
+
+        r = await client.patch(
+            f"/api/session_runs/{rid}",
+            json={"status": "done", "total_input_tokens": 1500},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "done"
+        assert body["finished_at"] is not None
+        assert body["total_input_tokens"] == 1500
+        # CTX-3 wires real cost; CTX-1 just defaults to 0 on creation.
+        assert str(body["total_cost_usd"]) in {"0", "0.0000", "0.00"}
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_patch_run_404_on_missing_id(client) -> None:
+    r = await client.patch("/api/session_runs/999999", json={"status": "done"})
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_session_runs_filters_by_status(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    name = _unique_name("run-list")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        run_a = await client.post(f"/api/sessions/{sid}/runs", json={})
+        run_b = await client.post(f"/api/sessions/{sid}/runs", json={})
+        rid_a = run_a.json()["id"]
+        rid_b = run_b.json()["id"]
+        await client.patch(
+            f"/api/session_runs/{rid_b}", json={"status": "done"}
+        )
+
+        r = await client.get(f"/api/sessions/{sid}/runs?status=running")
+        assert r.status_code == 200
+        ids = [row["id"] for row in r.json()]
+        assert rid_a in ids
+        assert rid_b not in ids
+
+        r2 = await client.get(f"/api/sessions/{sid}/runs?status=done")
+        ids2 = [row["id"] for row in r2.json()]
+        assert rid_b in ids2
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_list_compacts_empty_for_new_session(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    """CTX-4 owns POST /compacts; CTX-1 read-only endpoint just returns []."""
+    name = _unique_name("compact-empty")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        r = await client.get(f"/api/sessions/{sid}/compacts")
+        assert r.status_code == 200
+        assert r.json() == []
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+# =============================================================================
+# 4. Source-text-locks for the locked detail strings
+# =============================================================================
+
+
+def test_session_closed_detail_string_pinned_in_router_source() -> None:
+    from src.routers import sessions as sessions_router
+
+    source = Path(sessions_router.__file__).read_text(encoding="utf-8")
+    pinned = '"Session id={id} already closed"'
+    assert pinned in source, (
+        "Session-closed detail string template drifted in routers/sessions.py"
+    )
+
+
+def test_run_cross_project_detail_string_pinned_in_router_source() -> None:
+    from src.routers import sessions as sessions_router
+
+    source = Path(sessions_router.__file__).read_text(encoding="utf-8")
+    # The template is split across two adjacent string literals — assert each
+    # half is present so a refactor that joins or reflows them still passes
+    # iff the wire string is identical.
+    assert '"task {task_id} belongs to project {task_project_id}, "' in source
+    assert '"session belongs to project {session_project_id}"' in source
+
+
+# =============================================================================
+# 5. Behavioral — closing preserves filesystem; existing tables untouched
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_closing_session_preserves_filesystem_content(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    """Closing a session must not delete `_sessions/<id>/session.md` — the
+    file is the audit record of the session's content."""
+    name = _unique_name("sess-fs-preserve")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        from src.settings import get_settings
+
+        sess_md = (
+            Path(get_settings().repo_root)
+            / "_sessions"
+            / str(sid)
+            / "session.md"
+        )
+        assert sess_md.is_file()
+        pre_content = sess_md.read_text(encoding="utf-8")
+
+        await client.patch(f"/api/sessions/{sid}", json={"status": "closed"})
+
+        # File is preserved post-close.
+        assert sess_md.is_file()
+        assert sess_md.read_text(encoding="utf-8") == pre_content
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_existing_seeded_tasks_untouched(client) -> None:
+    """CTX-1 must not perturb the seeded `agent-teams` project's tasks. Spot-
+    check: the seeded `agent-teams` project still resolves by-name and has
+    tasks listable via the existing endpoint."""
+    p = await client.get("/api/projects/by-name/agent-teams")
+    assert p.status_code == 200
+    pid = p.json()["id"]
+    headers = {"X-Project-Id": str(pid)}
+
+    r = await client.get("/api/tasks?limit=5", headers=headers)
+    assert r.status_code == 200
+    # We don't assert a specific count (other tests may transiently soft-delete
+    # rows); we just confirm the contract still works after CTX-1 ships.
+    assert isinstance(r.json(), list)

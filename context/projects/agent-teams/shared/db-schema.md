@@ -141,6 +141,73 @@ AFTER UPDATE OR DELETE ON tasks
 FOR EACH ROW EXECUTE FUNCTION tasks_audit_fn();
 ```
 
+### sessions
+**Purpose:** One row per Lead bootstrap (or master-agent process) for a project. Per project × per Claude Code instance scope (multi-instance friendly — multiple `status='active'` rows per `project_id` are allowed). Hybrid storage: this row holds metadata + queryability; markdown content lives at `<repo_root>/_sessions/<id>/` (gitignored). **NO audit trigger** — sessions self-audit via `session_compacts`.
+
+| column                          | type           | constraints                                                              | notes |
+|---------------------------------|----------------|--------------------------------------------------------------------------|-------|
+| id                              | bigint         | PK, identity                                                             |       |
+| project_id                      | bigint         | NOT NULL, FK `projects(id)` ON DELETE CASCADE                            |       |
+| process_label                   | varchar(64)    | NULL                                                                     | optional human hint |
+| status                          | varchar(16)    | NOT NULL DEFAULT `'active'`, CHECK `status IN ('active','compacting','closed')` (named `ck_sessions_status_valid`) | terminal: closed → no further PATCH (router 400) |
+| token_budget_per_run            | bigint         | NULL                                                                     | soft budget; NULL = no budget |
+| compacted_history_ceiling_tokens| bigint         | NOT NULL DEFAULT 13000                                                   | CTX-4 trigger threshold |
+| recent_activity_ceiling_tokens  | bigint         | NOT NULL DEFAULT 15000                                                   | CTX-4 trigger threshold |
+| session_root_path               | text           | NOT NULL                                                                 | server-computed: `_sessions/<id>/` (single-COMMIT post-INSERT update via `flush()`) |
+| started_at                      | timestamptz    | NOT NULL DEFAULT `now()`                                                 |       |
+| closed_at                       | timestamptz    | NULL                                                                     | server-stamped on `status='closed'` |
+| created_at                      | timestamptz    | NOT NULL DEFAULT `now()`                                                 |       |
+| updated_at                      | timestamptz    | NOT NULL DEFAULT `now()`                                                 |       |
+
+**Indexes:**
+- `ix_sessions_project_id` on `(project_id)` — broad listing.
+- `ix_sessions_project_id_active` PARTIAL on `(project_id)` WHERE `status='active'` — hot-path "active sessions for project" lookup. **NOT a uniqueness gate** — multiple active rows per `project_id` are allowed (multi-instance support; mirrors post-#694 `is_active` freedom).
+
+**Foreign keys:** `project_id` → `projects(id)` ON DELETE CASCADE.
+
+### session_runs
+**Purpose:** One row per task fire / manual run within a session. Cost / token totals roll up here (CTX-3 #718 wires the real values; CTX-1 accepts user-supplied totals with no validation). FK to `tasks` is SET NULL — preserves the run audit row when a task is later hard-deleted.
+
+| column               | type           | constraints                                                              | notes |
+|----------------------|----------------|--------------------------------------------------------------------------|-------|
+| id                   | bigint         | PK, identity                                                             |       |
+| session_id           | bigint         | NOT NULL, FK `sessions(id)` ON DELETE CASCADE                            |       |
+| task_id              | bigint         | NULL, FK `tasks(id)` ON DELETE SET NULL                                  | preserves audit on hard-delete of task |
+| status               | varchar(16)    | NOT NULL DEFAULT `'running'`, CHECK `status IN ('running','done','error','timeout')` (named `ck_session_runs_status_valid`) | terminal states auto-stamp `finished_at` |
+| started_at           | timestamptz    | NOT NULL DEFAULT `now()`                                                 |       |
+| finished_at          | timestamptz    | NULL                                                                     | server-stamped on transition to terminal status |
+| total_input_tokens   | bigint         | NOT NULL DEFAULT 0                                                       | CTX-3 will replace with server-authoritative |
+| total_output_tokens  | bigint         | NOT NULL DEFAULT 0                                                       |       |
+| total_context_chars  | bigint         | NOT NULL DEFAULT 0                                                       |       |
+| total_cost_usd       | numeric(10,4)  | NOT NULL DEFAULT 0                                                       | CTX-1 accepts client-supplied; CTX-3 = server-authoritative |
+| budget_warning       | boolean        | NOT NULL DEFAULT false                                                   | set when token total exceeded `session.token_budget_per_run` |
+| card_log_path        | text           | NULL                                                                     | `_sessions/<sid>/cards/<task_id>.md` when task_id given |
+| created_at           | timestamptz    | NOT NULL DEFAULT `now()`                                                 |       |
+| updated_at           | timestamptz    | NOT NULL DEFAULT `now()`                                                 |       |
+
+**Indexes:** `ix_session_runs_session_id`, `ix_session_runs_task_id`.
+**Foreign keys:** `session_id` → `sessions(id)` ON DELETE CASCADE; `task_id` → `tasks(id)` ON DELETE SET NULL.
+
+### session_compacts
+**Purpose:** One row per compact event within a session. CTX-4 #719 wires the runner; CTX-1 ships the schema + read endpoints only.
+
+| column           | type           | constraints                                                              | notes |
+|------------------|----------------|--------------------------------------------------------------------------|-------|
+| id               | bigint         | PK, identity                                                             |       |
+| session_id       | bigint         | NOT NULL, FK `sessions(id)` ON DELETE CASCADE                            |       |
+| trigger_kind     | varchar(16)    | NOT NULL, CHECK `trigger_kind IN ('size','manual','run_count')` (named `ck_session_compacts_trigger_valid`) |       |
+| archive_path     | text           | NOT NULL                                                                 | `_sessions/<sid>/archive/compact_NNN.md` |
+| before_tokens    | bigint         | NOT NULL                                                                 |       |
+| after_tokens     | bigint         | NOT NULL                                                                 |       |
+| compact_model    | varchar(64)    | NOT NULL                                                                 | e.g., `claude-haiku-4-5-20251001` |
+| compact_cost_usd | numeric(10,4)  | NOT NULL DEFAULT 0                                                       |       |
+| compacted_at     | timestamptz    | NOT NULL DEFAULT `now()`                                                 |       |
+
+**Indexes:** `ix_session_compacts_session_id`.
+**Foreign keys:** `session_id` → `sessions(id)` ON DELETE CASCADE.
+
+**No audit trigger** on `sessions`, `session_runs`, or `session_compacts` — distinct from `tasks` / `tasks_history`. Sessions self-audit via the `session_compacts` archive history (each compact event archives the prior `session.md` to `_sessions/<id>/archive/compact_NNN.md`). The `tasks_audit_trg` pattern is `tasks`-only.
+
 <!-- No tables yet. First table goes above this line. -->
 
 ## Pending migrations (generated, not yet applied)
@@ -161,3 +228,4 @@ Format: YYYY-MM-DD HH:MM — <migration filename> — applied by <who> in commit
 - 2026-05-09 10:00 — 2026_05_09_1000_run_mode_and_consent.py — dev-devops, container apply (Kanban #482 — Step 2 prep schema seam: tasks.run_mode + projects.auto_run_consent_at; round-trip up→down→up verified; 464/464 tasks DEFAULT-backfilled to `manual`; ORM/Pydantic/router wire-up deferred to #483-B)
 - 2026-05-10 00:50 — 2026_05_10_0050_drop_active_one.py — dev-devops, container apply (Kanban #694 Phase 2 — drop `ux_projects_active_one` partial unique index after session-scoped active project shift; round-trip up→down→up verified; agent-teams id=1 byte-identical pre/post; remaining indexes `ux_projects_name_active`, `ix_projects_status`)
 - 2026-05-10 11:00 — 2026_05_10_1100_task_kind_and_recurrence.py — dev-devops, container apply (Kanban #706 — V3+ T1 schema foundation: `tasks.task_kind` + 5 recurrence template fields + 2 CHECKs (`ck_tasks_task_kind_valid`, `ck_tasks_template_recurrence_complete`) + 1 partial index (`ix_tasks_next_fire_at_template`) + 1 self-FK (`spawned_from_task_id` ON DELETE SET NULL); round-trip up→down→up verified on scratch DB before live apply; 53/53 tasks backfilled metadata-only via PG 16 ADD COLUMN-with-DEFAULT; agent-teams id=1 byte-identical pre/post; container rebuild required first because `croniter>=2.0,<7.0` was added to `pyproject.toml`)
+- 2026-05-10 13:00 — 2026_05_10_1300_sessions_and_runs.py — dev-devops, container apply (Kanban #716 — CTX-1 hybrid storage foundation: `sessions` (12 cols + 1 CHECK `ck_sessions_status_valid` + 2 indexes incl. partial `ix_sessions_project_id_active WHERE status='active'` — **NOT UNIQUE**, multi-instance support) + `session_runs` (14 cols + 1 CHECK `ck_session_runs_status_valid` + 2 indexes) + `session_compacts` (9 cols + 1 CHECK `ck_session_compacts_trigger_valid` + 1 index). FKs: sessions→projects CASCADE; session_runs→sessions CASCADE, session_runs→tasks SET NULL; session_compacts→sessions CASCADE. **NO audit trigger** on the 3 new tables — sessions self-audit via `session_compacts` archive history. Round-trip up→down→up verified on scratch DB before live apply; agent-teams id=1 byte-identical pre/post; tasks count 62 unchanged. NO container rebuild needed (no new pyproject deps).)

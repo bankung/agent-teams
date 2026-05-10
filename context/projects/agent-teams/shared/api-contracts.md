@@ -257,6 +257,86 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 - `400` — `{"detail":"X-Project-Id header is required for task endpoints"}` when header missing (Kanban #695)
 - `409` — `{"detail":"Cannot delete task — <n> active subtask(s) reference this task"}` when at least one row has `parent_task_id=<id> AND status=1`. Soft-delete the children first, then retry the parent. Idempotent re-DELETE on an already soft-deleted parent still returns 204 (the active-children check runs only on the first delete; per `routers/tasks.py` `delete_task`). (Kanban #238)
 
+### Sessions (CTX-1, Kanban #716, 2026-05-10)
+
+Session-based context store. Hybrid storage: DB rows for metadata + queryability; markdown content lives at `<repo_root>/_sessions/<id>/` (gitignored). Sessions are scoped per-project × per-Claude-Code-instance — multiple `status='active'` rows per project are allowed (multi-instance support; partial index `ix_sessions_project_id_active` is an accelerator NOT a uniqueness gate). NO audit trigger on `sessions` / `session_runs` / `session_compacts` tables — sessions self-audit via `session_compacts` archive history. **All `/api/sessions/*` and `/api/session_runs/*` endpoints follow the project-endpoint convention: NO `X-Project-Id` header required.**
+
+#### POST /api/sessions
+**Purpose:** Create a session row + filesystem skeleton (`_sessions/<id>/{session.md, archive/, cards/}`). Server-computed `session_root_path = "_sessions/<id>/"` post-INSERT (single COMMIT via `flush()` + mutate + `commit()`).
+**Auth:** none
+
+**Request:**
+```json
+{ "project_id": 1, "process_label": "term-1", "token_budget_per_run": null }
+```
+
+`process_label` (str, optional, max 64) — human hint (terminal id, branch name). `token_budget_per_run` (int, optional, ge=1, default null) — soft budget; null = no budget. Compact ceilings use server defaults (`compacted_history_ceiling_tokens=13000`, `recent_activity_ceiling_tokens=15000`).
+
+**Pydantic extra-policy note:** `SessionCreate` currently uses default `extra="ignore"` — smuggled fields (e.g., `{"status":"weird"}`) are silently dropped; server applies its defaults. Filed as #721 follow-up to tighten to `extra="forbid"` for parity with `ConsentGrant` (deliberate-action UX must fail loud). Until #721 lands, FE must NOT rely on 422 for unknown fields on Session POST.
+
+**Response 201:** `SessionRead` (with `session_root_path` set, server-computed).
+
+**Errors:**
+- `400` — `{"detail":"project_id <n> does not exist"}` when `project_id` references a missing or soft-deleted project. Source-text-locked. (Kanban #716)
+- `422` — Pydantic validation (e.g., `project_id<1`).
+
+#### GET /api/sessions
+**Purpose:** List sessions with optional filters.
+**Auth:** none
+**Query:** `project_id` (int ge=1, optional), `status` (`active`|`compacting`|`closed`, optional), `limit` (1..500, default 50), `offset` (≥0, default 0).
+**Response 200:** `[SessionRead, ...]` — `runs_count` and `compacts_count` are 0 in list responses (avoids N+1; detail GET fills real counts).
+
+#### GET /api/sessions/{id}
+**Purpose:** Detail with computed `runs_count` + `compacts_count`.
+**Auth:** none
+**Response 200:** `SessionRead`
+**Errors:**
+- `404` — `{"detail":"Session id=<n> not found"}` (source-text-locked).
+
+#### PATCH /api/sessions/{id}
+**Purpose:** Partial update — narrow surface (`process_label` / `token_budget_per_run` / `status`). Setting `status='closed'` server-stamps `closed_at=now()`. **`status='closed'` is terminal** — any subsequent PATCH on a closed row → 400.
+**Auth:** none
+**Request:** any subset of `{process_label, token_budget_per_run, status}`.
+**Response 200:** `SessionRead`.
+**Errors:**
+- `400` — `{"detail":"Session id=<n> already closed"}` when attempting to mutate a closed session. Source-text-locked per #122 pattern. (Kanban #716)
+- `404` — session id not found.
+- `422` — bad status literal.
+
+#### POST /api/sessions/{id}/runs
+**Purpose:** Register a run within a session. When `task_id` is given, the server writes a `_sessions/<sid>/cards/<task_id>.md` skeleton on disk after commit (FS write follows audit-row durability rule).
+**Auth:** none
+**Request:** `{ "task_id": int|null = null, "status": "running"|"done"|"error"|"timeout" = "running" }`. `session_id` is NOT in the body — taken from URL.
+**Response 201:** `SessionRunRead` (with `card_log_path` set when `task_id` is given).
+**Errors:**
+- `400` — `{"detail":"Session id=<n> is closed; cannot create runs"}`. Source-text-locked.
+- `400` — `{"detail":"task_id <n> does not exist or is deleted"}`.
+- `400` — `{"detail":"task <t> belongs to project <p>, session belongs to project <q>"}` when `task.project_id != session.project_id` (cross-project rejection — mirror of `parent_task_id belongs to a different project` from #238). Source-text-locked. (Kanban #716)
+- `404` — session id not found.
+
+#### PATCH /api/session_runs/{id}
+**Purpose:** Update a run's status / totals / cost. Transitioning `status` to a terminal state (`done`/`error`/`timeout`) auto-stamps `finished_at=now()` if NULL. **CTX-1 caveat:** `total_cost_usd` is currently accepted from the client with NO validation — CTX-3 (#718) will replace with server-authoritative cost computation from a pricing table.
+**Auth:** none
+**Request:** any subset of `{status, finished_at, total_input_tokens, total_output_tokens, total_context_chars, total_cost_usd, budget_warning}`.
+**Response 200:** `SessionRunRead`.
+**Errors:**
+- `404` — `{"detail":"Session run id=<n> not found"}`.
+- `422` — bad status literal / negative token total.
+
+#### GET /api/sessions/{id}/runs
+**Purpose:** List runs in a session.
+**Auth:** none
+**Query:** `status` (literal, optional), `limit`, `offset`.
+**Response 200:** `[SessionRunRead, ...]`.
+**Errors:** `404` — session id not found.
+
+#### GET /api/sessions/{id}/compacts
+**Purpose:** List compact events for a session. CTX-1 read-only; CTX-4 (#719) owns the POST/compact action.
+**Auth:** none
+**Query:** `limit`, `offset`.
+**Response 200:** `[SessionCompactRead, ...]`.
+**Errors:** `404` — session id not found.
+
 ## Schemas
 
 **`ProjectRead`** — `{id:int, name, description, paths_web, paths_api, paths_db, stack_web, stack_api, stack_db, config:object, is_active:bool, team:"dev"|"novel", created_at, updated_at, auto_run_consent_at:datetime|null}`
@@ -270,5 +350,11 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 `task_kind` + recurrence template fields (`is_template`, `recurrence_rule`, `recurrence_timezone`, `next_fire_at`, `spawned_from_task_id`) added 2026-05-10 by Kanban #706 (V3+ T1 / scope-lock). Defaults backfilled by migration `0007_task_kind_and_recurrence`: `task_kind='human'`, `is_template=false`, `recurrence_timezone='UTC'`, NULLs on the remaining nullable fields. `recurrence_rule` is a cron expression validated by `croniter.is_valid()`; `recurrence_timezone` is an IANA TZ name validated by `zoneinfo.available_timezones()`. `spawned_from_task_id` is system-managed lineage — settable on POST by the T2 scheduler when it spawns a child from a template; NEVER editable on PATCH. Datetime fields with UTC offset serialize as trailing `Z` form on output (Pydantic v2 default) regardless of input form — FE round-trip comparisons must use `Date.parse()`/`new Date(s)`, not string `===`.
 
 Integer code fields (`process_status`, `priority`, `assigned_role`) follow `context/standards/general.md` §"Kanban schema codes". Note that the `tasks` lifecycle code is named `process_status` everywhere on the wire (renamed from `status` by the 2026-05-08 migration); `status` on the wire is reserved as the internal soft-delete flag and is not exposed.
+
+**`SessionRead`** — `{id:int, project_id:int, process_label:str|null, status:"active"|"compacting"|"closed", token_budget_per_run:int|null, compacted_history_ceiling_tokens:int, recent_activity_ceiling_tokens:int, session_root_path:str, started_at, closed_at:datetime|null, created_at, updated_at, runs_count:int, compacts_count:int}` — added 2026-05-10 by Kanban #716 (CTX-1). `runs_count` / `compacts_count` are 0 on list responses; populated on detail GET only (avoids N+1).
+
+**`SessionRunRead`** — `{id:int, session_id:int, task_id:int|null, status:"running"|"done"|"error"|"timeout", started_at, finished_at:datetime|null, total_input_tokens:int, total_output_tokens:int, total_context_chars:int, total_cost_usd:Decimal, budget_warning:bool, card_log_path:str|null, created_at, updated_at}` — added 2026-05-10 by Kanban #716. Server-stamps `finished_at` when transitioning to terminal status (`done`/`error`/`timeout`). `total_cost_usd` is client-supplied in CTX-1; CTX-3 (#718) replaces with server-authoritative computation.
+
+**`SessionCompactRead`** — `{id:int, session_id:int, trigger_kind:"size"|"manual"|"run_count", archive_path:str, before_tokens:int, after_tokens:int, compact_model:str, compact_cost_usd:Decimal, compacted_at:datetime}` — added 2026-05-10 by Kanban #716. Read-only in CTX-1; POST/compact action ships in CTX-4 (#719).
 
 <!-- No endpoints documented yet. First endpoint goes above this line. -->

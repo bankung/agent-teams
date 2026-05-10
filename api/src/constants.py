@@ -153,3 +153,52 @@ class TaskKind:
     HUMAN = "human"
 
     ALL: tuple[str, ...] = (AI, HUMAN)
+
+
+class SessionStatus:
+    """sessions.status — VARCHAR(16) NOT NULL DEFAULT 'active',
+    CHECK status IN ('active','compacting','closed').
+
+    Added 2026-05-10 (Kanban #716 / CTX-1). 'closed' is terminal — router
+    400s any subsequent PATCH on a closed row.
+
+    Mirror of migration 0008's CHECK predicate (intentionally duplicated —
+    migrations don't import app code, see standards/sqlalchemy/migrations.md).
+    """
+
+    ACTIVE = "active"
+    COMPACTING = "compacting"
+    CLOSED = "closed"
+
+    ALL: tuple[str, ...] = (ACTIVE, COMPACTING, CLOSED)
+
+
+class SessionRunStatus:
+    """session_runs.status — VARCHAR(16) NOT NULL DEFAULT 'running',
+    CHECK status IN ('running','done','error','timeout').
+
+    Added 2026-05-10 (Kanban #716 / CTX-1). Three terminal states (done /
+    error / timeout) — the router auto-stamps `finished_at` on transition.
+    """
+
+    RUNNING = "running"
+    DONE = "done"
+    ERROR = "error"
+    TIMEOUT = "timeout"
+
+    ALL: tuple[str, ...] = (RUNNING, DONE, ERROR, TIMEOUT)
+
+
+class SessionCompactTrigger:
+    """session_compacts.trigger_kind — VARCHAR(16) NOT NULL,
+    CHECK trigger_kind IN ('size','manual','run_count').
+
+    Added 2026-05-10 (Kanban #716 / CTX-1). CTX-4 wires the runner; CTX-1
+    only ships the schema + read endpoints.
+    """
+
+    SIZE = "size"
+    MANUAL = "manual"
+    RUN_COUNT = "run_count"
+
+    ALL: tuple[str, ...] = (SIZE, MANUAL, RUN_COUNT)

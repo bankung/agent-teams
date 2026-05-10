@@ -53,3 +53,8 @@ context/projects/_*/
 # probe scripts). Keep the dir tracked via .gitkeep but ignore its contents.
 _scratch/*
 !_scratch/.gitkeep
+
+# CTX-1 (Kanban #716): per-Claude-Code-instance session markdown store.
+# DB rows live in `sessions` / `session_runs` / `session_compacts`; markdown
+# content (session.md + archive/ + cards/) lives here. Never commit content.
+/_sessions/

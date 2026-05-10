@@ -8,6 +8,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from src.routers import projects as projects_router
+from src.routers import sessions as sessions_router
 from src.routers import tasks as tasks_router
 from src.settings import get_settings
 
@@ -28,6 +29,8 @@ def create_app() -> FastAPI:
 
     app.include_router(projects_router.router, prefix="/api")
     app.include_router(tasks_router.router, prefix="/api")
+    app.include_router(sessions_router.router, prefix="/api")
+    app.include_router(sessions_router.runs_router, prefix="/api")
 
     return app
 
