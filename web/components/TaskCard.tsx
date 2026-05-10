@@ -1,0 +1,59 @@
+import type { TaskRead } from "@/lib/api";
+import { TaskPriority, TaskRole } from "@/lib/constants";
+import { RunModeBadge } from "./RunModeBadge";
+
+type Props = { task: TaskRead };
+
+const PRIORITY_LABEL: Record<number, string> = {
+  [TaskPriority.LOW]: "low",
+  [TaskPriority.NORMAL]: "normal",
+  [TaskPriority.HIGH]: "high",
+  [TaskPriority.URGENT]: "urgent",
+};
+
+const PRIORITY_CLASS: Record<number, string> = {
+  [TaskPriority.LOW]: "text-zinc-500 bg-zinc-100",
+  [TaskPriority.NORMAL]: "text-zinc-600 bg-zinc-100",
+  [TaskPriority.HIGH]: "text-orange-700 bg-orange-50",
+  [TaskPriority.URGENT]: "text-red-700 bg-red-50",
+};
+
+const ROLE_LABEL: Record<number, string> = {
+  [TaskRole.FRONTEND]: "frontend",
+  [TaskRole.BACKEND]: "backend",
+  [TaskRole.DEVOPS]: "devops",
+  [TaskRole.QA]: "qa",
+  [TaskRole.REVIEWER]: "reviewer",
+};
+
+export function TaskCard({ task }: Props) {
+  return (
+    <article
+      data-run-mode={task.run_mode}
+      data-task-id={task.id}
+      className="rounded border border-zinc-200 bg-white p-3 shadow-sm hover:shadow"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <span className="font-mono text-xs text-zinc-400">#{task.id}</span>
+        <RunModeBadge mode={task.run_mode} />
+      </div>
+      <h3 className="mt-1 line-clamp-2 text-sm font-medium text-zinc-900">
+        {task.title}
+      </h3>
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        <span
+          className={`inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${
+            PRIORITY_CLASS[task.priority] ?? "text-zinc-600 bg-zinc-100"
+          }`}
+        >
+          {PRIORITY_LABEL[task.priority] ?? `p${task.priority}`}
+        </span>
+        {task.assigned_role !== null && (
+          <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium text-indigo-700 bg-indigo-50">
+            {ROLE_LABEL[task.assigned_role] ?? `role${task.assigned_role}`}
+          </span>
+        )}
+      </div>
+    </article>
+  );
+}

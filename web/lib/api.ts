@@ -1,6 +1,5 @@
-// API type definitions — mirror of api/src/schemas/{project,task}.py.
+// API types + fetch helpers — mirror of api/src/schemas/{project,task}.py.
 // Source of truth: context/projects/agent-teams/shared/api-contracts.md.
-// DO NOT add fetch helpers here yet — V2 (Kanban #406) scope. Types only for #481-C / #484.
 
 import type {
   TaskStatusValue,
@@ -51,3 +50,85 @@ export type TaskRead = {
 export type ProjectGrantConsent = {
   confirm_name: string;
 };
+
+// ---------------------------------------------------------------------------
+// Fetch helpers (V2 / Kanban #406)
+// ---------------------------------------------------------------------------
+//
+// Base URL split:
+//   - BROWSER_API_URL  — what Client Components / browser fetch hit. The browser runs on the
+//                         host (not inside the compose network) and cannot DNS-resolve `api`.
+//                         Inlined into the JS bundle at build time via NEXT_PUBLIC_*.
+//   - SERVER_API_URL   — what Server Components hit. When this Next.js server runs inside the
+//                         `web` Docker container, dev-devops sets INTERNAL_API_URL=http://api:8456
+//                         so SSR fetches stay on the compose network. Falls back to the browser URL
+//                         for local non-Docker dev.
+// Selection: typeof window === 'undefined' picks server-side, else browser-side.
+
+const BROWSER_API_URL =
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8456";
+const SERVER_API_URL = process.env.INTERNAL_API_URL ?? BROWSER_API_URL;
+
+function apiBaseUrl(): string {
+  return typeof window === "undefined" ? SERVER_API_URL : BROWSER_API_URL;
+}
+
+async function extractDetail(response: Response): Promise<string> {
+  const body = (await response.json().catch(() => ({}))) as {
+    detail?: unknown;
+  };
+  if (typeof body.detail === "string") return body.detail;
+  return `${response.status} ${response.statusText}`;
+}
+
+async function jsonFetch<T>(
+  path: string,
+  init?: { headers?: Record<string, string> },
+): Promise<T> {
+  const url = `${apiBaseUrl()}${path}`;
+  const response = await fetch(url, {
+    ...init,
+    cache: "no-store",
+    headers: { Accept: "application/json", ...(init?.headers ?? {}) },
+  });
+  if (!response.ok) {
+    throw new Error(await extractDetail(response));
+  }
+  return (await response.json()) as T;
+}
+
+export async function getProjectByName(name: string): Promise<ProjectRead> {
+  return jsonFetch<ProjectRead>(
+    `/api/projects/by-name/${encodeURIComponent(name)}`,
+  );
+}
+
+type ListTasksOpts = {
+  pending?: boolean;
+  parent_task_id?: number;
+  top_level_only?: boolean;
+};
+
+export async function listTasks(
+  projectId: number,
+  opts: ListTasksOpts = {},
+): Promise<TaskRead[]> {
+  const qs = new URLSearchParams();
+  if (opts.pending) qs.set("pending", "true");
+  if (opts.top_level_only) qs.set("top_level_only", "true");
+  else if (opts.parent_task_id !== undefined)
+    qs.set("parent_task_id", String(opts.parent_task_id));
+  const path = qs.toString() ? `/api/tasks?${qs}` : `/api/tasks`;
+  return jsonFetch<TaskRead[]>(path, {
+    headers: { "X-Project-Id": String(projectId) },
+  });
+}
+
+export async function getTask(
+  projectId: number,
+  id: number,
+): Promise<TaskRead> {
+  return jsonFetch<TaskRead>(`/api/tasks/${id}`, {
+    headers: { "X-Project-Id": String(projectId) },
+  });
+}
