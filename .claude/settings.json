@@ -24,11 +24,21 @@
       "Write(~/.claude/projects/**/memory/**)",
       "Edit(~/.claude/projects/**/memory/**)",
 
-      "Write(/context/projects/**/current-state.md)",
-      "Edit(/context/projects/**/current-state.md)",
+      "Write(/context/projects/agent-teams/dev-backend/current-state.md)",
+      "Edit(/context/projects/agent-teams/dev-backend/current-state.md)",
+      "Write(/context/projects/agent-teams/dev-frontend/current-state.md)",
+      "Edit(/context/projects/agent-teams/dev-frontend/current-state.md)",
+      "Write(/context/projects/agent-teams/dev-devops/current-state.md)",
+      "Edit(/context/projects/agent-teams/dev-devops/current-state.md)",
+      "Write(/context/projects/agent-teams/dev-tester/current-state.md)",
+      "Edit(/context/projects/agent-teams/dev-tester/current-state.md)",
+      "Write(/context/projects/agent-teams/dev-reviewer/current-state.md)",
+      "Edit(/context/projects/agent-teams/dev-reviewer/current-state.md)",
 
       "Write(/_scratch/**)",
       "Edit(/_scratch/**)",
+      "Write(/_scratch/*)",
+      "Edit(/_scratch/*)",
 
       "Agent(*)",
 
@@ -73,6 +83,13 @@
       "Bash(curl --silent -X DELETE \"http://localhost:8456:*)",
       "Bash(curl --silent --output NUL http://localhost:8456:*)",
 
+      "Bash(curl --silent -H \"X-Project-Id: 1\" http://localhost:8456:*)",
+      "Bash(curl --silent -H \"X-Project-Id: 1\" \"http://localhost:8456:*)",
+      "Bash(curl --silent -o /dev/null -w \"%{http_code}\\n\" http://localhost:8456:*)",
+      "Bash(curl --silent -o /dev/null -w \"%{http_code}\\n\" http://localhost:3000:*)",
+      "Bash(curl --silent http://localhost:3000:*)",
+      "Bash(curl --silent http://localhost:3000/:*)",
+
       "Bash(rm _scratch/:*)",
       "Bash(rm -r _scratch/:*)",
       "Bash(where:*)",
@@ -102,9 +119,6 @@
       "Bash(docker compose exec -T db psql -U postgres -d agent_teams -c \\d:*)"
     ],
     "ask": [
-      "Write(*)",
-      "Edit(*)",
-      "Bash(*)",
       "Write(/context/projects/*/shared/**)",
       "Edit(/context/projects/*/shared/**)",
       "Write(/context/teams/**)",
