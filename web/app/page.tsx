@@ -38,16 +38,22 @@ export default async function Home() {
   );
 
   return (
-    <main className="min-h-screen bg-white p-6">
-      <header className="mb-4 flex flex-col gap-3">
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-2xl font-semibold text-zinc-900">
+    <main className="min-h-screen bg-white px-6 py-5">
+      <header className="mb-4 flex flex-col gap-2">
+        <div className="flex items-baseline gap-2 text-sm">
+          <h1 className="text-xl font-semibold tracking-tight text-zinc-900">
             {project.name}
           </h1>
-          <span className="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium text-zinc-700 bg-zinc-100">
-            team: {project.team}
+          <span aria-hidden className="text-zinc-300">
+            ·
           </span>
-          <span className="text-sm text-zinc-500">
+          <span className="text-zinc-600">
+            team: <span className="text-zinc-900">{project.team}</span>
+          </span>
+          <span aria-hidden className="text-zinc-300">
+            ·
+          </span>
+          <span className="text-zinc-500 tabular-nums">
             {tasks.length} task{tasks.length === 1 ? "" : "s"}
           </span>
         </div>

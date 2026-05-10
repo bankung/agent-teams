@@ -17,6 +17,33 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-10 — V2 visual baseline: Linear-style minimalism (post-#406 polish)
+**Scope:** frontend / shared
+**Proposed by:** dev-frontend (visual polish slice driven by Lead's `ui-ux-pro-max` consultation; user picked Linear-style minimalism over bento-dark / IBM Plex editorial). Lead applied; dev-tester / dev-reviewer skipped — visual-only slice, no API/router/migration touched (per `context/teams/dev/smoke-methodology.md` "skip for docs- / comments- / agent-prompt-only tasks" rule, extended to non-functional UI polish).
+**Decision:** Lock the V2 visual baseline so future surfaces (V3 project switcher, V3+ consent grant, future task detail) inherit consistent tokens:
+- **Style baseline:** hairline 1px borders, NO card shadows, NO gradients. Color reserved for state badges (priority / role / run-mode); chrome stays achromatic (`bg-white` / `bg-zinc-50/60` / `border-zinc-200`). Light mode only — dark mode is a later slice.
+- **Typography:** Inter loaded via `next/font/google` at `app/layout.tsx`. `inter.className` on `<html>`; `antialiased` on `<body>`. Self-hosted at build time. NO new deps — `next/font` ships with Next 14.
+- **Density tokens:** page `px-6 py-5`; column `p-2.5 rounded-md bg-zinc-50/60`; card `p-2.5 rounded-md border border-zinc-200 bg-white` with `hover:bg-zinc-50 hover:border-zinc-300`; intra-column gap `gap-1.5`; grid gap `gap-3`. Target: 5+ cards per column visible at 1280px without scroll for typical project loads.
+- **Inline header pattern (no chips):** `name · team: <name> · N tasks` with `·` middle-dot separators marked `aria-hidden`. The `bg-zinc-100` team chip from #406 is dropped — Linear-style chrome is achromatic.
+- **Column header pattern:** small-caps `uppercase tracking-wide text-zinc-500` label + `·` + count in plain `tabular-nums` text. Hairline `border-b border-zinc-200` divider under header. NO count pill / chip.
+- **Role-badge palette:** frontend = `text-blue-700 bg-blue-50`; backend / devops / qa / reviewer = `text-indigo-700 bg-indigo-50`. Differentiates the visible work-doer at a glance without rainbow-ing the board.
+- **`tabular-nums` on every numeric chrome.** Avoids jitter when counts grow (header task count, column counts).
+- **Empty-state convention:** em-dash `—` in `text-zinc-400 text-xs text-center py-4`. Replaces text like "No tasks" / "No items" everywhere in V2 and beyond. Linear convention.
+- **`RunModeBadge` and `ProjectConsentBanner` (locked from #484) untouched.** Their existing palette (zinc-500 muted manual / blue-50 auto_pickup / amber-50 auto_headless) already aligns with Linear-style; verified visually integrating cleanly.
+
+**Reasoning:** Solo-developer dogfood audience values info density + scannability + calm focus. Linear / Height / Vercel dashboard family is the canonical solution — chrome disappears, color flags only state, typography hierarchy carries weight. Bento-dark and IBM Plex editorial were also presented; user picked Linear minimalism. Locking the tokens here means V3 + future surfaces inherit them without re-deriving design intelligence per slice. ui-ux-pro-max skill's data files aren't installed (only SKILL.md prose), so the consultation used SKILL.md priority rules (Style Selection + Layout & Spacing + Typography & Color) rather than `--design-system` queries.
+
+**Implications:**
+- **dev-frontend agent** picked up `ui-ux-pro-max` opt-in skill section in `.claude/agents/dev-frontend.md` (V2 commit `63ce0ec`). Future polish slices can either (a) Lead pre-loads skill + locks direction in spawn brief (this slice's pattern) or (b) dev-frontend invokes skill itself when brief mentions a new visible surface.
+- **Standards-propagation queue (humans-only) grows by 2 framework files:**
+  - `context/standards/nextjs/typography.md` — codify `next/font/google` over `<link href="https://fonts.googleapis.com/...">` for App Router; `inter.className` on `<html>` + `antialiased` on `<body>`. Note: root-layout edits in Next 14.x dev mode may not HMR — `docker compose restart web` is the recovery.
+  - `context/standards/tailwind/density.md` — Linear-style density tokens for dashboard surfaces (the spec block above), achromatic-chrome rule, `tabular-nums` on numeric utilities, em-dash empty state.
+- **Operational note for future agents:** the host VS Code TS server emits `Cannot find module 'next'` / `JSX.IntrinsicElements` errors after every `Edit` because `node_modules` lives inside the `web` container, not on the Windows host. Authoritative check is `docker compose exec -T web sh -c "cd /app && npx tsc --noEmit"`. Disregard host-side IDE diagnostics for `web/` files. Worth a one-liner in a future README; deferred.
+- **Density-target follow-up:** project task count grew 6 → 38 between V2 land and polish (test rows). Vertical-scroll behavior at column-length > ~10-12 cards untested in this slice; defer to first user-reported overflow.
+- **Live verification (Lead-side):** wget against http://localhost:3000/ confirms 38 cards rendered, 5 columns with uppercase labels, 12 `tabular-nums` chips, 7 middle-dot separators, Inter className + `antialiased` body, hairline card chrome.
+
+**Files:** `web/app/layout.tsx` (Inter font load + body className), `web/app/page.tsx` (header inlining + `·` separators + chip removal), `web/app/loading.tsx` (skeleton density match), `web/app/error.tsx` (re-toned to neutral panel), `web/components/TaskCard.tsx` (hairline card + role-color split + `text-[11px]` id), `web/components/BoardColumn.tsx` (small-caps header + count as text + em-dash empty state). `RunModeBadge.tsx` and `ProjectConsentBanner.tsx` unchanged.
+
 ## 2026-05-10 — Phase 3 V2 read-only Kanban board landed (Kanban #406)
 **Scope:** frontend / shared
 **Proposed by:** dev-frontend (api.ts fetch helpers + page.tsx Server Component board + loading.tsx + error.tsx + TaskCard + BoardColumn) → dev-tester GREEN (P1-P3 + N1-N3 + B1-B5 + cleanup; 36 manual cards rendered, run-mode round-trip via `auto_pickup` throwaway id=703; 1 YELLOW = tester hook port-whitelist gap, deferred) → dev-reviewer GREEN (0 BLOCKER / 0 MAJOR / 7 NITs; NIT-1 magic-string `"auto_headless"` → `TaskRunMode.AUTO_HEADLESS` fixed in close-out, NITs 2-7 deferred)

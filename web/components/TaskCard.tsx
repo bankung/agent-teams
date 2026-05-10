@@ -26,18 +26,26 @@ const ROLE_LABEL: Record<number, string> = {
   [TaskRole.REVIEWER]: "reviewer",
 };
 
+const ROLE_CLASS: Record<number, string> = {
+  [TaskRole.FRONTEND]: "text-blue-700 bg-blue-50",
+  [TaskRole.BACKEND]: "text-indigo-700 bg-indigo-50",
+  [TaskRole.DEVOPS]: "text-indigo-700 bg-indigo-50",
+  [TaskRole.QA]: "text-indigo-700 bg-indigo-50",
+  [TaskRole.REVIEWER]: "text-indigo-700 bg-indigo-50",
+};
+
 export function TaskCard({ task }: Props) {
   return (
     <article
       data-run-mode={task.run_mode}
       data-task-id={task.id}
-      className="rounded border border-zinc-200 bg-white p-3 shadow-sm hover:shadow"
+      className="rounded-md border border-zinc-200 bg-white p-2.5 transition-colors hover:bg-zinc-50 hover:border-zinc-300"
     >
       <div className="flex items-start justify-between gap-2">
-        <span className="font-mono text-xs text-zinc-400">#{task.id}</span>
+        <span className="font-mono text-[11px] text-zinc-400">#{task.id}</span>
         <RunModeBadge mode={task.run_mode} />
       </div>
-      <h3 className="mt-1 line-clamp-2 text-sm font-medium text-zinc-900">
+      <h3 className="mt-1 line-clamp-2 text-sm font-medium leading-snug text-zinc-900">
         {task.title}
       </h3>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -49,7 +57,11 @@ export function TaskCard({ task }: Props) {
           {PRIORITY_LABEL[task.priority] ?? `p${task.priority}`}
         </span>
         {task.assigned_role !== null && (
-          <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium text-indigo-700 bg-indigo-50">
+          <span
+            className={`inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${
+              ROLE_CLASS[task.assigned_role] ?? "text-indigo-700 bg-indigo-50"
+            }`}
+          >
             {ROLE_LABEL[task.assigned_role] ?? `role${task.assigned_role}`}
           </span>
         )}
