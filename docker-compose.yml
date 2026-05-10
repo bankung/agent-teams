@@ -83,6 +83,12 @@ services:
       # safe for non-secret URLs only. The browser runs on the host, so use the host-resolvable
       # URL (`http://localhost:8456`) — the compose-internal `api` hostname is NOT browser-resolvable.
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8456}
+      # SSR / Server Component fetches inside the web container resolve `api` via the
+      # compose network. web/lib/api.ts:apiBaseUrl() picks SERVER_API_URL when
+      # typeof window === 'undefined'. Without this var SSR fetches localhost:8456,
+      # which only works on Windows / macOS Docker Desktop (gateway routing) —
+      # breaks on Linux compose where container localhost != host. (Kanban #704)
+      INTERNAL_API_URL: ${INTERNAL_API_URL:-http://api:8456}
     ports:
       - "${WEB_PORT:-3000}:3000"
     volumes:
