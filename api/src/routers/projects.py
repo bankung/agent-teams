@@ -106,6 +106,24 @@ async def get_project_by_name(
     )
 
 
+@router.get("/{project_id}", response_model=ProjectRead)
+async def get_project_by_id(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> Project:
+    # By-id lookup parity with /by-name/{name} — FE V3 project switcher + external
+    # integrations only ever want active rows. Soft-deleted projects 404 by id
+    # too; restore is a future admin path. Detail string matches grant-consent
+    # / PATCH / DELETE byte-for-byte (source-text-locked, Kanban #691).
+    return await get_or_404(
+        session,
+        Project,
+        detail=f"Project id={project_id} not found",
+        id=project_id,
+        status=RecordStatus.ACTIVE,
+    )
+
+
 @router.post("", response_model=ProjectRead, status_code=http_status.HTTP_201_CREATED)
 async def create_project(
     payload: ProjectCreate,

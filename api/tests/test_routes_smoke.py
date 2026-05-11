@@ -147,6 +147,60 @@ async def test_get_project_by_name_404_exact_detail(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_project_by_id_returns_active_project(client) -> None:
+    """Kanban #691: GET /api/projects/{id} parity with /by-name/{name}.
+
+    Seeded `agent-teams` is id=1, is_active=True. ProjectRead shape sanity
+    matches the by-name smoke test above.
+    """
+    resp = await client.get("/api/projects/1")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["id"] == 1
+    assert body["name"] == "agent-teams"
+    assert body["team"] == "dev"
+    assert body["is_active"] is True
+    # ProjectRead shape sanity — same fields the by-name smoke test pins.
+    for field in ("paths_web", "paths_api", "paths_db", "config", "auto_run_consent_at"):
+        assert field in body, f"missing {field} in ProjectRead body"
+
+
+@pytest.mark.asyncio
+async def test_get_project_by_id_404_exact_detail(client) -> None:
+    """Kanban #691: 404 detail is source-text-locked (per #122 pattern).
+
+    Detail string mirrors PATCH /api/projects/{id} and POST /grant-consent
+    byte-for-byte (`Project id=<n> not found`).
+    """
+    resp = await client.get("/api/projects/9999999")
+    assert resp.status_code == 404
+    assert resp.json() == {"detail": "Project id=9999999 not found"}
+
+
+@pytest.mark.asyncio
+async def test_get_project_by_id_404_for_soft_deleted(
+    client, scaffold_cleanup
+) -> None:
+    """Kanban #691: GET /{id} returns 404 on soft-deleted rows (active-only
+    parity with /by-name/{name} and /grant-consent).
+
+    Create a throwaway project, DELETE it (flips status=0), then GET /{id}
+    must 404 with the same source-text-locked detail.
+    """
+    name = scaffold_cleanup(_unique_name("get-by-id-deleted"))
+    create = await client.post("/api/projects", json=_project_create_payload(name))
+    assert create.status_code == 201, create.text
+    project_id = create.json()["id"]
+
+    delete = await client.delete(f"/api/projects/{project_id}")
+    assert delete.status_code == 204, delete.text
+
+    resp = await client.get(f"/api/projects/{project_id}")
+    assert resp.status_code == 404
+    assert resp.json() == {"detail": f"Project id={project_id} not found"}
+
+
+@pytest.mark.asyncio
 async def test_patch_project_404_exact_detail(client) -> None:
     """`get_or_404` on the PATCH path must surface "Project id=<n> not found"."""
     resp = await client.patch("/api/projects/9999999", json={})

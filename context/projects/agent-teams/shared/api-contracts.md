@@ -71,6 +71,13 @@ Template for a new endpoint:
 **Errors:**
 - `404` — `{"detail":"Project '<name>' not found"}` when name does not exist
 
+### GET /api/projects/{id}
+**Purpose:** Direct id-based lookup. Active-only (parity with `/by-name/{name}`). Added 2026-05-11 by Kanban #691 — prior to this slice the path returned 405 Method Not Allowed (only PATCH + DELETE were registered on `/{project_id}`).
+**Auth:** none
+**Response 200:** `ProjectRead`
+**Errors:**
+- `404` — `{"detail":"Project id=<n> not found"}` when id does not exist OR row is soft-deleted (`status=0`). Source-text-locked in `routers/projects.py` + `tests/test_routes_smoke.py` per the #122 pattern. Byte-equal with PATCH `/api/projects/{id}`, DELETE `/api/projects/{id}`, POST `/grant-consent` 404 detail (single shared format).
+
 ### POST /api/projects
 **Purpose:** Create a project + auto-scaffold its `context/projects/<name>/` folder.
 **Auth:** none
