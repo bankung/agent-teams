@@ -60,6 +60,21 @@ export type ProjectGrantConsent = {
   confirm_name: string;
 };
 
+// HttpError — typed error for non-2xx API responses. Callers (page.tsx) can
+// discriminate on `.status` to separate 404 from 500 / network / 422. The
+// `.message` is the formatted detail (string for 400, joined `msg` for Pydantic
+// 422 arrays) so consumers that only read `err.message` keep working unchanged.
+export class HttpError extends Error {
+  readonly status: number;
+  readonly detail: unknown;
+  constructor(status: number, detail: unknown, message: string) {
+    super(message);
+    this.name = "HttpError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
 // Base URL split: BROWSER_API_URL for client-bundle fetches; SERVER_API_URL for SSR
 // inside the web container (set INTERNAL_API_URL=http://api:8456 — see
 // shared/api-contracts.md "Conventions"). Selection: typeof window === 'undefined'.
@@ -72,12 +87,28 @@ function apiBaseUrl(): string {
   return typeof window === "undefined" ? SERVER_API_URL : BROWSER_API_URL;
 }
 
-async function extractDetail(response: Response): Promise<string> {
-  const body = (await response.json().catch(() => ({}))) as {
-    detail?: unknown;
-  };
-  if (typeof body.detail === "string") return body.detail;
-  return `${response.status} ${response.statusText}`;
+// formatDetail — render the parsed FastAPI `detail` field as a single string.
+// 400 / 404: `detail` is a string (route-locked source text). 422: Pydantic
+// returns an array of `{ type, loc, msg, input, ... }` error objects — join
+// the human-readable msgs. Returns null for unknown shapes so callers fall
+// back to the status-line.
+function formatDetail(detail: unknown): string | null {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const parts = detail.map((d) => {
+      if (
+        d &&
+        typeof d === "object" &&
+        "msg" in d &&
+        typeof (d as { msg: unknown }).msg === "string"
+      ) {
+        return (d as { msg: string }).msg;
+      }
+      return JSON.stringify(d);
+    });
+    return parts.length > 0 ? parts.join("; ") : null;
+  }
+  return null;
 }
 
 async function jsonFetch<T>(
@@ -96,7 +127,12 @@ async function jsonFetch<T>(
     headers: { Accept: "application/json", ...(init?.headers ?? {}) },
   });
   if (!response.ok) {
-    throw new Error(await extractDetail(response));
+    const body = (await response.json().catch(() => ({}))) as {
+      detail?: unknown;
+    };
+    const message =
+      formatDetail(body.detail) ?? `${response.status} ${response.statusText}`;
+    throw new HttpError(response.status, body.detail, message);
   }
   return (await response.json()) as T;
 }

@@ -55,13 +55,22 @@ export function ProjectSwitcher({ current }: Props) {
     router.push(`/p/${name}`);
   };
 
+  // Clear loadError on every (re)open — without this, a single failed fetch
+  // latches the dropdown into the error state until full page reload (#760).
+  // The `projects.length > 0` guard in the lazy-fetch effect preserves the
+  // happy-path no-refetch behavior; only the error latch is removed.
+  const onToggle = () => {
+    setLoadError(null);
+    setOpen((v) => !v);
+  };
+
   return (
     <div ref={wrapperRef} className="relative inline-block" data-project-switcher>
       <button
         type="button"
         aria-haspopup="listbox"
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        onClick={onToggle}
         className="inline-flex items-center gap-1.5 rounded border border-zinc-200 bg-white px-2 py-1 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900"
       >
         <span className="text-zinc-900 normal-case tracking-normal text-sm font-semibold">

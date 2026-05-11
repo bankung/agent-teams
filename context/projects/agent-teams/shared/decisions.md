@@ -16,6 +16,42 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-11 — Typed `HttpError` + ProjectSwitcher loadError reset — Kanban #760 closed (V3 WARNs)
+**Scope:** frontend / shared
+**Decision:** Three operational-quality WARNs from #407 V3 reviewer closed in one FE slice. No backend changes. No new dependencies. `tsc --noEmit` clean; #407 V3 Tier-1 baseline re-verified (57 task rows, switcher + grant trigger intact, 404 path renders not-found marker).
+
+- **`web/lib/api.ts`** — exported `class HttpError extends Error { readonly status: number; readonly detail: unknown }`. `jsonFetch` throws `HttpError` instead of bare `Error` on non-2xx. `.message` semantics preserved (formatted detail OR status-line fallback), so all existing `err instanceof Error ? err.message : "..."` catches in Board.tsx + ConsentGrantModal.tsx + ProjectSwitcher.tsx work unchanged. **Discrimination at the throw layer, not the catch layer** — each caller picks its behavior (404 → `notFound()`, others → bubble to `error.tsx`).
+- **`extractDetail` removed; new sync `formatDetail(detail: unknown): string | null`** handles BOTH string `detail` (400 / 404 source-text-locked) AND **array `detail`** (Pydantic 422 from `extra='forbid'` + future field validators). Array path joins each error's `msg` field with `"; "`; `JSON.stringify` per-element fallback for unknown shapes. Pre-#760 the modal rendered bare `"422 Unprocessable Entity"` on extra-field smuggle; now renders the actual `"Extra inputs are not permitted"` message.
+- **`web/app/p/[name]/page.tsx`** — `catch (e) { if (e instanceof HttpError && e.status === 404) notFound(); throw e; }`. Non-404 errors (500, connection-refused, future 422) bubble to `app/error.tsx` — symmetric with the unguarded `listTasks` below. Closes the WARN-1 footgun where backend outage looked like "wrong project name" to the user.
+- **`web/components/ProjectSwitcher.tsx`** — new `onToggle` handler calls `setLoadError(null)` before `setOpen((v) => !v)`. Trigger button wired to `onToggle`. The lazy-fetch effect's `projects.length > 0` short-circuit preserves happy-path no-refetch. Pre-#760, a single failed fetch permanently latched the error state until full-page reload; now every (re)open retries — correct UX for a dropdown.
+
+**Reasoning:** Typed HTTP errors at the throw layer is the canonical TS pattern for letting each caller discriminate without parsing `error.message` strings. The `HttpError extends Error` shape keeps backward-compatibility with every existing `instanceof Error` catch — zero refactor required across the rest of the codebase. The `Server / Client bundle duplication` concern (would `instanceof HttpError` fail across boundaries?) is dismissed by evidence: the Server-Component catch in `page.tsx` lives in the same Node SSR process as the throw site in `lib/api.ts` (same module instance → same class identity); the Client catches (Board / Modal / Switcher) use `err instanceof Error` via the prototype chain, where class identity is irrelevant. If a future Client surface needs `instanceof HttpError`, fall back to duck-typing (`'status' in e && e.status === 404`).
+
+**Implications:**
+- **Tier-1 verdict GREEN 5/5.** A (#407 baseline re-confirm), B (404 path via discriminator), C (non-404 → error.tsx — static code review per spawn-brief authorisation since live 500 simulation requires container restart), D (loadError reset — static code review since no headless browser in `web` image), N1 (tsc clean).
+- **Live runtime defense-in-depth deferred** (Probes C-live + D-headless) — both fixes have FE + reviewer + static-code triangulation; tester explicitly noted defers are safe. Future tooling slice candidate: add a Playwright harness to the web container + a `BACKEND_FAILURE_INJECT=true` SSR-side knob for deterministic 500 injection.
+- **`api-contracts.md` did NOT need an edit** — Pydantic 422 array shape was already documented at the contract level; `formatDetail` matches the documented shape verbatim.
+- **Tester surfaced a marker-grep drift in `standards/nextjs/notfound-dev-vs-prod.md` (which Lead wrote 2026-05-11):** the literal `>This page could not be found<` text-node pattern does NOT match in `next dev` SSR streams (markers live inside `__next_f` JSON chunks). The correct substring fingerprint is `could not be found` (without the angle-brackets). Two Tier-1 probes (#407 V3 + #760) hit this trap — surface to user for standards correction.
+- **Two new standards candidates surfaced by reviewer** (propose-only — human MA pending): (a) `nextjs/typed-error-catch.md` (Server Component catch must discriminate via typed error — bare `catch { notFound() }` is the anti-pattern); (b) `typescript/typed-errors.md` (class-shape rule for HTTP-error classes — `extends Error`, `readonly status`, optional `readonly detail`, super(message) for legacy compat).
+
+**Superseded:** N/A — additive refactor; existing #407 V3 surface preserved exactly.
+
+---
+
+## 2026-05-11 — `GET /api/projects/{id}` route added — Kanban #691 closed
+**Scope:** backend / shared
+**Decision:** Wire the direct id-based lookup route. Was 405 Method Not Allowed pre-#691 (only PATCH + DELETE registered on `/{project_id}`). New `GET /{project_id}` mirrors `/by-name/{name}` parity: `get_or_404` with `status=RecordStatus.ACTIVE` — soft-deleted rows 404 (parity). Detail string `f"Project id={project_id} not found"` source-text-locked, **byte-equal with PATCH / DELETE / grant-consent** on the same path (single shared format).
+
+**Reasoning:** FE V3 project switcher (and future external integrations) want id-based GETs; today they must use `/by-name/{name}` or `?...` filters as a workaround. Active-only filter parity with `/by-name/{name}` is the right contract: soft-deleted rows should not be visible via id either; restore is a future admin path.
+
+**Implications:**
+- pytest 302 → 305 GREEN (+3 tests: positive on seeded id=1, 404 on missing, 404 on soft-deleted).
+- Tier-1 live smoke 5/5 GREEN including route-ordering defense-in-depth check (`/active` still 410, `/by-name/agent-teams` still 200 — new dynamic route did NOT shadow the static segments).
+- Route ordering safe by two independent defenses: (a) declaration order at lines 60 (`/active`) + 92 (`/by-name/{name}`) + 109 (`/{project_id}`); (b) `project_id: int` makes Starlette's int-converter reject non-digit segments like `"active"` and `"by-name"` outright (reviewer-confirmed).
+- Reviewer 1 cosmetic NIT only (compress 4-line comment block to 2 lines — optional; deferred).
+
+---
+
 ## 2026-05-11 — Phase 3 V3 landed — Kanban #407 closed (project switcher + consent grant)
 **Scope:** frontend / shared
 **Decision:** First mutation surface on the Kanban board (V2 was read-only; T4 #709 added drag-drop; this slice adds project navigation + the consent grant mutation). Route structure split:
