@@ -16,6 +16,27 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-11 — Web host port 3000 → 5431 — Kanban #762 closed
+**Scope:** devops / shared / standards
+**Decision:** Bind agent-teams web to host port **5431** (custom, project-scoped). Container-internal port stays **3000** (unchanged: `web/Dockerfile` EXPOSE, `next dev -p 3000`, in-container healthcheck `wget http://localhost:3000`, `INTERNAL_API_URL`). Only the host-side mapping changes via `WEB_PORT` env-var; `docker-compose.yml` default `${WEB_PORT:-3000}:3000` → `${WEB_PORT:-5431}:3000`. Mirrors the **api project-scoped port pattern** (8456 for agent-teams api) — each project picks its own host port at scaffolding time instead of using the framework default.
+
+- **User rationale (2026-05-11):** future scaffolded projects will use Next.js default 3000; collision-free side-by-side dev requires project-scoped host ports. Picking 5431 here reserves the slot for agent-teams web; analogous to api=8456 reserving for agent-teams api.
+- **Container-internal port DELIBERATELY unchanged.** Container-side stays framework-native (3000 for next dev) — only host mapping is project-scoped. This minimizes blast radius: `web/Dockerfile`, `web/package.json` scripts, `INTERNAL_API_URL`, in-container healthcheck all untouched.
+- **Files edited (7):** `.env.example` (WEB_PORT default + comment), `docker-compose.yml` (default substitution), `.claude/settings.json` (3 allowlist lines for `localhost:5431`), `.claude/hooks/tester-curl-allow.ps1` (2 comment lines; hook regex `(localhost|127\.0\.0\.1):\d+` is port-agnostic — no logic change), `README.md` (host-facing port refs in quickstart + services table + Kanban UI section), `shared/smoke-matrix.md` (Web URL line + #762 cross-link), `standards/docker/compose.md` (example port + project-scoped-port rationale note).
+- **Files DELIBERATELY untouched:** `web/Dockerfile`, `web/package.json`, `web/lib/api.ts`, `web/components/**`, `web/app/**`, in-container healthcheck command, `INTERNAL_API_URL`. All container-internal or app-code; port abstraction stops at the compose mapping. Historical entries in `current-state.md` files and prior `decisions.md` entries also UNTOUCHED — audit trail; values were correct at write-time.
+
+**Reasoning:** Default-port collision is a real cost on multi-project workstations (Next.js 3000, Vite 5173, Postgres 5432, FastAPI 8000 are all common defaults). Project-scoped port allocation at scaffolding time avoids retro-incidents later (#762 itself is the retrofit — would have been cheaper to allocate at Phase 3 V1). Pattern now codified in `standards/docker/compose.md` for future project scaffolds.
+
+**Implications:**
+- **Tier-1 dev-tester GREEN 5/5** on the new port. All #407 V3 markers (data-task-id ≥ 50, data-project-switcher = 1, data-board="dnd" = 1, data-consent-grant-trigger = 1) intact on `localhost:5431/p/agent-teams`. Old port 3000 returns connection-refused (`STATUS:000 EXIT:7`). Container healthcheck still GREEN (internal port 3000 unchanged).
+- **Hook regex port-agnostic** — `tester-curl-allow.ps1` auto-allow continues to work for `localhost:5431` without any port-anchored allowlist gap. Tester observed zero permission prompts across 5 curls on 3 distinct ports.
+- **Local `.env` consideration:** if a developer machine has `.env` with `WEB_PORT=3000`, that overrides the compose default. The repo's `.env.example` is updated; individual developers must update their local `.env` (gitignored). The current Lead workstation `.env` does NOT contain `WEB_PORT` — compose-default fall-through; no action needed here.
+- **Standards insight surfaced:** project-scoped host ports for dev containers (added to `standards/docker/compose.md`). Mirrors the implicit pattern api=8456 + new web=5431; documenting it closes the loop and shifts the convention from "implicit per project" to "explicit at scaffolding time."
+
+**Superseded:** N/A — additive config + doc. Phase 3 V1 scaffold's choice of port 3000 (originally documented in the 2026-05-08 #406 entry, kept historical) is the prior state.
+
+---
+
 ## 2026-05-11 — `BACKEND_FAILURE_INJECT` env-knob — Kanban #761 closed (env-knob slice; Playwright residual deferred)
 **Scope:** frontend / shared / team-methodology
 **Decision:** Add a test-only env-knob `BACKEND_FAILURE_INJECT` consumed by `web/lib/api.ts` `jsonFetch`. When set to `"true"` AND `NODE_ENV != "production"`, `jsonFetch` throws `new HttpError(500, ...)` BEFORE hitting the real backend. Used by dev-tester to verify the WARN-1 fix from #760 (Server Component catch routes non-404 errors to `app/error.tsx`, NOT `notFound()`). This is the runtime verification path that was deferred from #760.

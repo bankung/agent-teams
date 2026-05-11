@@ -6,7 +6,7 @@
 ## Endpoints / hosts
 
 - **API:** `http://localhost:8456` — FastAPI on the `api` service in `docker-compose.yml`.
-- **Web:** `http://localhost:3000` — Next.js on the `web` service.
+- **Web:** `http://localhost:5431` — Next.js on the `web` service (host port; container-internal port is 3000). Host port changed from 3000 → 5431 by Kanban #762 (2026-05-11) to avoid collision with the Next.js default 3000 that future scaffolded projects may use.
 - **DB:** `agent_teams` on the `db` service. Direct probes are NOT Tier-1; use API endpoints.
 
 ## Project-specific Tier-1 trigger paths (overrides / additions)

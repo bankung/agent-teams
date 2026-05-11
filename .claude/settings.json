@@ -87,9 +87,9 @@
       "Bash(curl --silent -H \"X-Project-Id: 1\" http://localhost:8456:*)",
       "Bash(curl --silent -H \"X-Project-Id: 1\" \"http://localhost:8456:*)",
       "Bash(curl --silent -o /dev/null -w \"%{http_code}\\n\" http://localhost:8456:*)",
-      "Bash(curl --silent -o /dev/null -w \"%{http_code}\\n\" http://localhost:3000:*)",
-      "Bash(curl --silent http://localhost:3000:*)",
-      "Bash(curl --silent http://localhost:3000/:*)",
+      "Bash(curl --silent -o /dev/null -w \"%{http_code}\\n\" http://localhost:5431:*)",
+      "Bash(curl --silent http://localhost:5431:*)",
+      "Bash(curl --silent http://localhost:5431/:*)",
 
       "Bash(rm _scratch/:*)",
       "Bash(rm -r _scratch/:*)",

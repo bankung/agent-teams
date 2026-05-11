@@ -11,7 +11,7 @@
 #   not curl                                     -> neutral (exit 0, no JSON)
 #
 # Why localhost-any-port auto-allow: tester probes the API (8456) AND the
-# web UI (3000) AND any future Playwright / dev-tool port. Hard-coding 8456
+# web UI (5431) AND any future Playwright / dev-tool port. Hard-coding 8456
 # only forced workarounds via `docker compose exec wget` for V2 web smoke
 # (Kanban #406), which lost ergonomics (-X / -w / -H). Localhost-any-port
 # is the safety boundary — the dev stack is throwaway/containerized.
@@ -46,7 +46,7 @@ $reason = @"
 Non-localhost curl blocked from dev-tester role.
 
 dev-tester is scoped to localhost (any port) and 127.0.0.1 (any port) —
-typically API on 8456 and web on 3000, plus any future dev-tool ports.
+typically API on 8456 and web on 5431, plus any future dev-tool ports.
 External destinations require explicit user approval; this hook denies them
 by default to prevent accidental network calls during smoke probes. If you
 genuinely need an external curl, propose it in your final report and let

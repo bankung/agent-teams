@@ -103,12 +103,12 @@ web:
   environment:
     NEXT_PUBLIC_API_URL: http://api:8456
   ports:
-    - "${WEB_PORT:-3000}:3000"
+    - "${WEB_PORT:-5431}:3000"
 ```
 
 Notes:
 - `http://api:8456` uses **service-name DNS inside the compose network** — `api` resolves to the api container, not `localhost`.
-- `${WEB_PORT:-3000}:3000` follows the N:N rule.
+- `${WEB_PORT:-5431}:3000` follows the N:N rule. Host-side default is a **project-scoped port** (5431 for agent-teams, mirroring api=8456) rather than the Next.js stack default of 3000 — avoids collision when multiple projects run side-by-side on the same workstation. Container-side stays 3000 because the Dockerfile EXPOSE + `next dev -p 3000` are framework-native and stack-invariant. **Pick a project-scoped host port at scaffolding time;** retrofitting later is cheap but tedious (Kanban #762 was the agent-teams retrofit).
 - `condition: service_healthy` works against the api `/health` healthcheck (already wired — see Healthcheck convention).
 - `web` itself must ship with its own healthcheck on day one (per Healthcheck convention).
 

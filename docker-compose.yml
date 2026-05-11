@@ -90,7 +90,7 @@ services:
       # breaks on Linux compose where container localhost != host. (Kanban #704)
       INTERNAL_API_URL: ${INTERNAL_API_URL:-http://api:8456}
     ports:
-      - "${WEB_PORT:-3000}:3000"
+      - "${WEB_PORT:-5431}:3000"
     volumes:
       # Bind ./web read-write so source edits hot-reload via `next dev`. Mount node_modules
       # as an anonymous volume so the host node_modules (if any) doesn't clobber the

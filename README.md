@@ -137,7 +137,7 @@ curl http://localhost:8456/api/projects/by-name/agent-teams
 
 # 6. (optional) Open the Kanban UI
 cd web && pnpm dev
-# Open http://localhost:3000
+# Open http://localhost:5431
 
 # 7. Open Claude Code at the agent-teams repo root
 claude
@@ -154,7 +154,7 @@ CLAUDE.md is loaded automatically — Claude is ready to act as Lead.
 |---|---|---|---|
 | `db` | `agent-teams-db` | `${POSTGRES_PORT:-5432}` | Postgres 16, UTF8 encoding (full Unicode incl. emoji), named volume `agent-teams-pgdata` |
 | `api` | `agent-teams-api` | `${API_PORT:-8456}` | bind-mounts the repo at `/repo`; runs apscheduler in-process for the recurrence subsystem |
-| `web` | `agent-teams-web` | `3000` | Next.js 14 App Router; Linear-style minimalist Kanban board (V2 read-only landed; V3 project switcher pending) |
+| `web` | `agent-teams-web` | `${WEB_PORT:-5431}` | Next.js 14 App Router; Linear-style minimalist Kanban board (V2 read-only landed; V3 project switcher pending). Container-internal port is 3000; host mapping defaults to 5431 to avoid Next.js default-port collision with other projects. |
 
 `docker-compose.yml` sets the api's `DATABASE_URL` to the `db` service hostname automatically — host `.env` only matters when running `uvicorn` outside compose. The api container also runs an `AsyncIOScheduler` background job (60s default tick) — see "Built-in subsystems" below.
 
@@ -176,7 +176,7 @@ The api ships several background subsystems beyond CRUD task storage:
 
 ### Through the Kanban UI
 
-1. Open http://localhost:3000.
+1. Open http://localhost:5431.
 2. **Create a project** → fill in name, paths (web/api/db), stack, standards.
 3. **Create a task** → role, description, priority.
 4. **Trigger Lead** → click "Start" on a task → Lead picks it up, spawns the right subagent, updates status.
