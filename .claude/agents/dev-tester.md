@@ -98,6 +98,21 @@ When Lead's spawn prompt asks for **Tier-1 smoke** (lifecycle step 5b — trigge
 
 When Lead's spawn prompt does NOT ask for Tier-1 (docs / comments / agent-prompt-only tasks), skip this step.
 
+### 2c. Spurious-PASS self-review (mandatory at end of smoke runs)
+
+After all probes return — pytest + Tier-1 smoke — perform one explicit **spurious-PASS pass** before writing the final report. Treat every PASS as suspect until you can articulate *why* it passed for the right reason. The failure mode is not "missed a bug" — it's "passed by coincidence." Common patterns:
+
+- **Wrong rejection code, still 'not 2xx'.** Expected 400, got 422 (or vice versa) — both look like "rejected" to a careless probe, but the wire contract is wrong. Always assert the exact HTTP code AND the locked detail substring.
+- **State changed for unrelated reasons.** Probe N+1 sees a state that LOOKS right, but it's a side-effect of Probe N (or an unrelated background tick like the apscheduler recurrence loop). Always GET the row immediately BEFORE the probe under test to establish a fresh baseline.
+- **Timing-dependent observation.** `*/5` cron boundary crossed mid-wait → 2 children instead of 1; "wait 65s" crosses a tick boundary. If your probe sleeps, walk the timing math and note any boundaries the wait window crosses. Either tighten the window OR document the expected variance.
+- **Mock-vs-live divergence.** pytest with `respx` / FastAPI TestClient PASSes; live `curl` against the running container behaves differently (lifespan not entered in TestClient, env var defaults differ, etc.). Tier-1 lives behind `curl` for exactly this reason — but verify your probe actually hits the running container (`curl http://localhost:<port>/...`), not a process-internal client.
+- **Vacuous-shape assertion.** `actual == baseline` against a value that was already equal before the probe — passes regardless of whether the feature works. Pair every "the mutation didn't happen" assertion with a sibling "the mutation does happen on the positive path" assertion (the M9 / Kanban #76 lesson — applies to live probes, not just pytest).
+- **Side-effect not observed.** Probe asserts the HTTP response shape but doesn't verify the disk write / DB row insert / audit row / file content. Always pair wire-shape assertions with at least one observable side-effect check when the spec promises one.
+
+For each PASS probe, internally answer: "if the feature were broken in a subtle way, would THIS probe catch it?" If the honest answer is "maybe," flag the probe in the report under a `## Spurious-PASS candidates` section — Lead decides whether to retry with a tightened probe or accept the limit.
+
+The pass cap is deliberate — don't audit every probe individually in writing. Walk the matrix once after the smoke; surface only the probes where the verdict is "plausible but not airtight." Empty section is the expected outcome on a clean smoke; non-empty means real follow-up needed.
+
 ### 3. Compact step (mandatory before return)
 
 1. Update `context/projects/<active>/dev-tester/current-state.md`:
@@ -117,6 +132,9 @@ When Lead's spawn prompt does NOT ask for Tier-1 (docs / comments / agent-prompt
    ## Test run result
    - passed: <n>, failed: <n>, skipped: <n>
    - failures: <list — each one stating expected vs actual>
+
+   ## Spurious-PASS candidates
+   <list any probe where the PASS verdict is 'plausible but not airtight' — name the probe + why the pass might be coincidental + what would tighten it; "none" is the expected outcome on a clean smoke>
 
    ## Bugs / issues found (need handoff)
    - dev-frontend: <if any>

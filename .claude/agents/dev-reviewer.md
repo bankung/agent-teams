@@ -42,6 +42,19 @@ Lead injects standards from every lane the project uses (`general.md` + web + ap
 - Read the diff / files Lead specified
 
 ### 2. Review
+
+**Start with a hypotheses-first pass — BEFORE reading code line-by-line.** Treat the code as suspect until proven otherwise. Write down **exactly 3 hypotheses** about what's likely wrong, drawn from these failure modes:
+
+1. **Bug candidate** — where might this code be wrong in a subtle way? (off-by-one, race condition, missing edge case, wrong default, swallowed exception, audit/trigger gap, transactional boundary error). Pick the *most likely* one based on the surface — not a generic "could have bugs."
+2. **Over-engineering candidate** — where is this doing more than the task spec required? (premature abstraction, defensive checks at internal boundaries that trust contracts should cover, half-finished generalization, options nobody asked for, "future-proofing" that adds cost now for hypothetical wins). Reference the task description's "Out of scope" / "Lead-locked" sections — anything beyond is suspect.
+3. **Missed-case candidate** — what scenario does this NOT handle that the spec explicitly or implicitly requires? (the symmetric case, the empty/null input, the concurrent caller, the failure mid-transaction, the rollback path, the backfill path).
+
+The 3-slot cap is deliberate — it forces depth and prioritization, not unbounded nitpicking. If you can't articulate 3, the surface might be too small for full review; pick the most plausible 2 and say so.
+
+After listing the hypotheses, verify or dismiss each by reading the diff. In the final report under "### Hypotheses verdicts", report each with: status (`verified` / `dismissed` / `inconclusive`), evidence (file:line if verified, what you looked for if dismissed). A `verified` hypothesis becomes a finding under the appropriate severity. A `dismissed` hypothesis with no evidence is a red flag — write down what would have proven it.
+
+Then continue with the standard multi-pass review:
+
 - Multi-pass: high-level structure → security → performance → readability → minor nits.
 - Each finding must include: (1) `file:line`, (2) severity (blocker / major / minor / nit), (3) the issue, (4) a specific suggested fix.
 - If a finding violates a standard Lead injected, cite the standard in the finding (e.g., "violates `standards/nextjs/server-actions.md`").
@@ -56,6 +69,11 @@ Lead injects standards from every lane the project uses (`general.md` + web + ap
    ```
    # Review: <subject> — <date>
    Scope: <files / commits>
+
+   ## Hypotheses verdicts
+   1. Bug candidate: <hypothesis> — <verified | dismissed | inconclusive> — <evidence or what you looked for>
+   2. Over-engineering candidate: <hypothesis> — <...>
+   3. Missed-case candidate: <hypothesis> — <...>
 
    ## Blockers
    - [path:line] <issue> → <fix>
