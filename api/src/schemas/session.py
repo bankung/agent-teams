@@ -50,7 +50,13 @@ class SessionCreate(BaseModel):
     NOT accepted from the client. The four ceilings use DB defaults when
     omitted (compacted_history=13000, recent_activity=15000,
     card_detail=6000, output_budget=4000); explicit overrides are accepted.
+
+    `extra='forbid'` (Kanban #721, 2026-05-11) — smuggled fields (e.g.
+    `{"status":"weird"}` or server-managed `closed_at`) fail loud with 422.
+    Mirrors the `ConsentGrant` deliberate-action-UX pattern.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     project_id: int = Field(ge=1)
     process_label: str | None = Field(default=None, max_length=64)
@@ -229,9 +235,13 @@ class SessionActivityCreate(BaseModel):
     `summary` is the only required field; `task_id` / `role` / `kind` enrich
     the entry header. `task_id` (when given) must belong to the same project
     as the session — router 400s on mismatch (mirror of run cross-project).
+
+    `extra='forbid'` (Kanban #721, 2026-05-11) — tightened from the CTX-2
+    `extra='ignore'` for parity with `ConsentGrant`. Smuggled fields fail
+    loud with 422.
     """
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     task_id: int | None = Field(default=None, ge=1)
     summary: str = Field(min_length=1, max_length=4000)
@@ -269,9 +279,13 @@ class SessionRunHeartbeat(BaseModel):
 
     `mode='append'` (default) writes a timestamped block to the card log;
     `mode='replace'` overwrites the file verbatim (end-of-run snapshot).
+
+    `extra='forbid'` (Kanban #721, 2026-05-11) — tightened from the CTX-2
+    `extra='ignore'` for parity with `ConsentGrant`. Smuggled fields fail
+    loud with 422.
     """
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     content: str = Field(min_length=1, max_length=20000)
     mode: Literal["append", "replace"] = "append"

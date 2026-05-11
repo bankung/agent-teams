@@ -1599,6 +1599,108 @@ async def test_patch_run_null_budget_never_sets_warning(
         await client.delete(f"/api/projects/{pid}")
 
 
+# =============================================================================
+# 9. Kanban #721 — `extra='forbid'` on Session Create-shaped schemas
+#    Mirrors the `ConsentGrant` deliberate-action UX pattern (#483):
+#    smuggled fields fail loud with 422 instead of silent drop.
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_session_create_rejects_extra_status_field_422(client) -> None:
+    """POST /api/sessions with a smuggled `status` field → 422. Server-managed
+    `status` must not be settable on create."""
+    resp = await client.post(
+        "/api/sessions", json={"project_id": 1, "status": "weird"}
+    )
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert detail[0]["loc"] == ["body", "status"]
+    assert "extra" in detail[0]["type"] or "forbid" in detail[0]["type"]
+
+
+@pytest.mark.asyncio
+async def test_session_create_rejects_extra_closed_at_field_422(client) -> None:
+    """POST /api/sessions with a smuggled server-managed `closed_at` → 422."""
+    resp = await client.post(
+        "/api/sessions",
+        json={"project_id": 1, "closed_at": "2026-01-01T00:00:00Z"},
+    )
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert detail[0]["loc"] == ["body", "closed_at"]
+    assert "extra" in detail[0]["type"] or "forbid" in detail[0]["type"]
+
+
+@pytest.mark.asyncio
+async def test_post_activity_rejects_extra_field_422(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    """POST /api/sessions/{sid}/activity with a smuggled field → 422."""
+    name = _unique_name("act-forbid")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+
+    try:
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        r = await client.post(
+            f"/api/sessions/{sid}/activity",
+            json={"summary": "hi", "smuggled": "x"},
+        )
+        assert r.status_code == 422, r.text
+        detail = r.json()["detail"]
+        assert detail[0]["loc"] == ["body", "smuggled"]
+        assert "extra" in detail[0]["type"] or "forbid" in detail[0]["type"]
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_post_heartbeat_rejects_extra_field_422(
+    client, scaffold_cleanup, session_fs_cleanup
+) -> None:
+    """POST /api/session_runs/{rid}/heartbeat with a smuggled field → 422."""
+    name = _unique_name("hb-forbid")
+    scaffold_cleanup(name)
+    p = await client.post("/api/projects", json=_project_create_payload(name))
+    pid = p.json()["id"]
+    headers = {"X-Project-Id": str(pid)}
+
+    try:
+        t = await client.post(
+            "/api/tasks",
+            json={"project_id": pid, "title": "hb task"},
+            headers=headers,
+        )
+        tid = t.json()["id"]
+
+        s = await client.post("/api/sessions", json={"project_id": pid})
+        sid = s.json()["id"]
+        session_fs_cleanup(sid)
+
+        run = await client.post(
+            f"/api/sessions/{sid}/runs", json={"task_id": tid}
+        )
+        rid = run.json()["id"]
+
+        r = await client.post(
+            f"/api/session_runs/{rid}/heartbeat",
+            json={"content": "hi", "smuggled": "x"},
+        )
+        assert r.status_code == 422, r.text
+        detail = r.json()["detail"]
+        assert detail[0]["loc"] == ["body", "smuggled"]
+        assert "extra" in detail[0]["type"] or "forbid" in detail[0]["type"]
+
+        await client.delete(f"/api/tasks/{tid}", headers=headers)
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
 @pytest.mark.asyncio
 async def test_existing_seeded_tasks_untouched(client) -> None:
     """CTX-1 must not perturb the seeded `agent-teams` project's tasks. Spot-
