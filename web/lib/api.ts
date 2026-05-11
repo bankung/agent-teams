@@ -7,6 +7,7 @@ import type {
   TaskRoleValue,
   ProjectTeamValue,
   TaskRunModeValue,
+  TaskKindValue,
 } from "./constants";
 
 // ProjectRead — mirror of api/src/schemas/project.py:ProjectRead.
@@ -39,6 +40,14 @@ export type TaskRead = {
   priority: TaskPriorityValue;
   assigned_role: TaskRoleValue | null;
   run_mode: TaskRunModeValue; // #483 — default "manual"
+  task_kind: TaskKindValue; // #706 — default "human"
+  is_template: boolean; // #706 — recurrence template flag
+  is_pending: boolean; // #750 — paired with process_status=IN_PROGRESS to render the yellow "pending" marker
+  recurrence_rule: string | null; // #706 — cron expression
+  recurrence_timezone: string; // #706 — IANA TZ name, default "UTC"
+  next_fire_at: string | null; // #706 — ISO 8601 UTC "Z" form
+  spawned_from_task_id: number | null; // #706 — system-managed lineage
+  scheduled_at: string | null; // #723 — one-shot fire path; XOR with is_template
   created_at: string;
   updated_at: string;
   started_at: string | null;
@@ -73,11 +82,16 @@ async function extractDetail(response: Response): Promise<string> {
 
 async function jsonFetch<T>(
   path: string,
-  init?: { headers?: Record<string, string> },
+  init?: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+  },
 ): Promise<T> {
   const url = `${apiBaseUrl()}${path}`;
   const response = await fetch(url, {
-    ...init,
+    method: init?.method,
+    body: init?.body,
     cache: "no-store",
     headers: { Accept: "application/json", ...(init?.headers ?? {}) },
   });
@@ -97,6 +111,7 @@ type ListTasksOpts = {
   pending?: boolean;
   parent_task_id?: number;
   top_level_only?: boolean;
+  limit?: number;
 };
 
 export async function listTasks(
@@ -108,6 +123,7 @@ export async function listTasks(
   if (opts.top_level_only) qs.set("top_level_only", "true");
   else if (opts.parent_task_id !== undefined)
     qs.set("parent_task_id", String(opts.parent_task_id));
+  if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
   const path = qs.toString() ? `/api/tasks?${qs}` : `/api/tasks`;
   return jsonFetch<TaskRead[]>(path, {
     headers: { "X-Project-Id": String(projectId) },
@@ -120,5 +136,28 @@ export async function getTask(
 ): Promise<TaskRead> {
   return jsonFetch<TaskRead>(`/api/tasks/${id}`, {
     headers: { "X-Project-Id": String(projectId) },
+  });
+}
+
+// PATCH /api/tasks/{id} — partial update; minimal subset for T4 drag-drop.
+// Wider set (title/priority/assigned_role/run_mode/task_kind/is_template/...) is
+// accepted by the API per shared/api-contracts.md; expand the type as new
+// mutation surfaces land.
+export type TaskPatch = Partial<
+  Pick<TaskRead, "process_status" | "priority" | "title">
+>;
+
+export async function patchTask(
+  projectId: number,
+  id: number,
+  body: TaskPatch,
+): Promise<TaskRead> {
+  return jsonFetch<TaskRead>(`/api/tasks/${id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Project-Id": String(projectId),
+    },
+    body: JSON.stringify(body),
   });
 }

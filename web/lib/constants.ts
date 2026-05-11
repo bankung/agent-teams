@@ -48,3 +48,11 @@ export const TaskRunMode = {
   AUTO_HEADLESS: "auto_headless",
 } as const;
 export type TaskRunModeValue = typeof TaskRunMode[keyof typeof TaskRunMode];
+
+// TaskKind — V3+ scope-lock (Kanban #706). Discriminates AI-runner work from human work.
+// Cross-table rule enforced by API: task_kind='human' requires run_mode='manual'.
+export const TaskKind = {
+  AI: "ai",
+  HUMAN: "human",
+} as const;
+export type TaskKindValue = typeof TaskKind[keyof typeof TaskKind];
