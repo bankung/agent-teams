@@ -6,7 +6,7 @@
 
 | Call | `next dev` (development) | `next build && next start` (production) |
 |---|---|---|
-| `notFound()` from a Server Component try/catch | HTTP **200** + rendered not-found page body (`>This page could not be found<`) | HTTP **404** wire-level |
+| `notFound()` from a Server Component try/catch | HTTP **200** + not-found-page body. **Marker lives inside `__next_f` JSON stream chunks, not as a raw text node** — grep substring `could not be found`, NOT the angle-bracket form `>This page could not be found<`. | HTTP **404** wire-level + raw text node `>This page could not be found<` |
 | `redirect("/x")` from a Server Component | HTTP **200** + meta-refresh sentinel: `<meta http-equiv="refresh" content="1;url=/x"/>` + `NEXT_REDIRECT;...;307` template hint | HTTP **307** wire-level + `Location: /x` header |
 
 Root cause: `next dev` performs in-process navigation through the React Server Components shell; production compile emits real wire-level responses.
@@ -15,7 +15,7 @@ Root cause: `next dev` performs in-process navigation through the React Server C
 
 **Tier-1 web smoke runs against `next dev`.** Smoke matrices on `notFound()` / `redirect()` routes MUST assert against rendered markers, not wire status codes:
 
-- `notFound()`: grep response body for `>This page could not be found<` (Next.js stock not-found marker) OR a custom marker if `app/not-found.tsx` exists. Combine with grep counts for board markers (`data-board="dnd"` = 0, `data-task-id=` = 0) to prove the page did NOT fall through to a real route.
+- `notFound()`: grep response body for the **substring** `could not be found` (Next.js stock not-found marker — appears inside `__next_f` JSON-stream chunks like `404: This page could not be found.` and `\":\"This page could not be found.\"` in dev mode). The angle-bracket form `>This page could not be found<` is a **false-negative trap** — that text-node shape only emits in production builds. Combine with grep counts for board markers (`data-board="dnd"` = 0, `data-task-id=` = 0) to prove the page did NOT fall through to a real route. OR grep for a custom marker if `app/not-found.tsx` exists.
 - `redirect("/x")`: grep response body for `url=/x` (meta-refresh content attribute) AND `NEXT_REDIRECT;...;<status>;` template hint. Lock the target byte-exact.
 
 For **wire-level** 404 / 307 verification, run a production build:
@@ -35,7 +35,7 @@ Same pattern for `redirect()`: pair the meta-refresh-marker assertion with a pos
 
 ## Canonical worked example (in-repo)
 
-[web/app/p/[name]/page.tsx](../../../web/app/p/[name]/page.tsx) wraps `getProjectByName(params.name)` in `try / catch { notFound() }`. The dev-tester Tier-1 probe for Kanban #407 asserted `>This page could not be found<` × 2 + `data-task-id=` × 0 on `/p/_nonexistent-407-test`, paired with `data-task-id=` × 56 + `data-board="dnd"` × 1 on `/p/agent-teams` (same server). Causal binding proved.
+[web/app/p/[name]/page.tsx](../../../web/app/p/[name]/page.tsx) discriminates `if (e instanceof HttpError && e.status === 404) notFound(); throw e;` (refactored in Kanban #760 — see `nextjs/typed-error-catch.md`). The dev-tester Tier-1 probe for #760 asserted substring `could not be found` × 2 + `data-task-id=` × 0 on `/p/_nonexistent-760-test`, paired with `data-task-id=` × 57 + `data-board="dnd"` × 1 on `/p/agent-teams` (same server). Causal binding proved. (#407 V3 used the same marker-grep matrix; #760's tester surfaced the `__next_f`-JSON-chunk drift that retired the angle-bracket grep.)
 
 [web/app/page.tsx](../../../web/app/page.tsx) uses `redirect(\`/p/\${name}\`)`. Same Tier-1 probe asserted `NEXT_REDIRECT;...;/p/agent-teams;307` template hint × 2 + `url=/p/agent-teams` × 1 in the dev-mode body. Wire-307 verification deferred to a prod-build smoke (Tier-2).
 
