@@ -746,6 +746,339 @@ def test_task_kind_run_mode_detail_string_pinned_in_service_source() -> None:
     )
 
 
+# =============================================================================
+# 7. Kanban #714 MIN-1 — TaskUpdate template-completeness model_validator
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_patch_task_is_template_true_alone_returns_422(
+    client, scaffold_cleanup
+) -> None:
+    """PATCH body `{"is_template": true}` on a non-template task → 422 with
+    locked detail (mirror of TaskCreate's _check_template_completeness)."""
+    name = _unique_name("min1-template-bare")
+    scaffold_cleanup(name)
+    create = await client.post("/api/projects", json=_project_create_payload(name))
+    project_id = create.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    task = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "non-template"},
+        headers=headers,
+    )
+    task_id = task.json()["id"]
+
+    try:
+        resp = await client.patch(
+            f"/api/tasks/{task_id}",
+            json={"is_template": True},
+            headers=headers,
+        )
+        assert resp.status_code == 422, resp.text
+        assert (
+            "is_template=true requires recurrence_rule and next_fire_at"
+            in str(resp.json())
+        )
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
+        await client.delete(f"/api/projects/{project_id}")
+
+
+@pytest.mark.asyncio
+async def test_patch_task_is_template_true_with_explicit_nulls_returns_422(
+    client, scaffold_cleanup
+) -> None:
+    """PATCH `{is_template: true, recurrence_rule: null, next_fire_at: null}`
+    → 422; explicit nulls don't satisfy the completeness requirement."""
+    name = _unique_name("min1-template-nulls")
+    scaffold_cleanup(name)
+    create = await client.post("/api/projects", json=_project_create_payload(name))
+    project_id = create.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    task = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "non-template"},
+        headers=headers,
+    )
+    task_id = task.json()["id"]
+
+    try:
+        resp = await client.patch(
+            f"/api/tasks/{task_id}",
+            json={
+                "is_template": True,
+                "recurrence_rule": None,
+                "next_fire_at": None,
+            },
+            headers=headers,
+        )
+        assert resp.status_code == 422, resp.text
+        assert (
+            "is_template=true requires recurrence_rule and next_fire_at"
+            in str(resp.json())
+        )
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
+        await client.delete(f"/api/projects/{project_id}")
+
+
+@pytest.mark.asyncio
+async def test_patch_task_is_template_true_bundled_complete_200(
+    client, scaffold_cleanup
+) -> None:
+    """Positive control: PATCH with `is_template=true` AND both required
+    fields → 200 (round-trips through to the row). Confirms the validator
+    only fires when the payload is incomplete."""
+    name = _unique_name("min1-template-bundled")
+    scaffold_cleanup(name)
+    create = await client.post("/api/projects", json=_project_create_payload(name))
+    project_id = create.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    task = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "to be templatized",
+            "task_kind": "ai",
+            "run_mode": "auto_pickup",
+        },
+        headers=headers,
+    )
+    task_id = task.json()["id"]
+
+    try:
+        resp = await client.patch(
+            f"/api/tasks/{task_id}",
+            json={
+                "is_template": True,
+                "recurrence_rule": "0 * * * *",
+                "next_fire_at": "2026-12-01T00:00:00Z",
+            },
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["is_template"] is True
+        assert body["recurrence_rule"] == "0 * * * *"
+        assert body["next_fire_at"] is not None
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
+        await client.delete(f"/api/projects/{project_id}")
+
+
+@pytest.mark.asyncio
+async def test_patch_task_is_template_false_un_templating_200(
+    client, scaffold_cleanup
+) -> None:
+    """Positive control: PATCH `{is_template: false}` alone on an existing
+    template task → 200. Un-templating MUST NOT trigger the completeness
+    validator."""
+    name = _unique_name("min1-untemplate")
+    scaffold_cleanup(name)
+    create = await client.post("/api/projects", json=_project_create_payload(name))
+    project_id = create.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    task = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "template to be cleared",
+            "task_kind": "ai",
+            "run_mode": "auto_pickup",
+            "is_template": True,
+            "recurrence_rule": "0 9 * * MON",
+            "next_fire_at": _future_iso(),
+        },
+        headers=headers,
+    )
+    task_id = task.json()["id"]
+
+    try:
+        resp = await client.patch(
+            f"/api/tasks/{task_id}",
+            json={"is_template": False},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["is_template"] is False
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
+        await client.delete(f"/api/projects/{project_id}")
+
+
+@pytest.mark.asyncio
+async def test_patch_task_is_template_true_on_already_complete_row_returns_422_locks_option_a(
+    client, scaffold_cleanup
+) -> None:
+    """Option A lock (Kanban #714 WARN-1 follow-up): the validator does NOT
+    consult the existing row's state — the payload must self-contain the full
+    template tuple when flipping `is_template=true`. Even if the row already
+    has `recurrence_rule` + `next_fire_at` populated (from a prior un-template
+    PATCH), a bare `{is_template: true}` payload still fails 422.
+
+    Without this test, a future BE could "fix" the validator to also consult
+    the existing row (Option B) and all 7 prior MIN-1 tests would still pass
+    while silently flipping wire semantics."""
+    name = _unique_name("min1-option-a-lock")
+    scaffold_cleanup(name)
+    create = await client.post("/api/projects", json=_project_create_payload(name))
+    project_id = create.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    # Step 1: create a fully-complete template.
+    task = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "option-a lock target",
+            "task_kind": "ai",
+            "run_mode": "auto_pickup",
+            "is_template": True,
+            "recurrence_rule": "0 * * * *",
+            "next_fire_at": "2026-12-01T00:00:00Z",
+        },
+        headers=headers,
+    )
+    assert task.status_code == 201, task.text
+    task_id = task.json()["id"]
+
+    try:
+        # Step 2: un-template — row keeps rule + fire_at, only flag flips.
+        untmpl = await client.patch(
+            f"/api/tasks/{task_id}",
+            json={"is_template": False},
+            headers=headers,
+        )
+        assert untmpl.status_code == 200, untmpl.text
+        assert untmpl.json()["is_template"] is False
+        assert untmpl.json()["recurrence_rule"] == "0 * * * *"
+        assert untmpl.json()["next_fire_at"] is not None
+
+        # Step 3: re-template with payload-only `{is_template: true}` — must
+        # 422 because the validator ignores the row's existing rule + fire_at.
+        resp = await client.patch(
+            f"/api/tasks/{task_id}",
+            json={"is_template": True},
+            headers=headers,
+        )
+        assert resp.status_code == 422, resp.text
+        assert (
+            "is_template=true requires recurrence_rule and next_fire_at"
+            in str(resp.json())
+        )
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
+        await client.delete(f"/api/projects/{project_id}")
+
+
+# =============================================================================
+# 8. Kanban #714 MIN-3 — recurrence_timezone explicit-null rejection on PATCH
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_patch_task_recurrence_timezone_explicit_null_returns_422(
+    client, scaffold_cleanup
+) -> None:
+    """PATCH `{"recurrence_timezone": null}` → 422 with locked detail. The DB
+    column is NOT NULL; reject at the schema layer with an actionable message
+    instead of falling through to an IntegrityError 400."""
+    name = _unique_name("min3-tz-null")
+    scaffold_cleanup(name)
+    create = await client.post("/api/projects", json=_project_create_payload(name))
+    project_id = create.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    task = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "tz-null target"},
+        headers=headers,
+    )
+    task_id = task.json()["id"]
+
+    try:
+        resp = await client.patch(
+            f"/api/tasks/{task_id}",
+            json={"recurrence_timezone": None},
+            headers=headers,
+        )
+        assert resp.status_code == 422, resp.text
+        assert "recurrence_timezone cannot be explicitly null" in str(resp.json())
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
+        await client.delete(f"/api/projects/{project_id}")
+
+
+@pytest.mark.asyncio
+async def test_patch_task_recurrence_timezone_valid_iana_200(
+    client, scaffold_cleanup
+) -> None:
+    """Positive control: PATCH with a valid IANA TZ → 200, value round-trips."""
+    name = _unique_name("min3-tz-valid")
+    scaffold_cleanup(name)
+    create = await client.post("/api/projects", json=_project_create_payload(name))
+    project_id = create.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    task = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "tz template",
+            "task_kind": "ai",
+            "run_mode": "auto_pickup",
+            "is_template": True,
+            "recurrence_rule": "0 9 * * MON",
+            "next_fire_at": _future_iso(),
+        },
+        headers=headers,
+    )
+    task_id = task.json()["id"]
+
+    try:
+        resp = await client.patch(
+            f"/api/tasks/{task_id}",
+            json={"recurrence_timezone": "Asia/Bangkok"},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["recurrence_timezone"] == "Asia/Bangkok"
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
+        await client.delete(f"/api/projects/{project_id}")
+
+
+@pytest.mark.asyncio
+async def test_patch_task_recurrence_timezone_absent_key_is_noop_200(
+    client, scaffold_cleanup
+) -> None:
+    """Positive control: PATCH `{}` (no recurrence_timezone key) → 200. The
+    validator only fires when the key is in `model_fields_set`; absence is
+    the PATCH "no touch" semantic."""
+    name = _unique_name("min3-tz-absent")
+    scaffold_cleanup(name)
+    create = await client.post("/api/projects", json=_project_create_payload(name))
+    project_id = create.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    task = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "noop target"},
+        headers=headers,
+    )
+    task_id = task.json()["id"]
+
+    try:
+        resp = await client.patch(
+            f"/api/tasks/{task_id}",
+            json={},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        # Existing value preserved (default 'UTC' from server_default).
+        assert resp.json()["recurrence_timezone"] == "UTC"
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
+        await client.delete(f"/api/projects/{project_id}")
+
+
 def test_post_task_kind_check_detail_strings_pinned_in_router_source() -> None:
     """Router IntegrityError fallback strings for the two new CHECKs are
     defense-in-depth wire contract (only reachable via raw-SQL bypass / future

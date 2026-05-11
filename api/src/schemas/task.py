@@ -299,6 +299,60 @@ class TaskUpdate(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _reject_explicit_null_recurrence_timezone(self) -> "TaskUpdate":
+        """Kanban #714 MIN-3 (2026-05-11): the DB column is NOT NULL with
+        DEFAULT 'UTC'. A PATCH body of `{"recurrence_timezone": null}` would
+        otherwise reach the DB and surface as an IntegrityError 400. Reject
+        the explicit-null at 422 with a clear actionable detail.
+
+        Missing key (Field default = None, absent from `model_fields_set`) →
+        skip; preserves PATCH "no key = no touch" semantics.
+
+        Detail string is source-text-locked by the test pin — wire contract.
+        """
+        if (
+            "recurrence_timezone" in self.model_fields_set
+            and self.recurrence_timezone is None
+        ):
+            raise ValueError(
+                "recurrence_timezone cannot be explicitly null — omit the key "
+                "to leave the existing value, or send a valid IANA TZ string"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_template_completeness(self) -> "TaskUpdate":
+        """Kanban #714 MIN-1 (2026-05-11): mirror of TaskCreate's
+        `_check_template_completeness`. Flipping `is_template=true` via PATCH
+        without supplying BOTH `recurrence_rule` and `next_fire_at` would
+        otherwise fall through to the DB CHECK
+        `ck_tasks_template_recurrence_complete` 400. This validator fires the
+        friendly 422 first.
+
+        PATCH semantics: the validator can only see what's in the payload —
+        not the existing row's values. So we fire only when:
+          - `is_template=True` is in `model_fields_set` (explicit True), AND
+          - EITHER `recurrence_rule` resolves to None (explicit-null or absent
+            with the default), OR `next_fire_at` resolves to None.
+        Bundled body with all three present and non-null → 200 (positive).
+        PATCH of `{is_template: false}` alone → 200 (un-template flow).
+        Absence of `is_template` from the payload → skip entirely.
+
+        Detail message is byte-for-byte verbatim with TaskCreate so the wire
+        contract is one source-text-locked string for both create + patch.
+        """
+        if "is_template" not in self.model_fields_set:
+            return self
+        if self.is_template is not True:
+            # is_template=False (un-template flow) or explicit null → no check.
+            return self
+        if self.recurrence_rule is None or self.next_fire_at is None:
+            raise ValueError(
+                "is_template=true requires recurrence_rule and next_fire_at"
+            )
+        return self
+
 
 class TaskRead(BaseModel):
     """Full task row as returned by the API."""

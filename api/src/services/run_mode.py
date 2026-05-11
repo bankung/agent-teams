@@ -18,12 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.constants import RecordStatus, TaskRunMode
 from src.models.project import Project
+from src.schemas.task import TaskRunModeLiteral
 
 
 async def assert_consent_for_run_mode(
     db: AsyncSession,
     project_id: int,
-    run_mode: str | None,
+    run_mode: TaskRunModeLiteral | None,
 ) -> None:
     """Raise 400 if `run_mode='auto_headless'` and either the project does
     not exist (or is soft-deleted), or `auto_run_consent_at IS NULL`.
@@ -32,6 +33,11 @@ async def assert_consent_for_run_mode(
     - POST /api/tasks: pass `payload.project_id` and `payload.run_mode`.
     - PATCH /api/tasks/{id}: pass the EXISTING task's `project_id` (V1 forbids
       re-parenting) and the RESOLVED run_mode (existing or PATCH-supplied).
+
+    Kanban #714 MIN-2 (2026-05-11): `run_mode` narrowed from `str | None` to
+    `TaskRunModeLiteral | None` so static-type tooling catches drift at call
+    sites. Lockstep with `TaskRunMode.ALL` is guarded at import time in
+    `src/schemas/task.py`.
     """
     if run_mode != TaskRunMode.AUTO_HEADLESS:
         return

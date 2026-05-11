@@ -246,6 +246,8 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 **Errors:**
 - `404` — task id not found
 - `422` — Pydantic validation error if `parent_task_id` OR `spawned_from_task_id` is **present in the body** (whether int OR null). V1 forbids re-parenting both subtask hierarchy (#238) AND recurrence lineage (#706); clients must omit both keys. The router's `model_validator` checks `model_fields_set` membership, so explicit-null is treated identically to a non-null value. Error message substring: the field name. (Kanban #238 + #706)
+- `422` — `{"detail":[{"msg":"Value error, is_template=true requires recurrence_rule and next_fire_at", ...}]}` when the PATCH payload sets `is_template=true` without **also** supplying both `recurrence_rule` AND `next_fire_at` in the same body. **Option A wire contract:** the validator inspects payload only, never the existing row — clients must self-contain the full template tuple when flipping `is_template=true`, even on a row that already carries `recurrence_rule + next_fire_at` from a prior PATCH. Detail string is byte-for-byte identical to POST `/api/tasks` (single source-text-locked contract for create + patch). DB CHECK `ck_tasks_template_recurrence_complete` is the backstop for raw-SQL bypass paths. (Kanban #714)
+- `422` — `{"detail":[{"msg":"Value error, recurrence_timezone cannot be explicitly null — omit the key to leave the existing value, or send a valid IANA TZ string", ...}]}` when the PATCH body contains `{"recurrence_timezone": null}`. Missing-key (key absent from payload) is a no-op — PATCH "missing = don't touch" semantic preserved via `model_fields_set`. Source-text-locked. (Kanban #714)
 - `400` — header gate violation (Kanban #695):
   - `{"detail":"X-Project-Id header is required for task endpoints"}` when header missing.
   - `{"detail":"task <n> does not belong to project_id <h>"}` when fetched row's `project_id` ≠ header.
@@ -256,7 +258,7 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
   - `{"detail":"priority violates ck_tasks_priority_valid"}`
   - `{"detail":"run_mode violates ck_tasks_run_mode_valid"}` (defensive — Pydantic Literal gates first)
   - `{"detail":"task_kind violates ck_tasks_task_kind_valid"}` (defensive — Pydantic Literal gates first; Kanban #706)
-  - `{"detail":"template fields incomplete violates ck_tasks_template_recurrence_complete"}` (defensive — Pydantic model_validator catches at 422 first; Kanban #706)
+  - `{"detail":"template fields incomplete violates ck_tasks_template_recurrence_complete"}` (defensive — Pydantic model_validator on TaskCreate (Kanban #706) AND TaskUpdate (Kanban #714) catches at 422 first; this 400 only fires on raw-SQL bypass)
   - `{"detail":"scheduled_at is incompatible with is_template=true (use recurrence_rule for templates)"}` — fires when the **resolved final** state (PATCH-supplied OR existing if not in body) has `is_template=true AND scheduled_at IS NOT NULL`. Caught at the **router** (HTTP 422 — application-layer pre-check, not DB CHECK fallback) so direction-A (existing template + PATCH adds scheduled_at) AND direction-B (existing scheduled_at + PATCH flips is_template=true) BOTH 422 with this detail. Resolved-final pattern mirrors `task_kind`/consent. Same source-text-locked detail string also surfaces as 400 if a raw-SQL bypass triggers DB CHECK `ck_tasks_scheduled_xor_template`. (Kanban #723)
   - `{"detail":"is_pending=true requires process_status=2 (in_progress)"}` — fires when the **resolved final** `(is_pending, process_status)` pair (PATCH-supplied OR existing if not in body) is `(true, !=2)`. Both directions caught: direction-A (PATCH is_pending=true on a ps=1 row) AND direction-B (PATCH process_status=1 on a ps=2+is_pending=true row — validator sees `(true, 1)`). Bundled clear `{process_status:1, is_pending:false}` succeeds (resolved pair is `(false, 1)`). Source-text-locked at `services/is_pending.py` (byte-equal verified by Tier-1 smoke #756). Pure-function check; ordered after task_kind/run_mode, before consent gate. (Kanban #750)
   - `{"detail":"status violates ck_tasks_status_valid"}` (defensive — `status` is not a public PATCH field)
@@ -328,13 +330,11 @@ Session-based context store. Hybrid storage: DB rows for metadata + queryability
 
 **4-bucket token model** (per Agent Orchestration doc §1.3): `system prompt ~2k (fixed) + session.md ~28k (compacted_history 13k + recent_activity 15k) + card_detail ~6k + output_budget ~4k = ~40k total per run`. Schema-level since migration 0009; CTX-3 (#718) wires the runtime token counter and reads the 4 ceiling columns. `le=1_000_000` cap (Kanban #722 M2) guards against operator typos with soft-warn semantics.
 
-**Pydantic extra-policy note:** `SessionCreate` currently uses default `extra="ignore"` — smuggled fields (e.g., `{"status":"weird"}`) are silently dropped; server applies its defaults. Filed as #721 follow-up to tighten to `extra="forbid"` for parity with `ConsentGrant` (deliberate-action UX must fail loud). Until #721 lands, FE must NOT rely on 422 for unknown fields on Session POST.
-
 **Response 201:** `SessionRead` (with `session_root_path` set, server-computed).
 
 **Errors:**
 - `400` — `{"detail":"project_id <n> does not exist"}` when `project_id` references a missing or soft-deleted project. Source-text-locked. (Kanban #716)
-- `422` — Pydantic validation (e.g., `project_id<1`).
+- `422` — Pydantic validation (e.g., `project_id<1`); also fires on extra fields in the body (`extra='forbid'` since Kanban #721, 2026-05-11) — smuggled `status` / `closed_at` / unknown keys return `detail[0].loc=["body", <field>]` + `type="extra_forbidden"`. Mirrors the `ConsentGrant` typed-acknowledgment pattern (#483).
 
 #### GET /api/sessions
 **Purpose:** List sessions with optional filters.
@@ -495,13 +495,13 @@ Integer code fields (`process_status`, `priority`, `assigned_role`) follow `cont
 
 **`SessionCompactRead`** — `{id:int, session_id:int, trigger_kind:"size"|"manual"|"run_count", archive_path:str, before_tokens:int, after_tokens:int, compact_model:str, compact_cost_usd:Decimal, compacted_at:datetime}` — added 2026-05-10 by Kanban #716. Read-only in CTX-1; POST/compact action ships in CTX-4 (#719).
 
-**`SessionActivityCreate`** — `{task_id?:int>=1, summary:str(1..4000), role?:str(<=64), kind?:str(<=64)}` — added 2026-05-10 by Kanban #717 (CTX-2). `extra="ignore"` in CTX-2; #721 will tighten to `extra="forbid"` for parity with `ConsentGrant`.
+**`SessionActivityCreate`** — `{task_id?:int>=1, summary:str(1..4000), role?:str(<=64), kind?:str(<=64)}` — added 2026-05-10 by Kanban #717 (CTX-2). Tightened to `extra="forbid"` by Kanban #721 (2026-05-11) for parity with `ConsentGrant`; smuggled keys → 422 `type="extra_forbidden"`.
 
 **`SessionActivityRead`** — `{appended_block:str, section_preview:str, section_chars:int, compact_recommended:bool|null, current_recent_tokens:int|null, recent_ceiling_tokens:int|null}` — `appended_block`/`section_preview`/`section_chars` added 2026-05-10 by Kanban #717 (CTX-2); 3 advisory fields added 2026-05-10 by Kanban #718 (CTX-3). Advisory fields are `Optional` on the schema (forward-compat) but V1 router always sets them; tighten to required in a future hardening task if FE strict-typing demands.
 
 **`SessionPromptRead`** — `{markdown:str, char_count:int}` — added 2026-05-10 by Kanban #717. `char_count` is `len(markdown)` (code points). Token count deferred to CTX-3 #718.
 
-**`SessionRunHeartbeat`** — `{content:str(1..20000), mode:"append"|"replace"}` — added 2026-05-10 by Kanban #717. `extra="ignore"` in CTX-2; #721 will tighten to `extra="forbid"`.
+**`SessionRunHeartbeat`** — `{content:str(1..20000), mode:"append"|"replace"}` — added 2026-05-10 by Kanban #717. Tightened to `extra="forbid"` by Kanban #721 (2026-05-11) for parity with `ConsentGrant`; smuggled keys → 422 `type="extra_forbidden"`.
 
 **`SessionRunHeartbeatRead`** — `{card_log_path:str, total_bytes:int}` — added 2026-05-10 by Kanban #717. `total_bytes` is the total card file size after this write (renamed from `bytes_written` per CTX-2 reviewer M1).
 
