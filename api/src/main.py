@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -20,6 +21,24 @@ from src.routers import projects as projects_router
 from src.routers import sessions as sessions_router
 from src.routers import tasks as tasks_router
 from src.settings import get_settings
+
+# Project-scoped logging — uvicorn does NOT propagate non-uvicorn loggers
+# to stdout by default. Attach a StreamHandler directly to the `src` umbrella
+# logger (pointed at sys.stdout). Kanban #739 v2 — `basicConfig` attaches to
+# stderr, which uvicorn `--reload` workers do not forward to docker the same
+# way as stdout; surgical handler attachment bypasses that gap entirely.
+# Idempotent under uvicorn `--reload` re-import. Propagation is left enabled
+# so pytest's caplog (which installs a handler at root) can still capture
+# WARNING records from `src.routers.*` in existing test suites — and since
+# production root never gains a handler (no `basicConfig` call), there is no
+# duplicate-emit risk in live runs.
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+_src_logger = logging.getLogger("src")
+_src_logger.setLevel(logging.INFO)
+if not _src_logger.handlers:
+    _h = logging.StreamHandler(sys.stdout)
+    _h.setFormatter(logging.Formatter(_LOG_FORMAT))
+    _src_logger.addHandler(_h)
 
 logger = logging.getLogger(__name__)
 

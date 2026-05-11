@@ -16,6 +16,44 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-11 — Scheduler INFO/exception logs surface to docker logs — Kanban #739 closed
+**Scope:** backend
+**Decision:** Attach a `StreamHandler(sys.stdout)` directly to the `src` umbrella logger (NOT root) at module top-level in `api/src/main.py`. `setLevel(INFO)` on `src` so `src.main` + `src.services.*` + `src.routers.*` propagate. Drops the original v1 attempt at `logging.basicConfig(...)` because it routed to **stderr** by default and uvicorn's `--reload` worker subprocess does NOT forward stderr to `docker compose logs api` the same way as stdout — the scheduler boot INFO line was invisible despite the basicConfig being correct in a standalone `python -c` import test.
+
+```python
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+_src_logger = logging.getLogger("src")
+_src_logger.setLevel(logging.INFO)
+if not _src_logger.handlers:
+    _h = logging.StreamHandler(sys.stdout)
+    _h.setFormatter(logging.Formatter(_LOG_FORMAT))
+    _src_logger.addHandler(_h)
+# propagate left as True — see deviation below
+```
+
+**Live verification (the fix that PROVED the gap-fix worked, not a "should work" claim):**
+- `2026-05-11 14:46:11,215 INFO src.main: recurrence scheduler started — tick every 60s (job_id=recurrence_tick)` — visible in `docker compose logs api` immediately after `Application startup complete.`
+- `2026-05-11 14:46:08,892 INFO src.main: recurrence scheduler stopped` — visible on prior container shutdown emit
+- `docker compose logs api --tail 80 | grep "BEGIN (implicit)"` — each transaction's `BEGIN` appears exactly **once** (no v1-era duplicate-line regression)
+
+**Reasoning:**
+- Handler on `src` umbrella (not root) avoids interaction with uvicorn's stock `LOGGING_CONFIG` (which configures `uvicorn.*` loggers — root untouched in their setup, BUT we want OUR handler to be predictable, not contingent on uvicorn defaults).
+- `sys.stdout` (not stderr) is uvicorn-friendly. uvicorn's access logs also go to stdout; docker captures stdout reliably under `--reload`.
+- `if not _src_logger.handlers` idempotency guard — uvicorn `--reload` re-imports `src.main` on file change; without the guard each reload would stack another handler → duplicate emits per reload cycle.
+- No `basicConfig` call → no surprise root-handler attachment → no surprise duplicate-line regression for any other `INFO`-enabled logger (sqlalchemy.engine with `echo=True`, etc.).
+
+**Deviation from spawn brief — `propagate=True` kept (NOT False).** Setting `propagate=False` (defense-in-depth recommendation in the spawn brief) broke 2 pre-existing tests in `tests/test_sessions.py` (`test_patch_run_unknown_model_logs_warning_and_succeeds`, `test_patch_run_over_budget_sets_warning_and_logs`) — both rely on pytest's root-level caplog to capture WARNING records from `src.routers.sessions`. The spawn brief constrained the BE agent to 1 test file; touching `test_sessions.py` was out of scope. Current risk = zero (production never adds a root handler since we no longer call `basicConfig`); flag for cleanup IF a root JSON-shipping handler is added later — at that point `propagate=False` + caplog-rewrite become a joint slice.
+
+**Implications:**
+- **pytest 305 → 306 GREEN** (+1 caplog smoke test verifying `src.*` records surface; includes handler-attachment assertion).
+- **Reviewer GREEN-pending-runtime-probe (0 BLOCKER / 0 WARN / 3 NIT)** verdict locked GREEN once Lead ran the live probe.
+- **v1 attempt (basicConfig at WARNING)** is an instructive false-positive: pytest GREEN + `python -c` REPL test GREEN + reviewer GREEN-pending → but the actual uvicorn-worker runtime FAILED to surface the line. **Lesson:** logging-config slices NEVER ship without a live `docker compose logs` probe; the diagnostic gap between "pytest captures correctly" and "uvicorn worker emits correctly" is real and load-bearing. Captured as candidate `standards/python/logging.md` rule (proposed by both BE + reviewer, defer per dogfood-pollution discipline until strike #2).
+- **No api-contracts.md / db-schema.md / migration touch.**
+
+**Superseded:** v1 attempt within same #739 (basicConfig approach). v2 supersedes; v1 was never pushed.
+
+---
+
 ## 2026-05-11 — FE polish v2.2 (per-lane scrollbar + icon badges) — Kanban #764 closed
 **Scope:** frontend
 **Decision:** Two FE-only polish slices on the Kanban Board, bundled per direct user direction. **Slice A** — viewport-locked layout: `<main h-screen overflow-hidden flex flex-col>` + grid container `flex-1 min-h-0 overflow-hidden` + each `<BoardColumn>` cards-list `flex-1 overflow-y-auto`. Page-level chrome (ProjectSwitcher + h1 + ConsentBanner) stays fixed at top; only the cards inside each column scroll. **Slice B** — replace text-label badges with inline SVG icons: person/robot for `task_kind=human|ai`, M-glyph / A-with-circular-arrow for `run_mode=manual|auto_*`. No new dependencies.

@@ -12,7 +12,44 @@ is up.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
+
+
+def test_src_logger_emits_info_after_main_import(caplog) -> None:
+    """Kanban #739 v2 — `src.main` import attaches a stdout StreamHandler
+    directly to the `src` umbrella logger (level=INFO) so scheduler INFO
+    lines (and any future `src.services.*` INFO) reach uvicorn's stdout.
+    The v1 attempt used `basicConfig` which attaches to stderr and is not
+    forwarded by uvicorn's `--reload` worker subprocess to docker logs.
+
+    Propagation stays on (root has no handler in prod since we dropped
+    `basicConfig`, so no duplicate-emit risk), which keeps pytest's caplog
+    working at the root level.
+    """
+    # Force the import — installs the surgical stdout StreamHandler on `src`.
+    import src.main  # noqa: F401
+
+    src_logger = logging.getLogger("src.services.recurrence")
+    # Effective level walks up the parent chain; `src` was set to INFO.
+    assert src_logger.getEffectiveLevel() <= logging.INFO
+
+    # Verify the umbrella `src` logger has the expected handler config.
+    src_umbrella = logging.getLogger("src")
+    assert any(
+        isinstance(h, logging.StreamHandler) for h in src_umbrella.handlers
+    ), "src must have a StreamHandler attached (Kanban #739 v2)"
+
+    with caplog.at_level(logging.INFO, logger="src.services.recurrence"):
+        src_logger.info("kanban-739 logging smoke check")
+
+    assert any(
+        rec.name == "src.services.recurrence"
+        and rec.levelno == logging.INFO
+        and "kanban-739 logging smoke check" in rec.getMessage()
+        for rec in caplog.records
+    )
 
 
 def test_app_imports() -> None:
