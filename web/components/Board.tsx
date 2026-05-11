@@ -15,6 +15,7 @@ import { patchTask, type ProjectRead, type TaskRead } from "@/lib/api";
 import { TaskStatus, type TaskStatusValue } from "@/lib/constants";
 import { BoardColumn } from "@/components/BoardColumn";
 import { ProjectConsentBanner } from "@/components/ProjectConsentBanner";
+import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { ToastStack, type ToastMessage } from "@/components/Toast";
 
 type Props = {
@@ -123,10 +124,8 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
   return (
     <main className="min-h-screen bg-white px-6 py-5">
       <header className="mb-4 flex flex-col gap-2">
-        <div className="flex items-baseline gap-2 text-sm">
-          <h1 className="text-xl font-semibold tracking-tight text-zinc-900">
-            {project.name}
-          </h1>
+        <div className="flex items-center gap-2 text-sm">
+          <ProjectSwitcher current={project.name} />
           <span aria-hidden className="text-zinc-300">
             ·
           </span>

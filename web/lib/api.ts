@@ -107,6 +107,35 @@ export async function getProjectByName(name: string): Promise<ProjectRead> {
   );
 }
 
+// listProjects — V3 project switcher data source (Kanban #407).
+// `status=1` is the documented migration path from the deprecated /active endpoint
+// (api-contracts.md L62-65); backend filters soft-deleted by default. No X-Project-Id
+// header — project endpoints are project-scoped by URL, not by header.
+type ListProjectsOpts = { status?: 0 | 1 };
+
+export async function listProjects(
+  opts: ListProjectsOpts = {},
+): Promise<ProjectRead[]> {
+  const qs = new URLSearchParams();
+  if (opts.status !== undefined) qs.set("status", String(opts.status));
+  const path = qs.toString() ? `/api/projects?${qs}` : `/api/projects`;
+  return jsonFetch<ProjectRead[]>(path);
+}
+
+// grantConsent — V3 consent grant flow (Kanban #407 / #483 follow-up).
+// Body uses extra="forbid" — only `confirm_name` is accepted. 400 on mismatch with
+// stable detail "confirm_name must match project name exactly". Idempotent re-grant.
+export async function grantConsent(
+  projectId: number,
+  confirmName: string,
+): Promise<ProjectRead> {
+  return jsonFetch<ProjectRead>(`/api/projects/${projectId}/grant-consent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirm_name: confirmName }),
+  });
+}
+
 type ListTasksOpts = {
   pending?: boolean;
   parent_task_id?: number;

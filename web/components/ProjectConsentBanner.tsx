@@ -1,5 +1,7 @@
-// Read-only banner. Consent grant flow is V3+ (POST /api/projects/{id}/grant-consent).
+// Server-rendered banner. Grant action is a Client child (composition pattern):
+// banner stays SSR; only ProjectConsentGrantModal is "use client". V3 #407.
 import type { ProjectRead } from "@/lib/api";
+import { ProjectConsentGrantModal } from "@/components/ProjectConsentGrantModal";
 
 type Props = {
   project: ProjectRead;
@@ -12,13 +14,18 @@ export function ProjectConsentBanner({ project, hasHeadlessTask = false }: Props
   if (consentedAt === null) {
     // Default — safe state, low urgency.
     return (
-      <div className="rounded border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-600">
-        Headless auto-run not enabled for this project.
-        {hasHeadlessTask && (
-          <span className="ml-2 text-amber-700">
-            ⚠ A task in this project is marked auto-headless but consent is not granted — those tasks cannot run.
-          </span>
-        )}
+      <div className="flex items-center rounded border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-600">
+        <span>
+          Headless auto-run not enabled for this project.
+          {hasHeadlessTask && (
+            <span className="ml-2 text-amber-700">
+              ⚠ A task in this project is marked auto-headless but consent is not granted — those tasks cannot run.
+            </span>
+          )}
+        </span>
+        <ProjectConsentGrantModal
+          project={{ id: project.id, name: project.name }}
+        />
       </div>
     );
   }

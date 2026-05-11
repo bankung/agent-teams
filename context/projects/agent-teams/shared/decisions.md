@@ -16,6 +16,28 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-11 — Phase 3 V3 landed — Kanban #407 closed (project switcher + consent grant)
+**Scope:** frontend / shared
+**Decision:** First mutation surface on the Kanban board (V2 was read-only; T4 #709 added drag-drop; this slice adds project navigation + the consent grant mutation). Route structure split:
+- `/` → Server `redirect()` to `/p/${NEXT_PUBLIC_PROJECT_NAME ?? "agent-teams"}` (3-line page).
+- `/p/[name]` → dynamic Server Component that `getProjectByName(params.name)` + renders `<Board>`; `notFound()` on the 404 throw.
+URL is the project-selection source-of-truth — **NO localStorage** (scope-lock). URL bookmarks are how users share/save project context.
+
+- **`<ProjectSwitcher>`** (Client) lives in the Board header (left of project-name h1). Lazy-fetches `listProjects({status:1})` on first open; client-side `router.push` on selection; outside-click + Escape close; hairline Linear-style dropdown with team chip per row. Stale list is acceptable for V3 (no project create/edit UI yet).
+- **`<ProjectConsentGrantModal>`** (Client) embedded in the zinc-banner branch of `<ProjectConsentBanner>` (Server). **Composition pattern** — Server parent imports Client child as sibling, banner stays SSR; only the action is shipped to the browser. Typed-acknowledgment flow per #483: text input must match `project.name` exactly (case-sensitive). Backend 400 detail `"confirm_name must match project name exactly"` renders verbatim in an inline red alert. **NO optimistic update** — deliberate-action mutation class (auditable / consent-binding); wait for 200 then `router.refresh()` re-runs the Server banner so it flips zinc → emerald. Idempotent re-grant returns 200 unchanged on the wire (server side); UI surface for re-grant is structurally unreachable once consented (modal trigger removed from the emerald-branch DOM). No revoke UI — backend endpoint not yet shipped.
+- **Two new API helpers** in `web/lib/api.ts`: `listProjects(opts?)` and `grantConsent(projectId, confirmName)`. Both **omit `X-Project-Id`** (project endpoints — project IS the resource).
+
+**Reasoning:** Server/Client composition pattern is the canonical Next.js 14 App Router shape and the textbook anti-pattern is making the parent Client just to embed an interactive child (ships read-only state to the browser unnecessarily). Deliberate-action mutations (consent grant, account delete, payment confirm) MUST NOT use optimistic updates — auditable / legally-binding / hard-to-reverse → wait for server confirmation. V3 #407 grant flow is the worked example; the V2 drag-drop optimistic-update pattern (#709, locked) is the contrast (low-stakes mutation where optimistic IS correct). Both rules surfaced as candidate `context/standards/web/` insights (human MA pending).
+
+**Implications:**
+- **Tier-1 dev-tester verdict GREEN 11/11.** Probe pairs causally bound (A vs J: same web server, only diff is consented state → zinc-trigger-present vs emerald-trigger-absent; G + H: same project, idempotence locked via "non-null on first + byte-equal on re-grant"). `?status=1` silently ignored by backend surfaced as YELLOW — code is correct, gap is in the backend (no `status: int | None = Query(None)` plumbing) and api-contracts.md (now documents the silent-ignore explicitly).
+- **Dev-mode quirks for testers:** `next dev` renders `notFound()` as HTTP 200 + 404-page body (not wire 404); `next dev` emits `redirect()` as a meta-refresh sentinel + `NEXT_REDIRECT;...;307` template hint (not wire 307). Production `next build && next start` is the only path that emits wire-level 404 / 307. Smoke matrices on V3 routes must assert against rendered markers (e.g., `>This page could not be found<`) OR run a prod build. Captured for `context/standards/web/nextjs/` insight (human MA pending).
+- **Three WARNs filed by dev-reviewer for follow-up (do NOT block #407 close):** (a) `app/p/[name]/page.tsx` bare `catch { notFound() }` swallows non-404 backend errors as 404 — fix via `jsonFetch` typed-error refactor (`HttpError extends Error { status: number }`); (b) `ProjectSwitcher.loadError` never reset → permanent failure latch on first-fetch failure, reset on (re)open; (c) `extractDetail` only handles `typeof detail === "string"` — Pydantic 422 array form falls back to `"422 Unprocessable Entity"`, defense-in-depth fix in the same helper. WARN-1 + WARN-3 share the same fix surface and were bundled into one follow-up Kanban ticket; WARN-2 filed separately or bundled together.
+
+**Superseded:** none. Builds on V2 polish (#406+) and inherits T3/T4/#750 selectors unchanged.
+
+---
+
 ## 2026-05-11 — `tasks.is_pending` schema slice — Kanban #750 closed (supersedes #748 pending=TODO design error)
 **Scope:** backend / frontend / devops / shared
 **Decision:** "pending" is a first-class schema flag — `tasks.is_pending BOOLEAN NOT NULL DEFAULT FALSE` — orthogonal to `process_status`. Migration 0011 additive (PG 16 metadata-only via `server_default=false`; 94 rows backfilled). Cross-state rule enforced APP-LAYER at `src/services/is_pending.py`: `is_pending=true` REQUIRES `process_status=2` (in_progress). Backwards process_status transitions do NOT silently mutate is_pending — validator catches invalid pairs at write time.

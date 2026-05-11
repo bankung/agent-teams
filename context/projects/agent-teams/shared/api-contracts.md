@@ -55,7 +55,7 @@ Template for a new endpoint:
 ### GET /api/projects
 **Purpose:** List projects (paginated).
 **Auth:** none
-**Query:** `limit` (1..500, default 50), `offset` (>=0, default 0)
+**Query:** `limit` (1..500, default 50), `offset` (>=0, default 0). Note: the list already default-filters to `status=1` (active) via the project-level soft-delete contract; `?status=<int>` is currently silently accepted-and-ignored by FastAPI (no `status` param on the Query signature). FE V3 sends `?status=1` per the `/active` deprecation migration message; the wire behavior is correct (active-only) but the filter is not actually applied. Clients MUST NOT depend on `?status=<int>` until backend adds explicit `status: int | None = Query(None)` plumbing — tracked as a follow-up (Kanban #407 reviewer YELLOW, 2026-05-11).
 **Response 200:** `[ProjectRead, ...]`
 
 ### GET /api/projects/active
@@ -201,6 +201,8 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 
 `scheduled_at` (datetime ISO-8601 with timezone, optional, default null) — added 2026-05-10 by Kanban #723 (V3+ T1 audit follow-up). One-shot fire time for the T2 scheduler; non-recurring. **Mutually exclusive with `is_template=true`** — sending both → 422 (Pydantic XOR with detail substring containing both `scheduled_at` AND `is_template`). DB CHECK `ck_tasks_scheduled_xor_template` is the raw-SQL-bypass backstop. Stored in TIMESTAMPTZ — clients may send any TZ offset (e.g. `+07:00`); response always serializes to UTC `Z` form (verified live with `+07:00` → `Z` round-trip). Templates use `recurrence_rule` + `next_fire_at` (T1 path); regular one-shot tasks use `scheduled_at` (this path). T2 scheduler scans both fire paths.
 
+`is_pending` (bool, optional, default false) — added 2026-05-11 by Kanban #750 (migration 0011). Marks an in-progress row as "stuck/blocked". Cross-state validator rejects `is_pending=true` paired with `process_status != 2` (POST path; see 400 below). FE renders yellow card bg + pending badge + `data-card-pending="true"` when both predicates hold.
+
 **Response 201:** `TaskRead`
 
 **Errors:**
@@ -220,6 +222,7 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
   - `{"detail":"task_kind violates ck_tasks_task_kind_valid"}` (defensive — Pydantic Literal gates first)
   - `{"detail":"template fields incomplete violates ck_tasks_template_recurrence_complete"}` (defensive — Pydantic model_validator catches at 422 first)
   - `{"detail":"scheduled_at is incompatible with is_template=true (use recurrence_rule for templates)"}` — DB CHECK `ck_tasks_scheduled_xor_template` fallback. Source-text-locked. Reachable today only via raw-SQL bypass — Pydantic XOR validator catches at 422 first. (Kanban #723)
+  - `{"detail":"is_pending=true requires process_status=2 (in_progress)"}` — cross-state validator at `services/is_pending.py`. Fires on POST when `is_pending=true` AND `process_status != 2`. Source-text-locked (byte-equal verified by Tier-1 smoke #756). Pure-function check; runs after the task_kind/run_mode pair, before the consent gate. (Kanban #750)
   - `{"detail":"Task creation violates a database constraint"}` (fallback for unknown constraints)
 - `422` — Pydantic validation error. Includes `run_mode` outside the literal set; `task_kind` outside `{"ai","human"}` (Kanban #706); invalid cron in `recurrence_rule`; unknown IANA TZ in `recurrence_timezone`; `is_template=true` without both `recurrence_rule` AND `next_fire_at` (Kanban #706); `is_template=true` AND `scheduled_at IS NOT NULL` in the same body — XOR rejection, detail substring contains both `scheduled_at` AND `is_template` (Kanban #723).
 
@@ -228,7 +231,7 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 **Auth:** none
 **Headers:** `X-Project-Id: <int>` REQUIRED. The fetched row's `project_id` must match the header value; mismatch → 400. (Kanban #695)
 
-**Request:** any subset of `{title, description, process_status, priority, assigned_role, started_at, completed_at, run_mode, task_kind, is_template, recurrence_rule, recurrence_timezone, next_fire_at, scheduled_at}`. The soft-delete `status` flag is intentionally absent — sending `{"status": 0}` is silently ignored (use `DELETE` to soft-delete). `parent_task_id` AND `spawned_from_task_id` are BOTH REJECTED (V1 forbids re-parenting subtask hierarchy per Kanban #238 AND recurrence lineage per Kanban #706) — see 422 below. `scheduled_at` accepts any TZ offset on input; storage + GET response always normalize to UTC `Z` form. Set `{"scheduled_at": null}` to un-schedule a one-shot task (Kanban #723).
+**Request:** any subset of `{title, description, process_status, priority, assigned_role, started_at, completed_at, run_mode, task_kind, is_template, recurrence_rule, recurrence_timezone, next_fire_at, scheduled_at, is_pending}`. The soft-delete `status` flag is intentionally absent — sending `{"status": 0}` is silently ignored (use `DELETE` to soft-delete). `parent_task_id` AND `spawned_from_task_id` are BOTH REJECTED (V1 forbids re-parenting subtask hierarchy per Kanban #238 AND recurrence lineage per Kanban #706) — see 422 below. `scheduled_at` accepts any TZ offset on input; storage + GET response always normalize to UTC `Z` form. Set `{"scheduled_at": null}` to un-schedule a one-shot task (Kanban #723).
 
 **Response 200:** `TaskRead`
 
@@ -247,6 +250,7 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
   - `{"detail":"task_kind violates ck_tasks_task_kind_valid"}` (defensive — Pydantic Literal gates first; Kanban #706)
   - `{"detail":"template fields incomplete violates ck_tasks_template_recurrence_complete"}` (defensive — Pydantic model_validator catches at 422 first; Kanban #706)
   - `{"detail":"scheduled_at is incompatible with is_template=true (use recurrence_rule for templates)"}` — fires when the **resolved final** state (PATCH-supplied OR existing if not in body) has `is_template=true AND scheduled_at IS NOT NULL`. Caught at the **router** (HTTP 422 — application-layer pre-check, not DB CHECK fallback) so direction-A (existing template + PATCH adds scheduled_at) AND direction-B (existing scheduled_at + PATCH flips is_template=true) BOTH 422 with this detail. Resolved-final pattern mirrors `task_kind`/consent. Same source-text-locked detail string also surfaces as 400 if a raw-SQL bypass triggers DB CHECK `ck_tasks_scheduled_xor_template`. (Kanban #723)
+  - `{"detail":"is_pending=true requires process_status=2 (in_progress)"}` — fires when the **resolved final** `(is_pending, process_status)` pair (PATCH-supplied OR existing if not in body) is `(true, !=2)`. Both directions caught: direction-A (PATCH is_pending=true on a ps=1 row) AND direction-B (PATCH process_status=1 on a ps=2+is_pending=true row — validator sees `(true, 1)`). Bundled clear `{process_status:1, is_pending:false}` succeeds (resolved pair is `(false, 1)`). Source-text-locked at `services/is_pending.py` (byte-equal verified by Tier-1 smoke #756). Pure-function check; ordered after task_kind/run_mode, before consent gate. (Kanban #750)
   - `{"detail":"status violates ck_tasks_status_valid"}` (defensive — `status` is not a public PATCH field)
   - `{"detail":"Task update violates a database constraint"}` (fallback for unknown CHECK constraints)
 
@@ -465,7 +469,9 @@ Reader takes the per-session lock (V1 — serializes reads behind writes; avoids
 
 `auto_run_consent_at` (datetime ISO-8601 with timezone, or null) added 2026-05-09 by Kanban #483 — per-project consent gate for `tasks.run_mode='auto_headless'` (Mode B / Step 2 architecture). Default null = not consented; non-null = user consented at this timestamp via `POST /api/projects/{id}/grant-consent`.
 
-**`TaskRead`** — `{id:int, project_id:int, parent_task_id:int|null, title, description, process_status:int, priority:int, assigned_role:int|null, run_mode:"manual"|"auto_pickup"|"auto_headless", task_kind:"ai"|"human", is_template:bool, recurrence_rule:str|null, recurrence_timezone:str, next_fire_at:datetime|null, spawned_from_task_id:int|null, scheduled_at:datetime|null, created_at, updated_at, started_at:datetime|null, completed_at:datetime|null}`
+**`TaskRead`** — `{id:int, project_id:int, parent_task_id:int|null, title, description, process_status:int, priority:int, assigned_role:int|null, run_mode:"manual"|"auto_pickup"|"auto_headless", task_kind:"ai"|"human", is_template:bool, recurrence_rule:str|null, recurrence_timezone:str, next_fire_at:datetime|null, spawned_from_task_id:int|null, scheduled_at:datetime|null, is_pending:bool, created_at, updated_at, started_at:datetime|null, completed_at:datetime|null}`
+
+`is_pending` (bool, default false) added 2026-05-11 by Kanban #750 (migration 0011). Means "in-flight work that hit a problem and is stuck" — orthogonal to `process_status`. Cross-state invariant: `is_pending=true` requires `process_status=2 (in_progress)`. Enforced **app-layer** by `services/is_pending.py` (4th cross-state validator in lockstep with `task_kind`/`run_mode`, `run_mode`/consent, `scheduled_at`/`is_template`). Fires on POST + PATCH against the **resolved-final** `(is_pending, process_status)` pair (PATCH-supplied if in `model_fields_set`, else existing row value). Mismatch → 400 with detail `"is_pending=true requires process_status=2 (in_progress)"` — source-text-locked in the validator + verified byte-equal by Tier-1 smoke (Kanban #756). No DB CHECK; abuse evidence may add one later. FE predicate: yellow card bg + `<PendingBadge>` + `data-card-pending="true"` render IFF `task.is_pending && task.process_status === IN_PROGRESS`.
 
 `scheduled_at` (datetime ISO-8601 with TZ, default null) added 2026-05-10 by Kanban #723 (V3+ T1 audit follow-up; migration 0010). One-shot fire path. Mutually exclusive with `is_template=true` — DB CHECK `ck_tasks_scheduled_xor_template` is the backstop, but the wire-layer XOR (Pydantic + router resolved-final) catches first. Stored as TIMESTAMPTZ; serializes as trailing `Z` form on output.
 
