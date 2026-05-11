@@ -144,7 +144,16 @@ async def create_project(
         "config": config,
         "is_active": payload.is_active,
         "team": payload.team,
+        # Kanban #777: pass-through for the two text fields (None is fine — DB column
+        # is nullable). For agent_overrides, OMIT the key when None so the ORM's
+        # Python-side `default=dict` fires (DB server_default '{}'::jsonb is the safety
+        # net). Without this branch, Project(agent_overrides=None) would explicitly
+        # INSERT NULL, bypassing both defaults.
+        "working_path": payload.working_path,
+        "working_repo": payload.working_repo,
     }
+    if payload.agent_overrides is not None:
+        data["agent_overrides"] = payload.agent_overrides
 
     # Kanban #694, Phase 2: `is_active` is a free boolean — no atomic-clear of
     # other rows. The legacy `_clear_other_active(keep_id=None)` here was
@@ -179,6 +188,14 @@ async def update_project(
     )
 
     updates = payload.model_dump(exclude_unset=True)
+
+    # Kanban #777 WARN-1: PATCH explicit-null on agent_overrides means "clear to
+    # empty dict", NOT "write SQL NULL". The server_default '{}'::jsonb fires only
+    # on INSERT, so without this transform a null-PATCH would land JSONB scalar
+    # 'null' in the column (Pydantic surfaces it as None on read). Locked by
+    # test_patch_project_agent_overrides_null_clears_to_empty_dict.
+    if "agent_overrides" in updates and updates["agent_overrides"] is None:
+        updates["agent_overrides"] = {}
 
     # M10: cannot reactivate a soft-deleted project via PATCH — restore is a
     # separate (not-yet-built) admin path. Other fields ARE editable on a

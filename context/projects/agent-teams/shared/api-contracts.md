@@ -103,17 +103,32 @@ Template for a new endpoint:
 
 `team` is required and must be one of `"dev"` | `"novel"` — picks the subagent roster the auto-scaffold uses. (Renamed from `lead` by alembic revision `0004_rename_lead_to_team` — both request key and `ProjectRead` field changed atomically.)
 
+**Added by Kanban #777 (2026-05-12) — all optional:**
+- `working_path` (string | null, `min_length=1` when set) — single project-root path on the host. Advisory metadata only; not validated for existence. Orthogonal to `paths_web/api/db` (which are lane-specific sub-paths).
+- `working_repo` (string | null, `min_length=1` when set) — free-form repo identifier (URL or path; no regex).
+- `agent_overrides` (`object<string, "haiku"|"sonnet"|"opus">` | null, default `{}`) — per-project subagent model routing. Keys MUST match `^[a-zA-Z0-9_-]{1,64}$` (same shape as `name`). Values constrained to the 3 Claude tiers.
+
 **Response 201:** `ProjectRead`
 
 **Errors:**
 - `409` — `{"detail":"Project '<name>' already exists"}` on unique-name violation
 - `422` — Pydantic validation error on missing/invalid fields, including missing `team` or `team` not in `{"dev","novel"}`. `name` must match `^[a-zA-Z0-9_-]{1,64}$` (path-traversal hardening per Kanban #121); rejection shape: `{"detail":[{"type":"string_pattern_mismatch","loc":["body","name"],...}]}`. Same regex applies to PATCH `/api/projects/{id}` `name` updates.
+- `422` — `working_path` or `working_repo` empty string. Rejection shape: `{"detail":[{"type":"string_too_short","loc":["body","working_path"|"working_repo"],...}]}` (Kanban #777).
+- `422` — `agent_overrides` value not in `{"haiku","sonnet","opus"}`. Rejection shape: `{"detail":[{"type":"literal_error","loc":["body","agent_overrides","<key>"],...}]}` (Kanban #777).
+- `422` — `agent_overrides` key fails `^[a-zA-Z0-9_-]{1,64}$`. Rejection shape: `{"detail":[{"type":"value_error","loc":["body","agent_overrides"],"msg":"... must match ^[a-zA-Z0-9_-]{1,64}$"}]}` (Kanban #777 WARN-4).
 
 ### PATCH /api/projects/{id}
 **Purpose:** Partial update. Setting `is_active=true` ~~atomically clears every other row's `is_active`~~ **2026-05-10 (Kanban #694 Phase 2):** no longer touches other rows — multiple projects may carry `is_active=true` simultaneously under session-scoped binding. Server bumps `updated_at` on any real field change; an unchanged-body PATCH is a no-op (no `updated_at` advance, no audit-row noise) — N7 no-op-skip parity with PATCH `/api/tasks/{id}`.
 **Auth:** none
 
-**Request:** any subset of `{name, description, paths_web, paths_api, paths_db, stack_web, stack_api, stack_db, config, is_active, team}`
+**Request:** any subset of `{name, description, paths_web, paths_api, paths_db, stack_web, stack_api, stack_db, config, is_active, team, working_path, working_repo, agent_overrides}` (last 3 added by Kanban #777, 2026-05-12)
+
+**Null semantics (Kanban #777):**
+- `working_path: null` / `working_repo: null` → clears the field to SQL NULL (parity with `description`, `stack_*`).
+- `agent_overrides: null` → router normalizes to `{}` BEFORE the UPDATE (WARN-1 Option A). Response and subsequent GET both return `{}`, never `null`. The `server_default '{}'::jsonb` fires only on INSERT; this transform keeps the wire contract "always a dict at the response boundary" intact across PATCH too.
+- Key-absent → leave existing value unchanged (parity with every other optional field via `exclude_unset=True`).
+
+**Agent_overrides replace semantics:** the value sent is the NEW value, full-stop — NOT deep-merged with existing keys. Locked by `test_patch_project_agent_overrides_replace_semantics`.
 
 **Response 200:** `ProjectRead`
 
@@ -124,6 +139,7 @@ Template for a new endpoint:
   - `{"detail":"Project update conflicts with an existing row"}` (fallback for unknown integrity errors)
   Note: POST `/api/projects` 409 uses `"Project '<name>' already exists"` (no "name " word) — the two strings will be consolidated in a future contract revision.
 - `422` — `team` outside `{"dev","novel"}`
+- `422` — `working_path`/`working_repo` empty string, or `agent_overrides` value not in `{haiku|sonnet|opus}`, or `agent_overrides` key fails `^[a-zA-Z0-9_-]{1,64}$` (Kanban #777). Identical wire shapes to POST `/api/projects`.
 - `400` — `{"detail":"Cannot activate a soft-deleted project — restore first"}` when PATCH sets `is_active=true` on a row with `status=0`. Restore is a deferred admin path (separate endpoint when UI demands it). Other fields can still be PATCHed on a soft-deleted row.
 
 ### DELETE /api/projects/{id}

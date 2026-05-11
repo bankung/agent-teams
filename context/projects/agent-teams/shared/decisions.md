@@ -16,6 +16,37 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-12 — projects schema: working_path + working_repo + agent_overrides — Kanban #777 closed
+**Scope:** backend (migration `0012_projects_path_repo_ovr`, 4 files: migration, ORM model, Pydantic schemas, router; 22 tests on `test_routes_smoke.py`)
+**Decision:** Add 3 optional columns to `projects` — `working_path TEXT NULL` (project root on dev machine), `working_repo TEXT NULL` (free-form repo URL/path), `agent_overrides JSONB NULL DEFAULT '{}'::jsonb` (per-project subagent model routing). All optional / metadata-additive — no existing code path consumes them yet; consumers land in Lead bootstrap + #774/#775/#779/#780 role wiring later.
+
+**Locked contracts:**
+- **`working_path` orthogonal to `paths_web/api/db`** — keep both. `paths_web/api/db` are LANE-specific sub-paths (dev-team scaffold); `working_path` is the SINGLE project root that wraps them. Don't merge, don't rename. Captured in migration docstring + ORM-comment for the next maintainer.
+- **`working_path` / `working_repo` validation = `min_length=1` only.** No host-side path existence check (API host may differ from the host the path points to). No URL regex on `working_repo` — repo identifier is free-form (https/ssh/local-path/anything). Whitespace-only IS accepted (`"   "` passes `min_length=1`); contract is "non-empty string" not "non-blank string". Worth tightening if real abuse appears.
+- **`agent_overrides` PATCH-null normalize to `{}`** (WARN-1 Option A). `server_default '{}'::jsonb` fires on INSERT only; without router transform, a PATCH `{"agent_overrides": null}` would land JSONB scalar `'null'` in the column (Pydantic surfaces as `None` on read). Router in `update_project` rewrites `null → {}` before the UPDATE. Locked by `test_777_edge_patch_agent_overrides_null_clears_to_empty_dict`. Consequence: `ProjectRead.agent_overrides` is `dict[str, Any]` (no `| None`) — every response, every consumer, always a dict.
+- **`agent_overrides` PATCH replace semantics (NOT deep-merge).** Whole value sent = new value, full-stop. Locked by `test_patch_project_agent_overrides_replace_semantics`. Deep-merge could be added as a separate field/endpoint later, but cannot be silently retracted once shipped — preserve the simpler semantic by default.
+- **`agent_overrides` key allowlist `^[a-zA-Z0-9_-]{1,64}$`** (WARN-4) — Pydantic `field_validator` on both `ProjectCreate` + `ProjectUpdate`. Same shape as `project.name`. Forward-compatible with #774/#775/#779/#780 role names; rejects empty key, 65+ char keys, embedded newlines, prototype-pollution-shaped keys. Justification: keys persist to JSONB → free-form risks row bloat / audit-log noise / hypothetical FE prototype pollution if a consumer ever does `Object.assign(obj, agentOverrides)`.
+- **`agent_overrides` values = `Literal['haiku'|'sonnet'|'opus']`** on write (ProjectCreate/Update); `dict[str, Any]` on read (ProjectRead) — read-tolerant on VALUE for legacy-backfill resilience.
+
+**Reasoning:**
+- Bundle 3 columns into 1 migration because they all add to `projects` (single ALTER TABLE round-trip; one shared migration revision; one shared Pydantic + router patch). User accepted this fold over splitting into 3 separate tasks.
+- Option A (router null→{}) chosen over Option B (let null clear to SQL NULL) because the agent_overrides docstring already promised "always a dict at the response boundary" — Option A keeps the wire contract clean; Option B would have required loosening downstream consumer code to handle `None`. Cost: one `if` line in the router. Benefit: every consumer can assume `dict`.
+- Apply key allowlist NOW (not deferred) because the tester proved permissiveness held in practice; tightening later would be a breaking change. Forward-compat verified: every planned role name (`dev-analyst`, `dev-spec-reviewer`, `dev-documentor`, `dev-researcher`) fits the regex.
+
+**Implications:**
+- **Lead bootstrap (future)**: `GET /api/projects/by-name/{name}` now returns `working_path`, `working_repo`, `agent_overrides`. Bootstrap announce string should include them once Lead-prompt is updated.
+- **`scaffold_project_folder`**: currently uses `settings.repo_root` (NOT `working_path`). Verified by `test_777_edge_scaffold_uses_repo_root_not_working_path`. Decision: keep this — scaffold writes to `context/projects/<name>/` (inside the repo); `working_path` is metadata about the target project's location, not where the kanban app scaffolds metadata. Document explicitly here so the next slice doesn't re-litigate.
+- **Pending bootstrap** (per #777 description): after this slice closes, create 2 project rows — `NewsAnalyzer` (team=dev, working_path=`C:\Users\banku\Documents\Personal\Projects\WebApp\NewsAnalyzer`) and `Writing` (team=novel, working_path=`C:\Users\banku\Documents\Personal\Writing`). Both are the full-auto experiment targets.
+- **FE awareness**: `web/` Grep clean — frontend has no knowledge of the 3 new fields. Acceptable for this slice (BE-only contract); FE Create/Edit Project form gains a follow-up Kanban once #774/#775 stabilize.
+
+**Standards-candidates (propose-only — NOT written this slice):**
+- `standards/fastapi/patch-null-on-jsonb-default-column.md`: when a column has `server_default` for INSERT but PATCH semantics must keep it non-null, the router (not Pydantic) MUST normalize null → server-default-value before UPDATE. Schema-level `field_validator` can't do this because explicit-null is meaningful for sibling nullable fields. Strike #1 here; tabled until strike #2 (dogfood-pollution 3-strike discipline).
+- `standards/pydantic/dict-key-allowlist.md`: when a `dict[str, X]` field's keys are user-supplied AND persist to DB, add a `field_validator` with a name-shaped regex. Free-form keys are perpetual row-bloat / audit-noise / FE-prototype-pollution risk. Strike #1 here; tabled.
+
+**Reviewer + tester incidents (notes):**
+- Reviewer's 4 WARN + 5 NIT triage: 6 applied (1+2+3+4+6 + NIT-3), 1 deferred (NIT-4 _Paths.web/api/db min_length — pre-existing, separate task), 2 superseded (NIT-1 dict|None tightened by WARN-1; NIT-2 by-id GET covered by tester).
+- Tester's `test_777_edge_agent_overrides_pathological_keys` (documented permissiveness) replaced by `test_777_edge_agent_overrides_rejects_empty_key` + `test_777_edge_agent_overrides_rejects_long_key` after WARN-4 lock — contract direction reversed mid-slice, tests updated to match.
+
 ## 2026-05-11 — #710 polish: WARN-1 + 6 NITs — Kanban #768 closed
 **Scope:** frontend polish (5 files: layout.tsx, ThemeProvider.tsx, ThemePicker.tsx, BoardColumn.tsx, loading.tsx)
 **Decision:** Apply the 1 WARN + 6 NITs deferred from #710:

@@ -12,14 +12,28 @@ detail. (Decision 2026-05-07.)
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.constants import ProjectTeam
 
 TeamCode = Literal["dev", "novel"]
+
+# Kanban #777: per-project agent-model overrides. Values are constrained to the
+# three Claude tiers we route across via AgentModelLiteral (Pydantic enforces at
+# the request boundary). Keys are role names, allowlisted by `_AGENT_OVERRIDE_KEY`
+# below — same shape as project.name. Forward-compat with #774/#775/#779/#780
+# role names which all fit.
+AgentModelLiteral = Literal["haiku", "sonnet", "opus"]
+
+# Kanban #777 WARN-4: agent_overrides keys are role names — restrict to the
+# same shape as project.name (alphanumeric + underscore + hyphen, 1-64 chars).
+# Prevents row bloat / audit-log noise / hypothetical FE prototype-pollution
+# vectors. Forward-compat with `#774/#775/#779/#780` role names which all fit.
+_AGENT_OVERRIDE_KEY = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
 class _Paths(BaseModel):
@@ -59,6 +73,27 @@ class ProjectCreate(BaseModel):
     is_active: bool = False
     team: TeamCode
 
+    # Kanban #777: project-root + repo override + agent-model routing overrides.
+    # All optional — DB defaults working_path/repo to NULL and agent_overrides
+    # to '{}'::jsonb. min_length=1 guards against accidental empty strings on
+    # the two free-form text fields; agent_overrides values are constrained by
+    # AgentModelLiteral.
+    working_path: str | None = Field(default=None, min_length=1)
+    working_repo: str | None = Field(default=None, min_length=1)
+    agent_overrides: dict[str, AgentModelLiteral] | None = Field(default=None)
+
+    @field_validator("agent_overrides")
+    @classmethod
+    def _validate_agent_override_keys(cls, v):
+        if v is None:
+            return v
+        for key in v:
+            if not _AGENT_OVERRIDE_KEY.fullmatch(key):
+                raise ValueError(
+                    f"agent_overrides key {key!r} must match {_AGENT_OVERRIDE_KEY.pattern}"
+                )
+        return v
+
 
 class ProjectUpdate(BaseModel):
     """Request body for PATCH /api/projects/{id} — all fields optional.
@@ -88,6 +123,28 @@ class ProjectUpdate(BaseModel):
     is_active: bool | None = None
     team: TeamCode | None = None
 
+    # Kanban #777 — same three fields as ProjectCreate. Per existing project
+    # convention (description, stack_*, etc.), explicit `null` in PATCH is
+    # treated as "clear the field"; key-absent means "leave unchanged". No
+    # _reject_explicit_null validator — parity with neighbors, no audit-trail
+    # concern this slice. agent_overrides replace-semantics (not deep-merge):
+    # the value sent is the new value, full-stop.
+    working_path: str | None = Field(default=None, min_length=1)
+    working_repo: str | None = Field(default=None, min_length=1)
+    agent_overrides: dict[str, AgentModelLiteral] | None = Field(default=None)
+
+    @field_validator("agent_overrides")
+    @classmethod
+    def _validate_agent_override_keys(cls, v):
+        if v is None:
+            return v
+        for key in v:
+            if not _AGENT_OVERRIDE_KEY.fullmatch(key):
+                raise ValueError(
+                    f"agent_overrides key {key!r} must match {_AGENT_OVERRIDE_KEY.pattern}"
+                )
+        return v
+
 
 class ProjectRead(BaseModel):
     """Full project row as returned by the API."""
@@ -112,6 +169,20 @@ class ProjectRead(BaseModel):
     # (auto_headless tasks). NULL = not consented. First grant via
     # POST /api/projects/{id}/grant-consent stamps it; idempotent re-grant.
     auto_run_consent_at: datetime | None
+
+    # Kanban #777 — required-attribute reads. DB invariants:
+    #   working_path / working_repo  → nullable TEXT  (None when unset)
+    #   agent_overrides              → JSONB, always a dict at the response
+    #                                  boundary — both INSERT (via DB
+    #                                  server_default '{}'::jsonb) and PATCH-to-
+    #                                  null (via router transform, WARN-1
+    #                                  Option A) guarantee this. Reads stay
+    #                                  tolerant on VALUE (dict[str, Any], not
+    #                                  strict Literal) for legacy-backfill
+    #                                  resilience.
+    working_path: str | None
+    working_repo: str | None
+    agent_overrides: dict[str, Any]
 
 
 class ProjectGrantConsent(BaseModel):

@@ -103,6 +103,17 @@ class Project(Base):
         nullable=True,
     )
 
+    # Kanban #777: project-root metadata. Orthogonal to paths_web/api/db (which
+    # are per-lane sub-paths); working_path is the single project root.
+    working_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    working_repo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    agent_overrides: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        server_default="{}",
+        default=dict,
+    )
+
     tasks: Mapped[list["Task"]] = relationship(
         "Task",
         back_populates="project",

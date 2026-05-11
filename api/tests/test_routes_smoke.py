@@ -2218,3 +2218,704 @@ async def test_list_tasks_pending_with_top_level_only(client) -> None:
             await client.delete(f"/api/tasks/{parent_id}", headers=headers)
         if done_top_id is not None:
             await client.delete(f"/api/tasks/{done_top_id}", headers=headers)
+
+
+# =============================================================================
+# Kanban #777 — working_path / working_repo / agent_overrides
+# =============================================================================
+# These tests cover the three new optional ProjectCreate / ProjectUpdate /
+# ProjectRead fields introduced by Kanban #777:
+#   - working_path:     nullable TEXT, single project-root path on host
+#   - working_repo:     nullable TEXT, free-form repo URL or path
+#   - agent_overrides:  JSONB DEFAULT '{}', dict[str, "haiku"|"sonnet"|"opus"]
+# Values for agent_overrides are constrained by `AgentModelLiteral`; keys are
+# free-form (forward-compat with #774/#775/#779/#780 roles not yet wired).
+
+
+@pytest.mark.asyncio
+async def test_create_project_with_working_path_and_repo(
+    client, scaffold_cleanup
+) -> None:
+    """POST /api/projects echoes working_path + working_repo on the response."""
+    name = scaffold_cleanup(_unique_name("proj-777-paths"))
+    payload = _project_create_payload(name)
+    payload["working_path"] = "/tmp/foo"
+    payload["working_repo"] = "https://github.com/user/repo.git"
+
+    resp = await client.post("/api/projects", json=payload)
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["working_path"] == "/tmp/foo"
+    assert body["working_repo"] == "https://github.com/user/repo.git"
+
+
+@pytest.mark.asyncio
+async def test_create_project_without_new_fields_defaults_correctly(
+    client, scaffold_cleanup
+) -> None:
+    """POST without the 3 new fields → working_path/repo are None, overrides {}.
+
+    Lock the DB-default contract: agent_overrides falls back to '{}'::jsonb
+    via server_default when the field is absent in the request body.
+    """
+    name = scaffold_cleanup(_unique_name("proj-777-defaults"))
+    resp = await client.post("/api/projects", json=_project_create_payload(name))
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["working_path"] is None
+    assert body["working_repo"] is None
+    assert body["agent_overrides"] == {}
+
+
+@pytest.mark.asyncio
+async def test_create_project_with_agent_overrides(
+    client, scaffold_cleanup
+) -> None:
+    """POST with a populated agent_overrides dict → echoed back verbatim."""
+    name = scaffold_cleanup(_unique_name("proj-777-overrides"))
+    payload = _project_create_payload(name)
+    payload["agent_overrides"] = {
+        "dev-analyst": "sonnet",
+        "dev-spec-reviewer": "sonnet",
+    }
+
+    resp = await client.post("/api/projects", json=payload)
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["agent_overrides"] == {
+        "dev-analyst": "sonnet",
+        "dev-spec-reviewer": "sonnet",
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_project_rejects_invalid_model_value(
+    client, scaffold_cleanup
+) -> None:
+    """POST with agent_overrides value outside the haiku/sonnet/opus literal → 422.
+
+    Locks the AgentModelLiteral Pydantic enforcement at the request boundary.
+    The loc path is ["body", "agent_overrides", "<key>"] because Pydantic
+    descends into dict values when validating literal constraints. The error
+    type is `literal_error`.
+    """
+    name = scaffold_cleanup(_unique_name("proj-777-bad-model"))
+    payload = _project_create_payload(name)
+    payload["agent_overrides"] = {"dev-analyst": "claude-3"}
+
+    resp = await client.post("/api/projects", json=payload)
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert "detail" in body and isinstance(body["detail"], list)
+    matching = [
+        err
+        for err in body["detail"]
+        if err["loc"] == ["body", "agent_overrides", "dev-analyst"]
+    ]
+    assert matching, (
+        f"expected loc=['body','agent_overrides','dev-analyst'] in 422 detail; "
+        f"got {[err['loc'] for err in body['detail']]}"
+    )
+    assert matching[0]["type"] == "literal_error", (
+        f"expected type='literal_error'; got {matching[0]['type']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_project_rejects_empty_working_path(
+    client, scaffold_cleanup
+) -> None:
+    """POST with working_path="" → 422 via min_length=1 Field constraint."""
+    name = scaffold_cleanup(_unique_name("proj-777-empty-path"))
+    payload = _project_create_payload(name)
+    payload["working_path"] = ""
+
+    resp = await client.post("/api/projects", json=payload)
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert "detail" in body and isinstance(body["detail"], list)
+    matching = [
+        err for err in body["detail"] if err["loc"] == ["body", "working_path"]
+    ]
+    assert matching, (
+        f"expected loc=['body','working_path'] in 422 detail; "
+        f"got {[err['loc'] for err in body['detail']]}"
+    )
+    # Pydantic v2 reports the min_length violation with type='string_too_short'.
+    assert matching[0]["type"] == "string_too_short", (
+        f"expected type='string_too_short'; got {matching[0]['type']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_patch_project_sets_working_path(
+    client, scaffold_cleanup
+) -> None:
+    """PATCH with {"working_path": "/new/path"} → 200 + working_path updated,
+    other new fields untouched.
+    """
+    name = scaffold_cleanup(_unique_name("proj-777-patch-set"))
+    create = await client.post("/api/projects", json=_project_create_payload(name))
+    assert create.status_code == 201, create.text
+    project_id = create.json()["id"]
+
+    patch = await client.patch(
+        f"/api/projects/{project_id}", json={"working_path": "/new/path"}
+    )
+    assert patch.status_code == 200, patch.text
+    body = patch.json()
+    assert body["working_path"] == "/new/path"
+    # Other new fields untouched.
+    assert body["working_repo"] is None
+    assert body["agent_overrides"] == {}
+
+
+@pytest.mark.asyncio
+async def test_patch_project_unsets_working_path_via_null(
+    client, scaffold_cleanup
+) -> None:
+    """PATCH with {"working_path": null} → 200 + working_path becomes None.
+
+    Verifies the null-clears-field contract on the new optional fields:
+    explicit `null` in the JSON body is treated as "clear", consistent with
+    description / stack_* on ProjectUpdate.
+    """
+    name = scaffold_cleanup(_unique_name("proj-777-patch-null"))
+    payload = _project_create_payload(name)
+    payload["working_path"] = "/tmp/initial"
+    create = await client.post("/api/projects", json=payload)
+    assert create.status_code == 201, create.text
+    assert create.json()["working_path"] == "/tmp/initial"
+    project_id = create.json()["id"]
+
+    patch = await client.patch(
+        f"/api/projects/{project_id}", json={"working_path": None}
+    )
+    assert patch.status_code == 200, patch.text
+    assert patch.json()["working_path"] is None
+
+
+@pytest.mark.asyncio
+async def test_patch_project_unsets_working_repo_via_null(
+    client, scaffold_cleanup
+) -> None:
+    """PATCH with {"working_repo": null} → 200 + working_repo becomes None.
+
+    Sibling of test_patch_project_unsets_working_path_via_null (Kanban #777
+    WARN-2) — pins the explicit-null clears-field contract for working_repo too.
+    """
+    name = scaffold_cleanup(_unique_name("proj-777-patch-null-repo"))
+    payload = _project_create_payload(name)
+    payload["working_repo"] = "https://example.com/initial.git"
+    create = await client.post("/api/projects", json=payload)
+    assert create.status_code == 201, create.text
+    assert create.json()["working_repo"] == "https://example.com/initial.git"
+    project_id = create.json()["id"]
+
+    patch = await client.patch(
+        f"/api/projects/{project_id}", json={"working_repo": None}
+    )
+    assert patch.status_code == 200, patch.text
+    assert patch.json()["working_repo"] is None
+
+
+@pytest.mark.asyncio
+async def test_patch_project_agent_overrides_replace_semantics(
+    client, scaffold_cleanup
+) -> None:
+    """PATCH with a new agent_overrides dict REPLACES the prior dict (no merge).
+
+    Contract: agent_overrides PATCH is full-replace semantics, NOT deep-merge.
+    Start with {"a": "haiku"}, PATCH with {"b": "sonnet"} → result is exactly
+    {"b": "sonnet"} (key "a" gone). Lock this so a future "merge" refactor
+    can't silently change the wire contract.
+    """
+    name = scaffold_cleanup(_unique_name("proj-777-patch-replace"))
+    payload = _project_create_payload(name)
+    payload["agent_overrides"] = {"a": "haiku"}
+    create = await client.post("/api/projects", json=payload)
+    assert create.status_code == 201, create.text
+    assert create.json()["agent_overrides"] == {"a": "haiku"}
+    project_id = create.json()["id"]
+
+    patch = await client.patch(
+        f"/api/projects/{project_id}",
+        json={"agent_overrides": {"b": "sonnet"}},
+    )
+    assert patch.status_code == 200, patch.text
+    assert patch.json()["agent_overrides"] == {"b": "sonnet"}
+
+
+@pytest.mark.asyncio
+async def test_patch_project_omitted_fields_unchanged(
+    client, scaffold_cleanup
+) -> None:
+    """PATCH that touches only `name` leaves working_path/repo/overrides alone.
+
+    Locks the `exclude_unset=True` behavior — fields absent in the PATCH body
+    must not be re-written (key invariant: PATCH is partial-update, never
+    a full-replace).
+    """
+    name = scaffold_cleanup(_unique_name("proj-777-omit"))
+    payload = _project_create_payload(name)
+    payload["working_path"] = "/keep/me"
+    payload["working_repo"] = "https://example.com/repo.git"
+    payload["agent_overrides"] = {"dev-analyst": "opus"}
+    create = await client.post("/api/projects", json=payload)
+    assert create.status_code == 201, create.text
+    project_id = create.json()["id"]
+
+    new_name = scaffold_cleanup(_unique_name("proj-777-omit-renamed"))
+    patch = await client.patch(
+        f"/api/projects/{project_id}", json={"name": new_name}
+    )
+    assert patch.status_code == 200, patch.text
+    body = patch.json()
+    # Explicit safety-net: a regression to model_dump() (without exclude_unset)
+    # would null-clear these because their Pydantic default is None.
+    assert body["name"] == new_name
+    assert body["working_path"] == "/keep/me"
+    assert body["working_repo"] == "https://example.com/repo.git"
+    assert body["agent_overrides"] == {"dev-analyst": "opus"}
+
+
+@pytest.mark.asyncio
+async def test_get_project_by_name_returns_new_fields(
+    client, scaffold_cleanup
+) -> None:
+    """GET /api/projects/by-name/<name> response body carries all 3 new keys.
+
+    Verifies ProjectRead exposes working_path / working_repo / agent_overrides
+    on the read path used by Lead bootstrap and external integrations.
+    """
+    name = scaffold_cleanup(_unique_name("proj-777-by-name"))
+    payload = _project_create_payload(name)
+    payload["working_path"] = "/some/path"
+    payload["working_repo"] = "git@github.com:user/x.git"
+    payload["agent_overrides"] = {"dev-backend": "sonnet"}
+    create = await client.post("/api/projects", json=payload)
+    assert create.status_code == 201, create.text
+
+    resp = await client.get(f"/api/projects/by-name/{name}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    for field in ("working_path", "working_repo", "agent_overrides"):
+        assert field in body, f"missing {field!r} in ProjectRead body"
+    assert body["working_path"] == "/some/path"
+    assert body["working_repo"] == "git@github.com:user/x.git"
+    assert body["agent_overrides"] == {"dev-backend": "sonnet"}
+
+
+# -----------------------------------------------------------------------------
+# Kanban #777 — tester edge-case pass
+# -----------------------------------------------------------------------------
+# Independent edge-case + integration coverage on top of the BE author's 10
+# happy-path / contract tests above. Focus: pathological inputs, PATCH-null vs
+# PATCH-empty-dict semantics, whitespace, soft-delete cross-row leakage,
+# list-endpoint field surfacing, by-id parity, and scaffolding side-effect
+# independence from working_path.
+
+
+@pytest.mark.asyncio
+async def test_777_edge_agent_overrides_rejects_empty_key(
+    client, scaffold_cleanup
+) -> None:
+    """POST agent_overrides with empty-string key → 422.
+
+    Kanban #777 WARN-4: keys must match ^[a-zA-Z0-9_-]{1,64}$ — empty string
+    fails on min-length-1. Pydantic surfaces the failure as a value_error
+    on the agent_overrides field.
+    """
+    name = scaffold_cleanup(_unique_name("proj-777-edge-emptykey"))
+    payload = _project_create_payload(name)
+    payload["agent_overrides"] = {"": "haiku"}
+    resp = await client.post("/api/projects", json=payload)
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert any(
+        err["loc"] == ["body", "agent_overrides"] for err in body["detail"]
+    ), f"expected loc=['body','agent_overrides'] in 422 detail; got {body['detail']!r}"
+
+
+@pytest.mark.asyncio
+async def test_777_edge_agent_overrides_rejects_long_key(
+    client, scaffold_cleanup
+) -> None:
+    """POST agent_overrides with a 65-char key → 422.
+
+    Kanban #777 WARN-4: keys must match ^[a-zA-Z0-9_-]{1,64}$ — 65 chars
+    exceeds the cap by one. Pydantic surfaces as a value_error whose message
+    contains the regex pattern.
+    """
+    name = scaffold_cleanup(_unique_name("proj-777-edge-longkey"))
+    payload = _project_create_payload(name)
+    payload["agent_overrides"] = {"a" * 65: "haiku"}
+    resp = await client.post("/api/projects", json=payload)
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    matching = [
+        err for err in body["detail"]
+        if err["loc"] == ["body", "agent_overrides"]
+    ]
+    assert matching, (
+        f"expected loc=['body','agent_overrides'] in 422 detail; "
+        f"got {body['detail']!r}"
+    )
+    assert matching[0]["type"] == "value_error"
+    assert "[a-zA-Z0-9_-]" in matching[0]["msg"]
+
+
+@pytest.mark.asyncio
+async def test_777_edge_patch_agent_overrides_empty_dict_clears(
+    client, scaffold_cleanup
+) -> None:
+    """PATCH {"agent_overrides": {}} → result is exactly {} (cleared-to-empty).
+
+    Distinct from PATCH null (next test). Locks the wire contract that empty
+    dict and null are NOT collapsed by the server — they round-trip as the
+    caller sent them.
+    """
+    name = scaffold_cleanup(_unique_name("proj-777-edge-patch-empty"))
+    payload = _project_create_payload(name)
+    payload["agent_overrides"] = {"dev-analyst": "opus"}
+    create = await client.post("/api/projects", json=payload)
+    assert create.status_code == 201, create.text
+    project_id = create.json()["id"]
+    assert create.json()["agent_overrides"] == {"dev-analyst": "opus"}
+
+    patch = await client.patch(
+        f"/api/projects/{project_id}", json={"agent_overrides": {}}
+    )
+    assert patch.status_code == 200, patch.text
+    assert patch.json()["agent_overrides"] == {}
+
+    # Verify on a subsequent GET (round-trip).
+    get_resp = await client.get(f"/api/projects/by-name/{name}")
+    assert get_resp.status_code == 200, get_resp.text
+    assert get_resp.json()["agent_overrides"] == {}
+
+
+@pytest.mark.asyncio
+async def test_777_edge_patch_agent_overrides_null_clears_to_empty_dict(
+    client, scaffold_cleanup
+) -> None:
+    """PATCH {"agent_overrides": null} → response is exactly {}.
+
+    Kanban #777 WARN-1 Option A: the router transforms an explicit-null PATCH
+    on agent_overrides into an empty-dict UPDATE, so the wire contract is locked
+    — response (and subsequent GET) MUST be `{}`, never `None`, never a SQL-NULL
+    that surfaces as `None` to Pydantic. Contract is in the test name.
+    """
+    name = scaffold_cleanup(_unique_name("proj-777-edge-patch-null"))
+    payload = _project_create_payload(name)
+    payload["agent_overrides"] = {"dev-analyst": "opus"}
+    create = await client.post("/api/projects", json=payload)
+    assert create.status_code == 201, create.text
+    project_id = create.json()["id"]
+
+    patch = await client.patch(
+        f"/api/projects/{project_id}", json={"agent_overrides": None}
+    )
+    assert patch.status_code == 200, patch.text
+    body = patch.json()
+    assert body["agent_overrides"] == {}, (
+        f"agent_overrides after null-PATCH must be {{}} (WARN-1 Option A); "
+        f"got {body['agent_overrides']!r}"
+    )
+
+    # Round-trip via GET — same value as PATCH echoed.
+    get_resp = await client.get(f"/api/projects/by-name/{name}")
+    assert get_resp.status_code == 200, get_resp.text
+    assert get_resp.json()["agent_overrides"] == {}
+
+
+@pytest.mark.asyncio
+async def test_777_edge_patch_omitting_agent_overrides_preserves_existing(
+    client, scaffold_cleanup
+) -> None:
+    """PATCH that does NOT include `agent_overrides` leaves the prior value alone.
+
+    Mirrors test_patch_project_omitted_fields_unchanged but specifically pins
+    that the partial-update contract applies to agent_overrides (Pydantic
+    `exclude_unset=True`). Touch `description` only; assert overrides intact.
+    """
+    name = scaffold_cleanup(_unique_name("proj-777-edge-patch-omit"))
+    payload = _project_create_payload(name)
+    payload["agent_overrides"] = {"dev-analyst": "haiku", "dev-backend": "sonnet"}
+    create = await client.post("/api/projects", json=payload)
+    assert create.status_code == 201, create.text
+    project_id = create.json()["id"]
+
+    patch = await client.patch(
+        f"/api/projects/{project_id}", json={"description": "updated description"}
+    )
+    assert patch.status_code == 200, patch.text
+    body = patch.json()
+    assert body["description"] == "updated description"
+    assert body["agent_overrides"] == {
+        "dev-analyst": "haiku",
+        "dev-backend": "sonnet",
+    }
+
+
+@pytest.mark.asyncio
+async def test_777_edge_whitespace_only_working_path_accepted(
+    client, scaffold_cleanup
+) -> None:
+    """POST with working_path='   ' (3 spaces) is ACCEPTED.
+
+    `min_length=1` on a Pydantic str field does NOT strip whitespace before
+    counting, so a 3-space string passes the constraint. Document actual
+    behavior — the contract is "non-empty string", NOT "non-blank string".
+    Same for working_repo.
+
+    If product later wants a non-blank contract, this test becomes the
+    inflection point — flag as a test-NIT under OBSERVATION in the report.
+    """
+    # working_path = "   "
+    name1 = scaffold_cleanup(_unique_name("proj-777-edge-ws-path"))
+    payload = _project_create_payload(name1)
+    payload["working_path"] = "   "
+    resp = await client.post("/api/projects", json=payload)
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["working_path"] == "   "
+
+    # working_repo = "   "
+    name2 = scaffold_cleanup(_unique_name("proj-777-edge-ws-repo"))
+    payload = _project_create_payload(name2)
+    payload["working_repo"] = "   "
+    resp = await client.post("/api/projects", json=payload)
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["working_repo"] == "   "
+
+
+@pytest.mark.asyncio
+async def test_777_edge_very_long_working_path_accepted(
+    client, scaffold_cleanup
+) -> None:
+    """POST with working_path of 100k chars (TEXT has no length cap).
+
+    Verifies the field is genuinely uncapped at both Pydantic AND DB layers,
+    and the value round-trips intact through serialization + JSONB-adjacent
+    storage paths.
+    """
+    name = scaffold_cleanup(_unique_name("proj-777-edge-long-path"))
+    big = "x" * 100000
+    payload = _project_create_payload(name)
+    payload["working_path"] = big
+    payload["working_repo"] = big  # same big value, both fields
+
+    resp = await client.post("/api/projects", json=payload)
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["working_path"] == big
+    assert body["working_repo"] == big
+    assert len(body["working_path"]) == 100000
+    assert len(body["working_repo"]) == 100000
+
+    # Round-trip via GET — same intact value.
+    get_resp = await client.get(f"/api/projects/by-name/{name}")
+    assert get_resp.status_code == 200, get_resp.text
+    assert len(get_resp.json()["working_path"]) == 100000
+    assert get_resp.json()["working_path"] == big
+
+
+@pytest.mark.asyncio
+async def test_777_edge_soft_delete_recreate_isolates_working_path(
+    client, scaffold_cleanup
+) -> None:
+    """Re-create after soft-delete keeps each row's working_path independent.
+
+    Partial unique on (name) where status=1 frees the name slot after DELETE.
+    The new row's working_path must be ITS payload's value; the old (status=0)
+    row keeps its original working_path. No cross-row leakage via shared name.
+
+    Verify via `/api/projects?include_deleted=1` to fetch the soft-deleted row
+    and assert its working_path is unchanged.
+    """
+    name = scaffold_cleanup(_unique_name("proj-777-edge-recreate"))
+
+    # Project A — working_path="/a"
+    payload_a = _project_create_payload(name)
+    payload_a["working_path"] = "/a"
+    create_a = await client.post("/api/projects", json=payload_a)
+    assert create_a.status_code == 201, create_a.text
+    id_a = create_a.json()["id"]
+    assert create_a.json()["working_path"] == "/a"
+
+    # Soft-delete A.
+    delete_a = await client.delete(f"/api/projects/{id_a}")
+    assert delete_a.status_code == 204
+
+    # Re-create with the SAME name, working_path="/b".
+    payload_b = _project_create_payload(name)
+    payload_b["working_path"] = "/b"
+    create_b = await client.post("/api/projects", json=payload_b)
+    assert create_b.status_code == 201, create_b.text
+    id_b = create_b.json()["id"]
+    assert id_b != id_a
+    assert create_b.json()["working_path"] == "/b"
+
+    # Fetch via list w/ include_deleted to confirm A's working_path stayed "/a".
+    list_resp = await client.get("/api/projects?include_deleted=1")
+    assert list_resp.status_code == 200, list_resp.text
+    by_id = {row["id"]: row for row in list_resp.json()}
+    assert id_a in by_id, f"soft-deleted id={id_a} not in include_deleted list"
+    assert id_b in by_id, f"recreated id={id_b} not in include_deleted list"
+    assert by_id[id_a]["working_path"] == "/a", (
+        f"soft-deleted row should retain working_path='/a'; "
+        f"got {by_id[id_a]['working_path']!r}"
+    )
+    assert by_id[id_b]["working_path"] == "/b"
+
+    # Clean up — soft-delete the live B row.
+    await client.delete(f"/api/projects/{id_b}")
+
+
+@pytest.mark.asyncio
+async def test_777_edge_list_projects_includes_new_fields(
+    client, scaffold_cleanup
+) -> None:
+    """GET /api/projects (list) surfaces working_path / working_repo /
+    agent_overrides for every row.
+
+    ProjectRead is the response_model on list, so the new fields propagate
+    automatically — but a list-level test is the only place this is actually
+    wired end-to-end. Locks that the list serializer doesn't drop the new
+    keys (e.g., via a stale projection).
+    """
+    name_x = scaffold_cleanup(_unique_name("proj-777-edge-list-x"))
+    name_y = scaffold_cleanup(_unique_name("proj-777-edge-list-y"))
+
+    payload_x = _project_create_payload(name_x)
+    payload_x["working_path"] = "/list/x"
+    payload_x["agent_overrides"] = {"dev-analyst": "haiku"}
+    create_x = await client.post("/api/projects", json=payload_x)
+    assert create_x.status_code == 201, create_x.text
+    id_x = create_x.json()["id"]
+
+    payload_y = _project_create_payload(name_y)
+    payload_y["working_path"] = "/list/y"
+    payload_y["working_repo"] = "https://example.com/y.git"
+    create_y = await client.post("/api/projects", json=payload_y)
+    assert create_y.status_code == 201, create_y.text
+    id_y = create_y.json()["id"]
+
+    try:
+        list_resp = await client.get("/api/projects?status=1")
+        assert list_resp.status_code == 200, list_resp.text
+        by_id = {row["id"]: row for row in list_resp.json()}
+
+        assert id_x in by_id, f"created id={id_x} missing from active list"
+        assert id_y in by_id, f"created id={id_y} missing from active list"
+
+        # Both rows carry all three new keys.
+        for field in ("working_path", "working_repo", "agent_overrides"):
+            assert field in by_id[id_x], f"list row id={id_x} missing {field!r}"
+            assert field in by_id[id_y], f"list row id={id_y} missing {field!r}"
+
+        # Values match what we posted (no cross-row contamination on the list).
+        assert by_id[id_x]["working_path"] == "/list/x"
+        assert by_id[id_x]["working_repo"] is None
+        assert by_id[id_x]["agent_overrides"] == {"dev-analyst": "haiku"}
+
+        assert by_id[id_y]["working_path"] == "/list/y"
+        assert by_id[id_y]["working_repo"] == "https://example.com/y.git"
+        assert by_id[id_y]["agent_overrides"] == {}
+    finally:
+        await client.delete(f"/api/projects/{id_x}")
+        await client.delete(f"/api/projects/{id_y}")
+
+
+@pytest.mark.asyncio
+async def test_777_edge_get_by_id_parity_with_by_name(
+    client, scaffold_cleanup
+) -> None:
+    """GET /api/projects/{id} returns identical new-field values to
+    GET /api/projects/by-name/{name} for the same row.
+
+    Catches any divergence where one read path projects different columns or
+    applies a different serializer.
+    """
+    name = scaffold_cleanup(_unique_name("proj-777-edge-byid-parity"))
+    payload = _project_create_payload(name)
+    payload["working_path"] = "/parity/path"
+    payload["working_repo"] = "https://example.com/parity.git"
+    payload["agent_overrides"] = {"dev-frontend": "sonnet", "dev-backend": "opus"}
+    create = await client.post("/api/projects", json=payload)
+    assert create.status_code == 201, create.text
+    project_id = create.json()["id"]
+
+    try:
+        by_id_resp = await client.get(f"/api/projects/{project_id}")
+        assert by_id_resp.status_code == 200, by_id_resp.text
+        by_id_body = by_id_resp.json()
+
+        by_name_resp = await client.get(f"/api/projects/by-name/{name}")
+        assert by_name_resp.status_code == 200, by_name_resp.text
+        by_name_body = by_name_resp.json()
+
+        # All 3 new fields present + equal across both read paths.
+        for field in ("working_path", "working_repo", "agent_overrides"):
+            assert field in by_id_body, f"by-id missing {field!r}"
+            assert field in by_name_body, f"by-name missing {field!r}"
+            assert by_id_body[field] == by_name_body[field], (
+                f"{field} differs: by-id={by_id_body[field]!r} "
+                f"by-name={by_name_body[field]!r}"
+            )
+
+        # Values match what we POSTed (sanity).
+        assert by_id_body["working_path"] == "/parity/path"
+        assert by_id_body["working_repo"] == "https://example.com/parity.git"
+        assert by_id_body["agent_overrides"] == {
+            "dev-frontend": "sonnet",
+            "dev-backend": "opus",
+        }
+    finally:
+        await client.delete(f"/api/projects/{project_id}")
+
+
+@pytest.mark.asyncio
+async def test_777_edge_scaffold_uses_repo_root_not_working_path(
+    client, scaffold_cleanup
+) -> None:
+    """POST with working_path set still scaffolds under settings.repo_root.
+
+    Regression-guard: scaffold_project_folder(repo_root, name, team) signature
+    has NEVER taken working_path — it builds the on-disk role folders under
+    `<repo_root>/context/projects/<name>/` regardless of working_path. A
+    future refactor that re-routes scaffolding to working_path would silently
+    leak directories outside the repo. Lock the current behavior.
+
+    Assert: `<repo_root>/context/projects/<name>/` exists after POST. We don't
+    assert the working_path target does NOT exist (it's a fake `/nonsense/...`
+    path — `os.path.exists` is trivially False, no signal).
+    """
+    from src.settings import get_settings
+
+    repo_root = Path(get_settings().repo_root)
+    name = scaffold_cleanup(_unique_name("proj-777-edge-scaffold"))
+
+    payload = _project_create_payload(name)
+    # Deliberately non-existent absolute path — proves scaffold doesn't try
+    # to use it as the on-disk root (would error or no-op silently).
+    payload["working_path"] = "/nonsense/scaffold-target/that/does/not/exist"
+    resp = await client.post("/api/projects", json=payload)
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["working_path"] == "/nonsense/scaffold-target/that/does/not/exist"
+
+    # The canonical scaffold location must exist regardless.
+    canonical = repo_root / "context" / "projects" / name
+    assert canonical.exists(), (
+        f"scaffold target {canonical!s} does not exist after POST — "
+        f"scaffolder may have been mis-routed via working_path"
+    )
+    assert canonical.is_dir(), f"{canonical!s} exists but is not a directory"
+
+    # Sanity: at least one expected role folder under the canonical scaffold
+    # (dev team → role folders like dev-lead / dev-frontend / etc.).
+    role_subdirs = [p.name for p in canonical.iterdir() if p.is_dir()]
+    assert role_subdirs, (
+        f"scaffold {canonical!s} is empty — no role folders created. "
+        f"Expected dev-team roster sub-folders."
+    )
