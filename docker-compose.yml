@@ -90,7 +90,7 @@ services:
       # breaks on Linux compose where container localhost != host. (Kanban #704)
       INTERNAL_API_URL: ${INTERNAL_API_URL:-http://api:8456}
     ports:
-      - "${WEB_PORT:-5431}:3000"
+      - "${WEB_PORT:-5431}:5431"
     volumes:
       # Bind ./web read-write so source edits hot-reload via `next dev`. Mount node_modules
       # as an anonymous volume so the host node_modules (if any) doesn't clobber the
@@ -99,8 +99,8 @@ services:
       - /app/node_modules
     healthcheck:
       # Next dev mode takes ~5-10s for first-request compile; start_period covers it.
-      # wget is in alpine base by default; if not, swap to `node -e "require('http').get('http://localhost:3000', r => process.exit(r.statusCode === 200 ? 0 : 1))"`.
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000 || exit 1"]
+      # wget is in alpine base by default; if not, swap to `node -e "require('http').get('http://localhost:5431', r => process.exit(r.statusCode === 200 ? 0 : 1))"`.
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:5431 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5

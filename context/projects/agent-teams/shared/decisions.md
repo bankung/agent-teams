@@ -16,6 +16,31 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-11 — Web container-internal port 3000 → 5431 — Kanban #763 closed (full symmetry with api 8456:8456)
+**Scope:** devops / shared / standards
+**Decision:** Close the asymmetry left by #762 (host-side only). Flip the container-internal Next.js listener from 3000 → 5431 so the compose mapping becomes **`5431:5431` symmetric** — mirrors the api precedent (host = container = 8456). `docker compose exec -T web wget http://localhost:5431` now works identically to host `curl localhost:5431`; no inside-vs-outside port gear-shift.
+
+- **3-file devops diff:**
+  - `web/Dockerfile` — `EXPOSE 3000` → `EXPOSE 5431`
+  - `web/package.json` — scripts `next dev -p 3000` → `next dev -p 5431`; `next start -p 3000` → `next start -p 5431`
+  - `docker-compose.yml` — port mapping `${WEB_PORT:-5431}:3000` → `${WEB_PORT:-5431}:5431`; healthcheck `wget http://localhost:3000` → `localhost:5431`; inline comment example port updated.
+- **Image rebuild required** (Dockerfile EXPOSE is metadata, but the `next dev -p 5431` script change requires the image to ship the updated package.json — `docker compose build web` + `up -d web`). Devops confirmed via `docker compose ps web` showing `0.0.0.0:5431->5431/tcp` + `Health:healthy` post-rebuild.
+- **Tier-1 verdict GREEN 5/5** with **matched-pair listener-flip proof:** Probe B (`docker exec wget localhost:5431` inside container) PASS + Probe C (`docker exec wget localhost:3000`) refused with `Connection refused EXIT=1`. Together these are causal proof that the listener moved (not just port-forwarded). #407 V3 surface still serves 6/6 markers on the symmetric port.
+- **Reviewer NIT from #762 closed in this slice:** the project-scoped-port rule in `context/standards/docker/compose.md` got promoted + the symmetric-port-mapping rule explicitly added (host:container must match unless deliberate-asymmetry justification). Worked examples: api 8456:8456 (from project genesis) + web 5431:5431 (post-#763).
+- **Files DELIBERATELY untouched:** `web/lib/api.ts`, `web/components/**`, `web/app/**`, `INTERNAL_API_URL` (api URL, unchanged), `NEXT_PUBLIC_API_URL` (api URL, unchanged), `.env.example` (already correct from #762), `.claude/settings.json` allowlist (already correct from #762), `.claude/hooks/tester-curl-allow.ps1` (regex port-agnostic), `README.md` (already correct from #762). Historical entries preserved.
+
+**Reasoning:** Host:container port asymmetry was a hidden footgun. `docker compose exec` debugging probes silently produced an inside-vs-outside surface (developer types `localhost:5431` outside, must remember `localhost:3000` inside). The api side never had this issue (8456:8456 from genesis); web inherited it from Next.js's default 3000. Symmetry restores the "agent-teams web = 5431, period" mental model. Cost is minimal — 3 files, one image rebuild. The symmetry rule is now codified in `standards/docker/compose.md` so future services / scaffolds get it right at provisioning.
+
+**Implications:**
+- **Standards rule landed:** `standards/docker/compose.md` now explicitly says container-side port MUST match host-side port (with the inside-vs-outside gear-shift anti-pattern as the worked example). Future Lead spawn prompts should reference this when scaffolding new services.
+- **Healthcheck contract reinforced:** healthcheck command port literal MUST match the container-internal listener. The symmetric mapping makes this automatic; asymmetric mappings silently break healthchecks if devs forget to update both the port mapping AND the healthcheck command.
+- **`.env`-override risk unchanged from #762** — local `WEB_PORT=<value>` still overrides the compose default; same caveat as #762 close-out.
+- **Slice scope clean** — devops, Lead, tester, reviewer cycles all converged GREEN. No follow-up filed.
+
+**Superseded:** N/A — additive (closes the #762 residual). #762's "container-internal port stays 3000" note in this file's entry is correct historical context for that slice's scope; #763 is the deliberate follow-through.
+
+---
+
 ## 2026-05-11 — Web host port 3000 → 5431 — Kanban #762 closed
 **Scope:** devops / shared / standards
 **Decision:** Bind agent-teams web to host port **5431** (custom, project-scoped). Container-internal port stays **3000** (unchanged: `web/Dockerfile` EXPOSE, `next dev -p 3000`, in-container healthcheck `wget http://localhost:3000`, `INTERNAL_API_URL`). Only the host-side mapping changes via `WEB_PORT` env-var; `docker-compose.yml` default `${WEB_PORT:-3000}:3000` → `${WEB_PORT:-5431}:3000`. Mirrors the **api project-scoped port pattern** (8456 for agent-teams api) — each project picks its own host port at scaffolding time instead of using the framework default.

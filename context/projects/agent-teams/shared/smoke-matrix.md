@@ -6,7 +6,7 @@
 ## Endpoints / hosts
 
 - **API:** `http://localhost:8456` — FastAPI on the `api` service in `docker-compose.yml`.
-- **Web:** `http://localhost:5431` — Next.js on the `web` service (host port; container-internal port is 3000). Host port changed from 3000 → 5431 by Kanban #762 (2026-05-11) to avoid collision with the Next.js default 3000 that future scaffolded projects may use.
+- **Web:** `http://localhost:5431` — Next.js on the `web` service. **Symmetric:** host = container = 5431 (mirrors api 8456:8456). Host migration from 3000 → 5431 landed in Kanban #762 (2026-05-11); container-internal symmetry closed in Kanban #763 same day. `docker compose exec -T web wget http://localhost:5431` works identically to host `curl localhost:5431` — no inside-vs-outside gear-shift.
 - **DB:** `agent_teams` on the `db` service. Direct probes are NOT Tier-1; use API endpoints.
 
 ## Project-specific Tier-1 trigger paths (overrides / additions)

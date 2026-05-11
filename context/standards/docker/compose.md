@@ -45,6 +45,10 @@ See `docker-compose.yml:23` and `docker-compose.yml:51`. The Dockerfile's `EXPOS
 
 **Why:** one number means logs, in-container healthchecks, code references (`http://localhost:8456`), reverse-proxy configs, and operator muscle memory all use the same value — no NAT-style translation to keep in your head. Asymmetric mappings (`8456:8000`) are reserved for the rare case where an upstream image you don't control hardcodes a port; not applicable to anything we build.
 
+**Project-scoped over framework-default.** Each project picks its own host port at scaffolding time rather than using the framework's default (Next.js 3000, FastAPI 8000, Postgres 5432). Avoids collision when multiple projects run side-by-side on the same workstation. agent-teams uses api=8456, web=5431. Pick at provisioning; retrofitting later is cheap but tedious — and **may require an image rebuild if the framework's listener port is baked into Dockerfile `EXPOSE` / `CMD`** (worked example: Kanban #762 host-side retrofit + #763 container-internal symmetry retrofit; the latter required `docker compose build web` because `EXPOSE` is build-time metadata + `next dev -p` lives in the image's `package.json`).
+
+**Healthcheck port literal MUST match the container-internal listener.** When host:container are symmetric (this convention), the healthcheck just uses the shared port. When they diverge (anti-pattern; avoid), the healthcheck silently asserts the wrong surface — `wget http://localhost:<host-port>` from inside the container hits nothing. Symmetric mapping makes this automatic; if you ever break symmetry, update the healthcheck in the same commit.
+
 ## Bind-mount strategy — current
 
 ```yaml
@@ -103,14 +107,14 @@ web:
   environment:
     NEXT_PUBLIC_API_URL: http://api:8456
   ports:
-    - "${WEB_PORT:-5431}:3000"
+    - "${WEB_PORT:-5431}:5431"
 ```
 
 Notes:
 - `http://api:8456` uses **service-name DNS inside the compose network** — `api` resolves to the api container, not `localhost`.
-- `${WEB_PORT:-5431}:3000` follows the N:N rule. Host-side default is a **project-scoped port** (5431 for agent-teams, mirroring api=8456) rather than the Next.js stack default of 3000 — avoids collision when multiple projects run side-by-side on the same workstation. Container-side stays 3000 because the Dockerfile EXPOSE + `next dev -p 3000` are framework-native and stack-invariant. **Pick a project-scoped host port at scaffolding time;** retrofitting later is cheap but tedious (Kanban #762 was the agent-teams retrofit).
+- `${WEB_PORT:-5431}:5431` follows the N:N rule (see "Port mapping" section). `next dev -p 5431` in `web/package.json` + `EXPOSE 5431` in `web/Dockerfile` + `wget http://localhost:5431` in the healthcheck all agree on the same port — symmetric. (#762 + #763 retrofitted this from the Next.js default of 3000.)
 - `condition: service_healthy` works against the api `/health` healthcheck (already wired — see Healthcheck convention).
-- `web` itself must ship with its own healthcheck on day one (per Healthcheck convention).
+- `web` itself ships with its own healthcheck on day one (per Healthcheck convention).
 
 ## No production hardening yet
 
