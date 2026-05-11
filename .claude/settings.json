@@ -67,6 +67,7 @@
       "Bash(awk:*)",
       "Bash(date:*)",
 
+      "Bash(curl --silent http://localhost:8456/api/projects/by-name/agent-teams)",
       "Bash(curl --silent http://localhost:8456/api/:*)",
       "Bash(curl -s http://localhost:8456:*)",
       "Bash(curl -s http://localhost:8456/api/:*)",
