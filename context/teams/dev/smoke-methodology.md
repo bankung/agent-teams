@@ -170,6 +170,37 @@ Cost target unchanged: 1-3 probes, < 30 seconds.
 
 ---
 
+## Optional probe: C1-live (Server Component non-404 error routing — Kanban #760 WARN-1 follow-up; #761 env-knob)
+
+When a task modifies Server-Component error-handling (`app/p/**/page.tsx`, `app/error.tsx`, `web/lib/api.ts` error semantics, or any new typed-error catch site), run this probe to verify non-404 throws bubble to `app/error.tsx` and DO NOT route to `notFound()`. Skip for routine task changes.
+
+**Mechanism:** the `BACKEND_FAILURE_INJECT=true` env-knob on the `web` container (consumed by `web/lib/api.ts` `jsonFetch`) synthesizes an `HttpError(500)` before hitting the real backend. The synthetic error must traverse the same error-discriminator path as a real backend 500.
+
+**Procedure:**
+
+1. **Edit `docker-compose.yml`:** under `services.web.environment:`, add `BACKEND_FAILURE_INJECT: "true"` (YAML mapping form; match the surrounding indentation). Capture verbatim diff for the restoration step.
+2. **Restart web:** `docker compose up -d web`. Wait for healthy state (~13-33s; Next.js dev mode read env at startup — `docker compose exec -e ...` does NOT work).
+3. **Confirm env loaded:** `docker compose exec -T web node -e "console.log('BACKEND_FAILURE_INJECT='+process.env.BACKEND_FAILURE_INJECT)"` → `BACKEND_FAILURE_INJECT=true`.
+4. **Probe:** `curl -s -w "HTTP_STATUS:%{http_code}\n" http://localhost:<web-port>/p/agent-teams -o _scratch/probe-C1.html`.
+5. **Assert on `_scratch/probe-C1.html`:**
+   - **error-boundary sentinel present:** `<template data-dgst="...">` with `data-msg` containing the synthetic-detail substring `BACKEND_FAILURE_INJECT=true`. RSC stream also registers `app/error.tsx` as the error chunk (`"(app-pages-browser)/./app/error.tsx"`).
+   - **Stack trace pins the frame chain:** `jsonFetch → getProjectByName → ProjectBoardPage` (or equivalent for the route being tested). Verbatim file:line offsets prove the WARN-1 catch discriminator saw status=500 and re-threw (instead of calling `notFound()`).
+   - **404 markers ABSENT:** substring `could not be found` count matches the baseline (= 2 in agent-teams today — these are the `RootLayout` registered NotFound fallback template, never activated). Same count in C1 vs baseline = NOT a `notFound()` activation. **Do NOT assert `=== 0`** — the fallback template lives in the layout regardless of route outcome.
+   - **Board markers ABSENT:** `data-task-id=` count = 0 + `data-board="dnd"` = 0 (confirms render aborted before reaching the board).
+6. **Restoration (MANDATORY):**
+   - Remove `BACKEND_FAILURE_INJECT: "true"` from `docker-compose.yml`. Run `git diff docker-compose.yml` — MUST be empty (byte-identical to HEAD).
+   - `docker compose up -d web`. Wait healthy.
+   - Re-verify baseline: `curl -fsS http://localhost:<web-port>/p/agent-teams` → 200 + board markers ≥ 50 task-ids.
+   - Cleanup `_scratch/probe-C1.html`.
+
+**Production-grade restoration gate:** the post-restore `git diff docker-compose.yml` must be empty. If anything fails mid-probe (compose corrupted, container won't start), IMMEDIATELY revert + restart + verify baseline before reporting.
+
+**Dev-mode SSR handoff gotcha:** Next.js Server Components with a `"use client"` `app/error.tsx` render the Suspense loading skeleton in the SSR initial HTML, NOT the error UI directly — the error.tsx hydrates client-side. The distinguishing wire-level signal is the `<template data-dgst="..." data-msg="..." data-stck="...">` sentinel in the SSR body + the RSC graph's `app/error.tsx` chunk registration. Asserting the rendered UI text (e.g., `Failed to load board`) inside the SSR HTML FAILS in dev mode because that text only appears post-hydration. Probe the wire-level sentinel, not the rendered UI text.
+
+**Worked example:** Kanban #761 dev-tester transcript (`context/projects/agent-teams/dev-tester/current-state.md` 2026-05-11 entry) — 5/5 PASS with verbatim stack trace + `digest=1` sentinel + `data-task-id=0` confirming render aborted before `<Board>`.
+
+---
+
 ## Out of scope (NOT Tier-1)
 
 - Full-API matrix sweeps (every endpoint × every code path) — that is Tier-2 release wrap-up.

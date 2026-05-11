@@ -119,6 +119,22 @@ async function jsonFetch<T>(
     body?: string;
   },
 ): Promise<T> {
+  // BACKEND_FAILURE_INJECT — test-only knob (Kanban #761). When set in a
+  // non-production env, synthesize a 500 before hitting the real backend.
+  // Use case: dev-tester probes for app/error.tsx routing on non-404 throws
+  // (WARN-1 follow-up from #760). Guarded by NODE_ENV so a misconfigured
+  // prod build cannot accidentally inject failures.
+  if (
+    process.env.NODE_ENV !== "production" &&
+    process.env.BACKEND_FAILURE_INJECT === "true"
+  ) {
+    throw new HttpError(
+      500,
+      "BACKEND_FAILURE_INJECT=true (synthetic 500 from web/lib/api.ts)",
+      "BACKEND_FAILURE_INJECT=true (synthetic 500 from web/lib/api.ts)",
+    );
+  }
+
   const url = `${apiBaseUrl()}${path}`;
   const response = await fetch(url, {
     method: init?.method,

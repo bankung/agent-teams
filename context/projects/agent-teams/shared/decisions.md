@@ -16,6 +16,27 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-11 — `BACKEND_FAILURE_INJECT` env-knob — Kanban #761 closed (env-knob slice; Playwright residual deferred)
+**Scope:** frontend / shared / team-methodology
+**Decision:** Add a test-only env-knob `BACKEND_FAILURE_INJECT` consumed by `web/lib/api.ts` `jsonFetch`. When set to `"true"` AND `NODE_ENV != "production"`, `jsonFetch` throws `new HttpError(500, ...)` BEFORE hitting the real backend. Used by dev-tester to verify the WARN-1 fix from #760 (Server Component catch routes non-404 errors to `app/error.tsx`, NOT `notFound()`). This is the runtime verification path that was deferred from #760.
+
+- **Double-guarded against production:** (a) `process.env.NODE_ENV !== "production"` check inside the code path, AND (b) non-`NEXT_PUBLIC_*` naming so the var is inaccessible to the client bundle (Next.js inlines non-public vars as `undefined` on the client). Single-failure prod-enablement is structurally impossible.
+- **Detail / message source-text-locked:** `"BACKEND_FAILURE_INJECT=true (synthetic 500 from web/lib/api.ts)"`. dev-tester asserts the substring + verbatim stack trace chain `jsonFetch → getProjectByName → ProjectBoardPage`.
+- **Boolean-only V1 (no per-path scoping).** Original #761 description mentioned `BACKEND_FAILURE_INJECT_PATHS` for surgical injection; deferred — simple boolean is enough for the WARN-1 probe and any future generic SSR-failure smoke. File follow-up if surgical scoping is ever needed.
+- **Tier-1 methodology probe C1-live landed in `context/teams/dev/smoke-methodology.md`** — wraps the full enable / probe / restore cycle (docker-compose edit → restart → curl → restore → git diff = empty assertion). Optional probe — run only when task touches Server-Component error handling.
+
+**Reasoning:** Static-code review confirmed the WARN-1 discriminator logic post-#760, but a live runtime assertion was missing. The env-knob is the cheapest mechanism that produces a real non-404 throw from the same `jsonFetch` code path the real backend uses — no mock layer, no test framework. The synthetic `HttpError(500)` traverses the same `app/p/[name]/page.tsx` catch + the same `if (e instanceof HttpError && e.status === 404) notFound(); throw e;` discriminator that a real DB outage would. Tester captured verbatim stack trace + RSC `data-dgst` sentinel + `app/error.tsx` chunk-registration evidence proving the error-boundary path fires.
+
+**Implications:**
+- **Tier-1 verdict GREEN 5/5** with `git diff docker-compose.yml` empty post-restore (production-grade restoration gate intact).
+- **Methodology gotcha captured:** Next.js dev-mode SSR with a `"use client"` `app/error.tsx` renders the Suspense loading skeleton in the initial HTML, NOT the error UI text — the error.tsx hydrates client-side. The distinguishing wire-level signal is the `<template data-dgst="..." data-msg="..." data-stck="...">` sentinel + RSC graph's error.tsx chunk registration. Captured in the methodology probe so future testers don't waste cycles asserting against the visible-text marker.
+- **Playwright residual deferred to a new Kanban ticket** (alpine/musl libc vs glibc blocker — Playwright wants glibc, web image is alpine). Options for the deferred slice: (a) switch `web/Dockerfile` to `node:20-slim` (Debian), (b) add separate `web-e2e` service on `mcr.microsoft.com/playwright` base, (c) other. User-decision when the slice opens.
+- **Standards insight (CONFIRM, proposed for `context/standards/nextjs/` or `general.md`):** Test-only env knobs in SSR code MUST be double-guarded — (i) `NODE_ENV !== "production"` runtime check, AND (ii) non-`NEXT_PUBLIC_*` naming. The double-guard is the difference between "dev-only by convention" and "structurally impossible to enable in prod or in-browser." Worked example: `BACKEND_FAILURE_INJECT` in `web/lib/api.ts`.
+
+**Superseded:** N/A — additive infrastructure. Original #761 scope split: env-knob shipped here; Playwright harness + D1-headless UX walk deferred.
+
+---
+
 ## 2026-05-11 — Typed `HttpError` + ProjectSwitcher loadError reset — Kanban #760 closed (V3 WARNs)
 **Scope:** frontend / shared
 **Decision:** Three operational-quality WARNs from #407 V3 reviewer closed in one FE slice. No backend changes. No new dependencies. `tsc --noEmit` clean; #407 V3 Tier-1 baseline re-verified (57 task rows, switcher + grant trigger intact, 404 path renders not-found marker).
