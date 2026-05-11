@@ -25,7 +25,7 @@ export function BoardColumn({ columnId, statuses, label, tasks }: Props) {
     <section
       ref={setNodeRef}
       data-process-status={statuses.join("+")}
-      className={`flex min-w-0 flex-col rounded-md bg-zinc-50/60 p-2.5${dropHighlight}`}
+      className={`flex min-h-0 min-w-0 flex-col rounded-md bg-zinc-50/60 p-2.5${dropHighlight}`}
     >
       <header className="mb-2 flex items-center gap-1.5 border-b border-zinc-200 pb-2 px-1">
         <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">
@@ -39,7 +39,11 @@ export function BoardColumn({ columnId, statuses, label, tasks }: Props) {
         </span>
       </header>
       <SortableContext items={taskIds} strategy={verticalListSortingStrategy}>
-        <div className="flex flex-col gap-1.5">
+        <div
+          tabIndex={0}
+          aria-label={`column-${statuses.join("+")}-cards`}
+          className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto pr-1 [scrollbar-width:thin] [&::-webkit-scrollbar-thumb]:rounded [&::-webkit-scrollbar-thumb]:bg-zinc-300 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-1.5 hover:[&::-webkit-scrollbar-thumb]:bg-zinc-400"
+        >
           {tasks.length === 0 ? (
             <p className="px-1 py-4 text-center text-xs text-zinc-400">—</p>
           ) : (

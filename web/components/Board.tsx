@@ -122,7 +122,7 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
   );
 
   return (
-    <main className="min-h-screen bg-white px-6 py-5">
+    <main className="flex h-screen flex-col overflow-hidden bg-white px-6 py-5">
       <header className="mb-4 flex flex-col gap-2">
         <div className="flex items-center gap-2 text-sm">
           <ProjectSwitcher current={project.name} />
@@ -147,7 +147,7 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
       <DndContext sensors={sensors} onDragEnd={onDragEnd}>
         <div
           data-board="dnd"
-          className="grid grid-cols-1 gap-3 md:grid-cols-3 lg:grid-cols-5"
+          className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-hidden md:grid-cols-3 lg:grid-cols-5"
         >
           {COLUMNS.map((col) => (
             <BoardColumn

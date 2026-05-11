@@ -16,6 +16,28 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-11 — FE polish v2.2 (per-lane scrollbar + icon badges) — Kanban #764 closed
+**Scope:** frontend
+**Decision:** Two FE-only polish slices on the Kanban Board, bundled per direct user direction. **Slice A** — viewport-locked layout: `<main h-screen overflow-hidden flex flex-col>` + grid container `flex-1 min-h-0 overflow-hidden` + each `<BoardColumn>` cards-list `flex-1 overflow-y-auto`. Page-level chrome (ProjectSwitcher + h1 + ConsentBanner) stays fixed at top; only the cards inside each column scroll. **Slice B** — replace text-label badges with inline SVG icons: person/robot for `task_kind=human|ai`, M-glyph / A-with-circular-arrow for `run_mode=manual|auto_*`. No new dependencies.
+
+- **Layout primer in `app/layout.tsx`** — `<html h-full>` + `<body h-full overflow-hidden>` is the foundation; without it the viewport-lock chain collapses. All 3 load-bearing `min-h-0` declarations placed correctly (Board grid line 150, BoardColumn section line 28, cards-list line 45) — closes the classic flexbox-overflow gotcha.
+- **Scrollbar styling Linear-style** — `[scrollbar-width:thin]` + `[&::-webkit-scrollbar]:w-1.5` + zinc-300 thumb (zinc-400 on hover) + transparent track. Hairline; no glow. Per-column `tabindex=0` + `aria-label="column-<statuses>-cards"` for keyboard a11y.
+- **Icon set (4 SVGs total):** all 14×14 viewBox 16, `fill="none"` + `stroke="currentColor"` + stroke-width 1.5. Person (circle head + curved body), robot (rect head + antenna dot + 2 eye dots), A-with-circular-arrow (partial-circle arrow path + A glyph), double-M (manual). All carry `aria-hidden="true"` on the `<svg>`; wrapping `<span>` carries `aria-label` + `title` for screen-readers and hover tooltips.
+- **aria-label form decision (CONFIRMED space-form):** `aria-label="auto pickup"` / `"auto headless"` (space form) for screen-reader natural pronunciation; `data-run-mode="auto_pickup"` / `"auto_headless"` (underscore form) preserved verbatim for CSS selectors + JS hooks + DB enum parity. **Codifies a split convention:** human-facing strings use space form; machine-facing attributes use enum-verbatim form. Reviewer + tester both confirmed this is better UX than the spawn-brief's underscored draft.
+- **Standards candidates surfaced (propose-only — human MA pending):** (a) NEW `context/standards/web/aria-label-vs-data-attribute.md` codifying the space-vs-underscored split with RunModeBadge as worked example; (b) optional refinement to existing `context/standards/nextjs/server-client-composition.md` — add SVG-icon Server-component worked example (TaskKindBadge + RunModeBadge are pure-presentational, no `"use client"`).
+
+**Reasoning:** Page-level scroll on a Kanban board hides the column headers + switcher when scrolling — bad UX for a horizontally-laid-out tool. Per-lane scroll is the Linear / Notion / Jira norm. Icon badges (vs text) shrink horizontal real-estate per card (~30% smaller badge), letting more title/description fit. The double-form aria-label convention is the natural compromise — screen readers get human-readable strings without forcing the underlying enum to drift.
+
+**Implications:**
+- **Tier-1 dev-tester GREEN 5/5** with strong probes: Probe A 12-marker mass attestation (61 task-ids ↔ 61 aria-label="human" ↔ 61 aria-label="manual" 1:1); Probe B `aria-label="ai"=1` exact +1 delta on synthetic AI task; Probe C `aria-label="auto pickup"=1` exact +1 delta on synthetic auto_pickup task; Probe D verbatim cards-list class string extraction proving Slice A markup; Probe E tsc clean. All 3 throwaways DELETE 204 + post-restore byte-identical to baseline + canonical seed `agent-teams id=1 updated_at:2026-05-09T12:03:27.939263Z` intact.
+- **Reviewer GREEN 0/0/0/3-NIT** — 3 cosmetic NITs all defer-able (extract scrollbar utility class when 2nd scrollbar surface lands; `h-screen` → `h-[100dvh]` swap if/when mobile in scope; minor comment hygiene). 0 BLOCKER / 0 WARN.
+- **Visual scroll behavior (does the lane ACTUALLY scroll on overflow?) NOT directly probed** — requires headless browser; deferred to future tooling slice (companion to #761 residual). Wire-level markup proof accepted per prior #708/#748/#750 posture.
+- **`dev-frontend/current-state.md` compact-step gap** — FE agent paused mid-cycle; their role-state file does NOT have a #764 entry. Lead absorbs the FE summary into this decisions.md entry instead of force-writing role-state (Lead doesn't write `<role>/` zone per universal CLAUDE.md). Discipline gap noted; not blocker.
+
+**Superseded:** N/A — additive polish. T3 #708 / T4 #709 / V2 polish 2026-05-10 / #750 pending state all preserved exactly.
+
+---
+
 ## 2026-05-11 — Web container-internal port 3000 → 5431 — Kanban #763 closed (full symmetry with api 8456:8456)
 **Scope:** devops / shared / standards
 **Decision:** Close the asymmetry left by #762 (host-side only). Flip the container-internal Next.js listener from 3000 → 5431 so the compose mapping becomes **`5431:5431` symmetric** — mirrors the api precedent (host = container = 8456). `docker compose exec -T web wget http://localhost:5431` now works identically to host `curl localhost:5431`; no inside-vs-outside port gear-shift.
