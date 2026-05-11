@@ -8,7 +8,7 @@ export function TaskKindBadge({ kind }: Props) {
       <span
         aria-label="human"
         title="human"
-        className="inline-flex items-center text-zinc-600"
+        className="inline-flex items-center text-zinc-600 dark:text-zinc-400"
       >
         <svg
           viewBox="0 0 16 16"
@@ -31,7 +31,7 @@ export function TaskKindBadge({ kind }: Props) {
     <span
       aria-label="ai"
       title="ai"
-      className="inline-flex items-center rounded px-1 py-0.5 text-violet-700 bg-violet-50"
+      className="inline-flex items-center rounded px-1 py-0.5 text-violet-700 bg-violet-50 dark:text-violet-300 dark:bg-violet-900/30"
     >
       <svg
         viewBox="0 0 16 16"

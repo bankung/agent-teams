@@ -16,6 +16,118 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-11 — #710 polish: WARN-1 + 6 NITs — Kanban #768 closed
+**Scope:** frontend polish (5 files: layout.tsx, ThemeProvider.tsx, ThemePicker.tsx, BoardColumn.tsx, loading.tsx)
+**Decision:** Apply the 1 WARN + 6 NITs deferred from #710:
+- **WARN-1** — `suppressHydrationWarning` on `<html>` only (1 attribute, scope-confined; pattern from `next-themes` + Next.js docs).
+- **NIT-1** — FOUC bootstrap boolean reduced from `t==='dark'||((t===null||t==='system'||(t!=='light'&&t!=='dark'))&&matchMedia.matches)` to `t==='dark'||(t!=='light'&&matchMedia.matches)`. Truth-table-equivalent across all 5 input states (`'light'`/`'dark'`/`'system'`/`null`/invalid); ~40 bytes saved.
+- **NIT-2** — try/catch around `localStorage.getItem` + `setItem` in ThemeProvider (mirrors the FOUC script's own guard for Safari private-mode / locked-down WebViews / iframe sandboxing). Read failure defaults to `'system'`; write failure silently skips persistence (theme still applies in-memory + on DOM for the session).
+- **NIT-3** — ThemePicker switched to WAI-ARIA toggle-group pattern: container `role="group" aria-label="theme"` + bare-enum per-button `aria-label="light"` / `"dark"` / `"system"` (matches in-repo standard `react/aria-label-vs-data-attribute.md` worked example).
+- **NIT-4** — container `data-theme` renamed to `data-theme-selected` to disambiguate from per-button `data-theme-option`. Zero stale `data-theme=` references in `web/`.
+- **NIT-5** — BoardColumn `aria-label={\`column-${statuses.join("+")}-cards\`}` (hyphenated machine-form) → `\`${label} cards\`` (human form). Reuses existing `label` prop; Board.tsx call sites all pass guaranteed-string label literals (`"New tasks"`, `"In progress"`, `"Review"`, `"Blocked"`, `"Done"`).
+- **NIT-6** — loading.tsx viewport-lock chain aligned with Board.tsx (`h-screen + overflow-hidden + min-h-0 flex-1`) — skeleton no longer overflows viewport mid-load. Dark-mode classes from #710 preserved.
+
+**Verification:**
+- Tier-1 wire-attestation **PASS independently on first capture** — 11/11 positive markers (`aria-label="light|dark|system"` ×3, `role="group"` ×1, `aria-label="theme"` ×1, `data-theme-selected=` ×1, `data-theme-option=` ×3, `aria-label="<label> cards"` ×5 across the 5 columns, FOUC reduced-boolean exact substring ×1). 6/6 negative markers all =0 (no `"theme light"`, no `"column-"`, no orphan `data-theme=`, no old FOUC). Paired-pair structure → zero spurious-PASS surface.
+- tsc clean independent re-confirm.
+- Canonical seed `project 1 updated_at:2026-05-09T12:03:27.939263Z` byte-identical (pure FE polish — no API touch).
+- **#710 strike-#1 of `feature-wire-attestation.md` did its job:** FE self-attested with grep before handoff; tester independently re-grep'd same markers — alignment proves the rule's pairing-discipline works. No HMR-stall recurrence this slice (dev-frontend hit the stall once during their own attestation, recovered via `docker compose restart web` as the standard prescribes, then handed off clean).
+
+**Reviewer incident (closed as no-action):** dev-reviewer's GREEN report flagged a "brief vs code mismatch" on NIT-1, claiming the file retained the original 3-clause boolean. Re-verification showed the file IS the reduced form, byte-identical to the brief — reviewer misread their own grep output. Reviewer's truth-table analysis was nonetheless useful (independently confirmed all 5 input states are equivalent). No code change needed. Reviewer's own NIT was a misread, NOT a real finding.
+
+**Standards-candidate (propose-only — NOT written this slice):**
+- Strengthening clause for `standards/nextjs/feature-wire-attestation.md`: "every form-change NIT in the spawn brief must specify BOTH the positive marker (new form present) AND the negative marker (old form absent); vacuous-pass guard against 'both forms shipped' coincidence." The #768 brief followed this implicitly (every Probe-A entry had a Probe-B mirror); the rule earned its keep on first run. Surfaced by dev-tester; defer to user for the explicit-write decision (humans-only zone).
+
+**Implications:**
+- No FE behavior regression. ThemePicker keyboard / mouse interactions unchanged. Drag-drop, card rendering, scrollbar styling, dark-mode tokens all preserved.
+- BoardColumn `label` prop is now load-bearing for a11y (was visual-only before). Future column-header refactors (e.g., icon-only headers) must either keep `label` as a string OR decouple a11y-label from header-label. Documented in the file's call-site contract.
+- Standards-rule `feature-wire-attestation.md` survived its first independent verification cycle. Strike log entry stays as just #710 — #768 did NOT trigger a strike (FE recovered cleanly within the prescribed flow).
+
+**Superseded:** the 1 WARN + 6 NITs from #710's review block.
+
+---
+
+## 2026-05-11 — Theme picker (light/dark/system) + full dark-mode pass — Kanban #710 closed
+**Scope:** frontend (pure FE slice — no API contract change, no migration)
+**Decision:** Activate the T5 theme slice now that defer-gate (T1-T4 + #407) is satisfied. Three architectural pillars:
+
+1. **Tailwind `darkMode: 'class'`** — variants gate on explicit `<html class="dark">`, not `prefers-color-scheme`-media. Lets the user override OS preference; FOUC bootstrap script writes the class synchronously before React hydrates.
+2. **FOUC bootstrap** — inline `<script dangerouslySetInnerHTML>` in `<head>` of `app/layout.tsx`. Tiny + dependency-free + try/catch'd around `localStorage`. Reads `localStorage.theme` ('light'/'dark'/'system'); resolves 'system' via `matchMedia('(prefers-color-scheme: dark)').matches`; mutates `documentElement.classList`. Prevents first-paint flash. Two new Client Components — `ThemeProvider` (Context + matchMedia listener + localStorage sync) and `ThemePicker` (3-button toggle with sun/moon/monitor SVGs, aria-label space-form `'theme light'` etc., placed in Board.tsx header next to ProjectSwitcher via `ml-auto`).
+3. **Dark-mode token map (zinc-based + desaturated semantic pair):** page `bg-white → dark:bg-zinc-950`; column `bg-zinc-50/60 → dark:bg-zinc-900/40`; card `bg-white → dark:bg-zinc-900`; border `zinc-200 → dark:zinc-800`; text primary/secondary/tertiary `900/600/400 → dark:100/400/500`. Semantic accents (blue/red/orange/amber/indigo badges): **desaturated lighter pair** `text-X-700 bg-X-50 → adds dark:text-X-300 dark:bg-X-900/30`. NOT inversion. Scrollbar arbitrary variants gain dark twin: `dark:[&::-webkit-scrollbar-thumb]:bg-zinc-700` + hover `zinc-600`. Toast inverts (`zinc-900 → dark:zinc-100`) as floating chrome.
+
+**Reasoning:**
+- `darkMode: 'class'` lets the FOUC script short-circuit the OS-media branch when a user has chosen `light`/`dark` explicitly. Media-mode would force system-only.
+- Desaturated-lighter (not full inversion) preserves semantic identity recognition (red still reads "urgent", emerald still reads "consented") while landing in the dark surface's contrast band.
+- ThemeProvider's first effect re-reads localStorage + re-calls `applyDarkClass` — idempotent with the FOUC script in the happy path, but covers the failure path (private-mode browser, localStorage throws inside the script's try/catch). Redundancy by design.
+- ThemePicker in Board.tsx (Client) is acceptable — wrapping `app/p/[name]/page.tsx` stays Server. Established Server-parent + Client-child boundary preserved.
+- The matchMedia listener is conditional on `theme === 'system'`; flipping to `light`/`dark` detaches the listener, flipping back re-attaches. No leak.
+
+**Implications:**
+- 16 files touched: tailwind config + layout + 11 components + error/loading + Board (ThemePicker import). 2 new Components. Zero new dependencies; zero functional logic change (TaskCard byte-equality verified: useSortable, drag-drop, aria, data-attrs all preserved — only color classes added).
+- Tier-1 wire-level smoke 6/6 GREEN post-restart (FOUC script in `<head>` before `__next_f.push`; 7 ThemePicker markers verbatim; 492 distinct `class=` attributes with `dark:` utilities; SSR `<html>` neutral; tsc clean; healthcheck Up; canonical seed byte-identical).
+- **Pre-restart RED state — `next dev` HMR stall (2h stale compiled chunks)** — dev-tester caught it; `docker compose restart web` recovered. Triggered the **strike-#1 lesson** that landed `context/standards/nextjs/feature-wire-attestation.md` THIS slice (rule: dev-frontend handoff attestation MUST grep rendered HTML for ≥1 feature-specific marker, not just tsc+healthcheck+200). User-explicit standards write — overrides the default "humans-only auto-write" rule.
+
+**Deferred (filed as Kanban #768, priority=2):**
+- **WARN-1** — `<html>` missing `suppressHydrationWarning`. Real concern: React 18 dev-mode hydration warning every time FOUC script adds `dark` class; React 19 may treat as hydration error. 1-attribute fix.
+- **6 NITs** — FOUC boolean reduction, ThemeProvider localStorage try/catch, ThemePicker aria-label prefix-form consistency, `data-theme` overload disambiguation, pre-existing BoardColumn aria-label hyphenated machine-form, loading.tsx viewport-lock drift.
+
+**Standards landed this slice:**
+- **NEW** `context/standards/nextjs/feature-wire-attestation.md` — wire-level marker grep mandate for FE handoffs. User-explicit write per Q1-exception in CLAUDE.md.
+
+**Standards-candidate (propose-only, NOT written):**
+- `context/standards/tailwind/dark-mode.md` — class-mode opt-in, token map, desaturated-lighter accent pair, scrollbar arbitrary variant. Tabled until 2nd-strike use case (e.g., custom-theme variant) per dogfood-pollution discipline.
+- `context/standards/nextjs/fouc-theme-bootstrap.md` — inline-script + suppressHydrationWarning pattern for any "user-prefers-X-before-paint" concern (theme, locale, dyslexic-font, reduced-motion). Tabled until 2nd-strike (e.g., locale-picker FOUC).
+
+**Superseded:** none — first dark-mode decision; first FE-attestation standard.
+
+---
+
+## 2026-05-11 — TaskUpdate hardening (3 reviewer MINs from T1 #706) — Kanban #714 closed
+**Scope:** backend (schema + service typing — no migration, no router change)
+**Decision:** Three hardenings on `TaskUpdate` + the two cross-table service helpers:
+1. **MIN-1 — `_check_template_completeness` model_validator** on TaskUpdate, mirror of TaskCreate's. PATCH that sets `is_template=true` without `recurrence_rule` AND `next_fire_at` self-contained in the same payload → 422 with **byte-for-byte verbatim** detail `"is_template=true requires recurrence_rule and next_fire_at"` (same string used by TaskCreate — single source-text-locked wire contract).
+2. **MIN-2 — Literal narrowing on `services/task_kind.py` + `services/run_mode.py`**: param signatures tightened from `str` → `TaskKindLiteral` / `TaskRunModeLiteral` (imported from `src.schemas.task`). Direction services → schemas — verified cycle-free via `python -c "from src.services import task_kind, run_mode"` + grep (`api/src/schemas/` has zero `from src.services` imports). Static-tooling catches drift; no runtime behavior change.
+3. **MIN-3 — `_reject_explicit_null_recurrence_timezone` model_validator** on TaskUpdate: PATCH `{"recurrence_timezone": null}` → 422 with source-text-locked detail `"recurrence_timezone cannot be explicitly null — omit the key to leave the existing value, or send a valid IANA TZ string"`. Uses `model_fields_set` to distinguish explicit-null (rejected) from key-absent (no-op, preserves PATCH semantics).
+
+**Option A locked over Option B (MIN-1 design choice):** the TaskUpdate completeness validator does NOT consult the existing row's state — it judges the payload alone. A client flipping `is_template=true` MUST re-send `recurrence_rule + next_fire_at` in the same body, even if the row already carries them. Reasoning: Pydantic validators have no DB access; Option B (validator queries DB or moves to router) is a deeper refactor with no UX dividend (one extra payload key per template-flip is acceptable). DB CHECK `ck_tasks_template_recurrence_complete` remains the ultimate backstop. **Lock test:** `test_patch_task_is_template_true_on_already_complete_row_returns_422_locks_option_a` (test_task_kind_recurrence.py:911) — explicitly creates a fully-templated row, un-templates it (so the row retains rule+fire_at), then PATCHes bare `{"is_template": true}` and asserts 422. Folded into the same slice per dev-reviewer WARN-1.
+
+**Implications:**
+- **pytest 310 → 318 GREEN** (+7 wire-contract tests + 1 Option-A lock test).
+- **Tier-1 smoke 7/7 GREEN** (matched POSITIVE+NEGATIVE pairs on MIN-1 + MIN-3; MIN-3-C `updated_at` byte-identical to MIN-3-B → no-op semantic proven at the DB-row level; canonical seed project 1 + task 1 `updated_at` unchanged).
+- **FE impact:** PATCH endpoints that previously fell through to DB CHECK 400 now return a friendlier 422 on the same input. No FE client is known to send the rejected shapes today.
+- **NITs deferred** (not blocker, propose-only):
+  - NIT-1: `TaskKindLiteral` / `TaskRunModeLiteral` location — currently in `schemas/task.py` (services import from schemas, precedent: `compact_runner.py:60` mirrors this). Standards-candidate: rule in `standards/python/pydantic-schemas.md` once enum-family parity lands. Defer per dogfood-pollution discipline.
+  - NIT-2: comment expansion on `_check_template_completeness` early-return branch (cosmetic).
+
+**Standards-candidate (propose-only):** "Wire-level `Literal` aliases co-locate with their `ALL` tuple in `src.constants`; the import-time lockstep guard moves with them." Tabled until `TaskCreate` / `ProjectCreate` family parity (the deferred `extra='forbid'` audit slice) — at that point the pattern justifies a paragraph in `standards/python/pydantic-schemas.md`.
+
+**Superseded:** Pre-#714 DB-CHECK 400 fallback paths for the two PATCH shapes (`is_template=true` incomplete; `recurrence_timezone=null`). Detail strings now source-text-locked at the schema layer.
+
+---
+
+## 2026-05-11 — Session-family Create schemas → `extra='forbid'` — Kanban #721 closed
+**Scope:** backend (schema only — no router / migration / FE change)
+**Decision:** Tighten 3 Create-shaped Pydantic schemas in `api/src/schemas/session.py` from `extra='ignore'` (or Pydantic default) to `model_config = ConfigDict(extra="forbid")`: `SessionCreate`, `SessionActivityCreate`, `SessionRunHeartbeat`. Application of the pre-existing `ConsentGrant` decision (#483) — not a new policy.
+
+**Reasoning:** N6 (CTX-1 close-out, 2026-05-10) flagged that smuggled `{"status":"weird"}` on POST `/api/sessions` returned 201 with silent drop instead of 422. Same default applied to the 2 CTX-2 Create siblings (activity/heartbeat). The #483 lock — "deliberate-action UX must fail loud on smuggled fields" — already governs this surface; #721 is just the application slice. Schema-level fix; no router / no migration. Tester N6-re probe: pre-fix `{"project_id":1,"status":"weird"}` → 201; post-fix → 422 with `loc=["body","status"]` + `type="extra_forbidden"`.
+
+**Deliberately untouched:**
+- `SessionUpdate` / `SessionRunUpdate` — explicit `extra="ignore"` retained (CTX-1 deliberate: PATCH bodies legitimately carry stale fields).
+- `SessionCompactRequest` — left at Pydantic default `ignore` (server-side automation may pass enrichment keys). Reviewer NIT #1: its docstring still says "pending #721's project-wide locked decision" — stale now that #721 chose to skip it. Defer to a follow-up doc-only slice or fold into the next BE touch on this file.
+
+**Implications:**
+- pytest 306 → **310 GREEN** (+4 new tests, all 422 + loc assertions mirroring the canonical `test_grant_consent_rejects_extra_fields_422`).
+- Tier-1 smoke 8/8 GREEN (matched POSITIVE+NEGATIVE pairs on each of 3 endpoints; canonical seed `project 1 updated_at:2026-05-09T12:03:27.939263Z` byte-identical post-probe).
+- **FE risk:** any client sending extra keys on these 3 POSTs now gets 422 instead of silent success. No known FE caller does this (the V2/V3 board uses GET only); CTX-3/CTX-4 master-agent integration not yet wired. Watch when those land.
+- `api-contracts.md` updated: removed the "Pydantic extra-policy note" deferral paragraph under POST /api/sessions; added a 422-with-loc bullet in the Errors block; refreshed the `SessionActivityCreate` + `SessionRunHeartbeat` schema entries to drop the "#721 will tighten" forward-references.
+- **Probe leakage acknowledged:** sessions API has no DELETE endpoint (close-only, mirrors #716 design); tester left session 12 + run 8 + `_sessions/12/` in place. Not blocker.
+
+**Standards-candidate (propose-only, defer per dogfood-pollution discipline):** "Create-shaped HTTP-exposed Pydantic schemas → `extra='forbid'`; Update / internal-automation schemas → text-locked `extra='ignore'`." Two-pattern split now exemplified by 1 (ConsentGrant) + 3 (this slice) Create instances + 2 Update + 1 internal. Worth a rule paragraph in `standards/python/pydantic-schemas.md` once `TaskCreate` / `ProjectCreate` parity lands.
+
+**Superseded:** Pre-#721 silent-drop behavior on the 3 listed Create schemas. The "Pydantic extra-policy note" paragraph in `api-contracts.md` under POST /api/sessions.
+
+---
+
 ## 2026-05-11 — Scheduler INFO/exception logs surface to docker logs — Kanban #739 closed
 **Scope:** backend
 **Decision:** Attach a `StreamHandler(sys.stdout)` directly to the `src` umbrella logger (NOT root) at module top-level in `api/src/main.py`. `setLevel(INFO)` on `src` so `src.main` + `src.services.*` + `src.routers.*` propagate. Drops the original v1 attempt at `logging.basicConfig(...)` because it routed to **stderr** by default and uvicorn's `--reload` worker subprocess does NOT forward stderr to `docker compose logs api` the same way as stdout — the scheduler boot INFO line was invisible despite the basicConfig being correct in a standalone `python -c` import test.

@@ -20,10 +20,10 @@ const PRIORITY_LABEL: Record<number, string> = {
 };
 
 const PRIORITY_CLASS: Record<number, string> = {
-  [TaskPriority.LOW]: "text-zinc-500 bg-zinc-100",
-  [TaskPriority.NORMAL]: "text-zinc-600 bg-zinc-100",
-  [TaskPriority.HIGH]: "text-orange-700 bg-orange-50",
-  [TaskPriority.URGENT]: "text-red-700 bg-red-50",
+  [TaskPriority.LOW]: "text-zinc-500 bg-zinc-100 dark:text-zinc-400 dark:bg-zinc-800",
+  [TaskPriority.NORMAL]: "text-zinc-600 bg-zinc-100 dark:text-zinc-300 dark:bg-zinc-800",
+  [TaskPriority.HIGH]: "text-orange-700 bg-orange-50 dark:text-orange-300 dark:bg-orange-900/30",
+  [TaskPriority.URGENT]: "text-red-700 bg-red-50 dark:text-red-300 dark:bg-red-900/30",
 };
 
 const ROLE_LABEL: Record<number, string> = {
@@ -35,11 +35,11 @@ const ROLE_LABEL: Record<number, string> = {
 };
 
 const ROLE_CLASS: Record<number, string> = {
-  [TaskRole.FRONTEND]: "text-blue-700 bg-blue-50",
-  [TaskRole.BACKEND]: "text-indigo-700 bg-indigo-50",
-  [TaskRole.DEVOPS]: "text-indigo-700 bg-indigo-50",
-  [TaskRole.QA]: "text-indigo-700 bg-indigo-50",
-  [TaskRole.REVIEWER]: "text-indigo-700 bg-indigo-50",
+  [TaskRole.FRONTEND]: "text-blue-700 bg-blue-50 dark:text-blue-300 dark:bg-blue-900/30",
+  [TaskRole.BACKEND]: "text-indigo-700 bg-indigo-50 dark:text-indigo-300 dark:bg-indigo-900/30",
+  [TaskRole.DEVOPS]: "text-indigo-700 bg-indigo-50 dark:text-indigo-300 dark:bg-indigo-900/30",
+  [TaskRole.QA]: "text-indigo-700 bg-indigo-50 dark:text-indigo-300 dark:bg-indigo-900/30",
+  [TaskRole.REVIEWER]: "text-indigo-700 bg-indigo-50 dark:text-indigo-300 dark:bg-indigo-900/30",
 };
 
 export function TaskCard({ task }: Props) {
@@ -56,9 +56,9 @@ export function TaskCard({ task }: Props) {
   } = useSortable({ id: task.id, disabled: !draggable });
 
   const cardBg = isPending
-    ? "bg-yellow-50 hover:bg-yellow-100 hover:border-yellow-300"
-    : "bg-white hover:bg-zinc-50 hover:border-zinc-300";
-  const baseCard = `rounded-md border border-zinc-200 ${cardBg} p-2.5 transition-colors`;
+    ? "bg-yellow-50 hover:bg-yellow-100 hover:border-yellow-300 dark:bg-yellow-900/30 dark:hover:bg-yellow-900/40 dark:hover:border-yellow-700"
+    : "bg-white hover:bg-zinc-50 hover:border-zinc-300 dark:bg-zinc-900 dark:hover:bg-zinc-800/50 dark:hover:border-zinc-700";
+  const baseCard = `rounded-md border border-zinc-200 dark:border-zinc-800 ${cardBg} p-2.5 transition-colors`;
   const cursor = draggable ? " cursor-grab active:cursor-grabbing" : " cursor-not-allowed";
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -83,21 +83,21 @@ export function TaskCard({ task }: Props) {
       className={baseCard + cursor}
     >
       <div className="flex items-start justify-between gap-2">
-        <span className="font-mono text-[11px] text-zinc-400">#{task.id}</span>
+        <span className="font-mono text-[11px] text-zinc-400 dark:text-zinc-500">#{task.id}</span>
         <div className="flex items-center gap-1.5">
           <RunModeBadge mode={task.run_mode} />
           <TaskKindBadge kind={task.task_kind} />
           <PendingBadge task={task} />
         </div>
       </div>
-      <h3 className="mt-1 line-clamp-2 text-sm font-medium leading-snug text-zinc-900">
+      <h3 className="mt-1 line-clamp-2 text-sm font-medium leading-snug text-zinc-900 dark:text-zinc-100">
         {task.title}
       </h3>
       <RecurrenceIndicator task={task} />
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         <span
           className={`inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${
-            PRIORITY_CLASS[task.priority] ?? "text-zinc-600 bg-zinc-100"
+            PRIORITY_CLASS[task.priority] ?? "text-zinc-600 bg-zinc-100 dark:text-zinc-300 dark:bg-zinc-800"
           }`}
         >
           {PRIORITY_LABEL[task.priority] ?? `p${task.priority}`}
@@ -105,7 +105,7 @@ export function TaskCard({ task }: Props) {
         {task.assigned_role !== null && (
           <span
             className={`inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${
-              ROLE_CLASS[task.assigned_role] ?? "text-indigo-700 bg-indigo-50"
+              ROLE_CLASS[task.assigned_role] ?? "text-indigo-700 bg-indigo-50 dark:text-indigo-300 dark:bg-indigo-900/30"
             }`}
           >
             {ROLE_LABEL[task.assigned_role] ?? `role${task.assigned_role}`}

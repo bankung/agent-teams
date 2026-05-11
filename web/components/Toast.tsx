@@ -38,7 +38,7 @@ function ToastItem({
   return (
     <div
       data-toast
-      className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white shadow-sm"
+      className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white shadow-sm dark:bg-zinc-100 dark:text-zinc-900"
     >
       {message.text}
     </div>

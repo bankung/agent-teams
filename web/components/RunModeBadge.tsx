@@ -8,7 +8,7 @@ export function RunModeBadge({ mode }: Props) {
       <span
         aria-label="manual"
         title="manual"
-        className="inline-flex items-center text-zinc-600"
+        className="inline-flex items-center text-zinc-600 dark:text-zinc-400"
       >
         <svg
           viewBox="0 0 16 16"
@@ -36,7 +36,7 @@ export function RunModeBadge({ mode }: Props) {
     <span
       aria-label={label}
       title={title}
-      className="inline-flex items-center rounded px-1 py-0.5 text-emerald-700 bg-emerald-50"
+      className="inline-flex items-center rounded px-1 py-0.5 text-emerald-700 bg-emerald-50 dark:text-emerald-300 dark:bg-emerald-900/30"
     >
       <svg
         viewBox="0 0 16 16"

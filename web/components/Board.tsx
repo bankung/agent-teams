@@ -16,6 +16,7 @@ import { TaskStatus, type TaskStatusValue } from "@/lib/constants";
 import { BoardColumn } from "@/components/BoardColumn";
 import { ProjectConsentBanner } from "@/components/ProjectConsentBanner";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
+import { ThemePicker } from "@/components/ThemePicker";
 import { ToastStack, type ToastMessage } from "@/components/Toast";
 
 type Props = {
@@ -122,21 +123,24 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
   );
 
   return (
-    <main className="flex h-screen flex-col overflow-hidden bg-white px-6 py-5">
+    <main className="flex h-screen flex-col overflow-hidden bg-white dark:bg-zinc-950 px-6 py-5">
       <header className="mb-4 flex flex-col gap-2">
         <div className="flex items-center gap-2 text-sm">
           <ProjectSwitcher current={project.name} />
-          <span aria-hidden className="text-zinc-300">
+          <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
             ·
           </span>
-          <span className="text-zinc-600">
-            team: <span className="text-zinc-900">{project.team}</span>
+          <span className="text-zinc-600 dark:text-zinc-400">
+            team: <span className="text-zinc-900 dark:text-zinc-100">{project.team}</span>
           </span>
-          <span aria-hidden className="text-zinc-300">
+          <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
             ·
           </span>
-          <span className="text-zinc-500 tabular-nums">
+          <span className="text-zinc-500 dark:text-zinc-400 tabular-nums">
             {tasks.length} task{tasks.length === 1 ? "" : "s"}
+          </span>
+          <span className="ml-auto">
+            <ThemePicker />
           </span>
         </div>
         <ProjectConsentBanner

@@ -14,11 +14,11 @@ export function ProjectConsentBanner({ project, hasHeadlessTask = false }: Props
   if (consentedAt === null) {
     // Default — safe state, low urgency.
     return (
-      <div className="flex items-center rounded border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-600">
+      <div className="flex items-center rounded border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
         <span>
           Headless auto-run not enabled for this project.
           {hasHeadlessTask && (
-            <span className="ml-2 text-amber-700">
+            <span className="ml-2 text-amber-700 dark:text-amber-300">
               ⚠ A task in this project is marked auto-headless but consent is not granted — those tasks cannot run.
             </span>
           )}
@@ -34,7 +34,7 @@ export function ProjectConsentBanner({ project, hasHeadlessTask = false }: Props
   const consentedDay = consentedAt.slice(0, 10);
 
   return (
-    <div className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+    <div className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300">
       Auto-headless consented {consentedDay}.
       {hasHeadlessTask && <span className="ml-2 font-medium">⚠ active</span>}
     </div>

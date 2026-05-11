@@ -14,14 +14,14 @@ export function RecurrenceIndicator({ task }: Props) {
         ? `next fire: ${formatted} (${task.recurrence_timezone})`
         : "next fire: (pending)";
     return (
-      <div className="mt-1 text-[11px] text-zinc-500" title={title}>
+      <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400" title={title}>
         {task.recurrence_rule}
       </div>
     );
   }
   if (task.spawned_from_task_id !== null) {
     return (
-      <div className="mt-1 text-[11px] text-zinc-500 tabular-nums">
+      <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400 tabular-nums">
         from #{task.spawned_from_task_id}
       </div>
     );

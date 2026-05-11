@@ -8,7 +8,7 @@ export function PendingBadge({ task }: Props) {
     return null;
   }
   return (
-    <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium text-yellow-700 bg-yellow-50">
+    <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium text-yellow-700 bg-yellow-50 dark:text-yellow-300 dark:bg-yellow-900/30">
       pending
     </span>
   );
