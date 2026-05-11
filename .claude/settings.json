@@ -69,6 +69,20 @@
 
       "Bash(curl --silent http://localhost:8456/api/projects/by-name/agent-teams)",
       "Bash(curl --silent http://localhost:8456/api/:*)",
+
+      "Bash(curl --silent http://localhost:8456/api/tasks:*)",
+      "Bash(curl --silent http://localhost:8456/api/tasks/:*)",
+      "Bash(curl --silent http://localhost:8456/api/projects:*)",
+      "Bash(curl --silent http://localhost:8456/api/projects/:*)",
+      "Bash(curl --silent -X POST http://localhost:8456/api/tasks:*)",
+      "Bash(curl --silent -X POST http://localhost:8456/api/tasks/:*)",
+      "Bash(curl --silent -X POST http://localhost:8456/api/projects:*)",
+      "Bash(curl --silent -X POST http://localhost:8456/api/projects/:*)",
+      "Bash(curl --silent -X PATCH http://localhost:8456/api/tasks/:*)",
+      "Bash(curl --silent -X PATCH http://localhost:8456/api/projects/:*)",
+      "Bash(curl --silent -X DELETE http://localhost:8456/api/tasks/:*)",
+      "Bash(curl --silent -X DELETE http://localhost:8456/api/projects/:*)",
+
       "Bash(curl -s http://localhost:8456:*)",
       "Bash(curl -s http://localhost:8456/api/:*)",
       "Bash(curl --silent -X PATCH http://localhost:8456/api/:*)",
