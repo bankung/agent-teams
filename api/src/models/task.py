@@ -107,6 +107,18 @@ class Task(Base):
         default=RecordStatus.ACTIVE,
     )
 
+    # Kanban #750 (2026-05-11): "in-flight and stuck" flag — orthogonal to
+    # process_status. The cross-state rule (is_pending=true REQUIRES
+    # process_status=2/in_progress) lives in src/services/is_pending.py as an
+    # app-layer validator (resolved-final pattern on PATCH). No DB CHECK this
+    # slice; DB DEFAULT false backfills the 55 existing rows on migration 0011.
+    is_pending: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+
     # Step 2 (Kanban #481/#483): execution mode for Kanban-driven AI.
     # No Python-side default needed — DB DEFAULT 'manual' covers INSERT.
     # Pydantic Literal validation gates accepted values at the API boundary.

@@ -129,6 +129,10 @@ class TaskCreate(BaseModel):
     # V3+ T1 audit follow-up (Kanban #723) — one-shot scheduling. Mutually
     # exclusive with is_template=true (model_validator below + DB CHECK).
     scheduled_at: datetime | None = None
+    # Kanban #750 (2026-05-11): "in-flight and stuck" flag — orthogonal to
+    # process_status. Cross-state rule (is_pending=true REQUIRES
+    # process_status=2) enforced in src/services/is_pending.py at POST + PATCH.
+    is_pending: bool = False
     # System-managed lineage pointer — set by the T2 scheduler when it spawns
     # a child from a template. ACCEPTED on POST (so the scheduler can use the
     # public endpoint for audit-trail consistency); REJECTED on PATCH (V1
@@ -234,6 +238,11 @@ class TaskUpdate(BaseModel):
     # scheduled_at) is enforced router-side because the validator alone can't
     # see the existing row's state on a one-field PATCH.
     scheduled_at: datetime | None = None
+    # Kanban #750 (2026-05-11): PATCH-able. Explicit value (true / false) is
+    # the user signal; absence (key not in payload) means don't touch.
+    # Resolved-final cross-state check in routers/tasks.py pairs the resolved
+    # is_pending with the resolved process_status.
+    is_pending: bool | None = None
     # spawned_from_task_id is NOT modifiable post-creation — V1 forbids
     # re-parenting lineage (mirror of parent_task_id rejection). The field is
     # declared so we can REJECT it explicitly; explicit-null is treated
@@ -320,6 +329,10 @@ class TaskRead(BaseModel):
     spawned_from_task_id: int | None
     # V3+ T1 audit follow-up (Kanban #723) — backfilled to NULL on existing rows.
     scheduled_at: datetime | None
+    # Kanban #750 (2026-05-11) — backfilled to FALSE on existing rows by
+    # migration 0011's server_default. Cross-state validator at
+    # services/is_pending.py couples is_pending=true with process_status=2.
+    is_pending: bool
 
 
 # Sanity: the Literal stays in lockstep with src.constants.TaskRunMode.ALL.

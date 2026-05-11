@@ -22,6 +22,7 @@ from src.constants import RecordStatus, TaskStatus
 from src.db import get_or_404, get_session
 from src.models.task import Task
 from src.schemas.task import TaskCreate, TaskRead, TaskUpdate
+from src.services.is_pending import assert_is_pending_with_process_status
 from src.services.recurrence import fire_template, next_cron_fire
 from src.services.run_mode import assert_consent_for_run_mode
 from src.services.task_kind import assert_run_mode_for_kind
@@ -176,6 +177,13 @@ async def create_task(
     # services/task_kind.py.
     assert_run_mode_for_kind(payload.task_kind, payload.run_mode)
 
+    # Kanban #750 cross-state validator: is_pending=true requires
+    # process_status=2 (in_progress). Pure function (no DB I/O) — fires after
+    # task_kind (also pure) and BEFORE the consent gate (DB I/O). Default-case
+    # (is_pending=false) returns trivially. Detail string source-text-locked
+    # in services/is_pending.py.
+    assert_is_pending_with_process_status(payload.is_pending, payload.process_status)
+
     # Cross-table consent gate (Kanban #481/#483). Only fires when run_mode is
     # auto_headless; otherwise no-op. Detail string pinned by the source-text-lock
     # test in test_routes_smoke.py — keep in sync with services/run_mode.py.
@@ -245,6 +253,24 @@ async def update_task(
         updates.get("task_kind") if "task_kind" in updates else task.task_kind
     )
     assert_run_mode_for_kind(resolved_task_kind, resolved_run_mode)
+
+    # Kanban #750 resolved-final cross-state: is_pending=true requires
+    # process_status=2. Both fields resolve via PATCH-supplied if present,
+    # else the existing row's value — asymmetric drift fails (PATCH only
+    # is_pending=true on a ps=3 row → 400; PATCH only ps=3 on a ps=2 +
+    # is_pending=true row → 400). Pure function — fires before consent
+    # (DB I/O). Detail source-text-locked in services/is_pending.py.
+    resolved_is_pending = (
+        updates["is_pending"] if "is_pending" in updates else task.is_pending
+    )
+    resolved_process_status = (
+        updates["process_status"]
+        if "process_status" in updates
+        else task.process_status
+    )
+    assert_is_pending_with_process_status(
+        resolved_is_pending, resolved_process_status
+    )
 
     # Kanban #723 resolved-final XOR: scheduled_at and is_template are mutually
     # exclusive. The Pydantic validator catches the both-fields-in-payload case;
