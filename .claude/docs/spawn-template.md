@@ -64,6 +64,7 @@ Read `<absolute path>/context/projects/<active>/<role>/current-state.md` (if pre
 - No direct DB writes — use FastAPI endpoints.
 - Every Write/Edit/Bash will prompt the user; if denied, stop and report with the reason.
 - Do only what was asked. No refactors or features outside scope.
+- If the task has `acceptance_criteria` (check `curl -H "X-Project-Id: <id>" /api/tasks/<id>`), your final report MUST include a per-criterion verdict table + JSON block matching the shape in `.claude/agents/dev-tester.md` `### 2d` or `.claude/agents/dev-reviewer.md` "Acceptance criteria audit" bullet. NEVER report status='pending' — that means you didn't check.
 
 # X-Project-Id header on task endpoints (Kanban #695, mandatory)
 

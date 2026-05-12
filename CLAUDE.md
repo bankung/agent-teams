@@ -17,6 +17,24 @@ This file holds **universal** rules — they apply to every Lead regardless of d
 - **DB writes go through FastAPI endpoints only.** No `psql`, no ad-hoc ORM scripts — preserve validation + audit triggers. **Categorical**, not contextual: subagents may not execute destructive SQL via `psql -c` or `python -c` even for cleanup of test-leaked rows. The "Hard DELETE is reserved for manual psql cleanup" exception in `db-schema.md` is a **human-only** action; subagents propose, Lead surfaces, user executes. A PreToolUse hook (`.claude/hooks/block-raw-sql-dml.ps1`) blocks DML at the harness layer; the hook is the durable gate that survives context compaction. See `.claude/docs/lessons.md` "Raw SQL DML is human-only" for the strike-#1 incident (Kanban #483, 2026-05-09).
 - **Verify, don't trust.** When a subagent reports "done," open the modified files and confirm before reporting to the user.
 
+## Acceptance criteria discipline (universal)
+
+Tasks may carry an `acceptance_criteria` JSONB field (added Kanban #797) — a structured list of `{text, status, verified_by, verified_at, notes}` objects with status in `{pending, passed, failed, na}`.
+
+**Before flipping ANY task to `process_status=5` (DONE):**
+
+1. Fetch the task: `curl --silent -H "X-Project-Id: <id>" http://localhost:8456/api/tasks/<id>`.
+2. If `acceptance_criteria` is `null` or empty → proceed with the usual done-flip. Note in the user-facing message that the task had no structured criteria.
+3. If `acceptance_criteria` has items:
+   - Copy the FULL criteria list into your final user message.
+   - For EACH criterion, state: status (passed/failed/na) + verification source (file:line, command output, subagent report line) + verified_by (the role or 'user' or 'Lead-direct').
+   - If ANY criterion is `failed` or remains `pending` after work: DO NOT flip done. Either file a follow-up task to address the failure, or halt with `halt_reason='Option A/B decision needed: criterion <n> failed, options: ...'`.
+   - PATCH the task with the updated criteria array (status + verified_by + verified_at + notes filled in) BEFORE the process_status=5 flip. The criteria field is the audit trail.
+
+**Anti-pattern caught (2026-05-12):** "WIN" claim on #794 was actually 1.5/4 criteria when honestly counted. Exit criteria buried in description text → easy to skim → claim done without per-criterion check. Structured field + this discipline = visible failure if criteria are skipped.
+
+**Tasks without acceptance_criteria** are NOT exempt from quality — they just have weaker structural protection. The field is optional (Fork 2A locked 2026-05-12); tasks that need rigorous verification SHOULD include it, especially: verification gates, bug fixes, contract changes, smoke tests.
+
 ## Storage architecture (universal)
 
 Five named zones. The zone determines (a) who may write, (b) who reads, (c) blast radius of a change. **Pick the zone by scope** — never by convenience.

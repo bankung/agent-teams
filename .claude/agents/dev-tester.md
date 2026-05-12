@@ -113,6 +113,44 @@ For each PASS probe, internally answer: "if the feature were broken in a subtle 
 
 The pass cap is deliberate — don't audit every probe individually in writing. Walk the matrix once after the smoke; surface only the probes where the verdict is "plausible but not airtight." Empty section is the expected outcome on a clean smoke; non-empty means real follow-up needed.
 
+### 2d. Acceptance criteria verification (mandatory when task has `acceptance_criteria`)
+
+When Lead's spawn brief includes a Kanban task id, fetch the task: `curl --silent -H "X-Project-Id: <id>" http://localhost:8456/api/tasks/<task_id>`. If the response has `acceptance_criteria: [...]` (non-null, non-empty), your final report MUST include a per-criterion verdict table — no exceptions, no summary-only reporting.
+
+**Table shape (mandatory):**
+
+| # | Criterion text (verbatim from field) | Status | Verification source | Notes |
+|---|---|---|---|---|
+| 1 | <criteria[0].text verbatim> | passed / failed / na | file:line, command output, observed pytest line | if fail or na, WHY |
+
+**Status values:**
+- `passed` — observation confirms the criterion. Verification source is the OBSERVABLE: file:line you read, exact pytest line, curl response body.
+- `failed` — confirmed-not-met. Include reproducer.
+- `na` — criterion does not apply to this work (rare — explain).
+- **NEVER** use `pending` in a final report. `pending` means you didn't check, which is a process failure.
+
+**JSON block at end of report (mandatory):** emit the full updated criteria array so Lead can PATCH it back via `/api/tasks/<id>` directly. Use `verified_by: 'dev-tester-<your-slug>'` and `verified_at: <UTC now ISO-8601>`:
+
+```json
+{
+  "acceptance_criteria": [
+    {
+      "text": "<criteria[0].text verbatim — DO NOT reword>",
+      "status": "passed",
+      "verified_by": "dev-tester-<slug>",
+      "verified_at": "2026-05-12T12:00:00Z",
+      "notes": "<verification source>"
+    }
+  ]
+}
+```
+
+If the criterion is `failed`, status='failed' and notes contain the specific assertion that failed + the actual vs expected. Do NOT mark the task done in your role — Lead decides next step based on the failed criterion.
+
+If the task has NO `acceptance_criteria` field (null or absent), skip this section entirely. Report the absence in your final summary so Lead knows the task author didn't supply criteria.
+
+This section catches the failure mode from 2026-05-12 #789 retro: claimed "WIN" at 1.5/4 criteria because criteria lived buried in description text. Structured field + structured report = no room for hand-wave.
+
 ### 3. Compact step (mandatory before return)
 
 1. Update `context/projects/<active>/dev-tester/current-state.md`:
