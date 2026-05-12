@@ -54,6 +54,85 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 
+# Live-DB DSN derived from the SAME pattern as the test-DB rewrite at the top
+# of this module. We re-derive (rather than capture pre-rewrite) so the fixture
+# is robust to the rewrite running before this code path. The dbname is pinned
+# to the canonical live name `agent_teams` so the guard catches any drift
+# regardless of what `DATABASE_URL` currently points at.
+_LIVE_DB_URL = (
+    _os.environ["DATABASE_URL"].rsplit("/", 1)[0] + "/agent_teams"
+)
+
+
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def _live_db_row_count_invariant():
+    """Session-scope guard: live `agent_teams` DB row totals MUST be unchanged
+    by the pytest run.
+
+    This is the broader catch-all for the test-DB isolation contract — not
+    just "the engine URL is correct at import time" (covered by
+    `tests/test_db_isolation.py`) but "no actual writes leak to the live DB
+    through ANY code path during the session".
+
+    Mechanism: open a separate async engine pointed at `agent_teams` (the
+    LIVE DB, NOT the test DB), count `projects` + `tasks` total rows
+    (including soft-deleted — we want raw row totals) before yielding,
+    re-count on teardown, assert equality. On mismatch raise with the deltas
+    + a hint pointing the operator at the most likely culprit.
+
+    Ordering: defined ABOVE `_setup_test_database` so pytest-asyncio's
+    definition-order session-fixture setup runs this first (baseline captured
+    before the test DB build).
+
+    See conftest header + context/projects/agent-teams/shared/decisions.md
+    (2026-05-09 entry) for the locked isolation design this guard pins.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    live_engine = create_async_engine(_LIVE_DB_URL, isolation_level="AUTOCOMMIT")
+
+    async def _counts() -> tuple[int, int]:
+        async with live_engine.connect() as conn:
+            proj = (await conn.execute(text("SELECT count(*) FROM projects"))).scalar_one()
+            tasks = (await conn.execute(text("SELECT count(*) FROM tasks"))).scalar_one()
+        return int(proj), int(tasks)
+
+    try:
+        pre_proj, pre_tasks = await _counts()
+    except Exception:
+        # If the live DB isn't reachable (CI without it, dev workstation
+        # offline), skip the invariant rather than mis-fire. The two import-
+        # time checks in `tests/test_db_isolation.py` remain as the load-
+        # bearing canary.
+        await live_engine.dispose()
+        yield
+        return
+
+    yield
+
+    try:
+        post_proj, post_tasks = await _counts()
+    finally:
+        await live_engine.dispose()
+
+    if (post_proj, post_tasks) != (pre_proj, pre_tasks):
+        raise AssertionError(
+            "LIVE DB ROW COUNT DRIFT — pytest wrote to `agent_teams` (the "
+            "production DB) during this session. The test-DB isolation in "
+            "`tests/conftest.py` (DATABASE_URL rewrite at lines 32-39) did "
+            "NOT contain this run.\n"
+            f"  projects: {pre_proj} -> {post_proj} (delta {post_proj - pre_proj:+d})\n"
+            f"  tasks:    {pre_tasks} -> {post_tasks} (delta {post_tasks - pre_tasks:+d})\n"
+            "Hint: check the most recent test additions for fixtures that "
+            "open their own engine / SessionLocal without going through "
+            "`from src.db import ...` (which IS bound to the test DB after "
+            "the conftest rewrite). Also check any subprocess that re-reads "
+            "DATABASE_URL outside this process — alembic upgrade is the "
+            "known-safe path because we explicitly pass test_url in env."
+        )
+
+
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def _setup_test_database():
     """Drop + create `agent_teams_test`, run alembic upgrade head, run seed.

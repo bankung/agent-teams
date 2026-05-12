@@ -13,6 +13,28 @@ from __future__ import annotations
 import pytest
 
 
+def test_engine_bound_to_test_database() -> None:
+    """Cheap synchronous canary: `src.db.engine.url.database` MUST equal
+    `agent_teams_test`. Catches drift at the cheapest possible layer — if
+    conftest's env override breaks, every test in the suite picks up this
+    canary failure within milliseconds.
+
+    Why a second variant alongside the async URL-substring check below: the
+    `.database` attribute is the authoritative parsed dbname (immune to
+    accidental matches via query-string params, schema-search-path tricks,
+    etc.). Kept as a separate test (not folded into the existing one) so a
+    single regression surfaces one explicit pytest failure line with the
+    actual dbname, not a vague substring mismatch.
+    """
+    from src.db import engine
+
+    assert engine.url.database == "agent_teams_test", (
+        f"src.db.engine is pointed at {engine.url.database!r} — "
+        "the conftest.py module-level DATABASE_URL rewrite (lines 32-39) "
+        "did not take effect. This means tests will WRITE to the live DB."
+    )
+
+
 @pytest.mark.asyncio
 async def test_pytest_runs_against_test_database() -> None:
     """src.db.engine.url MUST point at agent_teams_test, never the live DB."""

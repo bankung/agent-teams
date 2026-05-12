@@ -16,6 +16,19 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-12 — Test-DB isolation regression guard added — Kanban #809
+**Scope:** api / tests (no `src/` change, no migration, no deps)
+**Decision:** Added two complementary regression guards on top of the 2026-05-09 separate-test-DB isolation. The underlying isolation pattern (separate `agent_teams_test` DB built fresh per session, env-override at conftest.py:32-39 before any `src.*` import) remains unchanged.
+1. **Cheap import-time canary** — `api/tests/test_db_isolation.py::test_engine_bound_to_test_database` asserts `src.db.engine.url.database == "agent_teams_test"` (parsed dbname attribute, not URL substring). Failure surfaces one explicit pytest line within milliseconds if the conftest rewrite ever breaks.
+2. **Session-scope row-count invariant** — `api/tests/conftest.py::_live_db_row_count_invariant` (autouse, defined above `_setup_test_database`). Opens a SEPARATE async engine pointed at the LIVE `agent_teams` DB (re-derived from the same DSN pattern), snapshots `count(*) FROM projects` + `count(*) FROM tasks` before yielding, re-counts on teardown, raises with explicit deltas + diagnostic hint on mismatch. Skips silently if the live DB is unreachable (CI without it).
+
+**Reasoning:** #809 was filed off stale info — investigation showed the 38 zombie `proj-patch-updated-at-*` rows in live `agent_teams.projects` are pre-isolation residue (all dated 2026-05-08 → 2026-05-09T12:03; the isolation landed at 12:03:30). No active leak. Real risk going forward is silent drift: someone moves the env override below a `from src import ...`, a test fixture opens its own engine via raw `create_async_engine(...)`, or a refactor breaks the rewrite. Two-layer defense — cheap canary catches engine-binding drift, broad invariant catches any write-path leak through any other route. Suite grew 401 → 402 with the new canary; live-DB row deltas are 0/0 across the full run (Lead independently re-ran post-tester).
+
+**Implications:**
+- Any future test fixture that opens its own engine MUST go through `from src.db import ...` (which IS bound to the test DB after the rewrite) OR explicitly point at `agent_teams_test`. The invariant will fail loudly otherwise.
+- The 38 zombie `proj-patch-updated-at-*` rows in live `agent_teams.projects` remain — hard-delete reserved for manual `psql` (raw-SQL-DML is human-only per the strike-#1 incident lessons; subagents cannot execute the DELETE even via the hook-blocked path). Surfaced to user separately.
+- Reviewer's NIT-1 (widen count snapshot to all user tables via `pg_stat_user_tables` — would catch leaks to `sessions`/`session_runs`/`session_compacts`/`tasks_history`) filed as a follow-up Kanban for later, not blocking #809 close.
+
 ## 2026-05-12 — Phase 3 umbrella #3 closed: Kanban UI scaffold ships
 **Scope:** shared (frontend / backend / scope close-out)
 **Decision:** Umbrella `#3 Phase 3 — kanban UI scaffold` flipped to `process_status=5`. All 16 child slices closed: V1 web/ scaffold (#405), V2 read-only board (#406), V3 ProjectSwitcher (#407); the recurrence T-series #706–710; the context-persistence CTX-series #716–719; the V2.1/V2.2 UX evolutions #748, #750, #760, #764. The four ACs are: V2 closed ✅ (#406), V3 closed ✅ (#407), browser smoke /p/agent-teams renders + ProjectSwitcher works post-#805 CORS fix ✅ (user-confirmed during 2026-05-12 session — the 42 leaked-row batch-DELETE on #805 was triggered precisely because the dropdown was being used; SSE push verified per #783), and this decisions.md entry.
