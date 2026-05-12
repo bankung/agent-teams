@@ -16,6 +16,35 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-12 — Auto-pickup kickoff trigger gap resolved: `/loop` + ScheduleWakeup self-rearm locked — Kanban #791 methodology only
+**Scope:** team methodology (`context/teams/dev/full-auto.md`). No code in agent-teams. Smoke verification deferred to follow-up.
+
+**Decision:** Fork B+C from #791 locked as the kickoff path. Full-auto sessions now require **4** activation conditions (was 3); the new 4th condition is *user invoked `/loop` at session start*. The reactive-Claude-Code constraint is acknowledged as structural — no daemon will be added; instead the loop is bootstrapped by exactly one user message.
+
+**The mechanism (B+C):**
+- `/loop check <project-name> queue and pick up next task` is the kickoff line. `/loop` is Claude Code's dynamic-pacing loop skill.
+- Lead's body resolves to `CLAUDE.md` bootstrap → MVP-3 pickup loop → on idle, Lead calls `ScheduleWakeup(delaySeconds=1800, prompt="recheck queue")` per `wakeup-30` idle-policy. The `/loop` runtime re-fires Lead with the same prompt on the wakeup → CLAUDE.md re-runs → pickup query re-runs.
+- Loop terminates when (a) user interrupts, (b) idle-policy is `stop` and queue empties, or (c) Lead omits the next wakeup call.
+
+**Why not the alternatives:**
+- **A (manual kickoff per task):** defeats the unattended use case — user has to keep typing. Acceptable as fallback only.
+- **B alone (/loop without ScheduleWakeup self-rearm):** loop runs but doesn't survive idle gracefully; user has to re-type after each empty-queue.
+- **C alone (ScheduleWakeup without /loop):** Lead can't kick off without a first user message; reactive gap unbroken.
+
+**Fallback path documented:** if `/loop` is unavailable (older Claude Code build), user types free-form `start auto-pickup on <project-name>`. Lead runs MVP-3 once, no self-rearm — manual kickoff per task. Not recommended; supported.
+
+**Methodology doc changes:**
+- `context/teams/dev/full-auto.md` "When this methodology fires" — 3 → 4 conditions (added: `/loop` invocation).
+- New `## Kickoff` section between Bootstrap announce and MVP-3.
+- Strike #3 entry locks the decision in the strike log.
+
+**Smoke verification deferred:** AC #3 of #791 requires a live `/loop` kickoff smoke that observes auto-pickup triggering WITHOUT mid-session manual prompts. That hasn't run yet. Filed as follow-up #810 to keep the verification gate visible — #791 stays in REVIEW until #810 passes, mirroring the discipline that #788 was the verification gate for the full-auto MVP rather than auto-claimed by #786/#787 alone.
+
+**Implications:**
+- Methodology is shippable now — any new full-auto session opened today follows the 4-condition activation.
+- Cross-session coordination (Meta-Lead) remains explicitly out of scope (#781 polish umbrella).
+- The `/loop` dependency is a Claude-Code-product surface — if upstream removes the skill, the fallback path kicks in but unattended overnight degrades.
+
 ## 2026-05-12 — Tier 3 multi-project parallel smoke PASS — Kanban #789 bet closes 6/6 (#807 + #808)
 **Scope:** verification gate. No code in agent-teams beyond two trivial smoke files. Outcome capture.
 

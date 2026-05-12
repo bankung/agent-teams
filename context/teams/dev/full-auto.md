@@ -8,13 +8,14 @@ This file covers MVP-3 (auto-pickup loop) and MVP-4 (top-5 decision matrix) toge
 
 ## When this methodology fires
 
-A Lead session is "full-auto" when ALL three conditions hold:
+A Lead session is "full-auto" when ALL four conditions hold:
 
 1. The session bootstrapped with `LEAD_AUTOPICKUP=1` in env at start time.
 2. The session is bound to a project whose `.claude/settings.json` wires in `.claude/hooks/auto-approve-safe-writes.ps1` (Kanban #784) for safe-zone Write/Edit auto-approval.
 3. Lead has announced the mode at bootstrap with the announce string below.
+4. **User invoked `/loop` at session start** (Kanban #791) — the kickoff message that wakes Lead and starts the pickup loop. Without it, the session sits idle (Claude Code is reactive — no message → no Lead output).
 
-If any of the 3 is missing, default to interactive (per-task user-in-the-loop). Do NOT partially enable.
+If any of the 4 is missing, default to interactive (per-task user-in-the-loop). Do NOT partially enable.
 
 ## Bootstrap announce
 
@@ -25,6 +26,51 @@ When `LEAD_AUTOPICKUP=1` is detected, Lead's bootstrap message MUST include:
 Idle policy defaults to `wakeup-30` unless `LEAD_AUTOIDLE=stop` is set.
 
 The announce is not optional — it gives the user reading the transcript a clear signal that Lead is in unattended mode, so any subsequent silence is expected (not a hang).
+
+---
+
+## Kickoff (Kanban #791)
+
+**The reactive-Claude-Code gap:** Claude Code does not generate output until the user sends a message. A session opened with `LEAD_AUTOPICKUP=1` initializes silently and waits — the env var has zero effect until the user types something. The "first action: ask which project?" rule in `CLAUDE.md` is also reactive: it only fires once Lead is woken up by a user message.
+
+So **every auto-pickup session needs exactly one user kickoff message** to bootstrap Lead. The locked mechanism (2026-05-12) is `/loop` + `ScheduleWakeup` self-rearm:
+
+### The kickoff line
+
+User opens `claude` at the project's `working_path`, then types:
+
+```
+/loop check <project-name> queue and pick up next task
+```
+
+- `/loop` is the Claude Code dynamic-pacing loop skill. It re-fires the same prompt on a Lead-chosen cadence (via `ScheduleWakeup`) until Lead omits the next-wakeup call to stop.
+- The prompt body resolves to `CLAUDE.md` bootstrap step 1 (ask/infer project) → step 2 (resolve via API) → step 3 (announce binding with `auto-pickup=ON`) → MVP-3 pickup loop.
+- After step 3, Lead runs the pickup query (MVP-3) immediately. If the queue has work, Lead picks it up; if empty, Lead schedules the next wakeup per idle-policy.
+
+### Why `/loop` + `ScheduleWakeup`, not just one of them
+
+- **`/loop` alone** (user re-invokes per cycle) defeats the unattended use case — user has to keep typing.
+- **`ScheduleWakeup` alone** can't kick off without a first message; same reactive gap.
+- **`/loop` + `ScheduleWakeup`** — `/loop` is the kickoff message; ScheduleWakeup is what `/loop`'s runtime uses internally to re-fire. After kickoff, the loop is self-sustaining until idle-policy `stop` or user interrupt.
+
+### Idle-policy interaction
+
+- `wakeup-30` (default): Lead's idle action is `ScheduleWakeup(delaySeconds=1800, prompt="recheck queue")`. `/loop` runtime delivers this back as the next message → CLAUDE.md bootstrap fires again → MVP-3 pickup query runs again. Loop continues.
+- `stop`: Lead omits the wakeup call on idle. `/loop` terminates (no next firing scheduled). User must reopen + re-kickoff to resume.
+
+### Fallback: manual kickoff
+
+If `/loop` is not available (older Claude Code build, slash-command harness mismatch), user can type a free-form kickoff instead:
+
+```
+start auto-pickup on <project-name>
+```
+
+Lead reads CLAUDE.md + this methodology doc, runs MVP-3 once, then announces idle without self-rearm. **Manual kickoff per task** — not true unattended. Use only as a fallback.
+
+### Cross-session boundary
+
+`/loop` is scoped to one Claude Code session. Parallel sessions need their own `/loop` invocations per terminal. Cross-session coordination (Meta-Lead) is explicitly out of scope (umbrella #781).
 
 ---
 
@@ -175,3 +221,4 @@ This methodology is MVP. The following are deferred until MVP-5 smoke (Kanban #7
   - AC-5 ✅ commit body references #790.
   - **Bet outcome: VALIDATED.** Multi-project full-auto orchestration works end-to-end. agent-teams as a meta-orchestration product clears proof-of-concept.
   - **Caveat surfaced (filed as #791):** Lead does NOT spontaneously start the pickup loop on session bootstrap. Claude Code is reactive — user must send one kickoff message to trigger Lead's first action. True unattended overnight requires a follow-up integration (`/loop` skill, ScheduleWakeup self-rearm, or accept the manual-kickoff limit).
+- **Strike #3 — 2026-05-12, Kanban #791:** kickoff trigger gap resolved. `/loop` + `ScheduleWakeup` self-rearm locked as the kickoff mechanism (Fork B+C from #791 description). MVP "When this methodology fires" condition list grew from 3 → 4 (added: user invoked `/loop`). New `## Kickoff` section between Bootstrap announce and MVP-3. Fallback path documented for builds without `/loop`. Manual kickoff is supported but is no longer the recommended path for unattended runs.
