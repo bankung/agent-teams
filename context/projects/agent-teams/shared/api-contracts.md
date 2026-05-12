@@ -229,6 +229,10 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 
 `halt_reason` (str, optional, min_length=1, default null) — added 2026-05-12 by Kanban #785 (migration `0013_tasks_halt_reason`). Free-form halt signal for full-auto Lead sessions. Non-empty string = task is halted (auto-pickup query in #786 skips these); null/absent = task runs normally. Empty `""` → 422 with `type=string_too_short` at `loc=["body","halt_reason"]`. Orthogonal to `process_status` (same pattern as `is_pending`).
 
+`blocked_by` (int, optional, ge=1, default null) — added 2026-05-12 by Kanban #771 (migration `0017_tasks_blocked_by`). Single-blocker dependency pointer; null = unblocked. **Status-code policy locked 2026-05-12:** cross-row business-rule rejections (FK target deleted/cross-project/self/cycle) return **422** (RFC 4918 Unprocessable Entity — semantically violated, not malformed). Parent_task_id validators still return 400 (legacy lock 2026-05-08); not migrated this slice. POST validates existence + same-project only — self-reference + cycle are structurally impossible on POST (new row has no id yet). Errors below (all 422, byte-locked):
+- `{"detail":"blocked_by <n> does not exist or is deleted"}` when the FK target is missing or soft-deleted.
+- `{"detail":"blocked_by <n> belongs to a different project"}` when the FK target's `project_id` ≠ payload's `project_id`.
+
 **Response 201:** `TaskRead`
 
 **Errors:**
@@ -257,7 +261,7 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 **Auth:** none
 **Headers:** `X-Project-Id: <int>` REQUIRED. The fetched row's `project_id` must match the header value; mismatch → 400. (Kanban #695)
 
-**Request:** any subset of `{title, description, process_status, priority, assigned_role, started_at, completed_at, run_mode, task_kind, is_template, recurrence_rule, recurrence_timezone, next_fire_at, scheduled_at, is_pending, halt_reason}`. The soft-delete `status` flag is intentionally absent — sending `{"status": 0}` is silently ignored (use `DELETE` to soft-delete). `parent_task_id` AND `spawned_from_task_id` are BOTH REJECTED (V1 forbids re-parenting subtask hierarchy per Kanban #238 AND recurrence lineage per Kanban #706) — see 422 below. `scheduled_at` accepts any TZ offset on input; storage + GET response always normalize to UTC `Z` form. Set `{"scheduled_at": null}` to un-schedule a one-shot task (Kanban #723). `halt_reason` PATCH semantics (Kanban #785): key-absent = unchanged; explicit `null` = clear/unhalt; non-empty string = halt; `""` → 422.
+**Request:** any subset of `{title, description, process_status, priority, assigned_role, started_at, completed_at, run_mode, task_kind, is_template, recurrence_rule, recurrence_timezone, next_fire_at, scheduled_at, is_pending, halt_reason, blocked_by}`. The soft-delete `status` flag is intentionally absent — sending `{"status": 0}` is silently ignored (use `DELETE` to soft-delete). `parent_task_id` AND `spawned_from_task_id` are BOTH REJECTED (V1 forbids re-parenting subtask hierarchy per Kanban #238 AND recurrence lineage per Kanban #706) — see 422 below. `scheduled_at` accepts any TZ offset on input; storage + GET response always normalize to UTC `Z` form. Set `{"scheduled_at": null}` to un-schedule a one-shot task (Kanban #723). `halt_reason` PATCH semantics (Kanban #785): key-absent = unchanged; explicit `null` = clear/unhalt; non-empty string = halt; `""` → 422. `blocked_by` PATCH semantics (Kanban #771, 2026-05-12): key-absent = unchanged; explicit `null` = clear/unblock; positive int = set/change blocker (router walks the chain up to depth=10 for cycle detection). Unlike `parent_task_id` / `spawned_from_task_id`, `blocked_by` IS modifiable post-create — re-blocking is supported and expected.
 
 **Response 200:** `TaskRead`
 
@@ -281,6 +285,21 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
   - `{"detail":"is_pending=true requires process_status=2 (in_progress)"}` — fires when the **resolved final** `(is_pending, process_status)` pair (PATCH-supplied OR existing if not in body) is `(true, !=2)`. Both directions caught: direction-A (PATCH is_pending=true on a ps=1 row) AND direction-B (PATCH process_status=1 on a ps=2+is_pending=true row — validator sees `(true, 1)`). Bundled clear `{process_status:1, is_pending:false}` succeeds (resolved pair is `(false, 1)`). Source-text-locked at `services/is_pending.py` (byte-equal verified by Tier-1 smoke #756). Pure-function check; ordered after task_kind/run_mode, before consent gate. (Kanban #750)
   - `{"detail":"status violates ck_tasks_status_valid"}` (defensive — `status` is not a public PATCH field)
   - `{"detail":"Task update violates a database constraint"}` (fallback for unknown CHECK constraints)
+- `422` — `blocked_by` validator failures (Kanban #771, 2026-05-12; status-code policy locked 422 same date). Byte-locked source strings in `routers/tasks.py` PATCH handler:
+  - `{"detail":"blocked_by cannot reference self"}` when `blocked_by == task_id` (self-reference rejected; the DB CHECK `ck_tasks_blocked_by_not_self` is the raw-SQL bypass backstop).
+  - `{"detail":"blocked_by <n> does not exist or is deleted"}` when the FK target is missing or soft-deleted.
+  - `{"detail":"blocked_by <n> belongs to a different project"}` when the FK target's `project_id` differs from the row's `project_id`.
+  - `{"detail":"blocked_by <n> would create a cycle (depth <N>)"}` when the chain walk from the new blocker hits `task_id` within depth ≤ 10. Depth in the message is 1-indexed.
+  - `{"detail":"blocked_by chain exceeds maximum depth of 10"}` defensive — fires when the walker exits the for-range without break. Should not occur in practice; real chains are 1-3 deep.
+
+### GET /api/tasks/{id}/blocks (Kanban #771, 2026-05-12)
+**Purpose:** Reverse-lookup for `blocked_by`. Returns the list of active tasks that have `blocked_by == {id}` — i.e., the dependents this task is currently blocking. Used by the FE TaskDetail panel to render an "Also blocks" list.
+**Auth:** none
+**Headers:** `X-Project-Id: <int>` REQUIRED. The looked-up `{id}` row's `project_id` must match the header value (Kanban #695 convention). Returns `[]` when no dependents reference it.
+**Response 200:** `list[TaskRead]` ordered by `id` ASC. Soft-deleted dependents excluded.
+**Errors:**
+- `404` — `{"detail":"Task id=<n> not found"}` when `{id}` does not exist.
+- `400` — header gate violations as per `GET /api/tasks/{id}` (Kanban #695).
 
 ### DELETE /api/tasks/{id}
 **Purpose:** Soft-delete a task — flips `status=0`. First DELETE advances `updated_at`; subsequent DELETEs on an already-deleted row are idempotent no-ops (return 204 without further `updated_at` bump — parity with DELETE `/api/projects/{id}`). The audit trigger snapshots the flip as `'U'` in `tasks_history`. Blocked when active subtasks reference the row (Kanban #238).

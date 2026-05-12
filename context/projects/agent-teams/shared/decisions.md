@@ -16,6 +16,32 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-12 — `tasks.blocked_by` schema + API + 422 status-code policy locked — Kanban #771 (backend slice)
+**Scope:** api (migration + ORM + Pydantic + router + tests); cross-cuts the wire-contract policy via the new policy header in `routers/tasks.py`.
+**Decision:** Two things, locked together this session:
+
+1. **`tasks.blocked_by` lands.** Migration `0017_tasks_blocked_by` adds `blocked_by BIGINT NULL REFERENCES tasks(id) ON DELETE SET NULL` + CHECK `ck_tasks_blocked_by_not_self` + index `ix_tasks_blocked_by`. ORM model + Pydantic schemas (Create/Update/Read) + router validators (POST: existence + same-project; PATCH: same plus self-rejection + cycle walk up to depth=10) + reverse-lookup endpoint `GET /api/tasks/{task_id}/blocks` + 14 pytest cases. 416 passed in 87.62s (was 402; +14, 0 regressions). Migration applied to live DB (`alembic current` shows `0017_tasks_blocked_by (head)`, row counts unchanged 54/158 → 54/158 — metadata-only schema-additive). Tier-1 smoke GREEN on 6 probes (POSITIVE×3 + NEGATIVE×3; cross-project NEGATIVE deferred to pytest per the smoke-methodology option-(a) pattern).
+
+2. **Status-code policy: 422 for cross-row business-rule rejections (NEW writes; legacy 400s remain).** Locked by user 2026-05-12 in response to reviewer's WARN-1. New validators in `routers/tasks.py` (cross-project FK target / soft-deleted target / self-reference / cycle / depth-exceeded) return **422 (Unprocessable Entity)** per RFC 4918 — the input is wire-valid Pydantic-shape; the violation is semantic. The pre-existing `parent_task_id` validators still return **400** (locked 2026-05-08, pre-policy) and are intentionally NOT migrated this slice — separate cleanup task if/when it's worth the test churn. The going-forward rule, codified inline at `api/src/routers/tasks.py` policy header (lines ~55-60): **new same-row cross-validation errors at the router boundary return 422; only request-shape/parse errors return 400.**
+
+**Reasoning:**
+
+- **SET NULL not CASCADE** on `blocked_by` mirrors `spawned_from_task_id` (recurrence lineage). Hard-deleting a blocker must NOT cascade-delete the blocked task — the blocked task should survive with `blocked_by=NULL`. Contrast with `parent_task_id` (CASCADE) where subtasks live-and-die with their umbrella parent. Three self-FKs now exist on `tasks`; each makes a different ON DELETE choice based on semantics, not style.
+
+- **App-layer same-project enforcement + app-layer cycle walk** keep the trigger surface small (one audit trigger handles everything via `to_jsonb(OLD)`) and let the rejection logic live where the detail strings are (router). Same precedent as `parent_task_id` (#238, 2026-05-08). Depth=10 is a defensive bound — real chains are 1-3 deep; the for/else exhaustion branch raises 422 with `"blocked_by chain exceeds maximum depth of 10"`.
+
+- **PATCH-able post-create** (unlike `parent_task_id` / `spawned_from_task_id` which reject re-parenting). The entire point of #771 is letting users set/clear/change the blocker as work progresses — re-blocking IS the feature.
+
+- **422 over 400** for the new validators: 422 is semantically correct (RFC 4918 — well-formed input that violates business rules) and the pytest already pinned 422 in 14 tests. Flipping to 400 would require migrating 4 router sites + 14 test assertions for stylistic consistency with the legacy `parent_task_id` validators — a wire churn that buys nothing. Reviewer leaned 422; user agreed. The legacy 400s are flagged as legacy in the policy header so future readers don't extrapolate them as the going-forward rule.
+
+**Implications:**
+
+- **FE slice (next spawn)** consumes `blocked_by` via `TaskRead` and the new reverse-lookup endpoint. Locks AC #4 on #771: TaskDetail picker (within-project search, excludes self + ancestors/descendants) + TaskCard ⛔ chip when set.
+- **#772 (sortable lane + blocker ordering constraint)** is now unblocked. The constraint "task may not be placed before its blocker in same-lane order" reads `blocked_by` from the row; the reject-422-on-violation matches the new 422 policy.
+- **Future 422-vs-400 cleanup task** (optional): migrate `parent_task_id` validators from 400 to 422 for repo-wide consistency. Costs ~10 line edits in router + ~5 test flips. NOT in the current queue; file when the legacy 400s become a confusion.
+- **History capture is free.** The existing `tasks_audit_trg` (`to_jsonb(OLD)`) auto-captures the new column — no trigger change. End-to-end verified by `test_blocked_by_history_captured_in_tasks_history`.
+- **Reviewer NIT-1/2/3 + WARN-1** all addressed in the cleanup pass (commit follows this decision entry).
+
 ## 2026-05-12 — Test-DB isolation regression guard added — Kanban #809
 **Scope:** api / tests (no `src/` change, no migration, no deps)
 **Decision:** Added two complementary regression guards on top of the 2026-05-09 separate-test-DB isolation. The underlying isolation pattern (separate `agent_teams_test` DB built fresh per session, env-override at conftest.py:32-39 before any `src.*` import) remains unchanged.

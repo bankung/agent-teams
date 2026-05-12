@@ -179,6 +179,12 @@ class TaskCreate(BaseModel):
     # forbids re-parenting lineage). Optional + ge=1 so regular user POSTs
     # default to None.
     spawned_from_task_id: int | None = Field(default=None, ge=1)
+    # Kanban #771 (2026-05-12): single-blocker dependency. None = unblocked;
+    # non-null = points at the task that blocks this one. Same-project +
+    # existence + not-self checks happen in the router (need DB lookup).
+    # Direct cycle is structurally impossible on POST (new row has no id yet);
+    # PATCH walks the chain for transitive cycle detection.
+    blocked_by: int | None = Field(default=None, ge=1)
     # Kanban #785 (MVP-2): in-flight halt flag for full-auto Lead sessions.
     # Non-empty string = task is halted (auto-pickup query skips these);
     # None / absent = task runs normally. Rare-but-legal on POST (e.g., user
@@ -306,6 +312,16 @@ class TaskUpdate(BaseModel):
     # declared so we can REJECT it explicitly; explicit-null is treated
     # identically to a non-null value.
     spawned_from_task_id: int | None = Field(default=None, ge=1)
+    # Kanban #771 (2026-05-12): PATCH-able. Semantics:
+    #   - key absent      → leave unchanged (exclude_unset=True in router)
+    #   - explicit null   → clear / unblock the task (null IS meaningful —
+    #                       column is nullable; lifts the blocker)
+    #   - non-null int    → set / change the blocker (router validates
+    #                       existence, same-project, not-self, no cycle)
+    # No _reject_explicit_null validator — parity with description, halt_reason,
+    # acceptance_criteria. Unlike parent_task_id / spawned_from_task_id,
+    # re-blocking IS supported in V1 (whole point of the field).
+    blocked_by: int | None = Field(default=None, ge=1)
     # Kanban #785 (MVP-2): PATCH-able. Semantics:
     #   - key absent      → leave unchanged (exclude_unset=True in router)
     #   - explicit null   → clear / unhalt the task (null IS meaningful)
@@ -462,6 +478,9 @@ class TaskRead(BaseModel):
     recurrence_timezone: str
     next_fire_at: datetime | None
     spawned_from_task_id: int | None
+    # Kanban #771 (2026-05-12) — single-blocker dependency. Backfilled to NULL
+    # on existing rows by migration 0017's nullable=true. NULL = unblocked.
+    blocked_by: int | None
     # V3+ T1 audit follow-up (Kanban #723) — backfilled to NULL on existing rows.
     scheduled_at: datetime | None
     # Kanban #750 (2026-05-11) — backfilled to FALSE on existing rows by

@@ -203,6 +203,17 @@ class Task(Base):
         ForeignKey("tasks.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Kanban #771 (2026-05-12): single-blocker dependency. NULL = unblocked;
+    # non-null = points at the task that blocks this one. ON DELETE SET NULL
+    # (NOT CASCADE) — hard-deleting a blocker must NOT delete the blocked task.
+    # Same-project + cycle-prevention enforced app-side in routers/tasks.py;
+    # ck_tasks_blocked_by_not_self in __table_args__ catches self-blocker
+    # drift via raw SQL.
+    blocked_by: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("tasks.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -272,6 +283,13 @@ class Task(Base):
             "parent_task_id IS NULL OR parent_task_id <> id",
             name="ck_tasks_parent_task_id_not_self",
         ),
+        # No-self-blocker backstop (Kanban #771). App rejects self-blocker via
+        # POST/PATCH 422; this CHECK catches raw-SQL drift. Mirror of
+        # ck_tasks_parent_task_id_not_self in shape + intent.
+        CheckConstraint(
+            "blocked_by IS NULL OR blocked_by <> id",
+            name="ck_tasks_blocked_by_not_self",
+        ),
         # V3+ T1 (Kanban #706): mirror of migration 0007's CHECKs. task_kind
         # values + template completeness — DB defense-in-depth alongside the
         # Pydantic model_validator on TaskCreate.
@@ -300,6 +318,9 @@ class Task(Base):
         Index("ix_tasks_assigned_role", "assigned_role"),
         Index("ix_tasks_status", "status"),
         Index("ix_tasks_parent_task_id", "parent_task_id"),
+        # Kanban #771: supports the reverse-lookup endpoint
+        # GET /api/tasks/{id}/blocks (rows pointing AT a given blocker).
+        Index("ix_tasks_blocked_by", "blocked_by"),
         # Partial index — scheduler hot path scans only the sparse template
         # subset. Mirror of migration 0007's postgresql_where predicate.
         Index(

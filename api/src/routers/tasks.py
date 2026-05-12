@@ -52,6 +52,18 @@ _DETAIL_FIRE_NOW_NOT_TEMPLATE_TEMPLATE = (
     "Task id={task_id} is not a template; fire-now only applies to is_template=true"
 )
 
+# Validator status-code policy (Kanban #771, locked 2026-05-12 by user):
+# cross-row business-rule rejections (cycle, FK target deleted/cross-project,
+# self-reference) return 422 — semantically Unprocessable Entity per RFC 4918.
+# The parent_task_id validators above still return 400 (locked 2026-05-08,
+# pre-policy) and remain as legacy; do NOT migrate this slice — separate
+# cleanup task. New validators in this file SHOULD use 422 going forward.
+
+# Kanban #771: maximum depth for the PATCH-time blocked_by cycle walk. Pins a
+# defensive upper bound — real chains are expected to be 1-3 deep. Hitting 10
+# without resolving raises 422 (defensive; should not occur in practice).
+_BLOCKED_BY_MAX_CHAIN_DEPTH = 10
+
 # Process-status transitions that auto-stamp a lifecycle timestamp (when not
 # already set). Order doesn't matter — at most one entry fires per PATCH
 # (process_status is a single value).
@@ -140,6 +152,31 @@ async def get_task(
     return task
 
 
+@router.get("/{task_id}/blocks", response_model=list[TaskRead])
+async def list_tasks_blocked_by(
+    task_id: int,
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+) -> list[Task]:
+    """Reverse-lookup for Kanban #771: list active tasks that point AT this
+    task via `blocked_by` (i.e., the dependents this task is currently
+    blocking). 404 if `task_id` itself does not exist — mirrors the detail
+    endpoint's "row must exist for sub-resource queries" convention. Returns
+    `[]` when no dependents reference it. Soft-deleted dependents are
+    excluded (status=1 filter). Same-project is implicit by FK semantics."""
+    task = await get_or_404(
+        session, Task, detail=f"Task id={task_id} not found", id=task_id
+    )
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+    stmt = (
+        select(Task)
+        .where(Task.blocked_by == task_id, Task.status == RecordStatus.ACTIVE)
+        .order_by(Task.id.asc())
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
 @router.post("", response_model=TaskRead, status_code=http_status.HTTP_201_CREATED)
 async def create_task(
     payload: TaskCreate,
@@ -167,6 +204,24 @@ async def create_task(
             raise HTTPException(
                 status_code=400,
                 detail=f"parent_task_id {payload.parent_task_id} belongs to a different project",
+            )
+
+    # Kanban #771: blocked_by validation. Same-project enforcement is app-layer
+    # (no DB trigger). POST has no row id yet, so neither self-reference nor
+    # transitive cycle is reachable; only existence + same-project checks fire
+    # here. Stable detail strings pinned by
+    # test_blocked_by_detail_strings_pinned_in_router_source — keep in sync.
+    if payload.blocked_by is not None:
+        blocker = await session.get(Task, payload.blocked_by)
+        if blocker is None or blocker.status == RecordStatus.DELETED:
+            raise HTTPException(
+                status_code=422,
+                detail=f"blocked_by {payload.blocked_by} does not exist or is deleted",
+            )
+        if blocker.project_id != payload.project_id:
+            raise HTTPException(
+                status_code=422,
+                detail=f"blocked_by {payload.blocked_by} belongs to a different project",
             )
 
     # V3+ T1 (Kanban #706) cross-table validator: task_kind='human' is
@@ -302,6 +357,59 @@ async def update_task(
     assert_is_pending_with_process_status(
         resolved_is_pending, resolved_process_status
     )
+
+    # Kanban #771: blocked_by validation on PATCH. Differs from POST in two ways:
+    #   1. Self-reference IS structurally possible (target row has an id), so
+    #      reject blocked_by == task_id at 422.
+    #   2. Cycle detection: walk the new blocker's chain up to depth=10. If we
+    #      hit task_id anywhere in the chain → cycle → 422. Setting to None
+    #      is always allowed (clears the blocker; no checks needed).
+    # Soft-deleted blockers are rejected. Same-project enforcement mirrors POST.
+    # Stable detail strings pinned by
+    # test_blocked_by_detail_strings_pinned_in_router_source — keep in sync.
+    if "blocked_by" in updates:
+        new_blocked_by = updates["blocked_by"]
+        if new_blocked_by is not None:
+            if new_blocked_by == task_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="blocked_by cannot reference self",
+                )
+            blocker = await session.get(Task, new_blocked_by)
+            if blocker is None or blocker.status == RecordStatus.DELETED:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"blocked_by {new_blocked_by} does not exist or is deleted",
+                )
+            if blocker.project_id != task.project_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"blocked_by {new_blocked_by} belongs to a different project",
+                )
+            # Cycle walk: starting from the new blocker, follow blocked_by
+            # links. If we hit task_id → cycle (the target transitively
+            # depends on itself). Exhaust within depth budget → OK. Exceed
+            # budget → defensive 422 (should not occur in practice).
+            cursor: int | None = blocker.blocked_by
+            for depth in range(1, _BLOCKED_BY_MAX_CHAIN_DEPTH + 1):
+                if cursor is None:
+                    break
+                if cursor == task_id:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"blocked_by {new_blocked_by} would create a cycle (depth {depth})",
+                    )
+                next_row = await session.get(Task, cursor)
+                if next_row is None:
+                    break
+                cursor = next_row.blocked_by
+            else:
+                # Loop exited via exhausting `range` without break — chain
+                # longer than the budget. Defensive guard.
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"blocked_by chain exceeds maximum depth of {_BLOCKED_BY_MAX_CHAIN_DEPTH}",
+                )
 
     # Kanban #723 resolved-final XOR: scheduled_at and is_template are mutually
     # exclusive. The Pydantic validator catches the both-fields-in-payload case;
