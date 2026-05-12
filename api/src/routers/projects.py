@@ -16,6 +16,9 @@ clears other rows; GET /api/projects/active returns 410 Gone (use
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi import status as http_status
 from sqlalchemy import select
@@ -34,9 +37,61 @@ from src.schemas.project import (
     ProjectUpdate,
 )
 from src.services.project_scaffold import scaffold_project_folder
+from src.services.zero_config_scaffold import (
+    scaffold_orchestration,
+    substitute_settings_json,
+)
 from src.settings import get_settings
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/projects", tags=["projects"])
+
+
+# Kanban #793 — settings.json substitution.
+#
+# The byte-level filter lives in `services.zero_config_scaffold.substitute_settings_json`
+# (shared with the GET /api/scaffold/{team}/files endpoint per Kanban #795).
+# This thin wrapper just handles the on-disk read/write half so the POST
+# auto-scaffold path stays a single tidy call.
+
+
+def _substitute_settings_json(target: Path, project: Project) -> None:
+    """Read, filter, and rewrite a freshly-scaffolded settings.json in place.
+
+    Wraps the pure-bytes `substitute_settings_json` helper with filesystem I/O.
+    Missing/unparseable settings.json is a warning, not an exception — the
+    scaffold itself is best-effort and a failure here must not roll back the
+    DB row (Kanban #793 contract: DB is the source of truth).
+    """
+    settings_path = target / ".claude" / "settings.json"
+    if not settings_path.exists():
+        logger.warning(
+            "settings.json missing at %s — scaffold may have failed earlier",
+            settings_path,
+        )
+        return
+
+    try:
+        content = settings_path.read_bytes()
+    except OSError as e:
+        logger.warning("failed to read %s: %s", settings_path, e)
+        return
+
+    filtered = substitute_settings_json(
+        content, project_name=project.name, project_id=project.id
+    )
+
+    # No-op write if the filter passed bytes through (unparseable JSON or no
+    # permissions block) — saves a syscall and avoids a redundant mtime bump,
+    # but functionally a re-write would be identical.
+    if filtered == content:
+        return
+
+    try:
+        settings_path.write_bytes(filtered)
+    except OSError as e:
+        logger.warning("failed to write %s: %s", settings_path, e)
 
 
 @router.get("", response_model=list[ProjectRead])
@@ -173,6 +228,61 @@ async def create_project(
     # Side-effect: scaffold context/projects/<name>/ — failure is non-fatal.
     settings = get_settings()
     scaffold_project_folder(settings.repo_root, project.name, team=project.team)
+
+    # Kanban #793 — second scaffold step: if the project declared a
+    # working_path AND that directory already exists, copy the agent-teams
+    # orchestration harness (CLAUDE.md, .claude/, context/standards/,
+    # context/teams/<team>/) into it. The DB row is the source of truth;
+    # any failure below is logged + swallowed so 201 still flies.
+    #
+    # We explicitly skip when `not target.exists()` — the underlying
+    # scaffolder would `mkdir(parents=True, exist_ok=True)`, but we DON'T
+    # want POST /api/projects auto-creating filesystem dirs the user didn't
+    # ask for. Users create their working_path themselves; we only fill it.
+    if project.working_path:
+        target = Path(project.working_path)
+        # `.exists()` on a pathologically-long path raises OSError
+        # (ENAMETOOLONG, ENOENT on bad components, etc). Treat any such
+        # filesystem stat failure as "skip the scaffold" — the DB row is
+        # still the source of truth.
+        try:
+            target_is_dir = target.exists() and target.is_dir()
+        except OSError as e:
+            logger.warning(
+                "stat failed on working_path %r: %s — skipping scaffold",
+                project.working_path,
+                e,
+            )
+            target_is_dir = False
+
+        if target_is_dir:
+            try:
+                report = scaffold_orchestration(
+                    target_path=target,
+                    project_name=project.name,
+                    team=project.team,
+                    agent_teams_root=settings.repo_root,
+                )
+                _substitute_settings_json(target, project)
+                logger.info(
+                    "scaffolded orchestration for %s at %s: "
+                    "%d copied, %d skipped, %d errors",
+                    project.name,
+                    target,
+                    len(report.copied),
+                    len(report.skipped),
+                    len(report.errors),
+                )
+            except ValueError as e:
+                # Path-traversal guard (target is/under agent_teams_root).
+                logger.warning("scaffold rejected: %s", e)
+            except Exception:  # pragma: no cover — defensive
+                logger.exception("scaffold failed for %s", project.name)
+        else:
+            logger.warning(
+                "working_path %r not a dir or missing, skipping scaffold",
+                project.working_path,
+            )
 
     return project
 

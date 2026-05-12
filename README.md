@@ -6,6 +6,57 @@ Instead of driving the AI step by step, you create tasks in the Kanban UI or han
 
 **Multi-project ready** — the Kanban UI manages every project (paths, stack, standards mapping). Lead keeps per-project knowledge isolated while sharing **cross-project standards** that all projects can pull from.
 
+## Quick Start
+
+agent-teams is a **meta-orchestration product** — a Kanban backend plus an agent harness (Lead playbook, role definitions, hooks, standards) that lives alongside every project you manage. Each project gets the same orchestration layer placed under its working directory in seconds, not 20 minutes of manual file-shuffling.
+
+Once the agent-teams stack is running (see [Run the agent-teams stack](#run-the-agent-teams-stack) below), the `bin/agent-teams-init.ps1` CLI registers a new project in the Kanban DB and scaffolds the harness into the target folder in one command:
+
+```powershell
+# Clone agent-teams, start the stack (docker compose up -d), then:
+.\bin\agent-teams-init.ps1 `
+    -Name myapp `
+    -WorkingPath C:\code\myapp `
+    -Team dev
+```
+
+Output:
+
+```
+Created project id=571
+
+Scaffolded C:\code\myapp
+  copied : 46
+  skipped: 0
+  errors : 0
+```
+
+After the first run, `C:\code\myapp` contains `CLAUDE.md`, `.claude/agents/*`, `.claude/hooks/*`, `.claude/settings.json` (auto-filtered for this project's name/id), `context/standards/*`, and `context/teams/<team>/*`. Open the folder in Claude Code and the Lead bootstrap protocol takes over.
+
+Re-running on the same target is idempotent — existing files are reported as `skipped` and never overwritten. To force a clobber, delete the target file first (the `-Force` flag is reserved; not yet wired up).
+
+### Parameters
+
+| Name | Required | Description |
+|---|---|---|
+| `-Name` | yes | Project name. Pattern `^[a-zA-Z0-9_-]{1,64}$`. Looked up via `GET /api/projects/by-name/<name>`; created on 404. |
+| `-WorkingPath` | yes | Absolute Windows path where the harness lands. Created if missing. |
+| `-Team` | yes | `dev` or `novel` — picks the agent roster + standards subset shipped in the manifest. |
+| `-ApiUrl` | no | Default `http://localhost:8456`. Override for a non-local agent-teams instance. |
+| `-Force` | no | Reserved for future overwrite mode; currently a no-op. |
+| `-Verbose` | no | Lists every `copied` / `skipped` rel_path under the summary block. |
+
+### Exit codes
+
+- `0` — at least one file copied or skipped, zero errors.
+- `1` — argument validation failed, API call failed, manifest empty, or one or more per-file writes threw.
+
+### Troubleshooting
+
+- **422 on POST /api/projects** — the agent-teams API enforces the `^[a-zA-Z0-9_-]{1,64}$` pattern for `name`. Spaces / dots / unicode are rejected.
+- **404 on GET /api/scaffold/...** — verify `team=dev` or `team=novel` and that the agent-teams stack is the version with MVP-D (Kanban #795) deployed.
+- **Connection refused** — `docker compose ps` against the agent-teams repo; the API binds `localhost:8456` by default.
+
 ## Storage architecture (three buckets)
 
 | Bucket | Storage | Examples | Writer |
@@ -109,7 +160,9 @@ Per-role definitions: [.claude/agents/](.claude/agents/) (`dev-*.md` files).
 | Docker Desktop | runs PostgreSQL + FastAPI in containers |
 | Node + Python toolchains for the target project | as required by the project itself |
 
-## Quick start
+## Run the agent-teams stack
+
+This is the one-time setup for the agent-teams repo itself (the orchestration backend). To onboard a target project against a running stack, see [Quick Start](#quick-start) above.
 
 ```bash
 # 1. Clone
