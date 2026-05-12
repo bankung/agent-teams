@@ -49,6 +49,7 @@ export type TaskRead = {
   spawned_from_task_id: number | null; // #706 — system-managed lineage
   scheduled_at: string | null; // #723 — one-shot fire path; XOR with is_template
   blocked_by: number | null; // #771 — peer-task blocker FK; null = unblocked
+  sort_order: number | null; // #772 — float lane-local ordering key (NULL = unordered; ORDER BY sort_order ASC NULLS LAST, created_at ASC)
   created_at: string;
   updated_at: string;
   started_at: string | null;
@@ -228,7 +229,7 @@ export async function getTask(
 // blocked_by (#771): explicit null clears; positive int sets; key-absent =
 // unchanged. Picker UI (TaskDetail) is the only consumer for now.
 export type TaskPatch = Partial<
-  Pick<TaskRead, "process_status" | "priority" | "title" | "blocked_by">
+  Pick<TaskRead, "process_status" | "priority" | "title" | "blocked_by" | "sort_order">
 >;
 
 export async function patchTask(
@@ -238,6 +239,31 @@ export async function patchTask(
 ): Promise<TaskRead> {
   return jsonFetch<TaskRead>(`/api/tasks/${id}`, {
     method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Project-Id": String(projectId),
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+// POST /api/tasks/{id}/reorder — anchor-based within-lane sort_order write
+// (Kanban #772). Body: {before_id?, after_id?} — at least one required. Server
+// computes the new sort_order atomically with same-lane + blocker-order checks.
+// 422 on cross-lane anchor, soft-deleted anchor, blocker-order violation, or
+// shape error (same id in both anchors / both omitted).
+export type TaskReorderBody = {
+  before_id?: number;
+  after_id?: number;
+};
+
+export async function reorderTask(
+  projectId: number,
+  id: number,
+  body: TaskReorderBody,
+): Promise<TaskRead> {
+  return jsonFetch<TaskRead>(`/api/tasks/${id}/reorder`, {
+    method: "POST",
     headers: {
       "Content-Type": "application/json",
       "X-Project-Id": String(projectId),

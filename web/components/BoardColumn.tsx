@@ -16,9 +16,14 @@ type Props = {
   label: string;
   tasks: TaskRead[];
   onOpenDetail?: (task: TaskRead) => void;
+  // #772 — marker prop: which lane wires within-lane reorder. SortableContext
+  // remains wrapping every lane (it gives cross-lane drag visual feedback for
+  // free), but `data-lane-sortable` on the section lets probes + Board.onDragEnd
+  // confirm this is the lane the FE reorders through `POST /api/tasks/{id}/reorder`.
+  sortable?: boolean;
 };
 
-export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail }: Props) {
+export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, sortable = false }: Props) {
   const { isOver, setNodeRef } = useDroppable({ id: columnId });
   const taskIds = tasks.map((t) => t.id);
   const dropHighlight = isOver ? " ring-2 ring-blue-400/50" : "";
@@ -26,6 +31,7 @@ export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail }: 
     <section
       ref={setNodeRef}
       data-process-status={statuses.join("+")}
+      data-lane-sortable={sortable}
       className={`flex min-h-0 min-w-0 flex-col rounded-md bg-zinc-50/60 dark:bg-zinc-900/40 p-2.5${dropHighlight}`}
     >
       <header className="mb-2 flex items-center gap-1.5 border-b border-zinc-200 dark:border-zinc-800 pb-2 px-1">

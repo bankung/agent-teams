@@ -12,8 +12,15 @@ import {
 } from "@dnd-kit/core";
 import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 
-import { patchTask, type ProjectRead, type TaskRead } from "@/lib/api";
+import {
+  HttpError,
+  patchTask,
+  reorderTask,
+  type ProjectRead,
+  type TaskRead,
+} from "@/lib/api";
 import { TaskStatus, type TaskStatusValue } from "@/lib/constants";
+import { sortLaneTasks } from "@/lib/sortLaneTasks";
 import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
 import { BoardColumn } from "@/components/BoardColumn";
 import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
@@ -58,8 +65,17 @@ function groupByStatus(tasks: TaskRead[]) {
     const bucket = groups.get(task.process_status);
     if (bucket) bucket.push(task);
   }
+  // #772 — render order per lane matches the backend ORDER BY:
+  // sort_order ASC NULLS LAST, created_at ASC. The legacy priority/id sort
+  // is preserved as a tiebreaker for lanes where nothing has sort_order set
+  // yet (the bulk of pre-#772 data) by composing the two stable sorts.
+  // Run priority/id first, then sortLaneTasks — stable sort guarantees ties
+  // on sort_order/created_at keep the priority-ordered position.
   for (const bucket of groups.values()) {
     bucket.sort((a, b) => b.priority - a.priority || a.id - b.id);
+    const sorted = sortLaneTasks(bucket);
+    bucket.length = 0;
+    bucket.push(...sorted);
   }
   return groups;
 }
@@ -131,40 +147,91 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
       const { active, over } = event;
       if (!over) return;
       const taskId = Number(active.id);
+      const original = tasks.find((t) => t.id === taskId);
+      if (!original) return;
+      if (original.task_kind === "ai") return; // belt-and-suspenders (sortable is also disabled)
+
+      // Resolve drop target: either a column (over.id is the column key string)
+      // or another task (over.id is a numeric task id).
       let newPs: TaskStatusValue | undefined;
+      let overTask: TaskRead | undefined;
       if (typeof over.id === "string") {
         newPs = COLUMN_PS[over.id];
       } else {
-        const overTask = tasks.find((t) => t.id === over.id);
+        overTask = tasks.find((t) => t.id === over.id);
         if (overTask === undefined) return;
         newPs = overTask.process_status;
       }
       if (newPs === undefined) return;
 
-      const original = tasks.find((t) => t.id === taskId);
-      if (!original) return;
-      if (original.task_kind === "ai") return; // belt-and-suspenders (sortable is also disabled)
-      if (original.process_status === newPs) return;
+      // Cross-lane drag → PATCH process_status (existing #709 path).
+      if (original.process_status !== newPs) {
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.id === taskId ? { ...t, process_status: newPs } : t,
+          ),
+        );
+        patchTask(project.id, taskId, { process_status: newPs })
+          .then((server) => {
+            setTasks((prev) =>
+              prev.map((t) => (t.id === taskId ? server : t)),
+            );
+          })
+          .catch((err: unknown) => {
+            setTasks((prev) =>
+              prev.map((t) => (t.id === taskId ? original : t)),
+            );
+            const msg = err instanceof Error ? err.message : "Update failed";
+            pushToast(`Task #${taskId}: ${msg}`);
+          });
+        return;
+      }
 
-      setTasks((prev) =>
-        prev.map((t) =>
-          t.id === taskId ? { ...t, process_status: newPs } : t,
-        ),
-      );
+      // Same-lane drop. Within-lane reorder is wired ONLY for the TODO lane
+      // per #772 spawn brief. Other lanes: silent no-op (no PATCH, no toast —
+      // visual transform snaps back when the SortableContext clears its drag
+      // state on drop).
+      if (newPs !== TaskStatus.TODO) return;
+      if (!overTask) return;
+      if (overTask.id === original.id) return;
 
-      patchTask(project.id, taskId, { process_status: newPs })
+      // Decide before_id vs after_id from the rendered lane order. The lane
+      // array passed to BoardColumn is the canonical SortableContext order
+      // (sortLaneTasks-sorted). oldIndex < newIndex means active moved
+      // downward → it should land AFTER over. oldIndex > newIndex means it
+      // moved upward → BEFORE over. Equal would mean dropped on itself
+      // (handled above by the id-equality guard).
+      const laneIds = (grouped.get(TaskStatus.TODO) ?? []).map((t) => t.id);
+      const oldIndex = laneIds.indexOf(original.id);
+      const newIndex = laneIds.indexOf(overTask.id);
+      if (oldIndex === -1 || newIndex === -1) return;
+      const body =
+        oldIndex < newIndex
+          ? { after_id: overTask.id }
+          : { before_id: overTask.id };
+
+      // NOTE: NO optimistic local mutation here. The dnd-kit transform shows
+      // the new position visually during the drag; on drop the transform
+      // clears and the card snaps back to the original rendered position
+      // until the server response merges in. On 422, no merge happens →
+      // cards remain in the pre-drag order (snap-back). On 200, the merged
+      // task carries the new sort_order and sortLaneTasks (in groupByStatus)
+      // re-orders the lane on the next render.
+      reorderTask(project.id, taskId, body)
         .then((server) => {
           setTasks((prev) => prev.map((t) => (t.id === taskId ? server : t)));
         })
         .catch((err: unknown) => {
-          setTasks((prev) =>
-            prev.map((t) => (t.id === taskId ? original : t)),
-          );
-          const msg = err instanceof Error ? err.message : "Update failed";
+          const msg =
+            err instanceof HttpError
+              ? err.message
+              : err instanceof Error
+                ? err.message
+                : "Reorder failed";
           pushToast(`Task #${taskId}: ${msg}`);
         });
     },
-    [tasks, project.id, pushToast],
+    [tasks, grouped, project.id, pushToast],
   );
 
   return (
@@ -213,6 +280,7 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
               label={col.label}
               tasks={col.statuses.flatMap((s) => grouped.get(s) ?? [])}
               onOpenDetail={onOpenDetail}
+              sortable={col.statuses.includes(TaskStatus.TODO)}
             />
           ))}
         </div>
