@@ -16,6 +16,44 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-12 — Full-auto MVP-5 smoke PASS on NewsAnalyzer — Kanban #788 closed, bet VALIDATED
+**Scope:** verification gate for the full-auto bet (no code in agent-teams — outcome capture only).
+
+**Decision:** MVP-5 smoke PASSED on NewsAnalyzer (project_id=567). All 5 ACs of #788 hit. Multi-project full-auto orchestration is validated as a working concept. agent-teams as a meta-orchestration product clears its proof-of-concept threshold.
+
+**The run:**
+- User opened Claude Code at NewsAnalyzer's working_path with `LEAD_AUTOPICKUP=1` set.
+- Lead was silent (Claude Code is reactive — no spontaneous bootstrap; gap filed as #791).
+- User typed kickoff message naming the project; Lead resolved, bound, announced auto-pickup mode.
+- Lead picked up smoke task #790 (`api/health.py` bootstrap on NewsAnalyzer).
+- dev-backend spawned with 1-line brief, wrote the file (auto-approve hook fired WITHOUT prompting — the critical cross-project assertion).
+- Lead committed (NewsAnalyzer-local commit `4f6f425`), PATCHed #790 to process_status=5.
+- Lead queried queue again → empty → announced idle.
+
+**What this validates:**
+- **#784 auto-approve hook** works on a fresh repo (not agent-teams-specific assumptions).
+- **#785 halt_reason column** schema is compatible with the auto-pickup query (halt_reason IS NULL filter).
+- **#786 pickup loop** logic is followable by Lead end-to-end.
+- **#787 decision matrix** wasn't exercised in this smoke (no judgment-call hit) — still un-validated for the 5 default actions, but loop infrastructure around them is sound.
+- **#777 schema** (working_path, working_repo, agent_overrides) supported the NewsAnalyzer project row creation and Lead's binding correctly.
+- **#779 dev-analyst, #780 dev-spec-reviewer** also weren't exercised on this trivial smoke — the smoke task was small enough that hand-written spec sufficed.
+
+**What this does NOT validate:**
+- True unattended overnight runs (requires #791 kickoff-trigger follow-up).
+- Halt + unhalt cycles (no judgment call hit during smoke).
+- dev-analyst + dev-spec-reviewer in the loop (not exercised).
+- Multi-task queue depth (queue had exactly 1 task; idle hit immediately).
+- The Writing project (novel team smoke is a separate next run).
+
+**Implications:**
+- **Critical path complete.** The 5 MVP tasks (#784/#785/#786/#787/#788) of the full-auto bet are all closed. Umbrella tasks #776 + #781 reopen for polish-only iterations (post-MVP).
+- **Publish goal unblocked at MVP level.** The repo can credibly demonstrate working multi-agent orchestration as a portfolio artifact. README + onboarding still needs the zero-config bootstrap from #789 before it's truly evaluator-friendly.
+- **Strike #2 logged in `context/teams/dev/full-auto.md`** — preserves the methodology trail across future smokes.
+- **Next pickups (in priority order):** #791 (kickoff trigger — gates true unattended), #789 (zero-config bootstrap — gates publish-ready UX), then revisit umbrellas #776 + #781 for polish breakdown.
+
+**Standards-candidates (propose-only — NOT written this slice):**
+- `standards/claude-code/reactive-session-bootstrap.md`: any methodology that depends on Lead acting before user input is invalid — Claude Code is reactive. Methodology authors must specify a kickoff trigger (slash command, manual message, or external scheduler). Strike #1 here (surfaced via #788 smoke); tabled.
+
 ## 2026-05-12 — Full-auto methodology MVP: pickup loop + top-5 decision matrix — Kanban #786 + #787 closed
 **Scope:** Lead-direct methodology doc (`context/teams/dev/full-auto.md` — new file). No code, no schema.
 

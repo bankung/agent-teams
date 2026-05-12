@@ -166,5 +166,12 @@ This methodology is MVP. The following are deferred until MVP-5 smoke (Kanban #7
 
 ## Strike log
 
-- **Strike #1 — 2026-05-12, Kanban #786 + #787:** MVP definition. No smoke yet.
-- Future smoke results (MVP-5 = Kanban #788) append here.
+- **Strike #1 — 2026-05-12, Kanban #786 + #787:** MVP definition.
+- **Strike #2 — 2026-05-12, Kanban #788 (MVP-5 smoke on NewsAnalyzer):** PASS. Lead picked up smoke task #790 (`api/health.py` bootstrap on NewsAnalyzer, project_id=567) via manual kickoff. dev-backend spawned, file written, committed (NewsAnalyzer `4f6f425`), task closed. All 5 ACs hit:
+  - AC-1 ✅ file exists at `api/health.py`.
+  - AC-2 ✅ contents include FastAPI router returning `{"status": "ok"}`.
+  - AC-3 ✅ **auto-approve hook fired without prompting on a non-agent-teams repo** — the critical cross-project validation.
+  - AC-4 ✅ task closed (process_status=5); queue empty → Lead announced idle.
+  - AC-5 ✅ commit body references #790.
+  - **Bet outcome: VALIDATED.** Multi-project full-auto orchestration works end-to-end. agent-teams as a meta-orchestration product clears proof-of-concept.
+  - **Caveat surfaced (filed as #791):** Lead does NOT spontaneously start the pickup loop on session bootstrap. Claude Code is reactive — user must send one kickoff message to trigger Lead's first action. True unattended overnight requires a follow-up integration (`/loop` skill, ScheduleWakeup self-rearm, or accept the manual-kickoff limit).
