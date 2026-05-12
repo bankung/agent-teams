@@ -30,7 +30,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import DOUBLE_PRECISION, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.constants import (
@@ -212,6 +212,21 @@ class Task(Base):
     blocked_by: Mapped[int | None] = mapped_column(
         BigInteger,
         ForeignKey("tasks.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Kanban #772 (2026-05-12): within-lane manual sort key (sparse-float
+    # lexicographic ordering). NULL = "use created_at fallback for ordering"
+    # — a lane that's never been reordered keeps its natural created_at
+    # order without paying a per-row write cost. No DB CHECK / FK / index
+    # this slice (measured-first index policy — lane-scoped queries already
+    # filter by process_status + status, both indexed). Ordering rule pinned
+    # in the api-contracts.md GET /api/tasks section: ORDER BY sort_order
+    # ASC NULLS LAST, created_at ASC. POST /api/tasks/{id}/reorder
+    # materializes NULL lane-mates on first reorder. The cross-row
+    # blocker-order constraint (T.sort_order >= T.blocked_by.sort_order in
+    # same lane when both ps=TODO) lives app-side in routers/tasks.py.
+    sort_order: Mapped[float | None] = mapped_column(
+        DOUBLE_PRECISION,
         nullable=True,
     )
 

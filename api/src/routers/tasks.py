@@ -21,7 +21,7 @@ from sqlalchemy.sql.elements import ClauseElement
 from src.constants import RecordStatus, TaskStatus
 from src.db import get_or_404, get_session
 from src.models.task import Task
-from src.schemas.task import TaskCreate, TaskRead, TaskUpdate
+from src.schemas.task import TaskCreate, TaskRead, TaskReorder, TaskUpdate
 from src.services.is_pending import assert_is_pending_with_process_status
 from src.services.recurrence import fire_template, next_cron_fire
 from src.services.run_mode import assert_consent_for_run_mode
@@ -63,6 +63,22 @@ _DETAIL_FIRE_NOW_NOT_TEMPLATE_TEMPLATE = (
 # defensive upper bound — real chains are expected to be 1-3 deep. Hitting 10
 # without resolving raises 422 (defensive; should not occur in practice).
 _BLOCKED_BY_MAX_CHAIN_DEPTH = 10
+
+# Kanban #772: maximum chain depth for the blocker-order constraint walk used
+# by both POST /api/tasks/{id}/reorder and PATCH /api/tasks/{id} (when
+# sort_order or blocked_by is in the body). Reused as a sibling of the cycle
+# walk's budget — real blocker chains stay 1-3 deep. Hitting depth 10
+# without resolving raises 422 defensively.
+_REORDER_BLOCKER_CHAIN_DEPTH = 10
+
+
+def _opt_int_str(v: int | None) -> str:
+    """Render an Optional[int] as JSON-conformant text for wire-contract
+    detail strings. `None` → `"null"` (NOT Python's `"None"`) so clients
+    string-matching the detail can rely on JSON-shaped values. Module-level
+    so future cross-row validators can reuse it.
+    """
+    return "null" if v is None else str(v)
 
 # Process-status transitions that auto-stamp a lifecycle timestamp (when not
 # already set). Order doesn't matter — at most one entry fires per PATCH
@@ -175,6 +191,320 @@ async def list_tasks_blocked_by(
     )
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def _enforce_blocker_order_constraint(
+    session: AsyncSession,
+    target_id: int,
+    target_blocked_by: int | None,
+    target_process_status: int,
+    target_sort_order: float | None,
+) -> None:
+    """Kanban #772 cross-row constraint.
+
+    Walks the blocker chain starting from `target_blocked_by` up to depth
+    `_REORDER_BLOCKER_CHAIN_DEPTH`. For each blocker B in the chain that is
+    in the SAME lane (`process_status == TODO`) as the target AND whose
+    `sort_order` is non-null AND whose target sort_order is also non-null,
+    enforce `target.sort_order >= B.sort_order`. Violation → 422 with the
+    specific (target, B) pair in the detail.
+
+    Only fires when BOTH the target and its blocker are in
+    `process_status=1` (TODO) — the FE only renders the same-lane blocker
+    constraint inside the TODO lane (per the locked design 2026-05-12).
+    Cross-lane blockers are out of scope for ordering enforcement.
+
+    Skip rule: if `target_sort_order` is None, the target is not yet
+    densified; ordering is irrelevant. Same for any blocker with NULL
+    sort_order on the chain — that link is skipped (but the walk
+    continues).
+
+    Detail strings are source-text-locked by
+    test_reorder_detail_strings_pinned_in_router_source — keep in sync.
+    """
+    # No blocker chain → nothing to enforce.
+    if target_blocked_by is None or target_sort_order is None:
+        return
+    # Out-of-lane target → blocker-order rule does not apply.
+    if target_process_status != TaskStatus.TODO:
+        return
+
+    cursor: int | None = target_blocked_by
+    # Range is N+2 (not N+1) so a chain of EXACTLY N blockers terminates via
+    # the `cursor is None: break` path on iteration N+1 instead of falsely
+    # tripping the for-else. The constant N is the budget for "blockers
+    # walked"; the +1 sentinel iteration exists solely to break cleanly
+    # when the chain ends at the budget edge (WARN-3 fix).
+    for depth in range(1, _REORDER_BLOCKER_CHAIN_DEPTH + 2):
+        if cursor is None:
+            break
+        blocker = await session.get(Task, cursor)
+        if blocker is None:
+            break
+        # Only check when the blocker shares the lane AND has a sort_order.
+        if (
+            blocker.process_status == TaskStatus.TODO
+            and blocker.sort_order is not None
+            and target_sort_order < blocker.sort_order
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=f"task #{target_id} cannot be ordered before its blocker #{blocker.id}",
+            )
+        cursor = blocker.blocked_by
+    else:
+        # Loop exited via exhausting `range` without break — chain strictly
+        # longer than the budget (depth > N). Defensive guard. Mirrors the
+        # cycle-walk pattern below (#771).
+        raise HTTPException(
+            status_code=422,
+            detail=f"reorder blocker chain exceeds maximum depth of {_REORDER_BLOCKER_CHAIN_DEPTH}",
+        )
+
+
+async def _materialize_null_sort_orders_in_lane(
+    session: AsyncSession,
+    project_id: int,
+    process_status: int,
+    exclude_task_id: int | None = None,
+) -> None:
+    """Kanban #772: first-reorder densifier.
+
+    Scans the lane (same project_id + process_status + status=1) in
+    (sort_order NULLS LAST, created_at ASC) order. For each row whose
+    sort_order is NULL, assigns floor floats 1.0, 2.0, 3.0, … BUT only
+    AFTER skipping rows that already have a sort_order (those keep their
+    existing values — we only fill NULLs without disturbing densified
+    rows). The numbering for the NULL block starts at
+    (max(existing sort_order in lane) + 1.0) if any non-null exists, else
+    1.0. This preserves total order across the lane.
+
+    `exclude_task_id`: when the caller is about to set a sort_order on a
+    specific task in the same call, exclude it from the densification so
+    the subsequent write isn't a no-op overwritten by the materializer.
+
+    Lane stays small (<30 rows in practice). Loaded all-at-once.
+    """
+    stmt = (
+        select(Task)
+        .where(
+            Task.project_id == project_id,
+            Task.process_status == process_status,
+            Task.status == RecordStatus.ACTIVE,
+        )
+        .order_by(Task.sort_order.asc().nulls_last(), Task.created_at.asc())
+    )
+    result = await session.execute(stmt)
+    rows = list(result.scalars().all())
+    # Determine the starting floor: max existing non-null sort_order in lane.
+    existing_max = max(
+        (r.sort_order for r in rows if r.sort_order is not None),
+        default=0.0,
+    )
+    next_value = existing_max + 1.0
+    for row in rows:
+        if exclude_task_id is not None and row.id == exclude_task_id:
+            continue
+        if row.sort_order is None:
+            row.sort_order = next_value
+            next_value += 1.0
+
+
+@router.post(
+    "/{task_id}/reorder",
+    response_model=TaskRead,
+    status_code=http_status.HTTP_200_OK,
+)
+async def reorder_task(
+    task_id: int,
+    payload: TaskReorder,
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+) -> Task:
+    """Kanban #772: anchor-based within-lane reorder.
+
+    Body: `{before_id?: int, after_id?: int}` (at least one). The moved
+    task lands JUST BELOW `before_id.sort_order` and / or JUST ABOVE
+    `after_id.sort_order`, depending on which anchor(s) are supplied:
+      - both → averaged between them.
+      - before only → averaged between before_id and the largest sort_order
+        strictly less than it in the same lane (or `before_id - 1.0` if
+        none).
+      - after only → averaged between after_id and the smallest sort_order
+        strictly greater than it in the same lane (or `after_id + 1.0` if
+        none).
+
+    Same-lane invariant: target, before_id, after_id MUST all share the
+    SAME `process_status`. Cross-lane reorder is OUT of scope (422).
+
+    On any anchor with NULL sort_order, the server first densifies the
+    lane (assigning floor floats 1.0, 2.0, … in NULLS LAST + created_at
+    ASC order) atomically inside the transaction. First-reorder
+    materialization keeps subsequent reorders constraint-free.
+
+    Blocker-order constraint: T.sort_order >= B.sort_order when T's
+    blocker chain (depth ≤ 10) contains any B in the same lane with a
+    non-null sort_order. Violation → 422 with the specific (T, B) pair.
+
+    Detail strings are pinned by
+    test_reorder_detail_strings_pinned_in_router_source.
+    """
+    task = await get_or_404(
+        session, Task, detail=f"Task id={task_id} not found", id=task_id
+    )
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+    if task.status == RecordStatus.DELETED:
+        raise HTTPException(
+            status_code=404, detail=f"Task id={task_id} not found"
+        )
+
+    # Resolve anchors in TWO passes so all 422 branches fire before any
+    # write happens (densification is the only mutation pre-commit; we
+    # rollback on any failure below).
+    #
+    # Pass 1: existence + same-project + not-deleted. Pass 2 (after) is the
+    # lane-mismatch check — done after both anchors are loaded so the 422
+    # detail can include both anchors' process_status values without an
+    # inline-await in an f-string.
+    async def _resolve_anchor_pass1(anchor_id: int) -> Task:
+        anchor = await session.get(Task, anchor_id)
+        if anchor is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"reorder anchor #{anchor_id} not found in project",
+            )
+        if anchor.project_id != task.project_id:
+            raise HTTPException(
+                status_code=422,
+                detail=f"reorder anchor #{anchor_id} not found in project",
+            )
+        if anchor.status == RecordStatus.DELETED:
+            raise HTTPException(
+                status_code=422,
+                detail=f"reorder anchor #{anchor_id} is deleted",
+            )
+        return anchor
+
+    before_anchor: Task | None = None
+    after_anchor: Task | None = None
+    if payload.before_id is not None:
+        before_anchor = await _resolve_anchor_pass1(payload.before_id)
+    if payload.after_id is not None:
+        after_anchor = await _resolve_anchor_pass1(payload.after_id)
+
+    # Pass 2: same-lane invariant. The 422 detail surfaces BOTH anchors'
+    # process_status values (or None for an anchor not supplied) so the
+    # client can see exactly which side is off.
+    def _lane_mismatch(anchor: Task) -> bool:
+        return anchor.process_status != task.process_status
+
+    if (before_anchor is not None and _lane_mismatch(before_anchor)) or (
+        after_anchor is not None and _lane_mismatch(after_anchor)
+    ):
+        before_status = before_anchor.process_status if before_anchor else None
+        after_status = after_anchor.process_status if after_anchor else None
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"reorder requires moved task #{task_id} and anchor(s) to "
+                f"share the same process_status; moved={task.process_status} "
+                f"before_id_status={_opt_int_str(before_status)} "
+                f"after_id_status={_opt_int_str(after_status)}"
+            ),
+        )
+
+    # Materialize NULL sort_orders in the lane upfront so anchor.sort_order
+    # is guaranteed non-null below. Exclude the moved task itself — we'll
+    # set its sort_order explicitly. NO-OP on lanes already fully densified.
+    # This runs AFTER all validation so a 422 doesn't leave a partial
+    # densification mid-transaction.
+    await _materialize_null_sort_orders_in_lane(
+        session,
+        project_id=task.project_id,
+        process_status=task.process_status,
+        exclude_task_id=task_id,
+    )
+    # NOTE: the materializer above mutates `Task.sort_order` on the SAME
+    # ORM-managed instances in the session's identity map; before_anchor /
+    # after_anchor reflect the new floor floats directly. Do NOT call
+    # session.refresh() here — that would re-read from the DB and clobber
+    # the pre-commit mutation.
+
+    # Compute the new sort_order from the anchors. Per the locked design:
+    #   - "before_id" is the row that should come AFTER the moved task →
+    #     moved.sort_order MUST be less than before_id.sort_order.
+    #   - "after_id" is the row that should come BEFORE the moved task →
+    #     moved.sort_order MUST be greater than after_id.sort_order.
+    # When both are supplied, the moved task lands between them: average.
+    if before_anchor is not None and after_anchor is not None:
+        # both anchors. The smaller is after_anchor.sort_order; the larger
+        # is before_anchor.sort_order. Average. (Server does NOT validate
+        # they are currently adjacent — trust client.)
+        assert before_anchor.sort_order is not None  # materialized above
+        assert after_anchor.sort_order is not None
+        new_sort_order = (
+            after_anchor.sort_order + before_anchor.sort_order
+        ) / 2.0
+    elif before_anchor is not None:
+        # Place just above (smaller than) before_anchor.
+        assert before_anchor.sort_order is not None
+        # Find the largest sort_order strictly less than before_anchor's
+        # in the same lane (excluding the moved task itself).
+        smaller_stmt = (
+            select(func.max(Task.sort_order))
+            .where(
+                Task.project_id == task.project_id,
+                Task.process_status == task.process_status,
+                Task.status == RecordStatus.ACTIVE,
+                Task.sort_order < before_anchor.sort_order,
+                Task.id != task_id,
+            )
+        )
+        largest_smaller = await session.scalar(smaller_stmt)
+        if largest_smaller is None:
+            new_sort_order = before_anchor.sort_order - 1.0
+        else:
+            new_sort_order = (largest_smaller + before_anchor.sort_order) / 2.0
+    else:
+        # after_anchor only — place just below (larger than) it.
+        assert after_anchor is not None
+        assert after_anchor.sort_order is not None
+        larger_stmt = (
+            select(func.min(Task.sort_order))
+            .where(
+                Task.project_id == task.project_id,
+                Task.process_status == task.process_status,
+                Task.status == RecordStatus.ACTIVE,
+                Task.sort_order > after_anchor.sort_order,
+                Task.id != task_id,
+            )
+        )
+        smallest_larger = await session.scalar(larger_stmt)
+        if smallest_larger is None:
+            new_sort_order = after_anchor.sort_order + 1.0
+        else:
+            new_sort_order = (after_anchor.sort_order + smallest_larger) / 2.0
+
+    # Enforce the blocker-order constraint on the resolved final value
+    # BEFORE writing. If the check fires, ORM session is rolled back so
+    # the densification we did above doesn't leak.
+    try:
+        await _enforce_blocker_order_constraint(
+            session,
+            target_id=task_id,
+            target_blocked_by=task.blocked_by,
+            target_process_status=task.process_status,
+            target_sort_order=new_sort_order,
+        )
+    except HTTPException:
+        await session.rollback()
+        raise
+
+    task.sort_order = new_sort_order
+    task.updated_at = func.now()
+    await session.commit()
+    await session.refresh(task)
+    return task
 
 
 @router.post("", response_model=TaskRead, status_code=http_status.HTTP_201_CREATED)
@@ -410,6 +740,31 @@ async def update_task(
                     status_code=422,
                     detail=f"blocked_by chain exceeds maximum depth of {_BLOCKED_BY_MAX_CHAIN_DEPTH}",
                 )
+
+    # Kanban #772 resolved-final blocker-order constraint. Fires when EITHER
+    # `sort_order` or `blocked_by` is in the PATCH body — the constraint
+    # touches both columns and a change to either side can violate the rule
+    # T.sort_order >= B.sort_order (where T.blocked_by transitively walks
+    # to B, B in same lane as T, both ps=TODO, both sort_orders non-null).
+    # This is a SEPARATE walk from the cycle walk above — two concerns,
+    # two detail-string templates. Skipped silently when neither field is
+    # in the body (no chance of violating).
+    if "sort_order" in updates or "blocked_by" in updates:
+        resolved_sort_order = (
+            updates["sort_order"] if "sort_order" in updates else task.sort_order
+        )
+        resolved_blocked_by_for_order = (
+            updates["blocked_by"]
+            if "blocked_by" in updates
+            else task.blocked_by
+        )
+        await _enforce_blocker_order_constraint(
+            session,
+            target_id=task_id,
+            target_blocked_by=resolved_blocked_by_for_order,
+            target_process_status=resolved_process_status,
+            target_sort_order=resolved_sort_order,
+        )
 
     # Kanban #723 resolved-final XOR: scheduled_at and is_template are mutually
     # exclusive. The Pydantic validator catches the both-fields-in-payload case;

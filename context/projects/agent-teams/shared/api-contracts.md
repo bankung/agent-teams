@@ -261,7 +261,7 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 **Auth:** none
 **Headers:** `X-Project-Id: <int>` REQUIRED. The fetched row's `project_id` must match the header value; mismatch → 400. (Kanban #695)
 
-**Request:** any subset of `{title, description, process_status, priority, assigned_role, started_at, completed_at, run_mode, task_kind, is_template, recurrence_rule, recurrence_timezone, next_fire_at, scheduled_at, is_pending, halt_reason, blocked_by}`. The soft-delete `status` flag is intentionally absent — sending `{"status": 0}` is silently ignored (use `DELETE` to soft-delete). `parent_task_id` AND `spawned_from_task_id` are BOTH REJECTED (V1 forbids re-parenting subtask hierarchy per Kanban #238 AND recurrence lineage per Kanban #706) — see 422 below. `scheduled_at` accepts any TZ offset on input; storage + GET response always normalize to UTC `Z` form. Set `{"scheduled_at": null}` to un-schedule a one-shot task (Kanban #723). `halt_reason` PATCH semantics (Kanban #785): key-absent = unchanged; explicit `null` = clear/unhalt; non-empty string = halt; `""` → 422. `blocked_by` PATCH semantics (Kanban #771, 2026-05-12): key-absent = unchanged; explicit `null` = clear/unblock; positive int = set/change blocker (router walks the chain up to depth=10 for cycle detection). Unlike `parent_task_id` / `spawned_from_task_id`, `blocked_by` IS modifiable post-create — re-blocking is supported and expected.
+**Request:** any subset of `{title, description, process_status, priority, assigned_role, started_at, completed_at, run_mode, task_kind, is_template, recurrence_rule, recurrence_timezone, next_fire_at, scheduled_at, is_pending, halt_reason, blocked_by, sort_order}`. The soft-delete `status` flag is intentionally absent — sending `{"status": 0}` is silently ignored (use `DELETE` to soft-delete). `parent_task_id` AND `spawned_from_task_id` are BOTH REJECTED (V1 forbids re-parenting subtask hierarchy per Kanban #238 AND recurrence lineage per Kanban #706) — see 422 below. `scheduled_at` accepts any TZ offset on input; storage + GET response always normalize to UTC `Z` form. Set `{"scheduled_at": null}` to un-schedule a one-shot task (Kanban #723). `halt_reason` PATCH semantics (Kanban #785): key-absent = unchanged; explicit `null` = clear/unhalt; non-empty string = halt; `""` → 422. `blocked_by` PATCH semantics (Kanban #771, 2026-05-12): key-absent = unchanged; explicit `null` = clear/unblock; positive int = set/change blocker (router walks the chain up to depth=10 for cycle detection). Unlike `parent_task_id` / `spawned_from_task_id`, `blocked_by` IS modifiable post-create — re-blocking is supported and expected. `sort_order` PATCH semantics (Kanban #772, 2026-05-12): key-absent = unchanged; explicit `null` = clear (NULL — falls back to created_at ordering); positive float = set directly. After applying, server runs the blocker-order constraint when EITHER `sort_order` or `blocked_by` is in the body (resolved-final); violation → 422 with the same locked detail as the reorder endpoint: `"task #<T> cannot be ordered before its blocker #<B>"`. No-op skip parity: PATCH with `sort_order` equal to existing → no `updated_at` bump.
 
 **Response 200:** `TaskRead`
 
@@ -300,6 +300,38 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 **Errors:**
 - `404` — `{"detail":"Task id=<n> not found"}` when `{id}` does not exist.
 - `400` — header gate violations as per `GET /api/tasks/{id}` (Kanban #695).
+
+### POST /api/tasks/{id}/reorder (Kanban #772, 2026-05-12)
+**Purpose:** Anchor-based within-lane reorder. Computes a new `sort_order` for the moved task server-side and writes it atomically with the cross-row blocker-order check. User-facing API for dnd-kit drag-drop in the "New tasks" lane.
+**Auth:** none
+**Headers:** `X-Project-Id: <int>` REQUIRED.
+
+**Body schema (`TaskReorder`, `extra='forbid'`):**
+- `before_id: int | null` (optional, ge=1) — the task that should appear immediately AFTER the moved task post-reorder.
+- `after_id:  int | null` (optional, ge=1) — the task that should appear immediately BEFORE the moved task post-reorder.
+- At least one of `before_id` / `after_id` required (Pydantic 422 with `"reorder requires at least one of before_id or after_id"`).
+- `before_id == after_id` rejected (Pydantic 422 with `"before_id and after_id cannot reference the same task"`).
+
+**Same-lane invariant:** the moved task and both anchors MUST share the same `process_status`. Cross-lane reorder is out of scope.
+
+**Sort-order computation:**
+- Both anchors → `new = (after_anchor.sort_order + before_anchor.sort_order) / 2`.
+- `before_id` only → average between `before_id.sort_order` and the largest sort_order strictly less than it in same lane (excluding the moved task); if none, `before_id.sort_order - 1.0`.
+- `after_id` only → mirror: average between `after_id.sort_order` and the smallest sort_order strictly greater; if none, `after_id.sort_order + 1.0`.
+- Any NULL anchor sort_order triggers lane materialization first (floor floats 1.0, 2.0, ... assigned in `NULLS LAST, created_at ASC` order; moved task excluded; same transaction; rolled back if validator subsequently fails).
+
+**Cross-row blocker-order constraint:** server walks the transitive blocker chain (depth ≤ 10, `_REORDER_BLOCKER_CHAIN_DEPTH`). For each blocker B in same lane (`process_status=TODO`) with non-null sort_order, enforces `target.sort_order >= B.sort_order`. Violation → 422.
+
+**Response 200:** `TaskRead` (the moved task with updated sort_order + updated_at).
+
+**Errors (all 422, byte-locked in `routers/tasks.py`):**
+- `{"detail":"reorder anchor #<n> not found in project"}` — anchor missing or cross-project.
+- `{"detail":"reorder anchor #<n> is deleted"}` — anchor soft-deleted.
+- `{"detail":"reorder requires moved task #<n> and anchor(s) to share the same process_status; moved=<n> before_id_status=<n|null> after_id_status=<n|null>"}` — same-lane violation. Missing-anchor renders as `null` (JSON-conformant; `_opt_int_str` helper). Locked 2026-05-12.
+- `{"detail":"task #<T> cannot be ordered before its blocker #<B>"}` — blocker-order constraint violation (specific T, B pair).
+- `{"detail":"reorder blocker chain exceeds maximum depth of 10"}` — defensive walker exhaust.
+- Pydantic `422`: `"reorder requires at least one of before_id or after_id"` / `"before_id and after_id cannot reference the same task"`.
+- `404`: `{"detail":"Task id=<n> not found"}` — moved task missing or soft-deleted.
 
 ### DELETE /api/tasks/{id}
 **Purpose:** Soft-delete a task — flips `status=0`. First DELETE advances `updated_at`; subsequent DELETEs on an already-deleted row are idempotent no-ops (return 204 without further `updated_at` bump — parity with DELETE `/api/projects/{id}`). The audit trigger snapshots the flip as `'U'` in `tasks_history`. Blocked when active subtasks reference the row (Kanban #238).
@@ -514,7 +546,7 @@ Reader takes the per-session lock (V1 — serializes reads behind writes; avoids
 
 `auto_run_consent_at` (datetime ISO-8601 with timezone, or null) added 2026-05-09 by Kanban #483 — per-project consent gate for `tasks.run_mode='auto_headless'` (Mode B / Step 2 architecture). Default null = not consented; non-null = user consented at this timestamp via `POST /api/projects/{id}/grant-consent`.
 
-**`TaskRead`** — `{id:int, project_id:int, parent_task_id:int|null, title, description, process_status:int, priority:int, assigned_role:int|null, run_mode:"manual"|"auto_pickup"|"auto_headless", task_kind:"ai"|"human", is_template:bool, recurrence_rule:str|null, recurrence_timezone:str, next_fire_at:datetime|null, spawned_from_task_id:int|null, scheduled_at:datetime|null, blocked_by:int|null, is_pending:bool, created_at, updated_at, started_at:datetime|null, completed_at:datetime|null}`
+**`TaskRead`** — `{id:int, project_id:int, parent_task_id:int|null, title, description, process_status:int, priority:int, assigned_role:int|null, run_mode:"manual"|"auto_pickup"|"auto_headless", task_kind:"ai"|"human", is_template:bool, recurrence_rule:str|null, recurrence_timezone:str, next_fire_at:datetime|null, spawned_from_task_id:int|null, scheduled_at:datetime|null, blocked_by:int|null, sort_order:float|null, is_pending:bool, created_at, updated_at, started_at:datetime|null, completed_at:datetime|null}`
 
 `is_pending` (bool, default false) added 2026-05-11 by Kanban #750 (migration 0011). Means "in-flight work that hit a problem and is stuck" — orthogonal to `process_status`. Cross-state invariant: `is_pending=true` requires `process_status=2 (in_progress)`. Enforced **app-layer** by `services/is_pending.py` (4th cross-state validator in lockstep with `task_kind`/`run_mode`, `run_mode`/consent, `scheduled_at`/`is_template`). Fires on POST + PATCH against the **resolved-final** `(is_pending, process_status)` pair (PATCH-supplied if in `model_fields_set`, else existing row value). Mismatch → 400 with detail `"is_pending=true requires process_status=2 (in_progress)"` — source-text-locked in the validator + verified byte-equal by Tier-1 smoke (Kanban #756). No DB CHECK; abuse evidence may add one later. FE predicate: yellow card bg + `<PendingBadge>` + `data-card-pending="true"` render IFF `task.is_pending && task.process_status === IN_PROGRESS`.
 

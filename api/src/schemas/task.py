@@ -185,6 +185,12 @@ class TaskCreate(BaseModel):
     # Direct cycle is structurally impossible on POST (new row has no id yet);
     # PATCH walks the chain for transitive cycle detection.
     blocked_by: int | None = Field(default=None, ge=1)
+    # Kanban #772 (2026-05-12): within-lane manual sort key. Sparse-float
+    # lexicographic ordering — NULL = "use created_at fallback for ordering"
+    # for the lane. Optional on POST (most rows land NULL and only acquire
+    # a value via POST /api/tasks/{id}/reorder or a direct PATCH). No range
+    # validation: the sparse-float scheme is unbounded by design.
+    sort_order: float | None = Field(default=None)
     # Kanban #785 (MVP-2): in-flight halt flag for full-auto Lead sessions.
     # Non-empty string = task is halted (auto-pickup query skips these);
     # None / absent = task runs normally. Rare-but-legal on POST (e.g., user
@@ -322,6 +328,17 @@ class TaskUpdate(BaseModel):
     # acceptance_criteria. Unlike parent_task_id / spawned_from_task_id,
     # re-blocking IS supported in V1 (whole point of the field).
     blocked_by: int | None = Field(default=None, ge=1)
+    # Kanban #772 (2026-05-12): PATCH-able. Semantics:
+    #   - key absent      → leave unchanged (exclude_unset=True in router)
+    #   - explicit null   → clear (NULL — falls back to created_at ordering)
+    #   - non-null float  → set directly. Router runs the blocker-order
+    #                       cross-row constraint after applying the value;
+    #                       422 with "cannot be ordered before its blocker"
+    #                       template on violation.
+    # The POST /api/tasks/{id}/reorder endpoint is the user-facing API;
+    # direct PATCH of sort_order is the escape hatch for "I know what value
+    # I want" cases (smoke tests, bulk admin).
+    sort_order: float | None = Field(default=None)
     # Kanban #785 (MVP-2): PATCH-able. Semantics:
     #   - key absent      → leave unchanged (exclude_unset=True in router)
     #   - explicit null   → clear / unhalt the task (null IS meaningful)
@@ -481,6 +498,12 @@ class TaskRead(BaseModel):
     # Kanban #771 (2026-05-12) — single-blocker dependency. Backfilled to NULL
     # on existing rows by migration 0017's nullable=true. NULL = unblocked.
     blocked_by: int | None
+    # Kanban #772 (2026-05-12) — within-lane manual sort key (sparse-float).
+    # Backfilled to NULL on existing rows by migration 0018's nullable=true.
+    # NULL = "use created_at fallback for ordering" — first reorder in the
+    # lane materializes NULLs to floor floats. ORDER BY sort_order ASC
+    # NULLS LAST, created_at ASC is the canonical lane-sort rule.
+    sort_order: float | None
     # V3+ T1 audit follow-up (Kanban #723) — backfilled to NULL on existing rows.
     scheduled_at: datetime | None
     # Kanban #750 (2026-05-11) — backfilled to FALSE on existing rows by
@@ -497,6 +520,48 @@ class TaskRead(BaseModel):
     # way OUT we expose the stored shape — Pydantic re-validates each element
     # so a hand-edited corrupt row would 500 here rather than silently leak.
     acceptance_criteria: list[AcceptanceCriterion] | None
+
+
+class TaskReorder(BaseModel):
+    """Request body for POST /api/tasks/{task_id}/reorder (Kanban #772).
+
+    Anchor-based reorder spec. At LEAST one of `before_id` / `after_id` must
+    be provided; both together pins the moved task between two anchors. The
+    moved task, before_id, and after_id MUST all share the same
+    `process_status` (same-lane invariant — enforced server-side).
+
+    Semantics:
+      - `before_id`: the task that should appear immediately AFTER the moved
+        task post-reorder. The moved task's new `sort_order` lands JUST
+        BELOW (smaller than) `before_id.sort_order`.
+      - `after_id`: the task that should appear immediately BEFORE the moved
+        task post-reorder. The moved task's new `sort_order` lands JUST
+        ABOVE (larger than) `after_id.sort_order`.
+      - Both → server averages: `new = (after.sort_order + before.sort_order) / 2`.
+        Server does NOT validate they are currently adjacent — trust client.
+
+    `extra='forbid'` rejects unknown keys at 422 (parity with TaskCreate).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    before_id: int | None = Field(default=None, ge=1)
+    after_id: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _require_one_anchor(self) -> "TaskReorder":
+        if self.before_id is None and self.after_id is None:
+            raise ValueError(
+                "reorder requires at least one of before_id or after_id"
+            )
+        if (
+            self.before_id is not None
+            and self.before_id == self.after_id
+        ):
+            raise ValueError(
+                "before_id and after_id cannot reference the same task"
+            )
+        return self
 
 
 # Sanity: the Literal stays in lockstep with src.constants.TaskRunMode.ALL.

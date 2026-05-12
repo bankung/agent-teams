@@ -16,6 +16,40 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-12 — `tasks.sort_order` + reorder endpoint + blocker-order constraint — Kanban #772 (backend slice)
+**Scope:** api (migration + ORM + Pydantic + router + tests); reuses the 422 status-code policy from #771.
+**Decision:**
+Migration `0018_tasks_sort_order` adds `sort_order DOUBLE PRECISION NULL` to `tasks` (no CHECK, no FK, no index — measured-first index policy; sparse-float ordering is constraint-free at the DB layer; lane queries already filter by `process_status` + `status`, both indexed). NULL = "use created_at fallback for ordering" within the lane (`ORDER BY sort_order ASC NULLS LAST, created_at ASC`).
+
+New endpoint `POST /api/tasks/{task_id}/reorder` with body `TaskReorder = {before_id?: int, after_id?: int}` (at least one anchor required; same-id rejected; both Pydantic-422 with locked detail strings). Server-side compute:
+- Both anchors → `(after.sort_order + before.sort_order) / 2`.
+- Single anchor → average against the nearest existing neighbor in the same lane; fall back to `anchor ± 1.0` when no neighbor exists.
+- NULL anchor sort_order triggers lane materialization (`_materialize_null_sort_orders_in_lane`) — floor floats 1.0, 2.0, ... assigned in `NULLS LAST, created_at ASC` order; rolled back atomically with the rest of the transaction if validator subsequently fails.
+
+`PATCH /api/tasks/{id}` also accepts `sort_order: float | null` directly (escape hatch for known-value sets / smoke / admin paths). Same constraint validator fires on the resolved-final value.
+
+Cross-row blocker-order constraint (`_enforce_blocker_order_constraint`): when target.blocked_by walks transitively (depth ≤ 10) to B in same lane (process_status=TODO) and both sort_orders non-null, `target.sort_order >= B.sort_order` must hold. Violation → 422 `"task #<T> cannot be ordered before its blocker #<B>"`. Constraint fires on: POST /reorder, PATCH sort_order, PATCH blocked_by (resolved-final).
+
+24 pytest cases in `api/tests/test_tasks_sort_order.py`; 440 passed in 94.45s (was 416 + 24 new = 440; 0 regressions). Migration applied 2026-05-12 (live row counts unchanged 54/161 → 54/161; live API restored from 500 → 200). Tier-1 smoke 8/8 GREEN (4 POSITIVE + 4 NEGATIVE; all detail strings byte-exact in the wire response).
+
+**Reasoning:**
+
+- **Sparse-float lexicographic ordering** lets users insert-between without renumbering. Classic UI-ordering trick. DB-constraint-free; collision risk after ~52 same-position reorders is documented + filed as #819 (deferred follow-up — real users won't hit it before a more involved re-densification design lands).
+- **NULL = created_at fallback** keeps existing 161 tasks legacy-compatible without a backfill. The first reorder in any lane densifies NULL lane-mates atomically with the operation — gradual migration, no batch job.
+- **Constraint walks the blocker chain transitively.** Sibling pattern to #771's cycle walk; depth=10 budget; same self-FK shape. The reorder-time constraint blocks "place blocked task above its blocker in the queue" — the auto-pickup loop (future #786) will trust that the sort_order respects blocking relationships.
+- **WARN-3 chain-exactly-10 fix:** the `for...else` overflow pattern needs `range(1, N+2)` not `range(1, N+1)` so the sentinel iteration can detect `cursor is None` and break cleanly. Without the +2, a chain of exactly 10 blockers (or a cycle closing at hop 10) falsely raises "exceeds maximum depth". `_REORDER_BLOCKER_CHAIN_DEPTH` walker fixed in this slice; the analogous #771 cycle walk (line 724) has the same latent bug — filed as #820 follow-up.
+- **WARN-2 fix:** `_opt_int_str` helper renders Optional[int] as JSON-conformant `null` (not Python's `str(None) == "None"`) in wire-contract detail strings. Same-lane mismatch detail string was the trigger; helper at module top is available for future cross-row validators.
+
+**Implications:**
+
+- **#772 FE slice (next spawn)** consumes `POST /api/tasks/{id}/reorder` via dnd-kit drag-drop in the "New tasks" lane. 422 toast + snap-back. AC #4 of #772 is in that slice.
+- **Future auto-pickup loop (#786)** reads sort_order as the queue order; the blocker-order constraint guarantees it can dequeue safely (no blocked task above its blocker).
+- **Three follow-ups filed this session:**
+  - #819 (P1=LOW, backend): sparse-float collision re-densification — defer until the float-64 epsilon collision is observed in the wild.
+  - #820 (P2=NORMAL, bug, backend): apply the `range(N+2)` fix to #771's cycle walk for symmetry.
+  - WARN-4 was the same as #819 — single Kanban covers both.
+- **Live API was down for ~10 min** between backend commit and devops apply (ORM had `sort_order` column but live DB didn't → 500 on any `/api/tasks*` call). Acceptable downtime in dev; flag for any future production-shaped deployment.
+
 ## 2026-05-12 — `tasks.blocked_by` schema + API + 422 status-code policy locked — Kanban #771 (backend slice)
 **Scope:** api (migration + ORM + Pydantic + router + tests); cross-cuts the wire-contract policy via the new policy header in `routers/tasks.py`.
 **Decision:** Two things, locked together this session:
