@@ -310,6 +310,70 @@ async def test_patch_task_blocked_by_creates_transitive_cycle_returns_422(
 
 
 # -----------------------------------------------------------------------------
+# (g2) Kanban #820 — boundary regression: chain of exactly N blockers ends
+# cleanly (no false-positive "exceeds maximum depth"). Mirrors the analogous
+# fix landed in _enforce_blocker_order_constraint (#772 cleanup pass).
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cycle_walk_chain_exactly_10_deep_does_not_overflow(client) -> None:
+    """
+    Chain of EXACTLY 10 blockers ending naturally (no cycle) must NOT raise
+    'exceeds maximum depth of 10'. Regression for the latent off-by-one in
+    the for-else range bound — analogous to the #772 fix in
+    _enforce_blocker_order_constraint. Range must be N+2 so the sentinel
+    iteration at depth=N+1 can detect cursor is None and break cleanly.
+    """
+    project_id = await _get_project_id(client)
+    headers = {"X-Project-Id": str(project_id)}
+
+    # Build chain T1 → T2 → ... → T10 where each Tk.blocked_by = T(k-1).id
+    # (T1.blocked_by = None). Then PATCH T_target.blocked_by = T10.id. Walk
+    # from T10: cursor=T10.blocked_by=T9 (depth 1), T9→T8 (depth 2), ...,
+    # T2→T1 (depth 9), T1.blocked_by=None (depth 10 sees cursor=None on
+    # the sentinel-iteration check) → break cleanly → 200.
+    chain_ids: list[int] = []
+    target_id: int | None = None
+    try:
+        prev: int | None = None
+        for k in range(1, 11):
+            extras = {"blocked_by": prev} if prev is not None else {}
+            tid = await _make_task(client, project_id, f"k820 T{k}", **extras)
+            chain_ids.append(tid)
+            prev = tid
+        target_id = await _make_task(client, project_id, "k820 T_target")
+
+        resp = await client.patch(
+            f"/api/tasks/{target_id}",
+            json={"blocked_by": chain_ids[-1]},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["blocked_by"] == chain_ids[-1], (
+            f"blocked_by did not round-trip: expected {chain_ids[-1]} got "
+            f"{body['blocked_by']!r}"
+        )
+    finally:
+        # Unwire target first, then unwire the chain in reverse so soft-
+        # deletes can succeed without blocker references.
+        if target_id is not None:
+            await client.patch(
+                f"/api/tasks/{target_id}",
+                json={"blocked_by": None},
+                headers=headers,
+            )
+            await client.delete(f"/api/tasks/{target_id}", headers=headers)
+        for tid in reversed(chain_ids):
+            await client.patch(
+                f"/api/tasks/{tid}", json={"blocked_by": None}, headers=headers
+            )
+        for tid in reversed(chain_ids):
+            await client.delete(f"/api/tasks/{tid}", headers=headers)
+
+
+# -----------------------------------------------------------------------------
 # (h) PATCH clear to null
 # -----------------------------------------------------------------------------
 

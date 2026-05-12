@@ -720,8 +720,15 @@ async def update_task(
             # links. If we hit task_id → cycle (the target transitively
             # depends on itself). Exhaust within depth budget → OK. Exceed
             # budget → defensive 422 (should not occur in practice).
+            # Range is N+2 (not N+1) so a chain of EXACTLY N blockers
+            # terminates via the `cursor is None: break` path on iteration
+            # N+1 instead of falsely tripping the for-else. The constant N
+            # is the budget for "blockers walked"; the +1 sentinel
+            # iteration exists solely to break cleanly when the chain ends
+            # (or cycle closes) at the budget edge. Mirrors the
+            # _enforce_blocker_order_constraint fix (#772 / Kanban #820).
             cursor: int | None = blocker.blocked_by
-            for depth in range(1, _BLOCKED_BY_MAX_CHAIN_DEPTH + 1):
+            for depth in range(1, _BLOCKED_BY_MAX_CHAIN_DEPTH + 2):
                 if cursor is None:
                     break
                 if cursor == task_id:
