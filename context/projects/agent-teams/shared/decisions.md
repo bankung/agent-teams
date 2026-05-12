@@ -16,6 +16,98 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-12 — Tier 3 multi-project parallel smoke PASS — Kanban #789 bet closes 6/6 (#807 + #808)
+**Scope:** verification gate. No code in agent-teams beyond two trivial smoke files. Outcome capture.
+
+**Decision:** Tier 3 of the zero-config bet (concurrent-session, two-project parallelism) PASS by direct observation. Bet now closes 6/6 — previously logged 5/6 with Tier 3 deferred (see #788 + #794 entries below).
+
+**The smoke:**
+- Lead session A: agent-teams (project_id=1, this terminal). Picked up #808 at 05:52:32Z, wrote `_scratch/hello-tier3.md` with that timestamp, PATCH-closed.
+- Lead session B: NewsAnalyzer (project_id=567, user opened separate Claude Code at `C:\Users\banku\Documents\Personal\Projects\WebApp\NewsAnalyzer`). Picked up #807, wrote `hello-tier3.md` at 05:50:21Z, PATCH-closed at 05:51:00Z via `lead-newsanalyzer` verified_by.
+- Concurrent window ~05:50-05:52Z. Both sessions hit the same FastAPI backend with their own `X-Project-Id` headers. Session B's subsequent queue poll returned `[]` confirming its own queue drained without touching session A's.
+
+**What this validates (last bet gap closed):**
+- **No state leak across sessions** — X-Project-Id header is the per-call binding; the FastAPI side filters tasks correctly. Two Leads on two project queues do not see each other's work.
+- **Bootstrap CLI scales to ≥2 distinct projects** — agent-teams (dev team, existing) + NewsAnalyzer (dev team, scaffolded via Kanban #777 working_path lineage). Different scaffold paths, different team agent files (both dev here, but novel scaffold proven separately by #794 Writing smoke).
+- **Reactive Claude Code is parallel-capable in practice** — each session is its own Read–Eval loop talking to the shared backend; concurrency is solved by the user opening N terminals, not by any in-product daemon. The #791 kickoff-trigger gap is still real (user had to type the kickoff message in terminal 2), but parallelism itself works once both sessions are bootstrapped.
+
+**What this does NOT validate (truly unattended):**
+- **Self-starting concurrent sessions** — still requires user to manually open terminal 2 and type a kickoff message. The #791 gap (filed earlier) gates true unattended overnight runs.
+- **Multi-task queue depth** — each project's queue had exactly 1 task. Queue-drain ordering across many tasks per session not exercised this slice.
+- **Cross-session same-task contention** — the smoke gave each Lead its own task. Two sessions both bound to the same project_id and both trying to pick up the same task would race — not tested. (Soft-gated today by the `task_kind="human"` filter excluding most rows; #786's auto-pickup loop should pin claim-or-skip semantics if/when this becomes relevant.)
+
+**Implications:**
+- **Bet #789 closes 6/6.** Public-repo readiness goal cleared. README + CLI + Tier 1/2/3 all green.
+- **Next bet candidates** (logged earlier, now ready to pick up): MCP server adapter (#806 filed today), #791 kickoff-trigger gap, post-MVP polish for #776 + #781 umbrellas, Phase 4 dashboard + list view (#769, #770).
+- **Concurrency story for README:** the existing 1-command CLI plus "open one terminal per project" recipe is the multi-project workflow today. No daemon, no orchestrator, no Meta-Lead. Worth a paragraph in README before publishing.
+
+## 2026-05-12 — acceptance_criteria JSONB field (Kanban #797 + #801 + #798) — discipline gate after #789 "1.5/4 not WIN" retrospective
+**Scope:** shared (data model + agent prompts + standards).
+
+**Decision:** Added structured `acceptance_criteria` JSONB field to tasks + soft-enforce via agent prompts. Tasks may carry `[{text, status, verified_by, verified_at, notes}]` where status ∈ {pending, passed, failed, na}. Optional per-task (no schema constraint). Discipline lives in dev-tester / dev-reviewer / CLAUDE.md / spawn-template prompts — no API done-guard.
+
+**The retrospective trigger:** earlier same day, I (Lead) claimed "Bet WIN" on #794 zero-config validation. User asked for honest count → 1.5/4 of #794's own exit criteria. Failure mode: exit criteria buried in description text → easy to skim → claim done without per-criterion check. Structured field + prompts make the gap visible.
+
+**Design lock (user signoff 2026-05-12, Fork 1C + 2A + 3B):**
+- **1C:** JSONB array of `{text, status, verified_by, verified_at, notes}` — full structure, not plain markdown.
+- **2A:** Optional field — no schema-level constraint on filing. Trivial tasks can skip; quality-gate tasks should include.
+- **3B:** Soft enforce — agents + Lead self-discipline via prompts. API does NOT block process_status=5 when criteria pending. Reason: 700+ legacy tasks have null criteria; hard-enforce breaks flow.
+
+**Implementation:**
+- **#797 backend:** Alembic 0014, model + Pydantic `AcceptanceCriterion`, TaskCreate/Update/Read fields. 9 tests in `tests/test_routes_smoke.py`. `mode='json'` not yet applied (bug surfaced via #801).
+- **#801 bug fix:** `verified_at: datetime` crashed JSONB write because SA's default `json_serializer` rejects datetime. Fix: `model_dump(mode='json')` on the criteria list in both POST and PATCH handlers (scoped to acceptance_criteria — sibling top-level DateTime columns stay native). 3 new regression tests. Standards rule recorded in `context/standards/sqlalchemy/orm.md` (humans-only zone — user-instructed write per CLAUDE.md exception).
+- **#798 agent prompts:** 4 inserts — dev-tester.md `### 2d. Acceptance criteria verification` (mandatory per-criterion table + JSON block in final report), dev-reviewer.md "Acceptance criteria audit" bullet (MAJOR if criterion not satisfied, BLOCKER if pending after dev-tester done), CLAUDE.md `## Acceptance criteria discipline (universal)` section (Lead must copy criteria list + verification source before flipping done), spawn-template.md Constraints bullet (cascades the rule to every subagent). Drafted in `_scratch/798-ac-prompt-patches.md`, user pasted, verified via Select-String.
+
+**Dogfood validation:** Tier 1 task #799 became the FIRST AC-field-bearing task. 3 criteria, all PASS verified (Lead bootstrap, novel-writer spawn, idempotent CLI re-run). End-to-end live exercise of the AC field + #801 bug fix on #802 close PATCH.
+
+**Implications:**
+- Going forward, ANY task with substantive verification scope should carry acceptance_criteria. Verification gates (smoke tests, bug fixes, contract changes) are the strongest candidates.
+- Spawn-template now requires per-criterion verdict in subagent reports. Subagents that skip → Lead rejects + asks for redo.
+- Standards rule for Pydantic+JSONB+datetime is durable — future tasks adding nested datetime to JSONB columns won't re-strike this bug.
+- Old tasks (700+) with null criteria are NOT retroactively required to add them — optional field stays optional.
+
+**The honest meta-takeaway:** "claimed WIN at 1.5/4" was the second strike of the same pattern (earlier strike 2026-05-12 morning: "MVP-5 smoke validated 🎲" at 3/8 ACs). Two strikes = pattern. The structural fix (field + prompts) is the response — discipline alone failed twice in one day.
+
+## 2026-05-12 — Zero-config bet WIN via CLI pivot — Kanban #789 MVP closed (#792/#793/#795/#796/#794)
+**Scope:** backend (scaffolder service + manifest endpoint + handler wiring) + devops (PowerShell CLI) + verification gate.
+
+**Decision:** Zero-config bootstrap MVP delivered via CLI path (Option A), not auto-scaffold-on-POST (Option D). User-driven smoke on Writing project (#794) PASSED on Steps 1+2 — Steps 3+4 deferred as nice-to-have. Bet outcome: setup time on a fresh project drops from ~20 min manual file-shuffle to ~10 sec CLI invocation. Public-repo onboarding gate cleared for the dev-team and novel-team scaffolds.
+
+**Pivot story (the architectural surprise):**
+- Original locked plan (#789 split, 2026-05-12 morning): Option D only — extend POST /api/projects to scaffold orchestration files into `working_path`. #792 (scaffolder service) + #793 (handler wiring) shipped GREEN with 6 + 6 tests.
+- Pre-#794 smoke check: agent-teams API runs in Docker; only `.:/repo` is mounted; user project paths (`C:\Users\banku\Documents\Personal\Writing` etc.) live on host filesystem outside the container's reach. The #793 handler's `target.exists()` check would silently return False → scaffold silently no-ops. The 6 #793 tests all used `tempfile.TemporaryDirectory()` (in-container paths) so they passed — but the bet wouldn't validate in production.
+- Pivot decision (user signoff): keep #792/#793 as local-dev opt-in, add #795 (server endpoint serving manifest + base64-encoded bytes) + #796 (host-side PowerShell CLI that fetches + decodes + writes).
+- Architecture: manifest logic lives in one place (`services/zero_config_scaffold.py`), called by both the #793 in-process handler and the #795 HTTP endpoint. Settings.json substitution extracted to a shared pure-bytes helper.
+
+**The smoke (#794) — Steps 1+2 verified:**
+- `bin/agent-teams-init.ps1 -Name Writing2 -WorkingPath C:\Users\banku\Documents\Personal\Writing -Team novel` → 39 files copied, 0 errors.
+- Filter correct: only `dev-analyst` + `dev-spec-reviewer` (cross-team utilities) + `novel-editor` + `novel-writer` present in `.claude/agents/`. NO `dev-backend|frontend|devops|reviewer|tester`.
+- Settings.json post-substitution: no `by-name/agent-teams` references.
+- DB row created via CLI's find-or-create path (POST 201).
+
+**What this validates:**
+- **Manifest engine is correct** — file-set per team matches expectation, no orphans, no leakage.
+- **Idempotent-add semantics** — smoke companion test (#796) ran twice, second run = 0 copied + 39 skipped, mtimes preserved.
+- **Settings.json filter** — pure-bytes helper drops the 4 forbidden substring categories cleanly.
+- **CLI <-> API contract** — base64 round-trip works across PowerShell 5.1 + FastAPI JSON serialization.
+- **Cross-host scaffold** — files land on Windows host filesystem despite API running in Docker container.
+
+**What this did NOT validate (deferred — out of bet scope):**
+- Lead bootstrap on the scaffolded project (would have been Steps 3+4 — opening Claude Code at Writing path + running a novel-team task). The smoke validates the SCAFFOLD; the Lead+team-playbook surface is a separate validation gate.
+- POSIX/Bash port of the CLI (Linux/macOS users still need manual setup).
+- `agent-teams.exe` standalone binary (deferred).
+- Refresh/rescaffold endpoint (deferred — manual delete-then-rerun is the user-driven escape hatch).
+- `working_path` collision detection (project #571 Writing2 shares the same path as #568 Writing — duplicate-by-path is allowed and harmless for now, but is a future UX paper-cut).
+
+**The DB-clutter note:**
+- Smoke session leaked 3 rows: #569 (dev tempdir test), #570 (dev tempdir test), #571 (Writing2 — novel team, same working_path as #568 Writing). agent-teams has no consumer-facing DELETE endpoint by design; cleanup is human-only via psql. Filed as a future housekeeping pass; not blocking.
+
+**Implications:**
+- New surface: `GET /api/scaffold/{team}/files?project_name=X&project_id=N` — manifest + base64 file bytes endpoint. Add to api-contracts.md.
+- New host tool: `bin/agent-teams-init.ps1` + companion `.smoke.ps1`. PowerShell 5.1 compatible. Windows-only for MVP.
+- Public-repo README can now point at a 1-command setup story instead of a 6-step PowerShell file-copy list. The portfolio/publish goal that motivated this bet (#789 description) is unblocked.
+- Future MCP server adapter (next-bet candidate) can layer on top of MVP-D's endpoint by exposing it as an MCP tool — non-Claude-Code clients (Cursor, Cline, ChatGPT) become possible Lead surfaces. Not committed; logged in #789 umbrella post-MVP polish list.
+
 ## 2026-05-12 — Full-auto MVP-5 smoke PASS on NewsAnalyzer — Kanban #788 closed, bet VALIDATED
 **Scope:** verification gate for the full-auto bet (no code in agent-teams — outcome capture only).
 
