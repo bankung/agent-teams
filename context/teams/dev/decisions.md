@@ -21,6 +21,24 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-12 — Decay policy locked: 3 classes (perishable / review-on-touch / evergreen) + 4 demote triggers + frontmatter contract
+**Scope:** bucket-architecture / lifecycle (governs `context/projects/<p>/shared/docs/` + `context/teams/dev/` writes — does NOT apply to standards, decisions logs, or `_scratch/`)
+**Proposed by:** user (clarification request after promote/demote discussion on dev-researcher dnd-kit doc — Kanban #812)
+**Decision:** Every doc Lead promotes to `shared/docs/` or writes to `context/teams/dev/` (other than this policy, lessons, and decisions logs) MUST declare `decay_class` in frontmatter — one of `perishable` (with `decay_after` ISO date + `decay_trigger` event), `review-on-touch` (with `review_when` description), or `evergreen` (no TTL — supersession-only). Demote/prune fires per 4 named triggers: (1) generality decay, (2) code-authoritative now, (3) stale snapshot, (4) scope retired. Full text in [`context/teams/dev/decay-policy.md`](decay-policy.md).
+
+**Reasoning:** `_scratch/` vs `shared/docs/` is a binary today — but some "keepers" are inherently perishable (lib API snapshots, security advisories) while others are evergreen (decisions). Without a class system, all docs age into the same "is this still current?" doubt that silently erodes trust in the whole tree. Tagging at write time + on-demand check at read time avoids the trap of (a) tagging everything as decay-able (signal collapses) and (b) building infra to scan staleness preemptively (latency tax for marginal value). Researcher's dnd-kit doc was the first concrete case that needed the policy.
+
+**Key non-decisions (rejected by design):**
+- **TTL on evergreen docs (decisions, lessons):** age = feature not bug; older entries are more proven.
+- **Track "not read in Y days":** filesystem mtime ≠ read time; instrumenting reads = new infra for marginal value. Neglect filters naturally; let trigger #1 (generality decay) clean up when the doc next surfaces.
+- **Session-bootstrap auto-scan:** adds latency to every session; check at the read point instead.
+
+**Implications:**
+- Lead writes/promotes to `shared/docs/` must include the frontmatter going forward — no retroactive sweep required (existing docs are grandfathered as `review-on-touch` until next edit).
+- `dev-documentor` and `dev-researcher` agent prompts should reference this policy when their output is candidate for promotion. (Soft enforce — Lead applies the frontmatter at promote time; agents don't need to write it themselves.)
+- An `/audit-decay` slash command is logged as a future option but NOT built; the on-demand check at embed time is the primary enforcement.
+- This is the first cross-cutting governance rule that applies to **Lead-written docs** (as opposed to standards or code). Pattern may grow if other write-zones need similar declarations.
+
 ## 2026-05-09 — Session-scoped active project: bootstrap asks user, supports parallel terminals
 **Scope:** team-playbook / bootstrap / multi-project safety
 **Proposed by:** user (after audit-2026-05-09 surfaced multi-terminal Gap A — "two terminals see the same global active row")

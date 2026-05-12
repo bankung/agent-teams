@@ -16,6 +16,17 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-12 — dnd-kit research promoted to `shared/docs/` as first perishable doc under new decay policy — Kanban #812
+**Scope:** shared (frontend-prep docs)
+**Decision:** Promoted `_scratch/research-dnd-kit-api.md` (produced by dev-researcher smoke gate #812) to [`context/projects/agent-teams/shared/docs/research-dnd-kit-api.md`](docs/research-dnd-kit-api.md) with frontmatter declaring `decay_class: perishable`, `decay_after: 2026-08-10`, `decay_trigger: "Kanban #772 closes AND dnd-kit version pinned in web/package.json"`. Also dropped `_scratch/doc-draft-task-type-feature.md` per the same evaluation (read-value too low to promote — content derivable from git log + code).
+
+**Reasoning:** Research doc has cross-role read-value while #772 is pending (frontend specialist will embed it in spawn brief; tester may reference for E2E drag specs). Documentor's task_type summary had read-value only during the same commit; once landed, `git show 8b2e280` + the code itself answer everything the doc would. First concrete application of the decay-class policy (team decisions log dated same day).
+
+**Implications:**
+- Frontend specialist spawn brief for #772 should link the promoted doc (NOT inline the full text — let the brief stay concise; specialist reads on demand).
+- When #772 closes, Lead distills any unique WHY into this `decisions.md` then prunes or `-superseded-`renames the dnd-kit doc per trigger #2 (code-authoritative).
+- Also added Pydantic `Literal` lockstep guard pattern (Standards insight #1 from documentor) to [`context/standards/sqlalchemy/orm.md`](../../../standards/sqlalchemy/orm.md). The other documentor insight (CHECK constraint naming `ck_<table>_<column>_valid`) was already documented in orm.md line 19 — no-op.
+
 ## 2026-05-12 — Auto-pickup kickoff trigger gap resolved: `/loop` + ScheduleWakeup self-rearm locked — Kanban #791 methodology only
 **Scope:** team methodology (`context/teams/dev/full-auto.md`). No code in agent-teams. Smoke verification deferred to follow-up.
 
