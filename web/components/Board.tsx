@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   DndContext,
   KeyboardSensor,
@@ -13,7 +14,9 @@ import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 
 import { patchTask, type ProjectRead, type TaskRead } from "@/lib/api";
 import { TaskStatus, type TaskStatusValue } from "@/lib/constants";
+import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
 import { BoardColumn } from "@/components/BoardColumn";
+import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
 import { ProjectConsentBanner } from "@/components/ProjectConsentBanner";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { ThemePicker } from "@/components/ThemePicker";
@@ -61,9 +64,33 @@ function groupByStatus(tasks: TaskRead[]) {
 }
 
 export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
+  const router = useRouter();
   const [tasks, setTasks] = useState<TaskRead[]>(initialTasks);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const toastIdRef = useRef(1);
+
+  // Sync local Board state to fresh server-rendered initialTasks whenever the
+  // RSC fetch re-runs (triggered by router.refresh() below on SSE events).
+  // initialTasks identity changes per RSC render, so a referential-equality
+  // effect is the right hook here — no diff needed; the prop IS the canonical
+  // snapshot at refresh time.
+  useEffect(() => {
+    setTasks(initialTasks);
+  }, [initialTasks]);
+
+  // Real-time push (Kanban #783). On any tasks-row change for this project,
+  // call router.refresh() — re-runs the RSC fetch, sends new initialTasks down
+  // via the prop sync effect above. Hook handles 100ms debounce + 5-event /
+  // 250ms hard-cap burst coalescing internally; one flush triggers one
+  // router.refresh() (Next 14 dedupes anyway, but we keep the surface narrow).
+  const onRowChange = useCallback(() => {
+    router.refresh();
+  }, [router]);
+  const { connectionState, lastEventAt } = useRowChangedEvents({
+    projectId: project.id,
+    onTaskChange: onRowChange,
+    onProjectChange: onRowChange,
+  });
 
   const pushToast = useCallback((text: string) => {
     const id = toastIdRef.current++;
@@ -139,6 +166,13 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
           <span className="text-zinc-500 dark:text-zinc-400 tabular-nums">
             {tasks.length} task{tasks.length === 1 ? "" : "s"}
           </span>
+          <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
+            ·
+          </span>
+          <ConnectionStateBadge
+            state={connectionState}
+            lastEventAt={lastEventAt}
+          />
           <span className="ml-auto">
             <ThemePicker />
           </span>
