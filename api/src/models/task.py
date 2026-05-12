@@ -36,6 +36,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.constants import (
     RecordStatus,
     TaskHistoryOperation,
+    TaskInteractionKind,
     TaskKind,
     TaskPriority,
     TaskRunMode,
@@ -187,6 +188,19 @@ class Task(Base):
     # NULL = task runs normally. Free-form reason text set by Lead at halt
     # time per the #787 decision matrix.
     halt_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Kanban #830 (2026-05-12): interaction_kind discriminates agent-executed tasks
+    # from user-interaction gates. DB DEFAULT 'work' covers existing rows + INSERT.
+    interaction_kind: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default="work",
+    )
+    # Kanban #830: question/decision task payload — question text, options, answer history.
+    # Full-replace PATCH semantics (same as acceptance_criteria). Append logic in #832.
+    question_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Kanban #830: partial-work state stored by Lead when auto-run halts mid-task.
+    # Used by re-spawn brief on resume. Free-form — no shape constraint.
+    resume_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     # Kanban #797 (2026-05-12): structured per-criterion exit-criteria tracker.
     # Optional JSONB array — each element is {text, status, verified_by,
     # verified_at, notes}; element shape validated by Pydantic
@@ -316,6 +330,11 @@ class Task(Base):
         CheckConstraint(
             in_clause_text("task_type", TaskType.ALL),
             name="ck_tasks_task_type_valid",
+        ),
+        # Kanban #830 (2026-05-12): mirror of migration 0019's CHECK predicate.
+        CheckConstraint(
+            in_clause_text("interaction_kind", TaskInteractionKind.ALL),
+            name="ck_tasks_interaction_kind_valid",
         ),
         CheckConstraint(
             "is_template = false OR (recurrence_rule IS NOT NULL "

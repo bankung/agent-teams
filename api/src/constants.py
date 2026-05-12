@@ -177,6 +177,21 @@ class TaskType:
     ALL: tuple[str, ...] = (BUG, FEATURE, CHORE, DOCS, REFACTOR)
 
 
+class TaskInteractionKind:
+    """tasks.interaction_kind — VARCHAR(16) NOT NULL DEFAULT 'work'.
+    CHECK ck_tasks_interaction_kind_valid: interaction_kind IN ('work','question','decision').
+    Added 2026-05-12 (Kanban #830). Distinguishes agent-executed work from
+    user-interaction gates created by auto-run when ambiguity is detected.
+    Mirror of migration 0019's _INTERACTION_KIND_ALL.
+    """
+
+    WORK = "work"
+    QUESTION = "question"
+    DECISION = "decision"
+
+    ALL: tuple[str, ...] = (WORK, QUESTION, DECISION)
+
+
 class SessionStatus:
     """sessions.status — VARCHAR(16) NOT NULL DEFAULT 'active',
     CHECK status IN ('active','compacting','closed').

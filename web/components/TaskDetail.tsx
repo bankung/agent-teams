@@ -4,8 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   getTaskBlocks,
+  invalidateAnswer,
   patchTask,
+  submitAnswer,
   type AcceptanceCriterion,
+  type AnswerHistoryEntry,
   type TaskRead,
 } from "@/lib/api";
 import { TaskStatus } from "@/lib/constants";
@@ -108,6 +111,7 @@ export function TaskDetail({
       role="dialog"
       aria-modal="true"
       aria-labelledby="taskdetail-title"
+      aria-describedby="taskdetail-desc"
       data-task-detail-modal
       data-task-id={task.id}
       className="fixed inset-0 z-40 bg-zinc-900/40 dark:bg-zinc-950/70"
@@ -179,10 +183,21 @@ export function TaskDetail({
 
           {task.description && (
             <Section label="Description">
-              <p className="whitespace-pre-wrap text-zinc-800 dark:text-zinc-200">
+              <p id="taskdetail-desc" className="whitespace-pre-wrap text-zinc-800 dark:text-zinc-200">
                 {task.description}
               </p>
             </Section>
+          )}
+
+          {/* #834 — question/decision interaction. Rendered above AC section
+              when interaction_kind is not "work". Work tasks: no section. */}
+          {task.interaction_kind !== "work" && (
+            <QuestionInteractionSection
+              task={task}
+              projectId={projectId}
+              onPatch={onPatch}
+              onError={onError}
+            />
           )}
 
           {/* #827 — acceptance_criteria. Read-only display. Section is
@@ -259,7 +274,7 @@ export function TaskDetail({
           {/* Also blocks — optional reverse-lookup */}
           <Section label="Also blocks">
             {alsoBlocks === null ? (
-              <span className="text-zinc-400 italic dark:text-zinc-500">…</span>
+              <span role="status" className="text-zinc-400 italic dark:text-zinc-500">…</span>
             ) : alsoBlocks.length === 0 ? (
               <span className="text-zinc-500 italic dark:text-zinc-400">
                 (none)
@@ -324,6 +339,233 @@ function Section({
         {label}
       </h3>
       <div>{children}</div>
+    </section>
+  );
+}
+
+// QuestionInteractionSection — answer UI for question/decision tasks (#834).
+// Rendered above AcceptanceCriteriaSection when interaction_kind != "work".
+function QuestionInteractionSection({
+  task,
+  projectId,
+  onPatch,
+  onError,
+}: {
+  task: TaskRead;
+  projectId: number;
+  onPatch: (updated: TaskRead) => void;
+  onError: (message: string) => void;
+}) {
+  const [answerValue, setAnswerValue] = useState("");
+  const [submittingAnswer, setSubmittingAnswer] = useState(false);
+  const [invalidateReasonFor, setInvalidateReasonFor] = useState<number | null>(null);
+  const [invalidateReason, setInvalidateReason] = useState("");
+
+  const payload = task.question_payload;
+  const history: AnswerHistoryEntry[] = payload?.answer_history ?? [];
+  const isDone = task.process_status === TaskStatus.DONE;
+
+  // Find the index of the last valid answer (at most one should exist at a time).
+  const lastValidIdx = (() => {
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i].is_valid) return i;
+    }
+    return null;
+  })();
+
+  const handleSubmitAnswer = async (value: string) => {
+    if (submittingAnswer || value.trim() === "") return;
+    setSubmittingAnswer(true);
+    try {
+      const updated = await submitAnswer(projectId, task.id, value);
+      setAnswerValue("");
+      onPatch(updated);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Submit failed";
+      onError(`Task #${task.id}: ${msg}`);
+    } finally {
+      setSubmittingAnswer(false);
+    }
+  };
+
+  const handleInvalidate = async (idx: number) => {
+    if (submittingAnswer || invalidateReason.trim() === "") return;
+    setSubmittingAnswer(true);
+    try {
+      const updated = await invalidateAnswer(projectId, task.id, invalidateReason);
+      setInvalidateReasonFor(null);
+      setInvalidateReason("");
+      onPatch(updated);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Invalidate failed";
+      onError(`Task #${task.id} (entry ${idx}): ${msg}`);
+    } finally {
+      setSubmittingAnswer(false);
+    }
+  };
+
+  const sectionLabel =
+    task.interaction_kind === "decision" ? "Decision" : "Question";
+
+  return (
+    <section
+      className="flex flex-col gap-1.5"
+      data-question-interaction
+      data-interaction-kind={task.interaction_kind}
+    >
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+        {sectionLabel}
+      </h3>
+      <div className="flex flex-col gap-3">
+        {payload?.question && (
+          <p className="whitespace-pre-wrap text-sm text-zinc-800 dark:text-zinc-200">
+            {payload.question}
+          </p>
+        )}
+
+        {isDone ? (
+          <p className="rounded bg-green-50 px-3 py-2 text-sm font-medium text-green-700 dark:bg-green-900/30 dark:text-green-300">
+            {sectionLabel} resolved
+          </p>
+        ) : payload?.options != null ? (
+          // Options mode — buttons; clicking one immediately submits.
+          <div className="flex flex-wrap gap-2" data-question-options>
+            {payload.options.map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                disabled={submittingAnswer}
+                onClick={() => handleSubmitAnswer(opt)}
+                data-question-option={opt}
+                className="rounded border border-violet-200 bg-violet-50 px-3 py-1.5 text-sm font-medium text-violet-800 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-800 dark:bg-violet-900/30 dark:text-violet-200 dark:hover:bg-violet-900/50"
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        ) : (
+          // Free-text mode — textarea + explicit submit button.
+          <div className="flex flex-col gap-2" data-question-freetext>
+            <textarea
+              value={answerValue}
+              onChange={(e) => setAnswerValue(e.target.value)}
+              disabled={submittingAnswer}
+              placeholder="Type your answer…"
+              rows={3}
+              data-question-textarea
+              className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+            />
+            <button
+              type="button"
+              disabled={submittingAnswer || answerValue.trim() === ""}
+              onClick={() => handleSubmitAnswer(answerValue)}
+              data-question-submit
+              className="self-start rounded border border-violet-300 bg-violet-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50 dark:border-violet-700 dark:bg-violet-700 dark:hover:bg-violet-600"
+            >
+              Submit answer
+            </button>
+          </div>
+        )}
+
+        {/* Answer history */}
+        {history.length > 0 && (
+          <div className="flex flex-col gap-1.5" data-answer-history>
+            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
+              Answer history
+            </p>
+            <ol className="flex flex-col gap-2">
+              {history.map((entry, idx) => (
+                <li
+                  key={idx}
+                  className="flex flex-col gap-1 rounded border border-zinc-100 bg-zinc-50 p-2 dark:border-zinc-800 dark:bg-zinc-950/40"
+                  data-answer-entry={idx}
+                  data-answer-valid={entry.is_valid}
+                >
+                  <div className="flex items-start gap-2">
+                    <span
+                      className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-xs font-semibold ${
+                        entry.is_valid
+                          ? "bg-green-50 text-green-700 dark:bg-green-900/30 dark:text-green-300"
+                          : "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300"
+                      }`}
+                      aria-label={entry.is_valid ? "valid" : "invalid"}
+                    >
+                      {entry.is_valid ? "✓" : "✗"}
+                    </span>
+                    <div className="flex-1">
+                      <p className="whitespace-pre-wrap text-sm text-zinc-900 dark:text-zinc-100">
+                        {entry.value}
+                      </p>
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                        by {entry.answered_by}
+                        {entry.answered_at && ` · ${entry.answered_at}`}
+                      </p>
+                      {!entry.is_valid && entry.invalidated_reason && (
+                        <p className="mt-0.5 text-xs text-red-600 dark:text-red-400">
+                          Reason: {entry.invalidated_reason}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Invalidate button — only on last valid answer, only when not done */}
+                  {!isDone && idx === lastValidIdx && (
+                    invalidateReasonFor === idx ? (
+                      <div className="mt-1 flex flex-col gap-1.5 pl-7">
+                        <input
+                          type="text"
+                          value={invalidateReason}
+                          onChange={(e) => setInvalidateReason(e.target.value)}
+                          placeholder="Reason for invalidation…"
+                          disabled={submittingAnswer}
+                          autoFocus
+                          data-invalidate-reason-input
+                          className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                        />
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            disabled={submittingAnswer || invalidateReason.trim() === ""}
+                            onClick={() => handleInvalidate(idx)}
+                            data-invalidate-confirm
+                            className="rounded border border-red-300 bg-red-600 px-2 py-0.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50 dark:border-red-700"
+                          >
+                            Confirm invalidate
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setInvalidateReasonFor(null);
+                              setInvalidateReason("");
+                            }}
+                            disabled={submittingAnswer}
+                            className="rounded border border-zinc-200 bg-white px-2 py-0.5 text-xs font-medium text-zinc-700 hover:border-zinc-300 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setInvalidateReasonFor(idx);
+                          setInvalidateReason("");
+                        }}
+                        disabled={submittingAnswer}
+                        data-invalidate-button={idx}
+                        className="ml-7 self-start rounded border border-zinc-200 bg-white px-2 py-0.5 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700"
+                      >
+                        Invalidate
+                      </button>
+                    )
+                  )}
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
+      </div>
     </section>
   );
 }

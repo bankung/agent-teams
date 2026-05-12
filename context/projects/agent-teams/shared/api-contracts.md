@@ -576,4 +576,50 @@ Integer code fields (`process_status`, `priority`, `assigned_role`) follow `cont
 
 **`SessionRunHeartbeatRead`** — `{card_log_path:str, total_bytes:int}` — added 2026-05-10 by Kanban #717. `total_bytes` is the total card file size after this write (renamed from `bytes_written` per CTX-2 reviewer M1).
 
+---
+
+## Headless Auto-Run endpoints (Kanban #832 / #833, 2026-05-12)
+
+### PATCH /api/tasks/{id} — action fields (Kanban #832)
+
+In addition to the standard field-update semantics, the following **action-only fields** may be sent. They are NOT stored in DB columns — they trigger logic in the router and are popped before the ORM write.
+
+| Field | Type | Description |
+|---|---|---|
+| `new_answer` | `string \| null` | Append an answer to `question_payload.answer_history`. Only valid when resolved `interaction_kind` is `'question'` or `'decision'`. |
+| `new_answer_by` | `string \| null` | Who is submitting the answer. Used with `new_answer`. Default: `'user'`. |
+| `invalidate_last_answer` | `boolean \| null` | When `true`, finds the last `is_valid=true` entry in `answer_history` and flips it to `false`. Requires `invalidated_reason`. |
+| `invalidated_reason` | `string \| null` | Required when `invalidate_last_answer=true`. |
+
+**Error details (422):**
+- `"new_answer is only valid for interaction_kind 'question' or 'decision'"` — sent `new_answer` on a `work` task
+- `"invalidated_reason is required when invalidate_last_answer=True"` — schema-layer rejection
+- `"no valid answer to invalidate"` — `answer_history` has no `is_valid=true` entry
+- `"no question_payload on this task — cannot invalidate"` — task has no payload
+
+**Auto-unblock side effect:** when a `question` or `decision` task transitions to `process_status=5` (DONE), any tasks with `blocked_by=<this_task_id>` AND `status=1` (active) will have `blocked_by` cleared to `null`; their `halt_reason` is also cleared if it starts with `'Question:'`.
+
+### GET /api/tasks/next-autorun (Kanban #833)
+
+**Purpose:** read-only snapshot for the headless auto-run loop — what to do next.
+
+**Header:** `X-Project-Id: <project_id>` (required)
+
+**Response 200:** `NextAutorunResponse`
+```json
+{
+  "next_task": TaskRead | null,
+  "resume_tasks": [TaskRead],
+  "pending_questions": [TaskRead],
+  "blocked_count": int
+}
+```
+
+- `next_task` — top-priority TODO task with `run_mode IN ('auto_pickup','auto_headless')`, `halt_reason IS NULL`, and blocker DONE or absent. Ordered: `priority DESC, sort_order ASC NULLS LAST, created_at ASC`.
+- `resume_tasks` — tasks with `halt_reason IS NOT NULL` whose blocker is DONE (ready to re-run with resume_context).
+- `pending_questions` — active `interaction_kind IN ('question','decision')` tasks not yet DONE.
+- `blocked_count` — count of TODO/IN_PROGRESS tasks whose blocker is still active (not DONE).
+
+No side effects.
+
 <!-- No endpoints documented yet. First endpoint goes above this line. -->

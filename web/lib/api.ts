@@ -40,6 +40,22 @@ export type AcceptanceCriterion = {
   notes: string | null;
 };
 
+// AnswerHistoryEntry — one entry in QuestionPayload.answer_history (#834).
+export type AnswerHistoryEntry = {
+  value: string;
+  answered_by: string;
+  answered_at: string | null;
+  is_valid: boolean;
+  invalidated_reason: string | null;
+};
+
+// QuestionPayload — JSONB payload for question/decision tasks (#834).
+export type QuestionPayload = {
+  question: string;
+  options: string[] | null;
+  answer_history: AnswerHistoryEntry[];
+};
+
 // TaskRead — mirror of api/src/schemas/task.py:TaskRead.
 export type TaskRead = {
   id: number;
@@ -62,6 +78,9 @@ export type TaskRead = {
   blocked_by: number | null; // #771 — peer-task blocker FK; null = unblocked
   sort_order: number | null; // #772 — float lane-local ordering key (NULL = unordered; ORDER BY sort_order ASC NULLS LAST, created_at ASC)
   acceptance_criteria: AcceptanceCriterion[] | null; // #797 — structured per-criterion verdicts; null/empty when not authored
+  interaction_kind: "work" | "question" | "decision"; // #834 — task interaction type; default "work"
+  question_payload: QuestionPayload | null; // #834 — question/options/history; non-null when interaction_kind != "work"
+  resume_context: Record<string, unknown> | null; // #834 — opaque context passed back on resume
   created_at: string;
   updated_at: string;
   started_at: string | null;
@@ -240,9 +259,15 @@ export async function getTask(
 // mutation surfaces land.
 // blocked_by (#771): explicit null clears; positive int sets; key-absent =
 // unchanged. Picker UI (TaskDetail) is the only consumer for now.
+// new_answer / invalidate_last_answer (#834): question/decision answer flow.
 export type TaskPatch = Partial<
   Pick<TaskRead, "process_status" | "priority" | "title" | "blocked_by" | "sort_order">
->;
+> & {
+  new_answer?: string | null;
+  new_answer_by?: string | null;
+  invalidate_last_answer?: boolean | null;
+  invalidated_reason?: string | null;
+};
 
 export async function patchTask(
   projectId: number,
@@ -293,5 +318,33 @@ export async function getTaskBlocks(
 ): Promise<TaskRead[]> {
   return jsonFetch<TaskRead[]>(`/api/tasks/${id}/blocks`, {
     headers: { "X-Project-Id": String(projectId) },
+  });
+}
+
+// submitAnswer — append an answer to a question/decision task (#834).
+// Delegates to patchTask; callers get the full updated TaskRead back so they
+// can call onPatch(updated) to refresh the drawer without a separate GET.
+export async function submitAnswer(
+  projectId: number,
+  taskId: number,
+  value: string,
+  answeredBy = "user",
+): Promise<TaskRead> {
+  return patchTask(projectId, taskId, {
+    new_answer: value,
+    new_answer_by: answeredBy,
+  });
+}
+
+// invalidateAnswer — flip the last valid answer to is_valid=false (#834).
+// Requires a non-empty reason; backend enforces the same constraint.
+export async function invalidateAnswer(
+  projectId: number,
+  taskId: number,
+  reason: string,
+): Promise<TaskRead> {
+  return patchTask(projectId, taskId, {
+    invalidate_last_answer: true,
+    invalidated_reason: reason,
   });
 }

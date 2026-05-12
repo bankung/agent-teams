@@ -31,6 +31,7 @@ from croniter import croniter
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.constants import (
+    TaskInteractionKind,
     TaskKind,
     TaskPriority,
     TaskRole,
@@ -52,6 +53,11 @@ TaskKindLiteral = Literal["ai", "human"]
 # lockstep with TaskType.ALL via the import-time guard at the bottom of this
 # module — same pattern as TaskKindLiteral / TaskRunModeLiteral.
 TaskTypeLiteral = Literal["bug", "feature", "chore", "docs", "refactor"]
+
+# Kanban #830 (2026-05-12): wire-level enum for tasks.interaction_kind. Stays
+# in lockstep with TaskInteractionKind.ALL via the import-time guard at the
+# bottom of this module — same pattern as the other Literal guards.
+InteractionKindLiteral = Literal["work", "question", "decision"]
 
 ProcessStatusCode = Annotated[
     int, Field(description="tasks.process_status — see TaskStatus.ALL")
@@ -136,6 +142,48 @@ class AcceptanceCriterion(BaseModel):
     notes: str | None = None
 
 
+class AnswerHistoryEntry(BaseModel):
+    """One entry in `QuestionPayload.answer_history` (Kanban #830).
+
+    `value` and `answered_by` are required (free-form, min_length=1).
+    `answered_at` is nullable — the Lead may record an answer before
+    the timestamp is available. `is_valid` defaults True; set False
+    to soft-invalidate a superseded answer. `invalidated_reason` is
+    the human-readable note for why the answer was superseded.
+
+    `extra='forbid'` rejects unknown keys at 422 (parity with
+    AcceptanceCriterion).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: str = Field(min_length=1)
+    answered_by: str = Field(min_length=1)
+    answered_at: datetime | None = None
+    is_valid: bool = True
+    invalidated_reason: str | None = None
+
+
+class QuestionPayload(BaseModel):
+    """Payload for `interaction_kind IN ('question', 'decision')` tasks
+    (Kanban #830).
+
+    `question` is required (min_length=1). `options` is an optional list
+    of choice strings (used for 'decision' tasks — Option A / B / …).
+    `answer_history` accumulates answers over time; append-only logic
+    (Kanban #832) is NOT in this slice — PATCH semantics are full-replace
+    (same as `acceptance_criteria`).
+
+    `extra='forbid'` rejects unknown keys at 422.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(min_length=1)
+    options: list[str] | None = None
+    answer_history: list[AnswerHistoryEntry] = Field(default_factory=list)
+
+
 class TaskCreate(BaseModel):
     """Request body for POST /api/tasks."""
 
@@ -205,6 +253,18 @@ class TaskCreate(BaseModel):
     # replace whole array. On POST: None / absent = NULL in DB; [] = empty
     # array (legal but unusual); [...] = stored as-is.
     acceptance_criteria: list[AcceptanceCriterion] | None = None
+    # Kanban #830 (2026-05-12): interaction_kind discriminates agent-executed work
+    # from user-interaction gate tasks created by the auto-run loop when ambiguity
+    # is detected mid-task. 'work' is the default; 'question'/'decision' require
+    # question_payload to be provided.
+    interaction_kind: InteractionKindLiteral = TaskInteractionKind.WORK
+    # Required when interaction_kind IN ('question','decision') — model_validator below.
+    # PATCH semantics: full-replace (same as acceptance_criteria). Append-only logic
+    # for answer_history lands in Kanban #832.
+    question_payload: QuestionPayload | None = None
+    # Free-form partial-work state stored by Lead when auto-run halts mid-task.
+    # Used by re-spawn brief on resume. No shape constraint.
+    resume_context: dict[str, Any] | None = None
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=True)
@@ -248,6 +308,16 @@ class TaskCreate(BaseModel):
                 "scheduled_at is incompatible with is_template=true "
                 "(use recurrence_rule for templates)"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _check_question_payload_required(self) -> "TaskCreate":
+        if self.interaction_kind in (TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION):
+            if self.question_payload is None:
+                raise ValueError(
+                    "question_payload is required when interaction_kind is "
+                    f"'question' or 'decision'"
+                )
         return self
 
 
@@ -359,6 +429,25 @@ class TaskUpdate(BaseModel):
     # Literal). No _reject_explicit_null validator — parity with description
     # and halt_reason.
     acceptance_criteria: list[AcceptanceCriterion] | None = None
+    interaction_kind: InteractionKindLiteral | None = None
+    question_payload: QuestionPayload | None = None
+    resume_context: dict[str, Any] | None = None
+    # Kanban #832: answer append for question/decision tasks.
+    # When set, the router appends this entry (with is_valid=True + answered_at=now())
+    # to the existing question_payload.answer_history. Does NOT replace the whole
+    # question_payload. Only valid when interaction_kind IN ('question','decision').
+    # None / absent = no append (standard PATCH semantics).
+    new_answer: str | None = Field(default=None, min_length=1)
+    # Kanban #832: who is submitting the answer. Defaults to 'user'.
+    # Only used when new_answer is set.
+    new_answer_by: str | None = Field(default=None, min_length=1)
+    # Kanban #832: invalidate the last valid answer in answer_history.
+    # When True, finds the last entry with is_valid=True and flips it to False
+    # + sets invalidated_reason from invalidated_reason field below.
+    # Task does NOT auto-flip to done — it remains a blocker.
+    invalidate_last_answer: bool | None = None
+    # Reason for invalidation — used when invalidate_last_answer=True.
+    invalidated_reason: str | None = Field(default=None, min_length=1)
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=False)
@@ -464,6 +553,36 @@ class TaskUpdate(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _check_question_payload_required(self) -> "TaskUpdate":
+        if (
+            "interaction_kind" in self.model_fields_set
+            and self.interaction_kind in (TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION)
+            and "question_payload" not in self.model_fields_set
+            # Only fire when interaction_kind changes to question/decision AND
+            # question_payload is not being supplied in the same PATCH.
+            # The resolved-final check in the router handles cross-state PATCH
+            # (e.g. PATCH interaction_kind='question' when question_payload already
+            # exists in the DB).
+        ):
+            raise ValueError(
+                "question_payload is required when interaction_kind is "
+                "'question' or 'decision'"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_invalidate_needs_reason(self) -> "TaskUpdate":
+        if (
+            "invalidate_last_answer" in self.model_fields_set
+            and self.invalidate_last_answer is True
+            and self.invalidated_reason is None
+        ):
+            raise ValueError(
+                "invalidated_reason is required when invalidate_last_answer=True"
+            )
+        return self
+
 
 class TaskRead(BaseModel):
     """Full task row as returned by the API."""
@@ -520,6 +639,30 @@ class TaskRead(BaseModel):
     # way OUT we expose the stored shape — Pydantic re-validates each element
     # so a hand-edited corrupt row would 500 here rather than silently leak.
     acceptance_criteria: list[AcceptanceCriterion] | None
+    # Kanban #830 (2026-05-12) — backfilled to 'work' on existing rows by migration 0019.
+    interaction_kind: InteractionKindLiteral
+    # Kanban #830 — nullable JSONB. question_payload element shape validated by
+    # QuestionPayload / AnswerHistoryEntry on the way IN. On the way OUT we expose
+    # the stored shape. None = no question data; object = the structured payload.
+    question_payload: QuestionPayload | None
+    # Kanban #830 — free-form JSONB. Any | None at read time (no shape constraint).
+    resume_context: dict[str, Any] | None
+
+
+class NextAutorunResponse(BaseModel):
+    """Response for GET /api/tasks/next-autorun (Kanban #833).
+
+    Tells the headless auto-run loop what to do next:
+    - next_task: the next work task to execute (if any)
+    - resume_tasks: HALTED tasks whose blocker is now DONE (ready to re-run)
+    - pending_questions: question/decision tasks awaiting user answer
+    - blocked_count: total tasks currently blocked (any blocker not DONE)
+    """
+
+    next_task: TaskRead | None
+    resume_tasks: list[TaskRead]
+    pending_questions: list[TaskRead]
+    blocked_count: int
 
 
 class TaskReorder(BaseModel):
@@ -585,4 +728,11 @@ if set(TaskTypeLiteral.__args__) != set(TaskType.ALL):  # type: ignore[attr-defi
     raise RuntimeError(
         f"TaskTypeLiteral {TaskTypeLiteral.__args__!r} drifted from "  # type: ignore[attr-defined]
         f"TaskType.ALL {TaskType.ALL!r}"
+    )
+
+# Kanban #830 (2026-05-12) — InteractionKindLiteral lockstep with TaskInteractionKind.ALL.
+if set(InteractionKindLiteral.__args__) != set(TaskInteractionKind.ALL):  # type: ignore[attr-defined]
+    raise RuntimeError(
+        f"InteractionKindLiteral {InteractionKindLiteral.__args__!r} drifted from "  # type: ignore[attr-defined]
+        f"TaskInteractionKind.ALL {TaskInteractionKind.ALL!r}"
     )

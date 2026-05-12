@@ -12,19 +12,25 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi import status as http_status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 from sqlalchemy.sql import func
 from sqlalchemy.sql.elements import ClauseElement
 
-from src.constants import RecordStatus, TaskStatus
+from src.constants import RecordStatus, TaskInteractionKind, TaskRunMode, TaskStatus
 from src.db import get_or_404, get_session
 from src.models.task import Task
-from src.schemas.task import TaskCreate, TaskRead, TaskReorder, TaskUpdate
+from src.schemas.task import NextAutorunResponse, TaskCreate, TaskRead, TaskReorder, TaskUpdate
 from src.services.is_pending import assert_is_pending_with_process_status
 from src.services.recurrence import fire_template, next_cron_fire
 from src.services.run_mode import assert_consent_for_run_mode
+from src.services.task_interaction import (
+    append_answer,
+    auto_unblock_dependents,
+    invalidate_last_answer as _invalidate_last_answer,
+)
 from src.services.task_kind import assert_run_mode_for_kind
 from src.services.session_project import (
     assert_body_matches_session,
@@ -70,6 +76,12 @@ _BLOCKED_BY_MAX_CHAIN_DEPTH = 10
 # walk's budget — real blocker chains stay 1-3 deep. Hitting depth 10
 # without resolving raises 422 defensively.
 _REORDER_BLOCKER_CHAIN_DEPTH = 10
+
+# Kanban #819: minimum gap between float sort_orders before re-densification
+# is triggered. Float-64 midpoint arithmetic exhausts after ~52 same-interval
+# halvings; when (a+b)/2 lands within this threshold of either anchor we
+# re-densify the lane with integer floors (1.0, 2.0, …) and recompute.
+_SORT_ORDER_MIN_GAP = 1e-9
 
 
 def _opt_int_str(v: int | None) -> str:
@@ -152,6 +164,107 @@ async def list_tasks(
     stmt = stmt.order_by(Task.id.asc()).limit(limit).offset(offset)
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+@router.get("/next-autorun", response_model=NextAutorunResponse)
+async def get_next_autorun(
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+) -> NextAutorunResponse:
+    """Kanban #833: read-only snapshot for the headless auto-run loop.
+
+    Returns four fields in a single round-trip so the loop can decide
+    whether to pick up work, resume a halted task, or surface a pending
+    question — without issuing four separate queries.
+
+    All four queries share the session-bound project_id from the header.
+    No side effects; purely SELECT.
+    """
+    project_id = session_project_id
+
+    # Alias for the blocker row so we can outerjoin Task → blocker Task.
+    blocker = aliased(Task)
+
+    # --- next_task -----------------------------------------------------------
+    # Highest-priority runnable TODO task: auto_pickup or auto_headless,
+    # not halted, not blocked by an in-progress/todo blocker.
+    next_task_stmt = (
+        select(Task)
+        .outerjoin(blocker, Task.blocked_by == blocker.id)
+        .where(
+            Task.project_id == project_id,
+            Task.status == RecordStatus.ACTIVE,
+            Task.process_status == TaskStatus.TODO,
+            Task.run_mode.in_([TaskRunMode.AUTO_PICKUP, TaskRunMode.AUTO_HEADLESS]),
+            Task.halt_reason.is_(None),
+            or_(Task.blocked_by.is_(None), blocker.process_status == TaskStatus.DONE),
+        )
+        .order_by(
+            Task.priority.desc(),
+            Task.sort_order.asc().nulls_last(),
+            Task.created_at.asc(),
+        )
+        .limit(1)
+    )
+    next_task_row = (await session.execute(next_task_stmt)).scalars().first()
+
+    # --- resume_tasks --------------------------------------------------------
+    # HALTED tasks (halt_reason IS NOT NULL) whose blocker question/decision is DONE.
+    # Tasks halted without a blocker (old-style "Option A/B" halts) are excluded —
+    # they have no resolved answer and require manual unhalt by the user.
+    resume_stmt = (
+        select(Task)
+        .join(blocker, Task.blocked_by == blocker.id)
+        .where(
+            Task.project_id == project_id,
+            Task.status == RecordStatus.ACTIVE,
+            Task.halt_reason.is_not(None),
+            Task.blocked_by.is_not(None),
+            blocker.process_status == TaskStatus.DONE,
+        )
+        .order_by(Task.priority.desc(), Task.created_at.asc())
+    )
+    resume_rows = list((await session.execute(resume_stmt)).scalars().all())
+
+    # --- pending_questions ---------------------------------------------------
+    # Active question/decision tasks not yet DONE — awaiting user input.
+    questions_stmt = (
+        select(Task)
+        .where(
+            Task.project_id == project_id,
+            Task.status == RecordStatus.ACTIVE,
+            Task.interaction_kind.in_([
+                TaskInteractionKind.QUESTION,
+                TaskInteractionKind.DECISION,
+            ]),
+            Task.process_status != TaskStatus.DONE,
+        )
+        .order_by(Task.created_at.asc())
+    )
+    question_rows = list((await session.execute(questions_stmt)).scalars().all())
+
+    # --- blocked_count -------------------------------------------------------
+    # Count of active TODO/IN_PROGRESS tasks that have a non-DONE blocker.
+    blocked_stmt = (
+        select(func.count())
+        .select_from(Task)
+        .outerjoin(blocker, Task.blocked_by == blocker.id)
+        .where(
+            Task.project_id == project_id,
+            Task.status == RecordStatus.ACTIVE,
+            Task.process_status.in_([TaskStatus.TODO, TaskStatus.IN_PROGRESS]),
+            Task.blocked_by.is_not(None),
+            blocker.process_status != TaskStatus.DONE,
+        )
+    )
+    blocked_count = (await session.execute(blocked_stmt)).scalar_one()
+
+    return NextAutorunResponse(
+        next_task=next_task_row,
+        resume_tasks=resume_rows,
+        pending_questions=question_rows,
+        blocked_count=blocked_count,
+    )
 
 
 @router.get("/{task_id}", response_model=TaskRead)
@@ -310,6 +423,35 @@ async def _materialize_null_sort_orders_in_lane(
             next_value += 1.0
 
 
+async def _redensify_lane(
+    session: AsyncSession,
+    project_id: int,
+    process_status: int,
+) -> None:
+    """Kanban #819: full lane re-densification — overwrites ALL sort_orders.
+
+    When float-64 midpoint arithmetic collapses a gap (computed new_sort_order
+    within _SORT_ORDER_MIN_GAP of either anchor), assign 1.0, 2.0, 3.0, … to
+    every active row in the lane in (sort_order ASC NULLS LAST, created_at ASC)
+    order, preserving relative position. The ORM identity map propagates the
+    new values to any already-loaded anchor objects in the caller's scope —
+    no session.refresh() needed.
+    """
+    stmt = (
+        select(Task)
+        .where(
+            Task.project_id == project_id,
+            Task.process_status == process_status,
+            Task.status == RecordStatus.ACTIVE,
+        )
+        .order_by(Task.sort_order.asc().nulls_last(), Task.created_at.asc())
+    )
+    result = await session.execute(stmt)
+    rows = list(result.scalars().all())
+    for i, row in enumerate(rows, start=1):
+        row.sort_order = float(i)
+
+
 @router.post(
     "/{task_id}/reorder",
     response_model=TaskRead,
@@ -436,54 +578,72 @@ async def reorder_task(
     #   - "after_id" is the row that should come BEFORE the moved task →
     #     moved.sort_order MUST be greater than after_id.sort_order.
     # When both are supplied, the moved task lands between them: average.
-    if before_anchor is not None and after_anchor is not None:
-        # both anchors. The smaller is after_anchor.sort_order; the larger
-        # is before_anchor.sort_order. Average. (Server does NOT validate
-        # they are currently adjacent — trust client.)
-        assert before_anchor.sort_order is not None  # materialized above
-        assert after_anchor.sort_order is not None
-        new_sort_order = (
-            after_anchor.sort_order + before_anchor.sort_order
-        ) / 2.0
-    elif before_anchor is not None:
-        # Place just above (smaller than) before_anchor.
-        assert before_anchor.sort_order is not None
-        # Find the largest sort_order strictly less than before_anchor's
-        # in the same lane (excluding the moved task itself).
-        smaller_stmt = (
-            select(func.max(Task.sort_order))
-            .where(
-                Task.project_id == task.project_id,
-                Task.process_status == task.process_status,
-                Task.status == RecordStatus.ACTIVE,
-                Task.sort_order < before_anchor.sort_order,
-                Task.id != task_id,
+    # Extracted as an inner helper so the collapse guard (Kanban #819) can
+    # recompute after re-densification without duplicating the branches.
+    async def _compute_sort_order() -> float:
+        if before_anchor is not None and after_anchor is not None:
+            # both anchors. The smaller is after_anchor.sort_order; the larger
+            # is before_anchor.sort_order. Average. (Server does NOT validate
+            # they are currently adjacent — trust client.)
+            assert before_anchor.sort_order is not None  # materialized above
+            assert after_anchor.sort_order is not None
+            return (after_anchor.sort_order + before_anchor.sort_order) / 2.0
+        elif before_anchor is not None:
+            # Place just above (smaller than) before_anchor.
+            assert before_anchor.sort_order is not None
+            # Find the largest sort_order strictly less than before_anchor's
+            # in the same lane (excluding the moved task itself).
+            smaller_stmt = (
+                select(func.max(Task.sort_order))
+                .where(
+                    Task.project_id == task.project_id,
+                    Task.process_status == task.process_status,
+                    Task.status == RecordStatus.ACTIVE,
+                    Task.sort_order < before_anchor.sort_order,
+                    Task.id != task_id,
+                )
             )
-        )
-        largest_smaller = await session.scalar(smaller_stmt)
-        if largest_smaller is None:
-            new_sort_order = before_anchor.sort_order - 1.0
+            largest_smaller = await session.scalar(smaller_stmt)
+            if largest_smaller is None:
+                return before_anchor.sort_order - 1.0
+            else:
+                return (largest_smaller + before_anchor.sort_order) / 2.0
         else:
-            new_sort_order = (largest_smaller + before_anchor.sort_order) / 2.0
-    else:
-        # after_anchor only — place just below (larger than) it.
-        assert after_anchor is not None
-        assert after_anchor.sort_order is not None
-        larger_stmt = (
-            select(func.min(Task.sort_order))
-            .where(
-                Task.project_id == task.project_id,
-                Task.process_status == task.process_status,
-                Task.status == RecordStatus.ACTIVE,
-                Task.sort_order > after_anchor.sort_order,
-                Task.id != task_id,
+            # after_anchor only — place just below (larger than) it.
+            assert after_anchor is not None
+            assert after_anchor.sort_order is not None
+            larger_stmt = (
+                select(func.min(Task.sort_order))
+                .where(
+                    Task.project_id == task.project_id,
+                    Task.process_status == task.process_status,
+                    Task.status == RecordStatus.ACTIVE,
+                    Task.sort_order > after_anchor.sort_order,
+                    Task.id != task_id,
+                )
             )
-        )
-        smallest_larger = await session.scalar(larger_stmt)
-        if smallest_larger is None:
-            new_sort_order = after_anchor.sort_order + 1.0
-        else:
-            new_sort_order = (after_anchor.sort_order + smallest_larger) / 2.0
+            smallest_larger = await session.scalar(larger_stmt)
+            if smallest_larger is None:
+                return after_anchor.sort_order + 1.0
+            else:
+                return (after_anchor.sort_order + smallest_larger) / 2.0
+
+    new_sort_order = await _compute_sort_order()
+
+    # Kanban #819: gap-collapse guard. Float-64 midpoint arithmetic exhausts
+    # after ~52 halvings in the same interval; when the computed position is
+    # within _SORT_ORDER_MIN_GAP of either anchor we re-densify the entire
+    # lane with integer floor values (1.0, 2.0, …) and recompute. Both
+    # operations happen inside the existing transaction — atomic with the
+    # final sort_order write below.
+    anchor_sort_orders = [
+        a.sort_order
+        for a in (before_anchor, after_anchor)
+        if a is not None and a.sort_order is not None
+    ]
+    if any(abs(new_sort_order - v) < _SORT_ORDER_MIN_GAP for v in anchor_sort_orders):
+        await _redensify_lane(session, task.project_id, task.process_status)
+        new_sort_order = await _compute_sort_order()
 
     # Enforce the blocker-order constraint on the resolved final value
     # BEFORE writing. If the check fires, ORM session is rolled back so
@@ -586,6 +746,17 @@ async def create_task(
         payload_dict["acceptance_criteria"] = [
             c.model_dump(mode="json") for c in payload.acceptance_criteria
         ]
+    # Kanban #830: QuestionPayload.answer_history contains `answered_at:
+    # datetime | None` — same serialization hazard as AcceptanceCriterion
+    # (Kanban #801 pattern). `mode='json'` coerces nested datetime →
+    # ISO-format string before reaching the JSONB column. `resume_context`
+    # is free-form dict; model_dump() already returns JSON-safe scalars for
+    # plain-dict fields, but run through mode='json' for symmetry + safety
+    # (non-JSON-native scalars in caller-supplied dicts would otherwise 500).
+    if payload_dict.get("question_payload") is not None:
+        payload_dict["question_payload"] = payload.question_payload.model_dump(mode="json")
+    if payload_dict.get("resume_context") is not None:
+        payload_dict["resume_context"] = payload.model_dump(mode="json")["resume_context"]
 
     task = Task(**payload_dict)
     session.add(task)
@@ -608,6 +779,8 @@ async def create_task(
             detail = "task_kind violates ck_tasks_task_kind_valid"
         elif "ck_tasks_task_type_valid" in orig_text:
             detail = "task_type violates ck_tasks_task_type_valid"
+        elif "ck_tasks_interaction_kind_valid" in orig_text:
+            detail = "interaction_kind violates ck_tasks_interaction_kind_valid"
         elif "ck_tasks_template_recurrence_complete" in orig_text:
             detail = (
                 "template fields incomplete violates "
@@ -652,6 +825,57 @@ async def update_task(
         updates["acceptance_criteria"] = [
             c.model_dump(mode="json") for c in payload.acceptance_criteria
         ]
+    # Kanban #830: same Kanban #801 pattern for question_payload / resume_context.
+    # Explicit-null PATCH (key present, value None) skips re-dumping (no data to
+    # coerce). question_payload is a QuestionPayload model instance — use its
+    # model_dump(mode='json'). resume_context is a plain dict — pull the already
+    # JSON-coerced value from payload.model_dump(mode='json') for safety.
+    if (
+        "question_payload" in updates
+        and updates["question_payload"] is not None
+        and payload.question_payload is not None
+    ):
+        updates["question_payload"] = payload.question_payload.model_dump(mode="json")
+    if (
+        "resume_context" in updates
+        and updates["resume_context"] is not None
+    ):
+        updates["resume_context"] = payload.model_dump(mode="json")["resume_context"]
+
+    # Kanban #832: pop action-only fields before writing to ORM.
+    # These are not DB columns — they trigger interaction logic below.
+    new_answer = updates.pop("new_answer", None)
+    new_answer_by = updates.pop("new_answer_by", None) or "user"
+    do_invalidate = updates.pop("invalidate_last_answer", None)
+    invalidated_reason = updates.pop("invalidated_reason", None)
+
+    # Kanban #832: answer append for question/decision tasks.
+    if new_answer is not None:
+        resolved_interaction_kind = (
+            updates.get("interaction_kind") if "interaction_kind" in updates
+            else task.interaction_kind
+        )
+        if resolved_interaction_kind not in (
+            TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="new_answer is only valid for interaction_kind 'question' or 'decision'",
+            )
+        updates["question_payload"] = append_answer(
+            task.question_payload, new_answer, new_answer_by
+        )
+
+    # Kanban #832: invalidate last valid answer. Use updates["question_payload"]
+    # if new_answer already updated it in this same PATCH; else fall back to DB value.
+    if do_invalidate:
+        _payload_for_invalidate = updates.get("question_payload") or task.question_payload
+        try:
+            updates["question_payload"] = _invalidate_last_answer(
+                _payload_for_invalidate, invalidated_reason or ""
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # Cross-table consent gate (Kanban #481/#483). Resolve run_mode = the
     # value AFTER this PATCH would land — payload value if present, else the
@@ -817,6 +1041,18 @@ async def update_task(
         if resolved_rule:
             updates["next_fire_at"] = next_cron_fire(resolved_rule, resolved_tz or "UTC")
 
+    # Kanban #832: capture resolved interaction_kind before the setattr loop
+    # so the auto-unblock check after commit can read it without touching an
+    # expired ORM attribute.
+    _resolved_interaction_kind_for_done = (
+        updates.get("interaction_kind") if "interaction_kind" in updates
+        else task.interaction_kind
+    )
+    _resolved_ps_for_done = (
+        updates.get("process_status") if "process_status" in updates
+        else task.process_status
+    )
+
     # Process-status-transition side effects — only stamp if not already set /
     # explicitly provided. We use the DB now() so the value matches the
     # audit-trigger snapshot.
@@ -863,6 +1099,8 @@ async def update_task(
             detail = "task_kind violates ck_tasks_task_kind_valid"
         elif "ck_tasks_task_type_valid" in orig_text:
             detail = "task_type violates ck_tasks_task_type_valid"
+        elif "ck_tasks_interaction_kind_valid" in orig_text:
+            detail = "interaction_kind violates ck_tasks_interaction_kind_valid"
         elif "ck_tasks_template_recurrence_complete" in orig_text:
             detail = (
                 "template fields incomplete violates "
@@ -873,6 +1111,17 @@ async def update_task(
         else:
             detail = "Task update violates a database constraint"
         raise HTTPException(status_code=400, detail=detail) from exc
+
+    # Kanban #832: auto-unblock dependents when a question/decision task is marked DONE.
+    if (
+        _resolved_ps_for_done == TaskStatus.DONE
+        and _resolved_interaction_kind_for_done in (
+            TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION
+        )
+    ):
+        await auto_unblock_dependents(session, task_id)
+        await session.commit()  # second commit for the unblock writes
+
     await session.refresh(task)
     return task
 
