@@ -1,11 +1,9 @@
 {
   "permissions": {
-    "defaultMode": "default",
     "allow": [
       "Read(*)",
       "Glob(*)",
       "Grep(*)",
-
       "Write(/api/**)",
       "Write(/web/**)",
       "Write(/context/projects/**)",
@@ -20,10 +18,8 @@
       "Edit(/README.md)",
       "Edit(/.gitignore)",
       "Edit(/docker-compose.yml)",
-
       "Write(~/.claude/projects/**/memory/**)",
       "Edit(~/.claude/projects/**/memory/**)",
-
       "Write(/context/projects/agent-teams/dev-backend/current-state.md)",
       "Edit(/context/projects/agent-teams/dev-backend/current-state.md)",
       "Write(/context/projects/agent-teams/dev-frontend/current-state.md)",
@@ -34,14 +30,11 @@
       "Edit(/context/projects/agent-teams/dev-tester/current-state.md)",
       "Write(/context/projects/agent-teams/dev-reviewer/current-state.md)",
       "Edit(/context/projects/agent-teams/dev-reviewer/current-state.md)",
-
       "Write(/_scratch/**)",
       "Edit(/_scratch/**)",
       "Write(/_scratch/*)",
       "Edit(/_scratch/*)",
-
       "Agent(*)",
-
       "Bash(git status)",
       "Bash(git status:*)",
       "Bash(git diff)",
@@ -53,7 +46,6 @@
       "Bash(git check-ignore:*)",
       "Bash(git stash list:*)",
       "Bash(git stash show:*)",
-
       "Bash(ls:*)",
       "Bash(cat:*)",
       "Bash(pwd)",
@@ -66,10 +58,8 @@
       "Bash(wc:*)",
       "Bash(awk:*)",
       "Bash(date:*)",
-
       "Bash(curl --silent http://localhost:8456/api/projects/by-name/agent-teams)",
       "Bash(curl --silent http://localhost:8456/api/:*)",
-
       "Bash(curl --silent http://localhost:8456/api/tasks:*)",
       "Bash(curl --silent http://localhost:8456/api/tasks/:*)",
       "Bash(curl --silent http://localhost:8456/api/projects:*)",
@@ -82,7 +72,6 @@
       "Bash(curl --silent -X PATCH http://localhost:8456/api/projects/:*)",
       "Bash(curl --silent -X DELETE http://localhost:8456/api/tasks/:*)",
       "Bash(curl --silent -X DELETE http://localhost:8456/api/projects/:*)",
-
       "Bash(curl -s http://localhost:8456:*)",
       "Bash(curl -s http://localhost:8456/api/:*)",
       "Bash(curl --silent -X PATCH http://localhost:8456/api/:*)",
@@ -97,22 +86,18 @@
       "Bash(curl --silent -X PATCH \"http://localhost:8456:*)",
       "Bash(curl --silent -X DELETE \"http://localhost:8456:*)",
       "Bash(curl --silent --output NUL http://localhost:8456:*)",
-
       "Bash(curl --silent -H \"X-Project-Id: 1\" http://localhost:8456:*)",
       "Bash(curl --silent -H \"X-Project-Id: 1\" \"http://localhost:8456:*)",
       "Bash(curl --silent -o /dev/null -w \"%{http_code}\\n\" http://localhost:8456:*)",
       "Bash(curl --silent -o /dev/null -w \"%{http_code}\\n\" http://localhost:5431:*)",
       "Bash(curl --silent http://localhost:5431:*)",
       "Bash(curl --silent http://localhost:5431/:*)",
-
       "Bash(rm _scratch/:*)",
       "Bash(rm -r _scratch/:*)",
       "Bash(where:*)",
-
       "Bash(docker compose ps:*)",
       "Bash(docker compose logs:*)",
       "Bash(docker inspect:*)",
-
       "Bash(docker compose exec api alembic current)",
       "Bash(docker compose exec api alembic heads)",
       "Bash(docker compose exec api alembic check)",
@@ -121,24 +106,24 @@
       "Bash(docker compose exec -T api alembic heads)",
       "Bash(docker compose exec -T api alembic check)",
       "Bash(docker compose exec -T api alembic history:*)",
-
       "Bash(docker compose exec api pytest:*)",
       "Bash(docker compose exec -T api pytest:*)",
-
       "Bash(docker compose exec -T api which:*)",
       "Bash(docker compose exec -T api pip-audit:*)",
-
       "Bash(docker compose exec db psql -U postgres -d agent_teams -c SELECT:*)",
       "Bash(docker compose exec -T db psql -U postgres -d agent_teams -c SELECT:*)",
       "Bash(docker compose exec db psql -U postgres -d agent_teams -c \\d:*)",
-      "Bash(docker compose exec -T db psql -U postgres -d agent_teams -c \\d:*)"
+      "Bash(docker compose exec -T db psql -U postgres -d agent_teams -c \\d:*)",
+      "WebSearch",
+      "WebFetch(domain:dev.to)"
     ],
     "ask": [
       "Write(/context/projects/*/shared/**)",
       "Edit(/context/projects/*/shared/**)",
       "Write(/context/teams/**)",
       "Edit(/context/teams/**)"
-    ]
+    ],
+    "defaultMode": "default"
   },
   "hooks": {
     "PreToolUse": [

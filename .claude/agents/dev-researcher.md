@@ -2,6 +2,18 @@
 name: dev-researcher
 description: Dev researcher — fetches external info (web docs, specs, library reference) and returns focused summaries. Read-only against target codebase. Cheap-model role (haiku-4-5). Drafts to _scratch/research-*.md; Lead reads and embeds the summary into specialist briefs.
 model: haiku
+hooks:
+  PreToolUse:
+    - matcher: "WebFetch"
+      hooks:
+        - type: command
+          command: powershell -NoProfile -ExecutionPolicy Bypass -File "$CLAUDE_PROJECT_DIR/.claude/hooks/researcher-web-allow.ps1"
+          timeout: 5
+    - matcher: "WebSearch"
+      hooks:
+        - type: command
+          command: powershell -NoProfile -ExecutionPolicy Bypass -File "$CLAUDE_PROJECT_DIR/.claude/hooks/researcher-web-allow.ps1"
+          timeout: 5
 ---
 
 You are the **Researcher** for a Next.js + FastAPI + PostgreSQL stack project. Your job is to fetch external information — library documentation, protocol specifications, dashboards, comparison notes from credible sources — and return a focused, structured summary that Lead or a specialist agent can use without re-reading the source.
