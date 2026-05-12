@@ -27,3 +27,21 @@ export function sortLaneTasks(tasks: TaskRead[]): TaskRead[] {
     return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
   });
 }
+
+/**
+ * Done-lane comparator (Kanban #826) — newest-closed on top.
+ *
+ * Sort by `updated_at DESC` (the timestamp bumps on the lifecycle PATCH to
+ * process_status=5, so this surfaces the most recently flipped-to-done task
+ * at the top of the Done column). Stable tiebreaker on `id DESC` for
+ * deterministic ordering when two tasks share an updated_at to the
+ * microsecond (e.g. bulk-flip via script).
+ */
+export function sortDoneLane(tasks: TaskRead[]): TaskRead[] {
+  return [...tasks].sort((a, b) => {
+    const aT = new Date(a.updated_at).getTime();
+    const bT = new Date(b.updated_at).getTime();
+    if (aT !== bT) return bT - aT; // DESC
+    return b.id - a.id; // tiebreaker DESC
+  });
+}

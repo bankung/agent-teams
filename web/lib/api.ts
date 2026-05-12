@@ -29,6 +29,17 @@ export type ProjectRead = {
   auto_run_consent_at: string | null; // null = not consented; set by POST /api/projects/{id}/grant-consent (#483)
 };
 
+// AcceptanceCriterion — one entry in TaskRead.acceptance_criteria (#797).
+// JSONB shape; verified_at is ISO 8601 string (serialized via mode='json' on
+// the backend per shared/decisions.md 2026-05-12 fix to #801).
+export type AcceptanceCriterion = {
+  text: string;
+  status: "pending" | "passed" | "failed" | "na";
+  verified_by: string | null;
+  verified_at: string | null;
+  notes: string | null;
+};
+
 // TaskRead — mirror of api/src/schemas/task.py:TaskRead.
 export type TaskRead = {
   id: number;
@@ -50,6 +61,7 @@ export type TaskRead = {
   scheduled_at: string | null; // #723 — one-shot fire path; XOR with is_template
   blocked_by: number | null; // #771 — peer-task blocker FK; null = unblocked
   sort_order: number | null; // #772 — float lane-local ordering key (NULL = unordered; ORDER BY sort_order ASC NULLS LAST, created_at ASC)
+  acceptance_criteria: AcceptanceCriterion[] | null; // #797 — structured per-criterion verdicts; null/empty when not authored
   created_at: string;
   updated_at: string;
   started_at: string | null;

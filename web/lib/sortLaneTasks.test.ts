@@ -6,7 +6,7 @@
 // `docker compose exec -T web sh -c "cd /app && npx tsx -e '...'"`.
 
 import type { TaskRead } from "./api";
-import { sortLaneTasks } from "./sortLaneTasks";
+import { sortDoneLane, sortLaneTasks } from "./sortLaneTasks";
 
 type StubArgs = {
   id: number;
@@ -22,6 +22,16 @@ function stub({ id, sort_order, created_at }: StubArgs): TaskRead {
     sort_order,
     created_at,
   } as unknown as TaskRead;
+}
+
+type DoneStubArgs = {
+  id: number;
+  updated_at: string;
+};
+
+function doneStub({ id, updated_at }: DoneStubArgs): TaskRead {
+  // Minimal TaskRead — only fields read by sortDoneLane (id, updated_at).
+  return { id, updated_at } as unknown as TaskRead;
 }
 
 type Case = {
@@ -80,11 +90,71 @@ export const CASES: Case[] = [
   },
 ];
 
+type DoneCase = {
+  name: string;
+  input: DoneStubArgs[];
+  expected: number[];
+};
+
+export const DONE_CASES: DoneCase[] = [
+  {
+    name: "done: mixed timestamps → newest updated_at first",
+    input: [
+      { id: 3, updated_at: "2026-05-12T01:00:00Z" },
+      { id: 1, updated_at: "2026-05-12T05:00:00Z" },
+      { id: 2, updated_at: "2026-05-12T03:00:00Z" },
+    ],
+    expected: [1, 2, 3],
+  },
+  {
+    name: "done: all same updated_at → tiebreaker id DESC",
+    input: [
+      { id: 5, updated_at: "2026-05-12T00:00:00Z" },
+      { id: 12, updated_at: "2026-05-12T00:00:00Z" },
+      { id: 7, updated_at: "2026-05-12T00:00:00Z" },
+    ],
+    expected: [12, 7, 5],
+  },
+  {
+    name: "done: lone task → array of 1 unchanged",
+    input: [{ id: 42, updated_at: "2026-05-12T00:00:00Z" }],
+    expected: [42],
+  },
+  {
+    name: "done: empty input → empty output",
+    input: [],
+    expected: [],
+  },
+  {
+    name: "done: equal-timestamp pair tiebreaks id DESC; distinct row sorts by time",
+    input: [
+      { id: 10, updated_at: "2026-05-12T02:00:00Z" },
+      { id: 20, updated_at: "2026-05-12T01:00:00Z" },
+      { id: 11, updated_at: "2026-05-12T02:00:00Z" },
+    ],
+    expected: [11, 10, 20],
+  },
+];
+
 export function runAll(): boolean {
   let pass = 0;
   let fail = 0;
   for (const c of CASES) {
     const got = sortLaneTasks(c.input.map(stub)).map((t) => t.id);
+    const ok =
+      got.length === c.expected.length &&
+      got.every((v, i) => v === c.expected[i]);
+    if (ok) {
+      pass++;
+    } else {
+      fail++;
+      console.error(
+        `FAIL ${c.name}\n  expected: ${JSON.stringify(c.expected)}\n  got:      ${JSON.stringify(got)}`,
+      );
+    }
+  }
+  for (const c of DONE_CASES) {
+    const got = sortDoneLane(c.input.map(doneStub)).map((t) => t.id);
     const ok =
       got.length === c.expected.length &&
       got.every((v, i) => v === c.expected[i]);

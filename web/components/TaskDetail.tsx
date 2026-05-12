@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   getTaskBlocks,
   patchTask,
+  type AcceptanceCriterion,
   type TaskRead,
 } from "@/lib/api";
 import { TaskStatus } from "@/lib/constants";
@@ -115,7 +116,10 @@ export function TaskDetail({
       }}
     >
       <aside
-        className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[480px] flex-col overflow-y-auto border-l border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
+        // #818 — responsive width. w-full lets the drawer shrink on mobile;
+        // tier breakpoints (480 → 640 → 720) match desktop / wider-desktop;
+        // 90vw cap prevents full-screen takeover on narrow viewports.
+        className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[90vw] flex-col overflow-y-auto border-l border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 sm:max-w-[480px] md:max-w-[640px] lg:max-w-[720px]"
         onMouseDown={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -150,18 +154,27 @@ export function TaskDetail({
 
         {/* Body */}
         <div className="flex flex-col gap-4 px-4 py-4 text-sm">
+          {/* #818 — Status / priority / role as a label-aligned grid.
+              fixed 120px label column makes the pairs scan vertically. */}
           <Section label="Status">
-            <span className="text-zinc-700 dark:text-zinc-300">
-              {STATUS_LABEL[task.process_status] ?? `ps${task.process_status}`}
-            </span>
-            <span className="ml-2 text-zinc-500 dark:text-zinc-400">
-              priority {task.priority}
-            </span>
-            {task.assigned_role !== null && (
-              <span className="ml-2 text-zinc-500 dark:text-zinc-400">
-                role {task.assigned_role}
-              </span>
-            )}
+            <dl className="grid grid-cols-[120px_1fr] gap-y-1 text-sm">
+              <dt className="text-zinc-500 dark:text-zinc-400">Status</dt>
+              <dd className="text-zinc-900 dark:text-zinc-100">
+                {STATUS_LABEL[task.process_status] ?? `ps${task.process_status}`}
+              </dd>
+              <dt className="text-zinc-500 dark:text-zinc-400">Priority</dt>
+              <dd className="text-zinc-900 dark:text-zinc-100">
+                {task.priority}
+              </dd>
+              {task.assigned_role !== null && (
+                <>
+                  <dt className="text-zinc-500 dark:text-zinc-400">Role</dt>
+                  <dd className="text-zinc-900 dark:text-zinc-100">
+                    {task.assigned_role}
+                  </dd>
+                </>
+              )}
+            </dl>
           </Section>
 
           {task.description && (
@@ -171,6 +184,11 @@ export function TaskDetail({
               </p>
             </Section>
           )}
+
+          {/* #827 — acceptance_criteria. Read-only display. Section is
+              ALWAYS rendered so the user sees the "(none defined)" cue when
+              criteria are missing — that's the visible discipline gate. */}
+          <AcceptanceCriteriaSection criteria={task.acceptance_criteria} />
 
           {task.parent_task_id !== null && (
             <Section label="Parent">
@@ -290,6 +308,9 @@ export function TaskDetail({
   );
 }
 
+// #818 — Section header treatment. Slightly heavier than the prior
+// text-[11px]/medium for clearer scan-ability; consistent across every
+// section incl. the new Acceptance criteria block.
 function Section({
   label,
   children,
@@ -298,11 +319,112 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="flex flex-col gap-1">
-      <h3 className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+    <section className="flex flex-col gap-1.5">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
         {label}
       </h3>
       <div>{children}</div>
+    </section>
+  );
+}
+
+// AcceptanceCriteriaSection — read-only AC display (#827).
+// Header shows "<passed>/<total>" summary when criteria are present.
+// Empty/null → italic "(none defined)" cue; this section is rendered even
+// when AC is null so the discipline-gate (per shared/decisions.md
+// 2026-05-12) is visually surfaced rather than hidden.
+const AC_STATUS_BADGE: Record<AcceptanceCriterion["status"], {
+  glyph: string;
+  className: string;
+  label: string;
+}> = {
+  passed: {
+    glyph: "✓",
+    className:
+      "bg-green-50 text-green-700 dark:bg-green-900/30 dark:text-green-300",
+    label: "passed",
+  },
+  failed: {
+    glyph: "✗",
+    className: "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300",
+    label: "failed",
+  },
+  pending: {
+    glyph: "·",
+    className:
+      "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300",
+    label: "pending",
+  },
+  na: {
+    glyph: "—",
+    className:
+      "bg-zinc-50 text-zinc-400 dark:bg-zinc-900 dark:text-zinc-500",
+    label: "n/a",
+  },
+};
+
+function AcceptanceCriteriaSection({
+  criteria,
+}: {
+  criteria: AcceptanceCriterion[] | null;
+}) {
+  const list = criteria ?? [];
+  const total = list.length;
+  const passed = list.filter((c) => c.status === "passed").length;
+  const headerLabel =
+    total > 0
+      ? `Acceptance criteria (${passed}/${total})`
+      : "Acceptance criteria";
+
+  return (
+    <section className="flex flex-col gap-1.5" data-acceptance-criteria>
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+        {headerLabel}
+      </h3>
+      <div>
+        {total === 0 ? (
+          <p className="text-sm italic text-zinc-500 dark:text-zinc-400">
+            (none defined)
+          </p>
+        ) : (
+          <ol className="flex flex-col gap-1">
+            {list.map((c, idx) => {
+              const badge = AC_STATUS_BADGE[c.status];
+              return (
+                <li
+                  key={idx}
+                  className="flex gap-2 py-1.5"
+                  data-ac-item
+                  data-ac-status={c.status}
+                >
+                  <span
+                    aria-label={badge.label}
+                    className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-xs font-semibold ${badge.className}`}
+                  >
+                    {badge.glyph}
+                  </span>
+                  <div className="flex-1">
+                    <p className="whitespace-pre-wrap text-sm text-zinc-900 dark:text-zinc-100">
+                      {c.text}
+                    </p>
+                    {c.verified_by && (
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                        by {c.verified_by}
+                        {c.verified_at && ` · ${c.verified_at}`}
+                      </p>
+                    )}
+                    {c.notes && (
+                      <p className="mt-1 whitespace-pre-wrap text-xs text-zinc-600 dark:text-zinc-400">
+                        {c.notes}
+                      </p>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        )}
+      </div>
     </section>
   );
 }

@@ -20,7 +20,7 @@ import {
   type TaskRead,
 } from "@/lib/api";
 import { TaskStatus, type TaskStatusValue } from "@/lib/constants";
-import { sortLaneTasks } from "@/lib/sortLaneTasks";
+import { sortDoneLane, sortLaneTasks } from "@/lib/sortLaneTasks";
 import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
 import { BoardColumn } from "@/components/BoardColumn";
 import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
@@ -71,7 +71,18 @@ function groupByStatus(tasks: TaskRead[]) {
   // yet (the bulk of pre-#772 data) by composing the two stable sorts.
   // Run priority/id first, then sortLaneTasks — stable sort guarantees ties
   // on sort_order/created_at keep the priority-ordered position.
-  for (const bucket of groups.values()) {
+  //
+  // #826 — Done lane breaks the pattern: it sorts by `updated_at DESC`
+  // (newest-closed on top). priority/id pre-sort is skipped there because
+  // updated_at is the dominant signal and breaking ties on id DESC inside
+  // sortDoneLane is the deterministic fallback.
+  for (const [ps, bucket] of groups.entries()) {
+    if (ps === TaskStatus.DONE) {
+      const sorted = sortDoneLane(bucket);
+      bucket.length = 0;
+      bucket.push(...sorted);
+      continue;
+    }
     bucket.sort((a, b) => b.priority - a.priority || a.id - b.id);
     const sorted = sortLaneTasks(bucket);
     bucket.length = 0;
