@@ -5,10 +5,12 @@ import { useSortable } from "@dnd-kit/sortable";
 
 import type { TaskRead } from "@/lib/api";
 import { TaskPriority, TaskRole, TaskStatus } from "@/lib/constants";
+import { parseSteps } from "@/lib/parseSteps";
 import { RunModeBadge } from "./RunModeBadge";
 import { TaskKindBadge } from "./TaskKindBadge";
 import { PendingBadge } from "./PendingBadge";
 import { RecurrenceIndicator } from "./RecurrenceIndicator";
+import { StepCounter } from "./StepCounter";
 
 type Props = { task: TaskRead };
 
@@ -45,6 +47,8 @@ const ROLE_CLASS: Record<number, string> = {
 export function TaskCard({ task }: Props) {
   const isAi = task.task_kind === "ai";
   const isPending = task.is_pending && task.process_status === TaskStatus.IN_PROGRESS;
+  const inProgress = task.process_status === TaskStatus.IN_PROGRESS;
+  const steps = inProgress ? parseSteps(task.description) : null;
   const draggable = !isAi && !isPending;
   const {
     attributes,
@@ -85,6 +89,7 @@ export function TaskCard({ task }: Props) {
       <div className="flex items-start justify-between gap-2">
         <span className="font-mono text-[11px] text-zinc-400 dark:text-zinc-500">#{task.id}</span>
         <div className="flex items-center gap-1.5">
+          {steps && <StepCounter done={steps.done} total={steps.total} />}
           <RunModeBadge mode={task.run_mode} />
           <TaskKindBadge kind={task.task_kind} />
           <PendingBadge task={task} />
