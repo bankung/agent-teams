@@ -1151,3 +1151,85 @@ def test_reorder_detail_strings_pinned_in_router_source() -> None:
         "Kanban #772 detail strings drifted in routers/tasks.py — "
         f"missing: {missing}"
     )
+
+
+# -----------------------------------------------------------------------------
+# (v) gap-collapse guard: re-densify when sort_orders collapse to float-64 epsilon
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reorder_gap_collapse_triggers_redensification(
+    client, scaffold_cleanup
+) -> None:
+    """Kanban #819: when before_id and after_id sort_orders are within
+    _SORT_ORDER_MIN_GAP (1e-9) of each other, the reorder endpoint must
+    re-densify the lane and produce a distinct sort_order for the moved task.
+
+    Scenario:
+      - A.sort_order = 1.0, B.sort_order = 1.0 + 1e-15 (gap < 1e-9 threshold)
+      - Reorder C to land between A and B (before_id=B, after_id=A)
+      - The naive midpoint (1.0 + 1e-15)/2 + 1.0/2 collapses to 1.0 (within gap)
+      - The guard must re-densify then produce a value distinct from all anchors
+    """
+    project_id = await _make_fresh_project(client, scaffold_cleanup, "k819")
+    headers = {"X-Project-Id": str(project_id)}
+
+    a_id = await _make_task(client, project_id, "k819-v A")
+    b_id = await _make_task(client, project_id, "k819-v B")
+    c_id = await _make_task(client, project_id, "k819-v C")
+
+    try:
+        # Set A.sort_order = 1.0 and B.sort_order = 1.0 + 1e-15 (gap < 1e-9).
+        resp_a = await client.patch(
+            f"/api/tasks/{a_id}", json={"sort_order": 1.0}, headers=headers
+        )
+        assert resp_a.status_code == 200, resp_a.text
+
+        resp_b = await client.patch(
+            f"/api/tasks/{b_id}", json={"sort_order": 1.0 + 1e-15}, headers=headers
+        )
+        assert resp_b.status_code == 200, resp_b.text
+
+        # Read back actual stored values (JSON float round-trip may alter 1e-15).
+        a_actual = (await _get_task(client, project_id, a_id))["sort_order"]
+        b_actual = (await _get_task(client, project_id, b_id))["sort_order"]
+
+        # Place C between A (after_id) and B (before_id) — gap is < 1e-9.
+        resp = await client.post(
+            f"/api/tasks/{c_id}/reorder",
+            json={"before_id": b_id, "after_id": a_id},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+
+        c_actual = resp.json()["sort_order"]
+
+        # C must have a distinct sort_order from both A and B.
+        assert c_actual != a_actual, (
+            f"C.sort_order {c_actual!r} must differ from A.sort_order {a_actual!r}"
+        )
+        assert c_actual != b_actual, (
+            f"C.sort_order {c_actual!r} must differ from B.sort_order {b_actual!r}"
+        )
+
+        # After re-densification all three tasks are in a sane integer range.
+        assert 0.0 < c_actual <= float(
+            len([a_id, b_id, c_id]) + 1
+        ), f"C.sort_order {c_actual!r} out of expected range after re-densification"
+
+        # All three tasks are fetchable with distinct sort_orders.
+        fetched_a = await _get_task(client, project_id, a_id)
+        fetched_b = await _get_task(client, project_id, b_id)
+        fetched_c = await _get_task(client, project_id, c_id)
+        sort_orders = {
+            fetched_a["sort_order"],
+            fetched_b["sort_order"],
+            fetched_c["sort_order"],
+        }
+        assert len(sort_orders) == 3, (
+            f"Expected 3 distinct sort_orders after re-densification; got {sort_orders}"
+        )
+    finally:
+        for tid in (a_id, b_id, c_id):
+            await client.delete(f"/api/tasks/{tid}", headers=headers)

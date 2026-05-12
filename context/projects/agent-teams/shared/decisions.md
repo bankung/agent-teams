@@ -16,6 +16,37 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-12 — Sparse-float sort_order gap-collapse fix — Kanban #819
+**Scope:** backend (api/src/routers/tasks.py)
+**Decision:** Option 2 — min-gap threshold + full lane re-densification. `_SORT_ORDER_MIN_GAP = 1e-9`: when the computed `new_sort_order` is within 1e-9 of either anchor's sort_order, `_redensify_lane` overwrites ALL sort_orders in the lane with 1.0, 2.0, … (in sort_order ASC NULLS LAST, created_at ASC order) and the recompute runs against the freshly-spaced values. Both operations are atomic within the existing transaction.
+**Reasoning:** Option 1 (detect-only, abort with 422) is user-hostile — the user can't resolve a float-precision exhaustion from the UI. Option 3 (LexoRank integer migration) is correct long-term but costly for a failure mode that requires >52 same-interval reorders (~7-8 minutes of continuous identical drags on a 1-row lane). Option 2 is transparent, O(lane-size) which is <30 rows in practice, and eliminates the gap permanently for the lane.
+**Implications:** `_redensify_lane` resets all sort_orders to dense integers after a collapse — any unsaved client-side sort state is consistent again. No schema change.
+
+## 2026-05-12 — Live-DB row-count guard widened to all public tables — Kanban #815
+**Scope:** qa (api/tests/conftest.py)
+**Decision:** `_live_db_row_count_invariant` fixture now snapshots all user tables in the `public` schema via `SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename != 'alembic_version'`, then runs `SELECT count(*)` per table. Changed from a hardcoded `projects`+`tasks`-only check (option 2: per-table exact counts, not `pg_stat_user_tables` estimates).
+**Reasoning:** The original guard missed writes to `sessions`, `session_compacts`, `session_runs`, `tasks_history`, and any future tables. The per-table exact count approach (option 2) was chosen over `pg_stat_user_tables.n_live_tup` (option 1) for higher fidelity — autovacuum can shift pg_stat estimates between before/after snapshots without any real write. `alembic_version` excluded because migration head advances legitimately during dev. Error message now names the specific table(s) that drifted.
+**Implications:** Guard catches any table write in the public schema. New tables added by future migrations are automatically included (no conftest changes needed).
+
+## 2026-05-12 — Headless Auto-Run schema: `interaction_kind` + `question_payload` + `resume_context` — Kanban #830
+**Scope:** backend (migration + ORM + Pydantic + router); foundation for #832 (question API) + #833 (queue endpoint) + #834 (FE drawer).
+**Decision:**
+Migration `0019_tasks_interaction_kind` adds 3 columns to `tasks`:
+- `interaction_kind VARCHAR(16) NOT NULL DEFAULT 'work'` CHECK IN ('work','question','decision') — discriminates agent-executed tasks from user-interaction gates.
+- `question_payload JSONB NULL` — validated by `QuestionPayload` / `AnswerHistoryEntry` Pydantic models at API boundary. Full-replace PATCH semantics (same as `acceptance_criteria`). Append-only answer_history logic deferred to #832.
+- `resume_context JSONB NULL` — free-form partial-work state for checkpoint re-spawn. No shape constraint.
+
+`interaction_kind IN ('question','decision')` requires `question_payload` — enforced by Pydantic `model_validator` on both `TaskCreate` and `TaskUpdate` (PATCH-safe: only fires when `interaction_kind` is in `model_fields_set` without `question_payload`). `InteractionKindLiteral` lockstep guard at schema module bottom (mirror of `TaskTypeLiteral` pattern, Kanban #803).
+
+**Reasoning:** Separate column (`interaction_kind`) keeps task classification (`task_type`: bug/feature/chore/docs/refactor) orthogonal to interaction pattern. Full-replace PATCH keeps the API consistent with `acceptance_criteria` — append semantics land in #832 as a distinct concern. `resume_context` is free-form JSONB so Lead can store any partial-work snapshot without a rigid schema.
+
+**Implications:**
+- **#831 (DevOps):** apply migration 0019 (`alembic upgrade head`, 0018 → 0019). All existing rows backfill cleanly via DB DEFAULT / NULL.
+- **#832 (BE question API):** implements append-only answer_history + auto-unblock trigger on question task DONE.
+- **#833 (BE queue endpoint):** `GET /api/tasks/next-autorun` reads `interaction_kind` + `halt_reason` to determine what the loop should do next.
+- **#834 (FE):** `TaskRead.interaction_kind` always present; drawer branches on `interaction_kind IN ('question','decision')`.
+- **441 tests pass** (0 regressions) after this slice.
+
 ## 2026-05-12 — `tasks.sort_order` + reorder endpoint + blocker-order constraint — Kanban #772 (backend slice)
 **Scope:** api (migration + ORM + Pydantic + router + tests); reuses the 422 status-code policy from #771.
 **Decision:**

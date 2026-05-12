@@ -92,14 +92,33 @@ async def _live_db_row_count_invariant():
 
     live_engine = create_async_engine(_LIVE_DB_URL, isolation_level="AUTOCOMMIT")
 
-    async def _counts() -> tuple[int, int]:
+    # Enumerate all user tables in the public schema, then snapshot every one.
+    # Using pg_tables + per-table SELECT count(*) (option 2 from #815) gives
+    # exact counts rather than the slightly-noisy pg_stat_user_tables estimates.
+    # alembic_version excluded: it legitimately changes during dev migrations
+    # and would cause false-positive fires.
+    async def _counts() -> dict[str, int]:
         async with live_engine.connect() as conn:
-            proj = (await conn.execute(text("SELECT count(*) FROM projects"))).scalar_one()
-            tasks = (await conn.execute(text("SELECT count(*) FROM tasks"))).scalar_one()
-        return int(proj), int(tasks)
+            rows = (
+                await conn.execute(
+                    text(
+                        "SELECT tablename FROM pg_tables "
+                        "WHERE schemaname = 'public' "
+                        "AND tablename != 'alembic_version' "
+                        "ORDER BY tablename"
+                    )
+                )
+            ).fetchall()
+            result: dict[str, int] = {}
+            for (tbl,) in rows:
+                n = (
+                    await conn.execute(text(f"SELECT count(*) FROM {tbl}"))  # noqa: S608
+                ).scalar_one()
+                result[tbl] = int(n)
+        return result
 
     try:
-        pre_proj, pre_tasks = await _counts()
+        pre = await _counts()
     except Exception:
         # If the live DB isn't reachable (CI without it, dev workstation
         # offline), skip the invariant rather than mis-fire. The two import-
@@ -112,18 +131,23 @@ async def _live_db_row_count_invariant():
     yield
 
     try:
-        post_proj, post_tasks = await _counts()
+        post = await _counts()
     finally:
         await live_engine.dispose()
 
-    if (post_proj, post_tasks) != (pre_proj, pre_tasks):
+    all_tables = sorted(set(pre) | set(post))
+    deltas = {t: post.get(t, 0) - pre.get(t, 0) for t in all_tables if post.get(t, 0) != pre.get(t, 0)}
+    if deltas:
+        delta_lines = "\n".join(
+            f"  {t}: {pre.get(t, 0)} -> {post.get(t, 0)} (delta {d:+d})"
+            for t, d in sorted(deltas.items())
+        )
         raise AssertionError(
             "LIVE DB ROW COUNT DRIFT — pytest wrote to `agent_teams` (the "
             "production DB) during this session. The test-DB isolation in "
             "`tests/conftest.py` (DATABASE_URL rewrite at lines 32-39) did "
             "NOT contain this run.\n"
-            f"  projects: {pre_proj} -> {post_proj} (delta {post_proj - pre_proj:+d})\n"
-            f"  tasks:    {pre_tasks} -> {post_tasks} (delta {post_tasks - pre_tasks:+d})\n"
+            f"{delta_lines}\n"
             "Hint: check the most recent test additions for fixtures that "
             "open their own engine / SessionLocal without going through "
             "`from src.db import ...` (which IS bound to the test DB after "

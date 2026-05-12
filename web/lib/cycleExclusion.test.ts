@@ -74,6 +74,13 @@ export const CASES: Case[] = [
     expected: [1, 2], // 99, 100 are reachable from neither direction
   },
   {
+    // Self-loop corrupt state: X.blocked_by == X (raw-SQL bypass). Walker must not crash.
+    name: "self-loop corrupt state does not crash walker",
+    tasks: [{ id: 1, blocked_by: 1 }],
+    target: 1,
+    expected: [1],
+  },
+  {
     name: "depth cap: 200-link forward chain bails at MAX_DEPTH",
     // Build chain 1 → 2 → 3 → ... → 200 (each blocked_by next).
     // target=1; ancestors chain is empty (1.blocked_by=2, walker goes 1→2→3→...)

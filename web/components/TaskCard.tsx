@@ -93,7 +93,7 @@ export function TaskCard({ task, onOpenDetail }: Props) {
     >
       <div className="flex items-start justify-between gap-2">
         <span className="font-mono text-[11px] text-zinc-400 dark:text-zinc-500">#{task.id}</span>
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           {steps && <StepCounter done={steps.done} total={steps.total} />}
           {task.blocked_by !== null && (
             <span
@@ -102,6 +102,15 @@ export function TaskCard({ task, onOpenDetail }: Props) {
               className="inline-flex items-center rounded bg-red-50 px-1.5 py-0.5 text-[11px] font-medium text-red-700 dark:bg-red-900/30 dark:text-red-300"
             >
               ⛔ #{task.blocked_by}
+            </span>
+          )}
+          {(task.interaction_kind === "question" || task.interaction_kind === "decision") && (
+            <span
+              title={task.interaction_kind === "decision" ? "Decision needed" : "Question for user"}
+              data-interaction-kind={task.interaction_kind}
+              className="inline-flex items-center rounded bg-violet-50 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300"
+            >
+              {task.interaction_kind === "decision" ? "⚡" : "❓"}
             </span>
           )}
           <RunModeBadge mode={task.run_mode} />
