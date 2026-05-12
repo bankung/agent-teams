@@ -40,6 +40,7 @@ from src.constants import (
     TaskPriority,
     TaskRunMode,
     TaskStatus,
+    TaskType,
     in_clause,
     in_clause_text,
 )
@@ -140,6 +141,15 @@ class Task(Base):
         server_default="human",
     )
 
+    # Kanban #803 (2026-05-12): task_type classifies work — bug / feature /
+    # chore / docs / refactor. DB DEFAULT 'feature' covers existing rows +
+    # INSERT-without-explicit. Mirror of migration 0015's CHECK predicate.
+    task_type: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default="feature",
+    )
+
     # V3+ T1 (Kanban #706): recurrence template fields. A "template" row carries
     # is_template=true + a cron rule + a next_fire_at; the scheduler (T2) reads
     # the partial index on next_fire_at WHERE is_template=TRUE, spawns child
@@ -177,6 +187,15 @@ class Task(Base):
     # NULL = task runs normally. Free-form reason text set by Lead at halt
     # time per the #787 decision matrix.
     halt_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Kanban #797 (2026-05-12): structured per-criterion exit-criteria tracker.
+    # Optional JSONB array — each element is {text, status, verified_by,
+    # verified_at, notes}; element shape validated by Pydantic
+    # AcceptanceCriterion at the API boundary. NULL = unset (task filed without
+    # structured criteria); [] = explicitly cleared. Soft enforce via agent
+    # prompts (#798) — no DB CHECK, no done-guard this slice.
+    acceptance_criteria: Mapped[list[dict] | None] = mapped_column(
+        JSONB, nullable=True
+    )
     # Self-ref FK: spawned children point at the template they came from.
     # ON DELETE SET NULL — defense-in-depth; app never hard-deletes templates.
     spawned_from_task_id: Mapped[int | None] = mapped_column(
@@ -259,6 +278,11 @@ class Task(Base):
         CheckConstraint(
             in_clause_text("task_kind", TaskKind.ALL),
             name="ck_tasks_task_kind_valid",
+        ),
+        # Kanban #803 (2026-05-12): mirror of migration 0015's CHECK.
+        CheckConstraint(
+            in_clause_text("task_type", TaskType.ALL),
+            name="ck_tasks_task_type_valid",
         ),
         CheckConstraint(
             "is_template = false OR (recurrence_rule IS NOT NULL "

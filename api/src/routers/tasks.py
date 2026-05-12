@@ -189,7 +189,20 @@ async def create_task(
     # test in test_routes_smoke.py — keep in sync with services/run_mode.py.
     await assert_consent_for_run_mode(session, payload.project_id, payload.run_mode)
 
-    task = Task(**payload.model_dump())
+    # Kanban #801: AcceptanceCriterion.verified_at is `datetime | None`. The
+    # default `model_dump()` leaves datetime objects in the nested list of
+    # dicts, which SQLAlchemy's JSONB json_serializer cannot encode → 500.
+    # `mode='json'` recursively coerces datetime → ISO-format string before
+    # the value reaches the JSONB column. Scoped to acceptance_criteria only
+    # so the other datetime fields (started_at, completed_at, next_fire_at,
+    # scheduled_at) keep landing as TIMESTAMPTZ-native datetimes.
+    payload_dict = payload.model_dump()
+    if payload_dict.get("acceptance_criteria") is not None:
+        payload_dict["acceptance_criteria"] = [
+            c.model_dump(mode="json") for c in payload.acceptance_criteria
+        ]
+
+    task = Task(**payload_dict)
     session.add(task)
     try:
         await session.commit()
@@ -208,6 +221,8 @@ async def create_task(
             detail = "status violates ck_tasks_status_valid"
         elif "ck_tasks_task_kind_valid" in orig_text:
             detail = "task_kind violates ck_tasks_task_kind_valid"
+        elif "ck_tasks_task_type_valid" in orig_text:
+            detail = "task_type violates ck_tasks_task_type_valid"
         elif "ck_tasks_template_recurrence_complete" in orig_text:
             detail = (
                 "template fields incomplete violates "
@@ -236,6 +251,22 @@ async def update_task(
     assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
 
     updates = payload.model_dump(exclude_unset=True)
+
+    # Kanban #801: AcceptanceCriterion.verified_at is `datetime | None`. The
+    # default `model_dump()` leaves datetime objects in the nested list of
+    # dicts, which SQLAlchemy's JSONB json_serializer cannot encode → 500.
+    # `mode='json'` recursively coerces datetime → ISO-format string before
+    # the value reaches the JSONB column. Scoped to acceptance_criteria only;
+    # explicit-null PATCH (key present, value None) skips re-dumping since
+    # there's nothing to coerce.
+    if (
+        "acceptance_criteria" in updates
+        and updates["acceptance_criteria"] is not None
+        and payload.acceptance_criteria is not None
+    ):
+        updates["acceptance_criteria"] = [
+            c.model_dump(mode="json") for c in payload.acceptance_criteria
+        ]
 
     # Cross-table consent gate (Kanban #481/#483). Resolve run_mode = the
     # value AFTER this PATCH would land — payload value if present, else the
@@ -360,6 +391,8 @@ async def update_task(
             detail = "status violates ck_tasks_status_valid"
         elif "ck_tasks_task_kind_valid" in orig_text:
             detail = "task_kind violates ck_tasks_task_kind_valid"
+        elif "ck_tasks_task_type_valid" in orig_text:
+            detail = "task_type violates ck_tasks_task_type_valid"
         elif "ck_tasks_template_recurrence_complete" in orig_text:
             detail = (
                 "template fields incomplete violates "

@@ -3173,3 +3173,783 @@ async def test_785_get_task_returns_halt_reason(client) -> None:
 
     # Cleanup
     await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+# -----------------------------------------------------------------------------
+# Kanban #793 — auto-scaffold-on-POST
+#
+# POST /api/projects copies the agent-teams orchestration harness (CLAUDE.md,
+# .claude/, context/standards/, context/teams/<team>/) into the project's
+# `working_path` when that path is set AND exists as a directory. DB row creation
+# is the source of truth: scaffold errors NEVER roll back the row or flip the
+# response off 201. The settings.json substitution drops agent-teams self-
+# references (project name, id=1 patterns, context/projects/agent-teams/...).
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_793_post_project_with_writable_working_path_scaffolds(
+    client, scaffold_cleanup
+) -> None:
+    """POST with `working_path` set to an existing tempdir → 201 + harness
+    files land inside the tempdir.
+
+    Verifies the universal manifest (CLAUDE.md, .claude/settings.json, the
+    dev-* agents) landed; the canonical context/projects/<name>/ scaffold is
+    still created in agent-teams under repo_root (handled by scaffold_cleanup).
+    """
+    import tempfile
+
+    name = scaffold_cleanup(_unique_name("proj-793-scaffold"))
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        payload = _project_create_payload(name)
+        payload["working_path"] = str(tmp_path)
+
+        resp = await client.post("/api/projects", json=payload)
+        assert resp.status_code == 201, resp.text
+
+        # Universal files copied
+        assert (tmp_path / "CLAUDE.md").is_file(), "CLAUDE.md should be scaffolded"
+        assert (tmp_path / ".claude" / "settings.json").is_file(), (
+            ".claude/settings.json should be scaffolded"
+        )
+        # context/standards/** is a glob — at least one file should land
+        standards_dir = tmp_path / "context" / "standards"
+        assert standards_dir.is_dir(), "context/standards/ should exist"
+        # Dev team agent file (team='dev' is the default in _project_create_payload)
+        assert (tmp_path / ".claude" / "agents" / "dev-backend.md").is_file(), (
+            "dev-backend.md should be scaffolded for team=dev"
+        )
+
+
+@pytest.mark.asyncio
+async def test_793_post_project_without_working_path_skips_scaffold(
+    client, scaffold_cleanup
+) -> None:
+    """POST without `working_path` → 201, no filesystem side-effect outside
+    the canonical context/projects/<name>/ folder under repo_root.
+    """
+    import tempfile
+
+    # Use tempdir purely as a witness — we never tell the API about it, so it
+    # must remain empty after POST.
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        name = scaffold_cleanup(_unique_name("proj-793-noscaffold"))
+        payload = _project_create_payload(name)
+        # No working_path field set.
+
+        resp = await client.post("/api/projects", json=payload)
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["working_path"] is None
+
+        # Tempdir is untouched — no harness leaked into a random path.
+        contents = list(tmp_path.iterdir())
+        assert contents == [], (
+            f"expected tempdir to remain empty; got {contents!r}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_793_post_project_nonexistent_working_path_returns_201_logs_warning(
+    client, scaffold_cleanup
+) -> None:
+    """POST with `working_path=/nonexistent/path/...` → 201 + DB row created.
+
+    The handler EXPLICITLY skips when the path doesn't exist (we don't want to
+    auto-create user-named directories). No crash, no 4xx.
+    """
+    name = scaffold_cleanup(_unique_name("proj-793-missing-path"))
+    payload = _project_create_payload(name)
+    payload["working_path"] = "/nonexistent/path/that/should/not/exist/793"
+
+    resp = await client.post("/api/projects", json=payload)
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["name"] == name
+    assert body["working_path"] == "/nonexistent/path/that/should/not/exist/793"
+
+    # Confirm the nonexistent path was NOT auto-created.
+    assert not Path("/nonexistent/path/that/should/not/exist/793").exists(), (
+        "handler must not auto-create user's working_path"
+    )
+
+
+@pytest.mark.asyncio
+async def test_793_post_project_settings_json_drops_agent_teams_specific_patterns(
+    client, scaffold_cleanup
+) -> None:
+    """The substituted settings.json in the scaffolded tempdir must NOT contain
+    any agent-teams self-reference (project name `agent-teams`, id=1 hard-codes,
+    or context/projects/agent-teams/ paths) in permissions.allow / permissions.ask.
+    """
+    import tempfile
+
+    name = scaffold_cleanup(_unique_name("proj-793-settings"))
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        payload = _project_create_payload(name)
+        payload["working_path"] = str(tmp_path)
+
+        resp = await client.post("/api/projects", json=payload)
+        assert resp.status_code == 201, resp.text
+
+        settings_path = tmp_path / ".claude" / "settings.json"
+        assert settings_path.is_file()
+
+        import json as _json
+
+        with settings_path.open("r", encoding="utf-8") as f:
+            data = _json.load(f)
+
+        forbidden = (
+            "by-name/agent-teams",
+            "/api/projects/1/",
+            '/api/projects/1"',
+            "/context/projects/agent-teams/",
+        )
+        allow = data.get("permissions", {}).get("allow", [])
+        ask = data.get("permissions", {}).get("ask", [])
+        for entry in allow + ask:
+            if not isinstance(entry, str):
+                continue
+            for needle in forbidden:
+                assert needle not in entry, (
+                    f"forbidden substring {needle!r} found in settings entry "
+                    f"{entry!r}"
+                )
+
+        # Sanity: the file is non-empty after filtering (we didn't blow away
+        # everything by accident).
+        assert len(allow) > 0, "filter wiped permissions.allow entirely"
+
+
+@pytest.mark.asyncio
+async def test_793_post_project_team_novel_only_copies_novel_agents(
+    client, scaffold_cleanup
+) -> None:
+    """POST with `team='novel'` → tempdir has novel-* agents, NO dev-* agents."""
+    import tempfile
+
+    name = scaffold_cleanup(_unique_name("proj-793-novel"))
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        payload = _project_create_payload(name, team="novel")
+        payload["working_path"] = str(tmp_path)
+
+        resp = await client.post("/api/projects", json=payload)
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["team"] == "novel"
+
+        agents_dir = tmp_path / ".claude" / "agents"
+        assert agents_dir.is_dir(), ".claude/agents/ should exist"
+
+        # Novel agents present
+        assert (agents_dir / "novel-writer.md").is_file(), "novel-writer.md missing"
+        assert (agents_dir / "novel-editor.md").is_file(), "novel-editor.md missing"
+
+        # Dev-specific agents must NOT be present
+        assert not (agents_dir / "dev-backend.md").exists(), (
+            "dev-backend.md leaked into novel scaffold"
+        )
+        assert not (agents_dir / "dev-frontend.md").exists(), (
+            "dev-frontend.md leaked into novel scaffold"
+        )
+        assert not (agents_dir / "dev-devops.md").exists(), (
+            "dev-devops.md leaked into novel scaffold"
+        )
+
+
+@pytest.mark.asyncio
+async def test_793_post_project_re_post_409_but_idempotent_scaffold_via_separate_path(
+    client, scaffold_cleanup
+) -> None:
+    """Duplicate name → 409 (existing contract); scaffolding the SAME tempdir
+    via a fresh second name is idempotent — already-present files are skipped
+    (no overwrite, no crash). The MVP-A scaffolder records them under `skipped`
+    in its report.
+    """
+    import tempfile
+
+    name_a = scaffold_cleanup(_unique_name("proj-793-idem-a"))
+    name_b = scaffold_cleanup(_unique_name("proj-793-idem-b"))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+
+        # First POST — name_a, working_path=tmp → harness lands.
+        payload_a = _project_create_payload(name_a)
+        payload_a["working_path"] = str(tmp_path)
+        resp_a = await client.post("/api/projects", json=payload_a)
+        assert resp_a.status_code == 201, resp_a.text
+
+        claude_md = tmp_path / "CLAUDE.md"
+        assert claude_md.is_file()
+        first_size = claude_md.stat().st_size
+
+        # Re-POST same name → 409 with existing detail string.
+        dup = await client.post("/api/projects", json=payload_a)
+        assert dup.status_code == 409, dup.text
+        assert dup.json()["detail"] == f"Project name {name_a!r} already exists"
+
+        # Second POST — DIFFERENT name, SAME working_path → 201, and the
+        # already-present CLAUDE.md is left untouched (size unchanged).
+        payload_b = _project_create_payload(name_b)
+        payload_b["working_path"] = str(tmp_path)
+        resp_b = await client.post("/api/projects", json=payload_b)
+        assert resp_b.status_code == 201, resp_b.text
+
+        assert claude_md.is_file(), "CLAUDE.md should still exist after 2nd scaffold"
+        assert claude_md.stat().st_size == first_size, (
+            "CLAUDE.md size changed — second scaffold should be idempotent-skip"
+        )
+
+
+# -----------------------------------------------------------------------------
+# Kanban #797 — acceptance_criteria
+#
+# Structured JSONB per-criterion exit-criteria tracker. Optional on every task;
+# AcceptanceCriterion validates element shape (text required, status Literal in
+# {'pending','passed','failed','na'}). PATCH semantics mirror halt_reason /
+# description: key-absent = unchanged, explicit-null = clear, explicit-array =
+# REPLACE the whole array (no element-merge). Soft enforce via agent prompts
+# (#798) — NOT a hard API done-guard this slice.
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_797_task_create_with_criteria_returns_criteria(client) -> None:
+    """POST with 2 criteria → 201 + GET returns the same 2 elements verbatim.
+
+    Locks the create-path roundtrip: structured JSONB array goes IN through
+    Pydantic AcceptanceCriterion, stored in tasks.acceptance_criteria, and
+    comes OUT through TaskRead with full element shape preserved.
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    criteria = [
+        {"text": "endpoint returns 201 on POST", "status": "pending"},
+        {"text": "migration applied via alembic", "status": "passed"},
+    ]
+    resp = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "qa-797 criteria roundtrip (test row, safe to delete)",
+            "acceptance_criteria": criteria,
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 201, resp.text
+    task_id = resp.json()["id"]
+
+    fetched = await client.get(f"/api/tasks/{task_id}", headers=headers)
+    assert fetched.status_code == 200, fetched.text
+    body = fetched.json()
+    assert body["acceptance_criteria"] is not None
+    assert len(body["acceptance_criteria"]) == 2
+    assert body["acceptance_criteria"][0]["text"] == "endpoint returns 201 on POST"
+    assert body["acceptance_criteria"][0]["status"] == "pending"
+    assert body["acceptance_criteria"][1]["text"] == "migration applied via alembic"
+    assert body["acceptance_criteria"][1]["status"] == "passed"
+
+    # Cleanup
+    await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_797_task_create_without_criteria_returns_null(client) -> None:
+    """POST omitting acceptance_criteria → 201 + GET returns null.
+
+    The DB column is nullable JSONB with no DEFAULT — absence on POST resolves
+    through Pydantic default=None and lands as NULL.
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    resp = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "qa-797 criteria absent (test row, safe to delete)",
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert "acceptance_criteria" in body, "TaskRead must expose acceptance_criteria"
+    assert body["acceptance_criteria"] is None
+
+    # Cleanup
+    await client.delete(f"/api/tasks/{body['id']}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_797_task_create_criteria_empty_text_rejected_422(client) -> None:
+    """POST with criterion text="" → 422 + type=string_too_short at
+    loc=['body','acceptance_criteria',0,'text'].
+
+    AcceptanceCriterion.text has min_length=1 — empty strings would be
+    invisible-but-counted false positives at done-time.
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    resp = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "qa-797 criterion empty-text rejection (should not insert)",
+            "acceptance_criteria": [{"text": "", "status": "pending"}],
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert "detail" in body and isinstance(body["detail"], list)
+    matching = [
+        err
+        for err in body["detail"]
+        if err["loc"] == ["body", "acceptance_criteria", 0, "text"]
+    ]
+    assert matching, (
+        f"expected loc=['body','acceptance_criteria',0,'text'] in 422 detail; "
+        f"got {[err['loc'] for err in body['detail']]}"
+    )
+    assert matching[0]["type"] == "string_too_short", (
+        f"expected type='string_too_short'; got {matching[0]['type']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_797_task_create_criteria_invalid_status_rejected_422(client) -> None:
+    """POST with criterion status='WONTFIX' → 422 + literal_error at
+    loc=['body','acceptance_criteria',0,'status'].
+
+    AcceptanceCriterion.status is Literal['pending','passed','failed','na'].
+    Unknown values must fail Pydantic at the boundary — no silent coerce.
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    resp = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "qa-797 criterion bad-status rejection (should not insert)",
+            "acceptance_criteria": [{"text": "x", "status": "WONTFIX"}],
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert "detail" in body and isinstance(body["detail"], list)
+    matching = [
+        err
+        for err in body["detail"]
+        if err["loc"] == ["body", "acceptance_criteria", 0, "status"]
+    ]
+    assert matching, (
+        f"expected loc=['body','acceptance_criteria',0,'status'] in 422 detail; "
+        f"got {[err['loc'] for err in body['detail']]}"
+    )
+    assert matching[0]["type"] == "literal_error", (
+        f"expected type='literal_error'; got {matching[0]['type']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_797_task_patch_sets_criteria_via_array(client) -> None:
+    """PATCH with acceptance_criteria=[...] on a task created without criteria
+    → 200 + GET reflects the new array.
+
+    Verifies the router's generic exclude_unset + setattr loop carries the
+    JSONB field without special-casing.
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    create = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "qa-797 patch sets criteria (test row, safe to delete)",
+        },
+        headers=headers,
+    )
+    assert create.status_code == 201, create.text
+    task_id = create.json()["id"]
+    assert create.json()["acceptance_criteria"] is None
+
+    new_criteria = [
+        {"text": "tests pass", "status": "pending"},
+        {"text": "reviewer approved", "status": "pending"},
+    ]
+    patch = await client.patch(
+        f"/api/tasks/{task_id}",
+        json={"acceptance_criteria": new_criteria},
+        headers=headers,
+    )
+    assert patch.status_code == 200, patch.text
+    assert len(patch.json()["acceptance_criteria"]) == 2
+
+    fetched = await client.get(f"/api/tasks/{task_id}", headers=headers)
+    assert fetched.status_code == 200, fetched.text
+    got = fetched.json()["acceptance_criteria"]
+    assert got[0]["text"] == "tests pass"
+    assert got[1]["text"] == "reviewer approved"
+
+    # Cleanup
+    await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_797_task_patch_replaces_entire_array(client) -> None:
+    """Start with 5 criteria → PATCH with 2 → GET returns 2 (replacement, not
+    merge).
+
+    Locks the design-locked PATCH semantic: full array replace only, no
+    element-merge. A future schema change that diffs/merges the array would
+    silently change semantics — this test traps it.
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    initial = [
+        {"text": "criterion 1", "status": "pending"},
+        {"text": "criterion 2", "status": "passed"},
+        {"text": "criterion 3", "status": "failed"},
+        {"text": "criterion 4", "status": "na"},
+        {"text": "criterion 5", "status": "pending"},
+    ]
+    create = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "qa-797 patch replaces array (test row, safe to delete)",
+            "acceptance_criteria": initial,
+        },
+        headers=headers,
+    )
+    assert create.status_code == 201, create.text
+    task_id = create.json()["id"]
+    assert len(create.json()["acceptance_criteria"]) == 5
+
+    replacement = [
+        {"text": "new criterion A", "status": "pending"},
+        {"text": "new criterion B", "status": "pending"},
+    ]
+    patch = await client.patch(
+        f"/api/tasks/{task_id}",
+        json={"acceptance_criteria": replacement},
+        headers=headers,
+    )
+    assert patch.status_code == 200, patch.text
+
+    fetched = await client.get(f"/api/tasks/{task_id}", headers=headers)
+    got = fetched.json()["acceptance_criteria"]
+    assert len(got) == 2, (
+        f"expected exactly 2 criteria after replacement-PATCH; got {len(got)} "
+        f"— implies merge semantics (forbidden)"
+    )
+    assert got[0]["text"] == "new criterion A"
+    assert got[1]["text"] == "new criterion B"
+
+    # Cleanup
+    await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_797_task_patch_unsets_criteria_via_null(client) -> None:
+    """Start with criteria, PATCH {"acceptance_criteria": null} →
+    acceptance_criteria becomes None.
+
+    Locks the explicit-null = clear semantic — null IS meaningful here, no
+    _reject_explicit_null validator (parity with halt_reason).
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    create = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "qa-797 patch null clears criteria (test row, safe to delete)",
+            "acceptance_criteria": [{"text": "x"}],
+        },
+        headers=headers,
+    )
+    assert create.status_code == 201, create.text
+    task_id = create.json()["id"]
+    assert create.json()["acceptance_criteria"] is not None
+
+    patch = await client.patch(
+        f"/api/tasks/{task_id}",
+        json={"acceptance_criteria": None},
+        headers=headers,
+    )
+    assert patch.status_code == 200, patch.text
+    assert patch.json()["acceptance_criteria"] is None
+
+    fetched = await client.get(f"/api/tasks/{task_id}", headers=headers)
+    assert fetched.json()["acceptance_criteria"] is None
+
+    # Cleanup
+    await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_797_task_patch_omitting_keeps_criteria(client) -> None:
+    """Start with criteria, PATCH {"title": "new"} only → criteria unchanged.
+
+    Locks the key-absent = no-touch PATCH semantic (exclude_unset=True). A
+    future schema change adding a default-None override would silently clear
+    criteria on every unrelated PATCH — this test traps it.
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    initial = [
+        {"text": "stays put A", "status": "pending"},
+        {"text": "stays put B", "status": "passed"},
+    ]
+    create = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "qa-797 patch omit keeps criteria (test row, safe to delete)",
+            "acceptance_criteria": initial,
+        },
+        headers=headers,
+    )
+    assert create.status_code == 201, create.text
+    task_id = create.json()["id"]
+
+    patch = await client.patch(
+        f"/api/tasks/{task_id}",
+        json={"title": "qa-797 retitled (criteria untouched)"},
+        headers=headers,
+    )
+    assert patch.status_code == 200, patch.text
+    assert patch.json()["title"] == "qa-797 retitled (criteria untouched)"
+    got = patch.json()["acceptance_criteria"]
+    assert got is not None and len(got) == 2, (
+        "acceptance_criteria must be untouched on a PATCH that omits the key"
+    )
+    assert got[0]["text"] == "stays put A"
+    assert got[1]["text"] == "stays put B"
+
+    fetched = await client.get(f"/api/tasks/{task_id}", headers=headers)
+    fetched_got = fetched.json()["acceptance_criteria"]
+    assert fetched_got is not None and len(fetched_got) == 2
+
+    # Cleanup
+    await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_797_task_get_returns_criteria_status_default_pending(client) -> None:
+    """POST with criterion {text: 'x'} (no status field) → GET returns the
+    element with status='pending'.
+
+    Locks AcceptanceCriterion.status default. A future change that flips the
+    default to e.g. 'passed' would silently mark fresh criteria as already-
+    verified — this test traps it.
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    create = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "qa-797 criterion default status (test row, safe to delete)",
+            "acceptance_criteria": [{"text": "no-status-given"}],
+        },
+        headers=headers,
+    )
+    assert create.status_code == 201, create.text
+    task_id = create.json()["id"]
+
+    fetched = await client.get(f"/api/tasks/{task_id}", headers=headers)
+    assert fetched.status_code == 200, fetched.text
+    got = fetched.json()["acceptance_criteria"]
+    assert got is not None and len(got) == 1
+    assert got[0]["text"] == "no-status-given"
+    assert got[0]["status"] == "pending", (
+        f"expected default status='pending'; got {got[0]['status']!r}"
+    )
+
+    # Cleanup
+    await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+# -----------------------------------------------------------------------------
+# Kanban #801 — AcceptanceCriterion.verified_at JSONB serialization fix
+#
+# Defect on #797: AcceptanceCriterion.verified_at is `datetime | None`. The
+# router's `model_dump()` left datetime objects nested in the list of dicts,
+# which SQLAlchemy's default JSONB json_serializer cannot encode → 500. Fix
+# was to re-dump the criterion list with `mode='json'` so datetime → ISO
+# string before it reaches the JSONB column. These tests pin the regression:
+# any future refactor that drops the mode='json' coercion → red here.
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_801_criteria_with_verified_at_isoformat_roundtrips(client) -> None:
+    """POST with a criterion carrying verified_at='2026-05-12T11:30:00Z' →
+    201 (NOT 500). GET returns verified_at as an ISO-format string.
+
+    Pre-fix: SQLAlchemy's JSONB json_serializer crashes on the nested
+    datetime object — server returns 500 with a TypeError traceback. Locks
+    the surgical mode='json' fix in routers/tasks.py.
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    create = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "qa-801 verified_at roundtrip (test row, safe to delete)",
+            "acceptance_criteria": [
+                {
+                    "text": "criterion with verified_at",
+                    "status": "passed",
+                    "verified_at": "2026-05-12T11:30:00Z",
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert create.status_code == 201, create.text
+    task_id = create.json()["id"]
+
+    fetched = await client.get(f"/api/tasks/{task_id}", headers=headers)
+    assert fetched.status_code == 200, fetched.text
+    got = fetched.json()["acceptance_criteria"]
+    assert got is not None and len(got) == 1
+    assert got[0]["text"] == "criterion with verified_at"
+    assert got[0]["status"] == "passed"
+    # ISO-format string — accept either 'Z' suffix or '+00:00' offset since
+    # Pydantic + datetime.isoformat() canonicalize differently across versions.
+    verified_at = got[0]["verified_at"]
+    assert isinstance(verified_at, str), (
+        f"verified_at should be ISO string after JSONB roundtrip; got {type(verified_at).__name__}"
+    )
+    assert "2026-05-12T11:30:00" in verified_at, (
+        f"expected '2026-05-12T11:30:00' substring; got {verified_at!r}"
+    )
+
+    # Cleanup
+    await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_801_criteria_with_microseconds_preserved(client) -> None:
+    """POST with verified_at carrying microseconds → 201 + roundtrip preserves
+    the microsecond component.
+
+    Locks that mode='json' coercion uses datetime.isoformat() (which keeps
+    microseconds when present) rather than a lossier strftime.
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    create = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "qa-801 verified_at microseconds (test row, safe to delete)",
+            "acceptance_criteria": [
+                {
+                    "text": "criterion with microsecond precision",
+                    "status": "passed",
+                    "verified_at": "2026-05-12T11:30:00.123456Z",
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert create.status_code == 201, create.text
+    task_id = create.json()["id"]
+
+    fetched = await client.get(f"/api/tasks/{task_id}", headers=headers)
+    assert fetched.status_code == 200, fetched.text
+    got = fetched.json()["acceptance_criteria"]
+    assert got is not None and len(got) == 1
+    verified_at = got[0]["verified_at"]
+    assert isinstance(verified_at, str)
+    assert "123456" in verified_at, (
+        f"expected microsecond component '123456' preserved through roundtrip; got {verified_at!r}"
+    )
+
+    # Cleanup
+    await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_801_patch_with_datetime_returns_200(client) -> None:
+    """Regression for the exact #799 PATCH reproducer shape: PATCH a task
+    with acceptance_criteria=[{text, status='passed', verified_at=<iso>}] →
+    200 (NOT 500).
+
+    Pre-fix: same JSONB-encoder crash on PATCH that #799 surfaced. This test
+    locks the parallel fix in update_task() — both POST and PATCH paths must
+    coerce datetime → ISO string before SQLAlchemy serializes the list to
+    JSONB.
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    create = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "qa-801 PATCH datetime regression (test row, safe to delete)",
+        },
+        headers=headers,
+    )
+    assert create.status_code == 201, create.text
+    task_id = create.json()["id"]
+    assert create.json()["acceptance_criteria"] is None
+
+    patch = await client.patch(
+        f"/api/tasks/{task_id}",
+        json={
+            "acceptance_criteria": [
+                {
+                    "text": "x",
+                    "status": "passed",
+                    "verified_at": "2026-05-12T11:30:00Z",
+                }
+            ]
+        },
+        headers=headers,
+    )
+    assert patch.status_code == 200, patch.text  # NOT 500
+    got = patch.json()["acceptance_criteria"]
+    assert got is not None and len(got) == 1
+    assert got[0]["text"] == "x"
+    assert got[0]["status"] == "passed"
+    verified_at = got[0]["verified_at"]
+    assert isinstance(verified_at, str)
+    assert "2026-05-12T11:30:00" in verified_at
+
+    # Cleanup
+    await client.delete(f"/api/tasks/{task_id}", headers=headers)

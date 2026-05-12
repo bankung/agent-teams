@@ -30,7 +30,14 @@ from typing import Annotated, Any, Literal
 from croniter import croniter
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from src.constants import TaskKind, TaskPriority, TaskRole, TaskRunMode, TaskStatus
+from src.constants import (
+    TaskKind,
+    TaskPriority,
+    TaskRole,
+    TaskRunMode,
+    TaskStatus,
+    TaskType,
+)
 
 # Wire-level enum for tasks.run_mode. Stays in lockstep with TaskRunMode.ALL via
 # the import-time guard at the bottom of this module — same pattern as
@@ -40,6 +47,11 @@ TaskRunModeLiteral = Literal["manual", "auto_pickup", "auto_headless"]
 # V3+ T1 (Kanban #706): wire-level enum for tasks.task_kind. Stays in lockstep
 # with TaskKind.ALL via the import-time guard at the bottom of this module.
 TaskKindLiteral = Literal["ai", "human"]
+
+# Kanban #803 (2026-05-12): wire-level enum for tasks.task_type. Stays in
+# lockstep with TaskType.ALL via the import-time guard at the bottom of this
+# module — same pattern as TaskKindLiteral / TaskRunModeLiteral.
+TaskTypeLiteral = Literal["bug", "feature", "chore", "docs", "refactor"]
 
 ProcessStatusCode = Annotated[
     int, Field(description="tasks.process_status — see TaskStatus.ALL")
@@ -100,6 +112,30 @@ def _validate_timezone(v: str | None) -> str | None:
     return v
 
 
+class AcceptanceCriterion(BaseModel):
+    """One row in `tasks.acceptance_criteria` (Kanban #797).
+
+    Locked design 2026-05-12: structured JSONB array element with five fields.
+    `text` is required (free-form, but min_length=1 — empty strings would be
+    invisible-but-counted false positives at done-time). `status` defaults to
+    `"pending"` so a freshly-filed criterion is opt-in to verification. The
+    rest are optional metadata set when an agent / human verifies the item.
+
+    Element shape is enforced HERE at the API boundary — the DB column is
+    plain JSONB with no CHECK (same precedent as projects.paths / .stack /
+    .config). Unknown keys are rejected via Pydantic's default model_config so
+    a typoed field surfaces at 422 rather than silently landing in storage.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1)
+    status: Literal["pending", "passed", "failed", "na"] = "pending"
+    verified_by: str | None = None
+    verified_at: datetime | None = None
+    notes: str | None = None
+
+
 class TaskCreate(BaseModel):
     """Request body for POST /api/tasks."""
 
@@ -120,6 +156,10 @@ class TaskCreate(BaseModel):
     # 'human' matches the DB DEFAULT; cross-table validator (HUMAN ↔ MANUAL)
     # lives in src/services/task_kind.py.
     task_kind: TaskKindLiteral = TaskKind.HUMAN
+    # Kanban #803 (2026-05-12) — task_type classifies the work. Default
+    # 'feature' matches the DB DEFAULT. No cross-table validator — purely
+    # classification metadata.
+    task_type: TaskTypeLiteral = TaskType.FEATURE
     # V3+ T1 (Kanban #706) — recurrence template fields. is_template=true
     # requires both recurrence_rule + next_fire_at (model_validator below).
     is_template: bool = False
@@ -146,6 +186,13 @@ class TaskCreate(BaseModel):
     # 422; explicit null = unhalt (PATCH semantics, no _reject_explicit_null
     # validator). Parity with `description`, `working_path`, etc.
     halt_reason: str | None = Field(default=None, min_length=1)
+    # Kanban #797 (2026-05-12): optional structured exit-criteria array. Each
+    # element validated by AcceptanceCriterion (text required, status Literal,
+    # etc.). PATCH semantics for the field on TaskUpdate mirror description /
+    # halt_reason: key-absent = unchanged, explicit null = clear, array =
+    # replace whole array. On POST: None / absent = NULL in DB; [] = empty
+    # array (legal but unusual); [...] = stored as-is.
+    acceptance_criteria: list[AcceptanceCriterion] | None = None
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=True)
@@ -233,6 +280,10 @@ class TaskUpdate(BaseModel):
     # (e.g., reclassifying ai → human). Cross-table validator (HUMAN ↔ MANUAL)
     # fires on the resolved final values in the router.
     task_kind: TaskKindLiteral | None = None
+    # Kanban #803 (2026-05-12). PATCH-able — task_type can be reclassified
+    # post-creation (e.g., a "feature" being downgraded to "chore"). No
+    # cross-table rule; Literal alone is the constraint.
+    task_type: TaskTypeLiteral | None = None
     # V3+ T1 (Kanban #706). Recurrence template fields PATCH-able for now —
     # T2 scheduler may need to advance next_fire_at programmatically. Cron +
     # TZ field validators reuse the TaskCreate ones.
@@ -263,6 +314,18 @@ class TaskUpdate(BaseModel):
     # No _reject_explicit_null validator — parity with `description`,
     # `working_path`, etc.
     halt_reason: str | None = Field(default=None, min_length=1)
+    # Kanban #797 (2026-05-12): PATCH-able. Semantics:
+    #   - key absent      → leave unchanged (exclude_unset=True in router)
+    #   - explicit null   → clear the array (null IS meaningful — column is
+    #                       nullable JSONB)
+    #   - explicit array  → REPLACE the whole array (no element-merge; clients
+    #                       must re-send the full list each PATCH). Atomic
+    #                       single-item PATCH is intentionally NOT supported
+    #                       (KISS — full array replace only).
+    # Each element validated by AcceptanceCriterion (text required, status
+    # Literal). No _reject_explicit_null validator — parity with description
+    # and halt_reason.
+    acceptance_criteria: list[AcceptanceCriterion] | None = None
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=False)
@@ -391,6 +454,9 @@ class TaskRead(BaseModel):
     # server_defaults backfill existing rows: task_kind='human', is_template=false,
     # recurrence_timezone='UTC'; nullable fields default to None.
     task_kind: TaskKindLiteral
+    # Kanban #803 (2026-05-12) — backfilled to 'feature' on existing rows by
+    # migration 0015's server_default.
+    task_type: TaskTypeLiteral
     is_template: bool
     recurrence_rule: str | None
     recurrence_timezone: str
@@ -406,6 +472,12 @@ class TaskRead(BaseModel):
     # 0013's nullable=true. Free-form string set by Lead at halt time per the
     # #787 decision matrix; NULL = task runs normally.
     halt_reason: str | None
+    # Kanban #797 (2026-05-12) — structured exit-criteria. Backfilled to NULL
+    # on existing rows by migration 0014's nullable=true. AcceptanceCriterion
+    # validates element shape on the way IN (TaskCreate / TaskUpdate); on the
+    # way OUT we expose the stored shape — Pydantic re-validates each element
+    # so a hand-edited corrupt row would 500 here rather than silently leak.
+    acceptance_criteria: list[AcceptanceCriterion] | None
 
 
 # Sanity: the Literal stays in lockstep with src.constants.TaskRunMode.ALL.
@@ -422,4 +494,11 @@ if set(TaskKindLiteral.__args__) != set(TaskKind.ALL):  # type: ignore[attr-defi
     raise RuntimeError(
         f"TaskKindLiteral {TaskKindLiteral.__args__!r} drifted from "  # type: ignore[attr-defined]
         f"TaskKind.ALL {TaskKind.ALL!r}"
+    )
+
+# Kanban #803 (2026-05-12) — same lockstep guard for TaskTypeLiteral.
+if set(TaskTypeLiteral.__args__) != set(TaskType.ALL):  # type: ignore[attr-defined]
+    raise RuntimeError(
+        f"TaskTypeLiteral {TaskTypeLiteral.__args__!r} drifted from "  # type: ignore[attr-defined]
+        f"TaskType.ALL {TaskType.ALL!r}"
     )

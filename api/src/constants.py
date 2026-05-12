@@ -155,6 +155,28 @@ class TaskKind:
     ALL: tuple[str, ...] = (AI, HUMAN)
 
 
+class TaskType:
+    """tasks.task_type — VARCHAR(16) NOT NULL DEFAULT 'feature',
+    CHECK task_type IN ('bug','feature','chore','docs','refactor').
+
+    Added 2026-05-12 (Kanban #803). Classifies work type so bug-fix tasks
+    (e.g. #801) and feature tasks (e.g. #792, #795) are structurally
+    distinguishable rather than mixed in the same shape. Motivated by the
+    2026-05-12 AC-discipline audit. Drives report grouping later.
+
+    Mirror of migration 0015's `_TASK_TYPE_ALL` (intentionally duplicated —
+    migrations don't import app code, see standards/sqlalchemy/migrations.md).
+    """
+
+    BUG = "bug"
+    FEATURE = "feature"
+    CHORE = "chore"
+    DOCS = "docs"
+    REFACTOR = "refactor"
+
+    ALL: tuple[str, ...] = (BUG, FEATURE, CHORE, DOCS, REFACTOR)
+
+
 class SessionStatus:
     """sessions.status — VARCHAR(16) NOT NULL DEFAULT 'active',
     CHECK status IN ('active','compacting','closed').
