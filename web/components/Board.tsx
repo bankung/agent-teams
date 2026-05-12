@@ -19,6 +19,7 @@ import { BoardColumn } from "@/components/BoardColumn";
 import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
 import { ProjectConsentBanner } from "@/components/ProjectConsentBanner";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
+import { TaskDetail } from "@/components/TaskDetail";
 import { ThemePicker } from "@/components/ThemePicker";
 import { ToastStack, type ToastMessage } from "@/components/Toast";
 
@@ -67,6 +68,7 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
   const router = useRouter();
   const [tasks, setTasks] = useState<TaskRead[]>(initialTasks);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
   const toastIdRef = useRef(1);
 
   // Sync local Board state to fresh server-rendered initialTasks whenever the
@@ -107,6 +109,22 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
   );
 
   const grouped = useMemo(() => groupByStatus(tasks), [tasks]);
+
+  const selectedTask = useMemo(
+    () =>
+      selectedTaskId === null
+        ? null
+        : tasks.find((t) => t.id === selectedTaskId) ?? null,
+    [tasks, selectedTaskId],
+  );
+
+  const onOpenDetail = useCallback((task: TaskRead) => {
+    setSelectedTaskId(task.id);
+  }, []);
+
+  const onPatchedTask = useCallback((updated: TaskRead) => {
+    setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+  }, []);
 
   const onDragEnd = useCallback(
     (event: DragEndEvent) => {
@@ -194,10 +212,21 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
               statuses={col.statuses}
               label={col.label}
               tasks={col.statuses.flatMap((s) => grouped.get(s) ?? [])}
+              onOpenDetail={onOpenDetail}
             />
           ))}
         </div>
       </DndContext>
+      {selectedTask && (
+        <TaskDetail
+          task={selectedTask}
+          allTasks={tasks}
+          projectId={project.id}
+          onClose={() => setSelectedTaskId(null)}
+          onPatch={onPatchedTask}
+          onError={pushToast}
+        />
+      )}
       <ToastStack messages={toasts} onDismiss={dismissToast} />
     </main>
   );

@@ -48,6 +48,7 @@ export type TaskRead = {
   next_fire_at: string | null; // #706 — ISO 8601 UTC "Z" form
   spawned_from_task_id: number | null; // #706 — system-managed lineage
   scheduled_at: string | null; // #723 — one-shot fire path; XOR with is_template
+  blocked_by: number | null; // #771 — peer-task blocker FK; null = unblocked
   created_at: string;
   updated_at: string;
   started_at: string | null;
@@ -224,8 +225,10 @@ export async function getTask(
 // Wider set (title/priority/assigned_role/run_mode/task_kind/is_template/...) is
 // accepted by the API per shared/api-contracts.md; expand the type as new
 // mutation surfaces land.
+// blocked_by (#771): explicit null clears; positive int sets; key-absent =
+// unchanged. Picker UI (TaskDetail) is the only consumer for now.
 export type TaskPatch = Partial<
-  Pick<TaskRead, "process_status" | "priority" | "title">
+  Pick<TaskRead, "process_status" | "priority" | "title" | "blocked_by">
 >;
 
 export async function patchTask(
@@ -240,5 +243,17 @@ export async function patchTask(
       "X-Project-Id": String(projectId),
     },
     body: JSON.stringify(body),
+  });
+}
+
+// GET /api/tasks/{id}/blocks — reverse-lookup for blocked_by (Kanban #771).
+// Returns active tasks whose blocked_by == id (dependents). Used by TaskDetail
+// for the optional "Also blocks" affordance. Soft-deleted excluded by API.
+export async function getTaskBlocks(
+  projectId: number,
+  id: number,
+): Promise<TaskRead[]> {
+  return jsonFetch<TaskRead[]>(`/api/tasks/${id}/blocks`, {
+    headers: { "X-Project-Id": String(projectId) },
   });
 }

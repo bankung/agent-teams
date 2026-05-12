@@ -15,9 +15,10 @@ type Props = {
   statuses: TaskStatusValue[];
   label: string;
   tasks: TaskRead[];
+  onOpenDetail?: (task: TaskRead) => void;
 };
 
-export function BoardColumn({ columnId, statuses, label, tasks }: Props) {
+export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail }: Props) {
   const { isOver, setNodeRef } = useDroppable({ id: columnId });
   const taskIds = tasks.map((t) => t.id);
   const dropHighlight = isOver ? " ring-2 ring-blue-400/50" : "";
@@ -47,7 +48,9 @@ export function BoardColumn({ columnId, statuses, label, tasks }: Props) {
           {tasks.length === 0 ? (
             <p className="px-1 py-4 text-center text-xs text-zinc-400 dark:text-zinc-500">—</p>
           ) : (
-            tasks.map((task) => <TaskCard key={task.id} task={task} />)
+            tasks.map((task) => (
+              <TaskCard key={task.id} task={task} onOpenDetail={onOpenDetail} />
+            ))
           )}
         </div>
       </SortableContext>
