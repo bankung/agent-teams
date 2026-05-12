@@ -16,8 +16,10 @@ from typing import AsyncIterator
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import FastAPI
+from starlette.middleware.cors import CORSMiddleware
 
 from src.routers import projects as projects_router
+from src.routers import scaffold as scaffold_router
 from src.routers import sessions as sessions_router
 from src.routers import tasks as tasks_router
 from src.settings import get_settings
@@ -117,6 +119,20 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # CORS — Kanban #805. Browser preflight (OPTIONS) on /api/* must succeed
+    # or FE jsonFetch surfaces TypeError "Failed to fetch". `allow_credentials`
+    # is False because the FE doesn't use cookies (`X-Project-Id` is a plain
+    # custom header, not a credential). Wildcard methods/headers are fine for
+    # this single-tenant local-dev app. Origins come from settings — defaults
+    # to localhost:3000, overridable via CORS_ALLOW_ORIGINS env var.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allow_origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     @app.get("/health", tags=["meta"])
     async def health() -> dict[str, str]:
         """Liveness probe — does NOT touch the DB."""
@@ -126,6 +142,7 @@ def create_app() -> FastAPI:
     app.include_router(tasks_router.router, prefix="/api")
     app.include_router(sessions_router.router, prefix="/api")
     app.include_router(sessions_router.runs_router, prefix="/api")
+    app.include_router(scaffold_router.router, prefix="/api")
 
     return app
 
