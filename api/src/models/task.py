@@ -172,6 +172,11 @@ class Task(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    # Kanban #785 (MVP-2): in-flight halt flag for full-auto Lead sessions.
+    # Non-null string = task is halted (auto-pickup query skips these);
+    # NULL = task runs normally. Free-form reason text set by Lead at halt
+    # time per the #787 decision matrix.
+    halt_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Self-ref FK: spawned children point at the template they came from.
     # ON DELETE SET NULL — defense-in-depth; app never hard-deletes templates.
     spawned_from_task_id: Mapped[int | None] = mapped_column(

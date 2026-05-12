@@ -227,6 +227,8 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 
 `is_pending` (bool, optional, default false) — added 2026-05-11 by Kanban #750 (migration 0011). Marks an in-progress row as "stuck/blocked". Cross-state validator rejects `is_pending=true` paired with `process_status != 2` (POST path; see 400 below). FE renders yellow card bg + pending badge + `data-card-pending="true"` when both predicates hold.
 
+`halt_reason` (str, optional, min_length=1, default null) — added 2026-05-12 by Kanban #785 (migration `0013_tasks_halt_reason`). Free-form halt signal for full-auto Lead sessions. Non-empty string = task is halted (auto-pickup query in #786 skips these); null/absent = task runs normally. Empty `""` → 422 with `type=string_too_short` at `loc=["body","halt_reason"]`. Orthogonal to `process_status` (same pattern as `is_pending`).
+
 **Response 201:** `TaskRead`
 
 **Errors:**
@@ -255,7 +257,7 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 **Auth:** none
 **Headers:** `X-Project-Id: <int>` REQUIRED. The fetched row's `project_id` must match the header value; mismatch → 400. (Kanban #695)
 
-**Request:** any subset of `{title, description, process_status, priority, assigned_role, started_at, completed_at, run_mode, task_kind, is_template, recurrence_rule, recurrence_timezone, next_fire_at, scheduled_at, is_pending}`. The soft-delete `status` flag is intentionally absent — sending `{"status": 0}` is silently ignored (use `DELETE` to soft-delete). `parent_task_id` AND `spawned_from_task_id` are BOTH REJECTED (V1 forbids re-parenting subtask hierarchy per Kanban #238 AND recurrence lineage per Kanban #706) — see 422 below. `scheduled_at` accepts any TZ offset on input; storage + GET response always normalize to UTC `Z` form. Set `{"scheduled_at": null}` to un-schedule a one-shot task (Kanban #723).
+**Request:** any subset of `{title, description, process_status, priority, assigned_role, started_at, completed_at, run_mode, task_kind, is_template, recurrence_rule, recurrence_timezone, next_fire_at, scheduled_at, is_pending, halt_reason}`. The soft-delete `status` flag is intentionally absent — sending `{"status": 0}` is silently ignored (use `DELETE` to soft-delete). `parent_task_id` AND `spawned_from_task_id` are BOTH REJECTED (V1 forbids re-parenting subtask hierarchy per Kanban #238 AND recurrence lineage per Kanban #706) — see 422 below. `scheduled_at` accepts any TZ offset on input; storage + GET response always normalize to UTC `Z` form. Set `{"scheduled_at": null}` to un-schedule a one-shot task (Kanban #723). `halt_reason` PATCH semantics (Kanban #785): key-absent = unchanged; explicit `null` = clear/unhalt; non-empty string = halt; `""` → 422.
 
 **Response 200:** `TaskRead`
 

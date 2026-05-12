@@ -2919,3 +2919,257 @@ async def test_777_edge_scaffold_uses_repo_root_not_working_path(
         f"scaffold {canonical!s} is empty — no role folders created. "
         f"Expected dev-team roster sub-folders."
     )
+
+
+# -----------------------------------------------------------------------------
+# Kanban #785 — halt_reason
+#
+# Free-form text on `tasks.halt_reason` (text, nullable). Lead sets it at halt
+# time; auto-pickup query skips rows where halt_reason IS NOT NULL. PATCH
+# semantics mirror description / working_path: key-absent = unchanged,
+# explicit-null = clear / unhalt, "" = 422 (min_length=1), non-empty = set.
+# ORM model + migration 0013 done in the DevOps slice. This slice wires the
+# field through Pydantic schemas (TaskCreate / TaskUpdate / TaskRead) and
+# verifies the router's generic exclude_unset + setattr loop carries it.
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_785_create_task_with_halt_reason(client) -> None:
+    """POST with halt_reason set → 201 + body echoes the field.
+
+    Rare-but-legal: a task may be filed already halted (e.g., user logs a task
+    that's pending external input). Cleanup soft-deletes the row.
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    resp = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "qa-785 halt_reason on create (test row, safe to delete)",
+            "halt_reason": "Option A/B decision needed",
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["halt_reason"] == "Option A/B decision needed"
+
+    # Cleanup
+    await client.delete(f"/api/tasks/{body['id']}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_785_create_task_without_halt_reason_defaults_null(client) -> None:
+    """POST omitting halt_reason → 201 + body has halt_reason: null.
+
+    The DB column is nullable with no DEFAULT — the absence on POST resolves
+    through Pydantic default=None and lands as NULL.
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    resp = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "qa-785 halt_reason default null (test row, safe to delete)",
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert "halt_reason" in body, "TaskRead must expose halt_reason"
+    assert body["halt_reason"] is None
+
+    # Cleanup
+    await client.delete(f"/api/tasks/{body['id']}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_785_create_task_rejects_empty_halt_reason(client) -> None:
+    """POST with halt_reason="" → 422 + type=string_too_short at
+    loc=['body','halt_reason']. Mirror of working_path empty-string contract.
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    resp = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "qa-785 halt_reason empty rejection (should not insert)",
+            "halt_reason": "",
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert "detail" in body and isinstance(body["detail"], list)
+    matching = [
+        err for err in body["detail"] if err["loc"] == ["body", "halt_reason"]
+    ]
+    assert matching, (
+        f"expected loc=['body','halt_reason'] in 422 detail; "
+        f"got {[err['loc'] for err in body['detail']]}"
+    )
+    assert matching[0]["type"] == "string_too_short", (
+        f"expected type='string_too_short'; got {matching[0]['type']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_785_patch_task_sets_halt_reason(client) -> None:
+    """PATCH {"halt_reason": "scope creep"} on a non-halted task → 200 with the
+    new value; subsequent GET returns it. Verifies the router's generic
+    exclude_unset + setattr loop carries the new field without special-casing.
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    create = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "qa-785 patch set halt_reason (test row, safe to delete)",
+        },
+        headers=headers,
+    )
+    assert create.status_code == 201, create.text
+    task_id = create.json()["id"]
+    assert create.json()["halt_reason"] is None
+
+    patch = await client.patch(
+        f"/api/tasks/{task_id}",
+        json={"halt_reason": "scope creep"},
+        headers=headers,
+    )
+    assert patch.status_code == 200, patch.text
+    assert patch.json()["halt_reason"] == "scope creep"
+
+    # GET round-trip confirms persistence (not just response shape).
+    fetched = await client.get(f"/api/tasks/{task_id}", headers=headers)
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["halt_reason"] == "scope creep"
+
+    # Cleanup
+    await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_785_patch_task_unsets_halt_reason_via_null(client) -> None:
+    """Start halted, PATCH {"halt_reason": null} → halt_reason becomes None.
+
+    Locks the explicit-null = unhalt semantics. No _reject_explicit_null
+    validator — null IS meaningful here (parity with description).
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    create = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "qa-785 patch unset halt_reason (test row, safe to delete)",
+            "halt_reason": "waiting on user",
+        },
+        headers=headers,
+    )
+    assert create.status_code == 201, create.text
+    task_id = create.json()["id"]
+    assert create.json()["halt_reason"] == "waiting on user"
+
+    patch = await client.patch(
+        f"/api/tasks/{task_id}",
+        json={"halt_reason": None},
+        headers=headers,
+    )
+    assert patch.status_code == 200, patch.text
+    assert patch.json()["halt_reason"] is None
+
+    # GET round-trip
+    fetched = await client.get(f"/api/tasks/{task_id}", headers=headers)
+    assert fetched.json()["halt_reason"] is None
+
+    # Cleanup
+    await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_785_patch_task_omitting_halt_reason_unchanged(client) -> None:
+    """Start halted, PATCH {"title": "new"} only → halt_reason unchanged.
+
+    Locks the key-absent = no-touch PATCH semantics (exclude_unset=True). A
+    future schema change that adds a default-None override on PATCH would
+    silently clear halt_reason on every unrelated PATCH — this test traps it.
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    create = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "qa-785 patch omit halt_reason (test row, safe to delete)",
+            "halt_reason": "pending review",
+        },
+        headers=headers,
+    )
+    assert create.status_code == 201, create.text
+    task_id = create.json()["id"]
+
+    patch = await client.patch(
+        f"/api/tasks/{task_id}",
+        json={"title": "qa-785 retitled (still halted)"},
+        headers=headers,
+    )
+    assert patch.status_code == 200, patch.text
+    assert patch.json()["title"] == "qa-785 retitled (still halted)"
+    assert patch.json()["halt_reason"] == "pending review", (
+        "halt_reason must be untouched on a PATCH that omits the key"
+    )
+
+    # GET round-trip
+    fetched = await client.get(f"/api/tasks/{task_id}", headers=headers)
+    assert fetched.json()["halt_reason"] == "pending review"
+
+    # Cleanup
+    await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_785_get_task_returns_halt_reason(client) -> None:
+    """POST a halted task, GET it by id, assert the field is present and
+    equals what was set. Locks TaskRead exposure of halt_reason."""
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    create = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "qa-785 GET returns halt_reason (test row, safe to delete)",
+            "halt_reason": "blocked by upstream",
+        },
+        headers=headers,
+    )
+    assert create.status_code == 201, create.text
+    task_id = create.json()["id"]
+
+    fetched = await client.get(f"/api/tasks/{task_id}", headers=headers)
+    assert fetched.status_code == 200, fetched.text
+    body = fetched.json()
+    assert "halt_reason" in body, "TaskRead must expose halt_reason"
+    assert body["halt_reason"] == "blocked by upstream"
+
+    # Cleanup
+    await client.delete(f"/api/tasks/{task_id}", headers=headers)

@@ -139,6 +139,13 @@ class TaskCreate(BaseModel):
     # forbids re-parenting lineage). Optional + ge=1 so regular user POSTs
     # default to None.
     spawned_from_task_id: int | None = Field(default=None, ge=1)
+    # Kanban #785 (MVP-2): in-flight halt flag for full-auto Lead sessions.
+    # Non-empty string = task is halted (auto-pickup query skips these);
+    # None / absent = task runs normally. Rare-but-legal on POST (e.g., user
+    # files a task that's pending external input). min_length=1 rejects "" at
+    # 422; explicit null = unhalt (PATCH semantics, no _reject_explicit_null
+    # validator). Parity with `description`, `working_path`, etc.
+    halt_reason: str | None = Field(default=None, min_length=1)
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=True)
@@ -248,6 +255,14 @@ class TaskUpdate(BaseModel):
     # declared so we can REJECT it explicitly; explicit-null is treated
     # identically to a non-null value.
     spawned_from_task_id: int | None = Field(default=None, ge=1)
+    # Kanban #785 (MVP-2): PATCH-able. Semantics:
+    #   - key absent      → leave unchanged (exclude_unset=True in router)
+    #   - explicit null   → clear / unhalt the task (null IS meaningful)
+    #   - empty string "" → 422 via min_length=1
+    #   - non-empty       → set halt reason
+    # No _reject_explicit_null validator — parity with `description`,
+    # `working_path`, etc.
+    halt_reason: str | None = Field(default=None, min_length=1)
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=False)
@@ -387,6 +402,10 @@ class TaskRead(BaseModel):
     # migration 0011's server_default. Cross-state validator at
     # services/is_pending.py couples is_pending=true with process_status=2.
     is_pending: bool
+    # Kanban #785 (MVP-2) — backfilled to NULL on existing rows by migration
+    # 0013's nullable=true. Free-form string set by Lead at halt time per the
+    # #787 decision matrix; NULL = task runs normally.
+    halt_reason: str | None
 
 
 # Sanity: the Literal stays in lockstep with src.constants.TaskRunMode.ALL.

@@ -16,6 +16,35 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-12 — Full-auto MVP infrastructure: hook + halt schema — Kanban #784 + #785 closed
+**Scope:** infra (`.claude/hooks/auto-approve-safe-writes.ps1` + smoke; migration `0013_tasks_halt_reason`, ORM, Pydantic, 7 tests on `test_routes_smoke.py`)
+
+**Decision:** Land 2 of the 5 MVP atomic pieces for the full-auto bet (#776 + #781 umbrella scope):
+- **#784** — PowerShell hook `.claude/hooks/auto-approve-safe-writes.ps1` that emits `permissionDecision: "allow"` for `Write`/`Edit` on safe-zone prefixes (`api/`, `web/`, `context/projects/`, `_scratch/`, `.claude/hooks/`); emits `"ask"` on path-traversal (`..`); pass-through (exit 0, no output) on everything else. Companion smoke script with 5 input shapes — all PASS. NOT wired into `agent-teams/.claude/settings.json` this slice; per-project enablement is a separate step on NewsAnalyzer + Writing only.
+- **#785** — `tasks.halt_reason TEXT NULL` via migration `0013_tasks_halt_reason`. Free-form halt reason; Lead PATCHes to non-empty string to halt, PATCHes to null to unhalt. Pydantic `min_length=1` rejects empty string (422). Auto-pickup query in #786 will skip rows where `halt_reason IS NOT NULL` regardless of `process_status` (orthogonal to lifecycle, same pattern as `is_pending` from #750).
+
+**Locked contracts:**
+- **Hook is ALLOW-or-pass-through only** — never denies. Deny-side responsibility belongs to `block-raw-sql-dml.ps1` and other future deny-hooks. Separation of concerns preserves debuggability.
+- **Path-traversal forces "ask"** — `\.\.` regex against raw input (before normalization) catches both forward-slash and Windows-backslash variants. Strictly conservative: a literal filename like `foo..bar.txt` also forces ask; trade-off accepted for zero traversal escapes.
+- **`halt_reason` PATCH semantics**: key-absent = leave unchanged; explicit null = clear/unhalt; non-empty string = set; empty `""` = 422. Parity with `description`, `working_path`. NO `_reject_explicit_null` validator (null IS meaningful = unhalt).
+- **No new `process_status` enum value** for halted state — `halt_reason IS NOT NULL` is the flag; process_status stays at whatever value the task held when halted. Same orthogonal-flag pattern as `is_pending` (Kanban #750).
+
+**Reasoning — MVP cut points:**
+- Skipped `dev-reviewer` + standalone `dev-tester` on #785 BE phase. Mirrors `working_path` pattern from #777 byte-for-byte (Pydantic `str | None` with `min_length=1`, PATCH-null clears, mirror tests). Reviewer's value on #777 was catching the JSONB scalar-null + key-allowlist; halt_reason is plain text with no such surface — no novelty to audit.
+- Skipped `process_status=8` enum + `halted_at` timestamp. Both deferred to #781 polish umbrella. MVP only needs the flag, not the lifecycle ceremony.
+- Hook NOT wired into agent-teams' own settings.json. Wiring is per-project deliberate — agent-teams (this session) stays prompt-per-call so Lead remains under human review on the dogfood loop.
+
+**Reviewer/tester decisions (subagent denials):**
+- 2nd strike: `.claude/hooks/*` writes from subagents denied (after `.claude/agents/*` denied 2026-05-11 on #779/#780). Pattern confirmed: `.claude/**` is humans-only for subagents in this project, regardless of `Write(/.claude/**)` allow rule in settings.json. Memory saved (`feedback_claude_dir_humans_only.md`). Future tasks touching `.claude/**` must use draft-in-`_scratch/` + user-move workflow.
+
+**Implications:**
+- **Hook enablement (out of scope this slice)**: when MVP-5 smoke begins on NewsAnalyzer, the user adds a `.claude/settings.json` in that project pointing to the hook. agent-teams keeps the hook installed but UNUSED.
+- **Auto-pickup query consumer (#786)**: MUST filter `AND halt_reason IS NULL`. Brief for #786 needs to specify this byte-for-byte.
+- **Decision matrix (#787)**: when Lead sets `halt_reason`, the value should be one of a curated set (e.g., `"Option A/B decision needed: <summary>"`, `"Scope creep proposed: <summary>"`) per the matrix. Free-form text at DB level; convention at app/Lead level.
+
+**Standards-candidates (propose-only — NOT written this slice):**
+- `standards/claude-code/hook-allow-vs-deny-separation.md`: ALLOW-hooks must never DENY (and vice versa). One responsibility per hook keeps debugging tractable when prompts unexpectedly fire (or unexpectedly don't). Strike #1 here; tabled.
+
 ## 2026-05-12 — projects schema: working_path + working_repo + agent_overrides — Kanban #777 closed
 **Scope:** backend (migration `0012_projects_path_repo_ovr`, 4 files: migration, ORM model, Pydantic schemas, router; 22 tests on `test_routes_smoke.py`)
 **Decision:** Add 3 optional columns to `projects` — `working_path TEXT NULL` (project root on dev machine), `working_repo TEXT NULL` (free-form repo URL/path), `agent_overrides JSONB NULL DEFAULT '{}'::jsonb` (per-project subagent model routing). All optional / metadata-additive — no existing code path consumes them yet; consumers land in Lead bootstrap + #774/#775/#779/#780 role wiring later.
