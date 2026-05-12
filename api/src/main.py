@@ -18,10 +18,12 @@ from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
+from src.routers import events as events_router
 from src.routers import projects as projects_router
 from src.routers import scaffold as scaffold_router
 from src.routers import sessions as sessions_router
 from src.routers import tasks as tasks_router
+from src.services.row_changed_listener import start_listener, stop_listener
 from src.settings import get_settings
 
 # Project-scoped logging — uvicorn does NOT propagate non-uvicorn loggers
@@ -75,11 +77,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     global _scheduler
 
+    # Kanban #782 — boot the row_changed SSE broker before the scheduler so
+    # tests / smoke ordering is deterministic. stop_listener runs in the
+    # cleanup branch regardless of how the lifespan exits.
+    await start_listener()
+
     disabled = os.environ.get("APP_SCHEDULER_DISABLE", "false").lower() == "true"
     if disabled:
         logger.info("recurrence scheduler disabled via APP_SCHEDULER_DISABLE")
         _scheduler = None
-        yield
+        try:
+            yield
+        finally:
+            await stop_listener()
         return
 
     tick_seconds = int(os.environ.get("APP_SCHEDULER_TICK_SECONDS", "60"))
@@ -107,6 +117,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception:
             logger.exception("recurrence scheduler shutdown failed")
         _scheduler = None
+        # Kanban #782 — release the SSE broker connection on shutdown.
+        await stop_listener()
 
 
 def create_app() -> FastAPI:
@@ -143,6 +155,7 @@ def create_app() -> FastAPI:
     app.include_router(sessions_router.router, prefix="/api")
     app.include_router(sessions_router.runs_router, prefix="/api")
     app.include_router(scaffold_router.router, prefix="/api")
+    app.include_router(events_router.router, prefix="/api")  # Kanban #782 SSE
 
     return app
 
