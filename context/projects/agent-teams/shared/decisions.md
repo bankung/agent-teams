@@ -16,6 +16,17 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-12 — Phase 3 umbrella #3 closed: Kanban UI scaffold ships
+**Scope:** shared (frontend / backend / scope close-out)
+**Decision:** Umbrella `#3 Phase 3 — kanban UI scaffold` flipped to `process_status=5`. All 16 child slices closed: V1 web/ scaffold (#405), V2 read-only board (#406), V3 ProjectSwitcher (#407); the recurrence T-series #706–710; the context-persistence CTX-series #716–719; the V2.1/V2.2 UX evolutions #748, #750, #760, #764. The four ACs are: V2 closed ✅ (#406), V3 closed ✅ (#407), browser smoke /p/agent-teams renders + ProjectSwitcher works post-#805 CORS fix ✅ (user-confirmed during 2026-05-12 session — the 42 leaked-row batch-DELETE on #805 was triggered precisely because the dropdown was being used; SSE push verified per #783), and this decisions.md entry.
+
+**Reasoning:** Phase 3 was the bridge from API-only dogfood to interactive UI. The umbrella sat in_progress for 7 days (started 2026-05-08) while it absorbed two unplanned thrusts that materially raised the surface area beyond the original V1/V2/V3 scope: (a) the recurrence subsystem (#706–710 + #748/#750) re-shaped the task model with `task_kind`/`is_pending`/recurrence triggers — Board view had to learn pending semantics + drag-drop-gating; (b) the context-persistence CTX-series (#716–719) added session/heartbeat/compact infra that the UI exposes via a per-card log. The scope-creep was deliberate, not accidental — each addition was filed as a child and reviewed individually rather than being smuggled into the umbrella description.
+
+**Implications:**
+- Phase 3 is done; **Phase 4** is the next milestone shell. Candidate Phase 4 scope (NOT locked here — needs its own session): cross-project dashboard (#769), Board↔List toggle (#770), `tasks.blocked_by` FK + sortable lane (#771/#772), per-project enabled_roles (#7). The full-auto bet (#776/#781 umbrellas + MVP children #784–788) is a parallel track, not part of Phase 4 sequencing.
+- The Phase 3 close does NOT change any wire contracts — it is purely a scope-bookkeeping decision. No follow-up code, migration, or doc changes are implied by this entry beyond the umbrella PATCH itself.
+- The umbrella's children remain the authoritative narrative for each sub-decision (drag-drop gating semantics, ProjectSwitcher loadError reset pattern in #760, per-lane scrollbar in #764). This entry is the index, not the recap.
+
 ## 2026-05-12 — dnd-kit research promoted to `shared/docs/` as first perishable doc under new decay policy — Kanban #812
 **Scope:** shared (frontend-prep docs)
 **Decision:** Promoted `_scratch/research-dnd-kit-api.md` (produced by dev-researcher smoke gate #812) to [`context/projects/agent-teams/shared/docs/research-dnd-kit-api.md`](docs/research-dnd-kit-api.md) with frontmatter declaring `decay_class: perishable`, `decay_after: 2026-08-10`, `decay_trigger: "Kanban #772 closes AND dnd-kit version pinned in web/package.json"`. Also dropped `_scratch/doc-draft-task-type-feature.md` per the same evaluation (read-value too low to promote — content derivable from git log + code).
