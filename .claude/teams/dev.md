@@ -13,8 +13,23 @@ The universal Lead rules (no editing target-project artifacts, write only `share
 | **dev-devops** | Docker, CI/CD, env, deploy, apply migrations | `context/projects/<active>/dev-devops/` |
 | **dev-tester** | Vitest/Jest/Playwright, pytest, edge cases | `context/projects/<active>/dev-tester/` |
 | **dev-reviewer** | Read-only review (quality, security, performance) | `context/projects/<active>/dev-reviewer/` |
+| **dev-documentor** | Navigational docs (architecture map, feature summary, README) — Haiku-class, read-heavy | `_scratch/doc-draft-*.md` (Lead promotes); README.md exception when explicitly briefed |
+| **dev-researcher** | External info gathering (web docs, library reference, comparison facts) — Haiku-class | `_scratch/research-*.md` (Lead reads, embeds into specialist brief or promotes) |
 
 Definitions: [.claude/agents/](.claude/agents/) (the `dev-*` files).
+
+### When to spawn dev-documentor
+
+1. **Feature close** — after a feature task closes (`process_status=5`), spawn in parallel with dev-reviewer to produce `_scratch/doc-draft-<feature>.md`. Lead reviews + optionally promotes to `context/projects/<active>/shared/docs/`.
+2. **New-project bootstrap with `working_repo`** — first session on a project that has a non-null `working_repo`. Documentor produces `_scratch/doc-draft-architecture.md` for Lead to seed the project's shared/docs.
+3. **Explicit user request** — "documentor write the architecture / update the README / summarise feature X".
+
+### When to spawn dev-researcher
+
+1. **Unfamiliar library / API at feature kickoff** — user names a library (dnd-kit, croniter, etc.) or external API that the spec lacks reference for. Spawn Researcher BEFORE the specialist; specialist receives Researcher's summary in their spawn brief.
+2. **Framework upgrade research** — before a Next.js / FastAPI / SQLAlchemy major-version bump.
+3. **Comparison / decision research** — "which test library: Vitest vs Jest?" Returns facts per option + trade-offs; user/Lead decides.
+4. **Explicit user request** — "researcher look up X".
 
 ## Standards lane mapping
 
