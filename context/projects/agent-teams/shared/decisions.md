@@ -16,6 +16,43 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-12 — Full-auto methodology MVP: pickup loop + top-5 decision matrix — Kanban #786 + #787 closed
+**Scope:** Lead-direct methodology doc (`context/teams/dev/full-auto.md` — new file). No code, no schema.
+
+**Decision:** Locked the MVP rules for unattended Lead operation. Activation requires ALL of: `LEAD_AUTOPICKUP=1` env var, `.claude/settings.json` wiring in the #784 auto-approve hook, and Lead bootstrap-announce string. Partial activation defaults to interactive — no half-modes.
+
+**Pickup loop (MVP-3):** on task close, Lead queries `GET /api/tasks?project_id=<p>&process_status=1&order_by=priority,created_at`, picks the first row matching `task_kind != 'human'` AND `halt_reason IS NULL` AND `status = 1`. Idle policies: `wakeup-30` (default) or `stop` via `LEAD_AUTOIDLE=stop`.
+
+**Decision matrix (MVP-4) — top-5 defaults USER SIGNED OFF 2026-05-12:**
+1. **Reviewer WARN** — Fold if (≤10 LOC) AND (no public API / wire / shared/ change); else file follow-up + close. *User: accepted.*
+2. **Reviewer NIT** — Always defer to consolidated follow-up task. Never fold in auto. *User: accepted.*
+3. **Tester new-standard proposal (strike #1)** — Log to `_scratch/` + bullet in `decisions.md` "Standards-candidates". Never auto-write `standards/**`. *User: accepted.*
+4. **Option A/B validator ambiguity** — HALT with `halt_reason="Option A/B decision needed: <summary>"`. *User: accepted.*
+5. **Cross-task scope creep** — HALT with `halt_reason="Scope creep proposed: <summary>"`. *User: accepted.*
+
+**Reasoning:**
+- The 5 defaults derive from real strikes in interactive sessions today (Option A/B from #714, scope creep is a recurring pattern, reviewer fold/defer matches user's habitual choices). Choosing widely-used heuristics minimises surprise on first smoke run.
+- Defer-by-default for NITs (rule 2) errs on the conservative side — better to over-batch than to auto-apply polish that turns out wrong. Codified in the strike log so future iterations can reconsider if NIT-fatigue becomes a thing.
+- HALT (rules 4 + 5) is the safety net for wire-contract and scope-cost decisions — the two categories where a wrong auto-default cascades widest.
+- Standards-candidate logging (rule 3) preserves the humans-only invariant on `context/standards/**` even when no human is present — auto sessions log proposals; user codifies at next interactive session.
+
+**Implications:**
+- **MVP-5 smoke (Kanban #788)** is now unblocked. Critical path complete for the bet (all 4 of #784/#785/#786/#787 closed).
+- **Halt format prefix discipline** — `halt_reason` strings MUST start with one of the matrix-defined prefixes ("Option A/B decision needed:" or "Scope creep proposed:"). Future matrix extensions add new prefixes. The prefix is the categorical signal.
+- **Strike log lives in `context/teams/dev/full-auto.md`** — append entry after each MVP-5 smoke run. Codifies what the matrix actually caught vs missed.
+
+**Out of scope (deferred to umbrella #776 + #781):**
+- All decision points beyond top-5.
+- `process_status=8` dedicated halted enum value.
+- `halted_at` timestamp + FE halted lane.
+- Granular Bash auto-approve patterns (MVP allows only Write/Edit).
+- `blocked_by` integration in pickup query (#771 P3-deferred).
+- Notification webhooks on halt.
+- Cross-project Meta-Lead coordination.
+
+**Standards-candidates (propose-only — NOT written this slice):**
+- `standards/process/auto-decision-matrix.md`: "every auto-decision rule must have a halt-prefix convention" — prefix is the categorical signal across heterogeneous halts. Tabled, strike #1.
+
 ## 2026-05-12 — Full-auto MVP infrastructure: hook + halt schema — Kanban #784 + #785 closed
 **Scope:** infra (`.claude/hooks/auto-approve-safe-writes.ps1` + smoke; migration `0013_tasks_halt_reason`, ORM, Pydantic, 7 tests on `test_routes_smoke.py`)
 
