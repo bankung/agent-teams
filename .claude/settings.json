@@ -228,7 +228,8 @@
       "Bash(curl --silent -X PATCH -H \"X-Project-Id: 1\" -H \"Content-Type: application/json\" --data @_scratch/patch-828.json http://localhost:8456/api/tasks/828)",
       "Bash(curl --silent -X PATCH -H \"X-Project-Id: 1\" -H \"Content-Type: application/json\" --data @_scratch/patch-845.json http://localhost:8456/api/tasks/845)",
       "Bash(curl --silent -X PATCH -H \"X-Project-Id: 1\" -H \"Content-Type: application/json\" --data @_scratch/patch-846.json http://localhost:8456/api/tasks/846)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(curl --silent http://localhost:8456/api/projects/by-name/lead-modal-smoke)"
     ],
     "ask": [
       "Write(/context/projects/*/shared/**)",
