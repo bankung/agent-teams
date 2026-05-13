@@ -59,6 +59,28 @@ Template for a new endpoint:
 **Query:** `limit` (1..500, default 50), `offset` (>=0, default 0). Note: the list already default-filters to `status=1` (active) via the project-level soft-delete contract; `?status=<int>` is currently silently accepted-and-ignored by FastAPI (no `status` param on the Query signature). FE V3 sends `?status=1` per the `/active` deprecation migration message; the wire behavior is correct (active-only) but the filter is not actually applied. Clients MUST NOT depend on `?status=<int>` until backend adds explicit `status: int | None = Query(None)` plumbing — tracked as a follow-up (Kanban #407 reviewer YELLOW, 2026-05-11).
 **Response 200:** `[ProjectRead, ...]`
 
+### GET /api/projects/stats
+**Purpose:** Batched cross-project stats — powers the cross-project dashboard (Kanban #769, 2026-05-13). One entry per active (`status=1`) project in `projects.created_at ASC` order (deterministic; matches `GET /api/projects`). N+1-free: backend computes counts in exactly two SQL round-trips regardless of project count (one list query + one grouped-aggregate over `tasks`).
+**Auth:** none. **Takes NO `X-Project-Id` header** — cross-project read (parity with `GET /api/projects`, `/api/projects/by-name/{name}`). Project endpoints don't carry the gate.
+**Response 200:** `[ProjectStatsEntry, ...]`
+**ProjectStatsEntry shape:**
+```json
+{
+  "id": 1,
+  "name": "agent-teams",
+  "team": "dev",
+  "run_mode_breakdown": {"manual": 143, "auto_pickup": 0, "auto_headless": 0},
+  "counts": {"1": 24, "2": 2, "3": 0, "4": 0, "5": 117},
+  "last_activity_at": "2026-05-13T04:30:25.270599Z"
+}
+```
+- `counts` keys are string-form ints `"1".."5"` mirroring `tasks.process_status` (TaskStatus codes per general.md). **All five keys always present** even when count is 0 — FE renders the lane grid without `||0` coalescing.
+- `run_mode_breakdown` mirrors `tasks.run_mode` ∈ `{manual, auto_pickup, auto_headless}`. **All three keys always present** even when count is 0.
+- `last_activity_at` is `MAX(tasks.updated_at)` across the project's active (`status=1`) tasks; `null` when the project has zero active tasks. Soft-deleted tasks excluded — their typically-newer `updated_at` from the delete flip MUST NOT leak through.
+- Soft-deleted projects (`projects.status=0`) excluded from the list entirely.
+- Ordering: `projects.created_at ASC` (id ASC tiebreak) — both locked by pytest `test_stats_ordered_by_created_at_asc`.
+**Errors:** none expected — the endpoint takes no params, no header, no body. An empty DB yields `[]`.
+
 ### GET /api/projects/active
 **Purpose:** ~~Get the single active project.~~ **DEPRECATED 2026-05-10 (Kanban #694 Phase 2 — session-scoped active project shift).** The "single active project" invariant is gone — multiple rows may legitimately carry `is_active=true` because each Claude Code session binds to a project by name independently. Callers MUST migrate to `/api/projects/by-name/{name}` or `/api/projects?status=1`.
 **Auth:** none
@@ -108,6 +130,10 @@ Template for a new endpoint:
 - `working_repo` (string | null, `min_length=1` when set) — free-form repo identifier (URL or path; no regex).
 - `agent_overrides` (`object<string, "haiku"|"sonnet"|"opus">` | null, default `{}`) — per-project subagent model routing. Keys MUST match `^[a-zA-Z0-9_-]{1,64}$` (same shape as `name`). Values constrained to the 3 Claude tiers.
 
+**Added by Kanban #778 (2026-05-13) — optional:**
+- `sources` (`list<SourceEntry>` | null, default `[]`, `max_length=20`) — per-project curated reference list (URLs, refs, doc anchors, repos). Each `SourceEntry`: `{url: str (1..2000), label?: str (1..200), kind?: "doc"|"spec"|"repo"|"dashboard"|"other"}` with `extra="forbid"` (typo'd keys reject 422). Optional fields stored with `exclude_none` — omitted from JSONB / response, NOT serialized as null.
+  - **`url` scheme allowlist (BLOCKER-1, fixed 2026-05-13):** accepts a scheme-prefixed URL where the scheme (case-insensitive) is one of **`http`, `https`, `ref`, `file`**, OR a Unix absolute path (`/...`), OR a Windows absolute path (`X:\...` or `X:/...`). Any other shape (including code-execution schemes `javascript:`, `data:`, `vbscript:`, non-allowlisted `gopher:`/`ftp:`, or the bare `://` separator) is rejected 422. The allowlist is the XSS-bypass gate — a permissive `"://" in s` substring check admitted `javascript://%0aalert(1)//` (canonical AngularJS-sanitizer-bypass payload) and `rel="noopener noreferrer"` does NOT block scheme execution. FE renderers MUST mirror the allowlist before producing a click-navigable `<a href>` (see `web/components/SourcesBadge.tsx::isExternal`; FE intentionally narrower — clickable set is `{http, https, ref}`, since browsers can't navigate to `file://` from a remote-served page anyway).
+
 **Response 201:** `ProjectRead`
 
 **Errors:**
@@ -116,19 +142,26 @@ Template for a new endpoint:
 - `422` — `working_path` or `working_repo` empty string. Rejection shape: `{"detail":[{"type":"string_too_short","loc":["body","working_path"|"working_repo"],...}]}` (Kanban #777).
 - `422` — `agent_overrides` value not in `{"haiku","sonnet","opus"}`. Rejection shape: `{"detail":[{"type":"literal_error","loc":["body","agent_overrides","<key>"],...}]}` (Kanban #777).
 - `422` — `agent_overrides` key fails `^[a-zA-Z0-9_-]{1,64}$`. Rejection shape: `{"detail":[{"type":"value_error","loc":["body","agent_overrides"],"msg":"... must match ^[a-zA-Z0-9_-]{1,64}$"}]}` (Kanban #777 WARN-4).
+- `422` — `sources` length > 20. Rejection shape: `{"detail":[{"type":"too_long","loc":["body","sources"],...,"ctx":{"max_length":20,"actual_length":<n>}}]}` (Kanban #778).
+- `422` — `sources[i].url` scheme not in allowlist OR not an absolute path. Rejection shape: `{"detail":[{"type":"value_error","loc":["body","sources",<i>,"url"],"msg":"Value error, url must be http/https/ref/file scheme, or an absolute path",...}]}` (Kanban #778 BLOCKER-1).
+- `422` — `sources[i].kind` not in `{"doc","spec","repo","dashboard","other"}`. Rejection shape: `{"detail":[{"type":"literal_error","loc":["body","sources",<i>,"kind"],...}]}` (Kanban #778).
+- `422` — `sources[i]` contains an unknown key (`SourceEntry.extra="forbid"`). Rejection shape: `{"detail":[{"type":"extra_forbidden","loc":["body","sources",<i>,"<key>"],...}]}` (Kanban #778).
 
 ### PATCH /api/projects/{id}
 **Purpose:** Partial update. Setting `is_active=true` ~~atomically clears every other row's `is_active`~~ **2026-05-10 (Kanban #694 Phase 2):** no longer touches other rows — multiple projects may carry `is_active=true` simultaneously under session-scoped binding. Server bumps `updated_at` on any real field change; an unchanged-body PATCH is a no-op (no `updated_at` advance, no audit-row noise) — N7 no-op-skip parity with PATCH `/api/tasks/{id}`.
 **Auth:** none
 
-**Request:** any subset of `{name, description, paths_web, paths_api, paths_db, stack_web, stack_api, stack_db, config, is_active, team, working_path, working_repo, agent_overrides}` (last 3 added by Kanban #777, 2026-05-12)
+**Request:** any subset of `{name, description, paths_web, paths_api, paths_db, stack_web, stack_api, stack_db, config, is_active, team, working_path, working_repo, agent_overrides, sources}` (`working_path`/`working_repo`/`agent_overrides` added by Kanban #777, 2026-05-12; `sources` added by Kanban #778, 2026-05-13)
 
-**Null semantics (Kanban #777):**
+**Null semantics (Kanban #777 / #778):**
 - `working_path: null` / `working_repo: null` → clears the field to SQL NULL (parity with `description`, `stack_*`).
 - `agent_overrides: null` → router normalizes to `{}` BEFORE the UPDATE (WARN-1 Option A). Response and subsequent GET both return `{}`, never `null`. The `server_default '{}'::jsonb` fires only on INSERT; this transform keeps the wire contract "always a dict at the response boundary" intact across PATCH too.
+- `sources: null` → router normalizes to `[]` BEFORE the UPDATE (parity with `agent_overrides` Option A). Response and subsequent GET both return `[]`, never `null`. The DB column IS nullable but the app layer treats NULL identically to `[]`, so the response boundary contract is "always a list, never null". Kanban #778.
 - Key-absent → leave existing value unchanged (parity with every other optional field via `exclude_unset=True`).
 
-**Agent_overrides replace semantics:** the value sent is the NEW value, full-stop — NOT deep-merged with existing keys. Locked by `test_patch_project_agent_overrides_replace_semantics`.
+**Replace semantics for JSONB collection fields:**
+- `agent_overrides`: the value sent is the NEW value, full-stop — NOT deep-merged with existing keys. Locked by `test_patch_project_agent_overrides_replace_semantics`.
+- `sources`: same — the array sent fully replaces the previous list, NOT element-merged. Locked by `test_sources_happy_crud_round_trip` (Kanban #778).
 
 **Response 200:** `ProjectRead`
 
@@ -140,6 +173,7 @@ Template for a new endpoint:
   Note: POST `/api/projects` 409 uses `"Project '<name>' already exists"` (no "name " word) — the two strings will be consolidated in a future contract revision.
 - `422` — `team` outside `{"dev","novel"}`
 - `422` — `working_path`/`working_repo` empty string, or `agent_overrides` value not in `{haiku|sonnet|opus}`, or `agent_overrides` key fails `^[a-zA-Z0-9_-]{1,64}$` (Kanban #777). Identical wire shapes to POST `/api/projects`.
+- `422` — `sources` length > 20, `sources[i].url` outside the allowlist, `sources[i].kind` enum miss, or unknown key per `extra="forbid"` (Kanban #778). Identical wire shapes to POST `/api/projects`.
 - `400` — `{"detail":"Cannot activate a soft-deleted project — restore first"}` when PATCH sets `is_active=true` on a row with `status=0`. Restore is a deferred admin path (separate endpoint when UI demands it). Other fields can still be PATCHed on a soft-deleted row.
 
 ### DELETE /api/projects/{id}

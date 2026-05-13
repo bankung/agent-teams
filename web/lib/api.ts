@@ -10,6 +10,18 @@ import type {
   TaskKindValue,
 } from "./constants";
 
+// Source — one entry in ProjectRead.sources (#778). Curated reference URL or
+// local path that an agent / human may need while working on the project.
+// `label` / `kind` are optional human metadata; `kind` is free-form (common
+// values: doc | spec | repo | dashboard | other) and rendered as a chip when
+// present. Local paths (no `scheme://`) are rendered as plain text — browsers
+// can't navigate to them.
+export type Source = {
+  url: string;
+  label?: string;
+  kind?: string;
+};
+
 // ProjectRead — mirror of api/src/schemas/project.py:ProjectRead.
 export type ProjectRead = {
   id: number;
@@ -27,6 +39,7 @@ export type ProjectRead = {
   created_at: string; // ISO 8601 with timezone
   updated_at: string;
   auto_run_consent_at: string | null; // null = not consented; set by POST /api/projects/{id}/grant-consent (#483)
+  sources: Source[]; // #778 — curated references; ALWAYS a list (never null), each entry has a required `url`
 };
 
 // AcceptanceCriterion — one entry in TaskRead.acceptance_criteria (#797).
@@ -205,6 +218,25 @@ export async function listProjects(
   if (opts.status !== undefined) qs.set("status", String(opts.status));
   const path = qs.toString() ? `/api/projects?${qs}` : `/api/projects`;
   return jsonFetch<ProjectRead[]>(path);
+}
+
+// ProjectStatsEntry — mirror of GET /api/projects/stats row (Kanban #769).
+// counts: all 5 TaskStatus keys ("1".."5") always present even when zero —
+// FE renders the lane grid without `||0` coalescing. run_mode_breakdown: all
+// 3 keys always present. last_activity_at: MAX(tasks.updated_at) over active
+// tasks; null when project has no active tasks. Ordering preserved by backend
+// (projects.created_at ASC).
+export type ProjectStatsEntry = {
+  id: number;
+  name: string;
+  team: ProjectTeamValue;
+  run_mode_breakdown: Record<TaskRunModeValue, number>;
+  counts: Record<"1" | "2" | "3" | "4" | "5", number>;
+  last_activity_at: string | null;
+};
+
+export async function getProjectsStats(): Promise<ProjectStatsEntry[]> {
+  return jsonFetch<ProjectStatsEntry[]>(`/api/projects/stats`);
 }
 
 // grantConsent — V3 consent grant flow (Kanban #407 / #483 follow-up).

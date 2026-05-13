@@ -148,7 +148,29 @@
       "Skill(firecrawl-build-interact)",
       "Skill(firecrawl-build-interact:*)",
       "Skill(firecrawl-build-onboarding)",
-      "Skill(firecrawl-build-onboarding:*)"
+      "Skill(firecrawl-build-onboarding:*)",
+      "Bash(curl --silent -o nul -w \"3000=%{http_code}\\\\n\" http://localhost:3000/p/agent-teams)",
+      "Bash(curl --silent http://localhost:8456/api/projects/stats)",
+      "Bash(curl --silent -w \"\\\\nHTTP_STATUS:%{http_code}\\\\n\" -X DELETE http://localhost:8456/api/projects/576)",
+      "Bash(curl --silent -o _scratch/board_empty.html -w \"%{http_code}\\\\n\" http://localhost:5431/p/agent-teams)",
+      "Bash(curl --silent -o _scratch/dashboard.html -w \"%{http_code}\\\\n\" http://localhost:5431/dashboard)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); e=[p for p in d if p['id']==1][0]; print\\(e['last_activity_at']\\)\")",
+      "Bash(curl --silent -H \"X-Project-Id: 1\" \"http://localhost:8456/api/tasks?process_status=2\")",
+      "Bash(curl --silent -H \"X-Project-Id: 1\" http://localhost:8456/api/tasks/769 -o _scratch/task-769-baseline.json)",
+      "Bash(curl --silent http://localhost:8456/api/projects/by-name/src-badge-smoke)",
+      "Bash(curl --silent -o _scratch/board_full.html -w \"%{http_code}\\\\n\" http://localhost:5431/p/src-badge-smoke)",
+      "Bash(curl --silent -w \"\\\\nHTTP_STATUS:%{http_code}\\\\n\" -X PATCH -H \"X-Project-Id: 1\" -H \"Content-Type: application/json\" -d '{\"description\":\"marker — smoke probe PATCH\"}' http://localhost:8456/api/tasks/866 -o _scratch/task-866-after-patch.json)",
+      "Bash(curl --silent -w \"\\\\nHTTP_STATUS:%{http_code}\\\\n\" -X DELETE -H \"X-Project-Id: 1\" http://localhost:8456/api/tasks/866)",
+      "Bash(curl --silent -H \"X-Project-Id: 1\" http://localhost:8456/api/tasks/866)",
+      "Bash(curl --silent -o nul -w \"%{http_code}\\\\n\" http://localhost:8456/api/projects/by-name/src-badge-smoke)",
+      "Bash(curl --silent -o nul -w \"%{http_code}\\\\n\" -H \"X-Project-Id: 577\" \"http://localhost:8456/api/tasks?limit=500\")",
+      "PowerShell($r = Invoke-WebRequest -Uri \"http://localhost:5431/dashboard\" -UseBasicParsing; \"STATUS=$\\($r.StatusCode\\) CONTENT_LENGTH=$\\($r.Content.Length\\)\"; \"--MARKERS--\"; \"agent-teams=$\\([regex]::Matches\\($r.Content,'agent-teams'\\).Count\\) NewsAnalyzer=$\\([regex]::Matches\\($r.Content,'NewsAnalyzer'\\).Count\\) Writing=$\\([regex]::Matches\\($r.Content,'Writing'\\).Count\\)\")",
+      "PowerShell($r = Invoke-WebRequest -Uri \"http://localhost:5431/p/agent-teams\" -UseBasicParsing; \"STATUS=$\\($r.StatusCode\\) CONTENT_LENGTH=$\\($r.Content.Length\\)\"; \"--MARKERS--\"; \"href_dashboard=$\\([regex]::Matches\\($r.Content,'href=&quot;/dashboard&quot;|href=\"\"/dashboard\"\"'\\).Count\\) raw_href=$\\([regex]::Matches\\($r.Content,'/dashboard'\\).Count\\)\")",
+      "Bash(curl --silent -o nul -w \"%{http_code}\" http://localhost:5431/)",
+      "Bash(curl --silent -o _scratch/board_full2.html -w \"%{http_code}\\\\n\" http://localhost:5431/p/src-badge-smoke)",
+      "Bash(curl --silent -o _scratch/board_empty2.html -w \"agent-teams=%{http_code}\\\\n\" http://localhost:5431/p/agent-teams)",
+      "Bash(curl --silent -o _scratch/dashboard2.html -w \"dashboard=%{http_code}\\\\n\" http://localhost:5431/dashboard)",
+      "Bash(python -c \"import json; entries=[{'url':f'https://x{i}.com','kind':'doc'} for i in range\\(21\\)]; payload={'name':'_smoke-778-B','team':'dev','paths':{'web':'/tmp/B/w','api':'/tmp/B/a','db':'/tmp/B/d'},'sources':entries}; open\\('_scratch/probe-B.json','w'\\).write\\(json.dumps\\(payload\\)\\)\")"
     ],
     "ask": [
       "Write(/context/projects/*/shared/**)",
@@ -158,7 +180,9 @@
     ],
     "defaultMode": "default"
   },
-  "enabledMcpjsonServers": ["chrome-devtools"],
+  "enabledMcpjsonServers": [
+    "chrome-devtools"
+  ],
   "hooks": {
     "PreToolUse": [
       {

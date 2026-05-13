@@ -27,13 +27,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
 from sqlalchemy.sql.elements import ClauseElement
 
-from src.constants import RecordStatus
+from src.constants import RecordStatus, TaskRunMode, TaskStatus
 from src.db import get_or_404, get_session
 from src.models.project import Project
+from src.models.task import Task
 from src.schemas.project import (
     ProjectCreate,
     ProjectGrantConsent,
     ProjectRead,
+    ProjectStatsEntry,
+    ProjectStatsRunModeBreakdown,
     ProjectUpdate,
 )
 from src.services.project_scaffold import scaffold_project_folder
@@ -110,6 +113,96 @@ async def list_projects(
     stmt = stmt.order_by(Project.id.asc()).limit(limit).offset(offset)
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+@router.get("/stats", response_model=list[ProjectStatsEntry])
+async def list_projects_stats(
+    session: AsyncSession = Depends(get_session),
+) -> list[ProjectStatsEntry]:
+    """Batched cross-project stats — powers the dashboard (Kanban #769).
+
+    One entry per active (`status=1`) project in `projects.created_at ASC`
+    order (matches GET /api/projects). Each entry carries `counts` (one bucket
+    per `tasks.process_status` 1..5, string keys), `run_mode_breakdown`
+    (manual / auto_pickup / auto_headless), and `last_activity_at`
+    (MAX(updated_at) of active tasks; None when project has zero active tasks).
+
+    Cross-project read — takes NO `X-Project-Id` header (parity with `""`,
+    `/active`, `/by-name/{name}`).
+
+    Query strategy (two-query stitch): one SELECT for the project list, one
+    SELECT against `tasks` GROUP BY (project_id, process_status, run_mode)
+    with `MAX(updated_at)` aggregate. Soft-deleted tasks (`status=0`) and
+    soft-deleted projects excluded at SQL. Python loop stitches the buckets
+    onto the project rows. No N+1: exactly two queries regardless of project
+    count.
+    """
+    # Query 1 — project list in canonical order.
+    projects_stmt = (
+        select(Project)
+        .where(Project.status == RecordStatus.ACTIVE)
+        .order_by(Project.created_at.asc(), Project.id.asc())
+    )
+    projects = list((await session.execute(projects_stmt)).scalars().all())
+
+    # Query 2 — GROUP BY aggregate across active tasks of active projects.
+    # Joining to projects (vs. filtering Task.project_id IN [...]) keeps the
+    # SQL stable when projects is empty (no IN-clause edge case) and lets
+    # PG's planner pick the join order.
+    agg_stmt = (
+        select(
+            Task.project_id,
+            Task.process_status,
+            Task.run_mode,
+            func.count().label("n"),
+            func.max(Task.updated_at).label("max_updated_at"),
+        )
+        .join(Project, Project.id == Task.project_id)
+        .where(
+            Project.status == RecordStatus.ACTIVE,
+            Task.status == RecordStatus.ACTIVE,
+        )
+        .group_by(Task.project_id, Task.process_status, Task.run_mode)
+    )
+    agg_rows = (await session.execute(agg_stmt)).all()
+
+    # Stitch. For each project, initialize all-zero buckets so every key is
+    # always present in the response (FE renders without coalescing); then
+    # fold each (project_id, process_status, run_mode) bucket into its
+    # project's tallies and update last_activity_at = max-so-far.
+    by_id: dict[int, dict] = {
+        p.id: {
+            "counts": {str(code): 0 for code in TaskStatus.ALL},
+            "run_mode_breakdown": {mode: 0 for mode in TaskRunMode.ALL},
+            "last_activity_at": None,
+        }
+        for p in projects
+    }
+    for project_id, process_status, run_mode, n, max_updated_at in agg_rows:
+        bucket = by_id[project_id]
+        bucket["counts"][str(process_status)] += n
+        # run_mode is constrained by DB CHECK to TaskRunMode.ALL, but be
+        # defensive — an unknown value would KeyError; route the unknown
+        # bucket to nothing visible rather than 500 the whole endpoint.
+        if run_mode in bucket["run_mode_breakdown"]:
+            bucket["run_mode_breakdown"][run_mode] += n
+        cur = bucket["last_activity_at"]
+        if max_updated_at is not None and (cur is None or max_updated_at > cur):
+            bucket["last_activity_at"] = max_updated_at
+
+    return [
+        ProjectStatsEntry(
+            id=p.id,
+            name=p.name,
+            team=p.team,
+            run_mode_breakdown=ProjectStatsRunModeBreakdown(
+                **by_id[p.id]["run_mode_breakdown"]
+            ),
+            counts=by_id[p.id]["counts"],
+            last_activity_at=by_id[p.id]["last_activity_at"],
+        )
+        for p in projects
+    ]
 
 
 @router.get(
@@ -210,6 +303,17 @@ async def create_project(
     if payload.agent_overrides is not None:
         data["agent_overrides"] = payload.agent_overrides
 
+    # Kanban #778: sources is a list of `SourceEntry` at the Pydantic boundary.
+    # OMIT the key when None so the ORM's Python-side `default=list` fires (DB
+    # server_default '[]'::jsonb is the safety net). When present, materialize
+    # each SourceEntry as a plain dict for JSONB storage — model_dump strips
+    # the None-valued optional fields out so we don't persist `label: null` /
+    # `kind: null` noise (parity with `acceptance_criteria` storage).
+    if payload.sources is not None:
+        data["sources"] = [
+            entry.model_dump(exclude_none=True) for entry in payload.sources
+        ]
+
     # Kanban #694, Phase 2: `is_active` is a free boolean — no atomic-clear of
     # other rows. The legacy `_clear_other_active(keep_id=None)` here was
     # load-bearing on the dropped `ux_projects_active_one` invariant.
@@ -306,6 +410,23 @@ async def update_project(
     # test_patch_project_agent_overrides_null_clears_to_empty_dict.
     if "agent_overrides" in updates and updates["agent_overrides"] is None:
         updates["agent_overrides"] = {}
+
+    # Kanban #778: PATCH explicit-null on sources means "clear to empty list"
+    # (parity with agent_overrides WARN-1 Option A). DB column IS nullable so a
+    # SQL NULL would not 500 — but the ProjectRead wire contract is
+    # always-a-list, so normalize here to keep response shape consistent. When
+    # present, `model_dump(exclude_unset=True)` has already serialized each
+    # `SourceEntry` to a plain dict; strip None-valued optional keys
+    # (`label`/`kind`) so they don't persist as `null` in JSONB (parity with the
+    # POST path's `exclude_none=True` model_dump).
+    if "sources" in updates:
+        if updates["sources"] is None:
+            updates["sources"] = []
+        else:
+            updates["sources"] = [
+                {k: v for k, v in entry.items() if v is not None}
+                for entry in updates["sources"]
+            ]
 
     # M10: cannot reactivate a soft-deleted project via PATCH — restore is a
     # separate (not-yet-built) admin path. Other fields ARE editable on a

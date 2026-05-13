@@ -14,6 +14,7 @@ from sqlalchemy import (
     SmallInteger,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -112,6 +113,21 @@ class Project(Base):
         nullable=True,
         server_default="{}",
         default=dict,
+    )
+
+    # Kanban #778 (2026-05-13): per-project curated source list. Element shape
+    # ({url, label?, kind?}) validated at the API boundary by Pydantic SourceEntry;
+    # NO DB CHECK on element shape (mirrors `config` / `agent_overrides` /
+    # `tasks.acceptance_criteria` precedent). DB CHECK `ck_projects_sources_length`
+    # caps array length <= 20 as defense-in-depth — Pydantic `max_length=20` is the
+    # first wall. nullable=True with server_default '[]'::jsonb: pre-existing rows
+    # read `[]` via the default (PG 16 metadata-only ADD COLUMN); ORM dict-default
+    # `list` keeps Python-side INSERT a list rather than None when omitted.
+    sources: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        server_default=text("'[]'::jsonb"),
+        default=list,
     )
 
     tasks: Mapped[list["Task"]] = relationship(

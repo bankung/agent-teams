@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { ListView } from "@/components/ListView";
@@ -28,6 +29,7 @@ import { BoardColumn } from "@/components/BoardColumn";
 import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
 import { ProjectConsentBanner } from "@/components/ProjectConsentBanner";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
+import { SourcesBadge } from "@/components/SourcesBadge";
 import { TaskDetail } from "@/components/TaskDetail";
 import { ThemePicker } from "@/components/ThemePicker";
 import { ToastStack, type ToastMessage } from "@/components/Toast";
@@ -271,9 +273,26 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
           <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
             ·
           </span>
+          <Link
+            href="/dashboard"
+            className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
+          >
+            Dashboard
+          </Link>
+          <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
+            ·
+          </span>
           <span className="text-zinc-600 dark:text-zinc-400">
             team: <span className="text-zinc-900 dark:text-zinc-100">{project.team}</span>
           </span>
+          {project.sources.length > 0 && (
+            <>
+              <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
+                ·
+              </span>
+              <SourcesBadge sources={project.sources} />
+            </>
+          )}
           <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
             ·
           </span>
