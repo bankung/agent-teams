@@ -11,8 +11,10 @@ The `general` team has **one core agent** plus **access to all specialist agents
 | Role | Stack scope | Owns (writes only here) |
 |---|---|---|
 | **general** | Cross-stack, investigative, exploratory, one-off scripting — fallback when no specialist fits | `context/projects/<active>/general/` |
-| *dev-frontend* | (available if task becomes React/Next.js–heavy) | `context/projects/<active>/dev-frontend/` |
-| *dev-backend* | (available if task becomes FastAPI/business-logic–heavy) | `context/projects/<active>/dev-backend/` |
+| *dev-sr-frontend* | (available for new-surface / design-heavy React/Next.js work — Opus tier) | `context/projects/<active>/dev-sr-frontend/` |
+| *dev-sr-backend* | (available for new-surface / design-heavy FastAPI work — Opus tier) | `context/projects/<active>/dev-sr-backend/` |
+| *dev-frontend* | (available if task becomes React/Next.js–heavy — existing surfaces) | `context/projects/<active>/dev-frontend/` |
+| *dev-backend* | (available if task becomes FastAPI/business-logic–heavy — existing surfaces) | `context/projects/<active>/dev-backend/` |
 | *dev-devops* | (available if task becomes Docker/CI-CD–heavy) | `context/projects/<active>/dev-devops/` |
 | *dev-tester* | (available if task becomes test-focused) | `context/projects/<active>/dev-tester/` |
 | *dev-reviewer* | (available for quality review) | `context/projects/<active>/dev-reviewer/` |

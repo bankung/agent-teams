@@ -218,6 +218,16 @@ class Task(Base):
     acceptance_criteria: Mapped[list[dict] | None] = mapped_column(
         JSONB, nullable=True
     )
+    # Kanban #887 (2026-05-13): append-only subagent spawn log per task.
+    # JSONB NOT NULL DEFAULT '[]'. Each element: {agent:str, model:str, at:datetime}.
+    # Shape validated by SubagentModelEntry at the API boundary. Full-replace
+    # PATCH semantics (Lead accumulates, then sends the whole list).
+    subagent_models: Mapped[list[dict]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("'[]'::jsonb"),
+        default=list,
+    )
     # Self-ref FK: spawned children point at the template they came from.
     # ON DELETE SET NULL — defense-in-depth; app never hard-deletes templates.
     spawned_from_task_id: Mapped[int | None] = mapped_column(

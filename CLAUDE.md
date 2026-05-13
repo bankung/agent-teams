@@ -88,6 +88,40 @@ Each Claude Code session is **bound to one project** for its entire lifetime. Mu
 
 The legacy `GET /api/projects/active` endpoint still exists but is **no longer authoritative** for session-scoped active. Use `by-name/<name>` (this protocol) or `?status=1` (list live projects) instead.
 
+## Subagent model logging (universal)
+
+Added Kanban #887 (2026-05-13). Every state-transition PATCH Lead sends to the tasks API **must include the full `subagent_models` list** accumulated for that task so far. Bundle it into the same PATCH body as `process_status`, `acceptance_criteria`, `completed_at`, etc. — do NOT send a separate per-spawn PATCH (too noisy; the audit log grows with each state transition).
+
+**What counts as a spawn (include in the list):**
+- Any `Agent({subagent_type: "<name>", ...})` call that returns real work output — dev-backend, dev-tester, dev-reviewer, dev-devops, dev-frontend, dev-documentor, dev-researcher, spec-reviewer, general, etc.
+
+**What does NOT count (do not include):**
+- Lead's own Read / Grep / Glob / Bash exploration
+- Skill invocations
+
+**Element shape** (REPLACE semantics — Lead sends the full accumulated list each PATCH; append is on Lead's side):
+```json
+{"agent": "dev-backend", "model": "opus", "at": "2026-05-13T09:00:00Z"}
+```
+- `agent`: the agent's frontmatter `name` (free-form string, e.g. `dev-backend`, `dev-sr-backend`)
+- `model`: one of `"opus"`, `"sonnet"`, `"haiku"` — mirrors the `model:` field in agent frontmatter (no frontmatter `model:` line → Opus default)
+- `at`: UTC ISO-8601 timestamp when Lead initiated the spawn
+
+**Example DONE-flip PATCH:**
+```json
+{
+  "process_status": 5,
+  "completed_at": "2026-05-13T10:00:00Z",
+  "acceptance_criteria": [...],
+  "subagent_models": [
+    {"agent": "dev-backend", "model": "opus", "at": "2026-05-13T09:00:00Z"},
+    {"agent": "dev-tester", "model": "sonnet", "at": "2026-05-13T09:30:00Z"}
+  ]
+}
+```
+
+If a task loops back (DONE → rework → DONE again), keep accumulating — the field records all spawns across the full task lifetime so the cohort baseline is complete.
+
 ## Two ways to receive work (universal)
 
 - **Natural language:** "add a login feature with API" → Lead picks roles + sequence per the active team's playbook.

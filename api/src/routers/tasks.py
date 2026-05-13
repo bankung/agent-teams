@@ -784,6 +784,13 @@ async def create_task(
         payload_dict["acceptance_criteria"] = [
             c.model_dump(mode="json") for c in payload.acceptance_criteria
         ]
+    # Kanban #887: SubagentModelEntry.at is `datetime`. Same Kanban #801 pattern
+    # — `mode='json'` coerces datetime → ISO-format string before the value
+    # reaches the JSONB column. The list may be empty (default) — always coerce
+    # for consistency (empty list no-ops silently).
+    payload_dict["subagent_models"] = [
+        e.model_dump(mode="json") for e in payload.subagent_models
+    ]
     # Kanban #830: QuestionPayload.answer_history contains `answered_at:
     # datetime | None` — same serialization hazard as AcceptanceCriterion
     # (Kanban #801 pattern). `mode='json'` coerces nested datetime →
@@ -862,6 +869,16 @@ async def update_task(
     ):
         updates["acceptance_criteria"] = [
             c.model_dump(mode="json") for c in payload.acceptance_criteria
+        ]
+    # Kanban #887: SubagentModelEntry.at is `datetime`. Same Kanban #801 pattern
+    # — `mode='json'` coerces datetime → ISO-format string before the value
+    # reaches the JSONB column. Only fires when the key is in the body and the
+    # list is non-null (null value means key absent semantics mismatch; TaskUpdate
+    # accepts None to mean "not in body" via exclude_unset, but the column is
+    # NOT NULL so null is never written — the condition below is a safety guard).
+    if "subagent_models" in updates:
+        updates["subagent_models"] = [
+            e.model_dump(mode="json") for e in payload.subagent_models
         ]
     # Kanban #830: same Kanban #801 pattern for question_payload / resume_context.
     # Explicit-null PATCH (key present, value None) skips re-dumping (no data to

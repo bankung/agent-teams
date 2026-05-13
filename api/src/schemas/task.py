@@ -142,6 +142,26 @@ class AcceptanceCriterion(BaseModel):
     notes: str | None = None
 
 
+class SubagentModelEntry(BaseModel):
+    """One entry in `tasks.subagent_models` (Kanban #887).
+
+    Locked design 2026-05-13: append-only audit log of subagent spawns per task.
+    `agent` is required (free-form name from agent frontmatter, min_length=1).
+    `model` is constrained to the three Claude tiers so the log stays
+    queryable by tier without free-form string matching.
+    `at` is the UTC ISO-8601 spawn timestamp.
+
+    `extra='forbid'` rejects unknown keys at 422 (parity with AcceptanceCriterion).
+    PATCH semantics: full-replace (Lead accumulates, then sends the whole list).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent: str = Field(min_length=1)
+    model: Literal["opus", "sonnet", "haiku"]
+    at: datetime
+
+
 class AnswerHistoryEntry(BaseModel):
     """One entry in `QuestionPayload.answer_history` (Kanban #830).
 
@@ -264,6 +284,11 @@ class TaskCreate(BaseModel):
     # replace whole array. On POST: None / absent = NULL in DB; [] = empty
     # array (legal but unusual); [...] = stored as-is.
     acceptance_criteria: list[AcceptanceCriterion] | None = None
+    # Kanban #887 (2026-05-13): append-only subagent spawn log. NOT NULL DEFAULT
+    # '[]' at the DB layer — POST default matches: empty list. Each element
+    # validated by SubagentModelEntry (agent required, model Literal, at datetime).
+    # Full-replace PATCH semantics (Lead accumulates, then sends the whole list).
+    subagent_models: list[SubagentModelEntry] = Field(default_factory=list)
     # Kanban #830 (2026-05-12): interaction_kind discriminates agent-executed work
     # from user-interaction gate tasks created by the auto-run loop when ambiguity
     # is detected mid-task. 'work' is the default; 'question'/'decision' require
@@ -448,6 +473,15 @@ class TaskUpdate(BaseModel):
     # Literal). No _reject_explicit_null validator — parity with description
     # and halt_reason.
     acceptance_criteria: list[AcceptanceCriterion] | None = None
+    # Kanban #887 (2026-05-13): PATCH-able. Semantics:
+    #   - key absent      → leave unchanged (exclude_unset=True in router)
+    #   - explicit list   → REPLACE the whole array (full-replace; Lead
+    #                       accumulates, then sends the whole list each PATCH)
+    # NOT nullable: the DB column is NOT NULL DEFAULT '[]'. Explicit null on
+    # PATCH is NOT meaningful (cannot clear to NULL — the column has no null
+    # state). Omit the key to leave unchanged. Each element validated by
+    # SubagentModelEntry (agent required, model Literal, at datetime).
+    subagent_models: list[SubagentModelEntry] | None = None
     interaction_kind: InteractionKindLiteral | None = None
     question_payload: QuestionPayload | None = None
     resume_context: dict[str, Any] | None = None
@@ -537,6 +571,18 @@ class TaskUpdate(BaseModel):
             raise ValueError(
                 "recurrence_timezone cannot be explicitly null — omit the key "
                 "to leave the existing value, or send a valid IANA TZ string"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_explicit_null_subagent_models(self) -> "TaskUpdate":
+        if (
+            "subagent_models" in self.model_fields_set
+            and self.subagent_models is None
+        ):
+            raise ValueError(
+                "subagent_models cannot be explicitly null — omit the key "
+                "to leave the existing value, or send [] to clear"
             )
         return self
 
@@ -662,6 +708,12 @@ class TaskRead(BaseModel):
     # way OUT we expose the stored shape — Pydantic re-validates each element
     # so a hand-edited corrupt row would 500 here rather than silently leak.
     acceptance_criteria: list[AcceptanceCriterion] | None
+    # Kanban #887 (2026-05-13) — append-only subagent spawn log. Backfilled to
+    # '[]' on existing rows by migration 0023's server_default. SubagentModelEntry
+    # validates element shape on the way IN; on the way OUT we expose the stored
+    # shape — Pydantic re-validates so a corrupt row would 500 rather than leak.
+    # NOT NULL in the DB — always a list on the wire, never null.
+    subagent_models: list[SubagentModelEntry]
     # Kanban #830 (2026-05-12) — backfilled to 'work' on existing rows by migration 0019.
     interaction_kind: InteractionKindLiteral
     # Kanban #830 — nullable JSONB. question_payload element shape validated by

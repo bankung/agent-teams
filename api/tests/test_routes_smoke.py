@@ -3483,6 +3483,13 @@ async def test_797_task_create_without_criteria_returns_null(client) -> None:
     body = resp.json()
     assert "acceptance_criteria" in body, "TaskRead must expose acceptance_criteria"
     assert body["acceptance_criteria"] is None
+    # Kanban #887: subagent_models is NOT NULL DEFAULT '[]' — always present,
+    # never null. Verify alongside acceptance_criteria (both are JSONB fields
+    # on the same task row).
+    assert "subagent_models" in body, "TaskRead must expose subagent_models"
+    assert body["subagent_models"] == [], (
+        f"expected [] (NOT NULL DEFAULT '[]'), got {body['subagent_models']!r}"
+    )
 
     # Cleanup
     await client.delete(f"/api/tasks/{body['id']}", headers=headers)

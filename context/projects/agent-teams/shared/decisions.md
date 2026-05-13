@@ -16,6 +16,58 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-13 — `tasks.subagent_models` JSONB audit log — Kanban #887
+**Scope:** backend / shared / CLAUDE.md (Lead protocol)
+**Decision:** Added `tasks.subagent_models JSONB NOT NULL DEFAULT '[]'` — an append-only audit log of subagent spawns per task. Each element: `{agent: str, model: "opus"|"sonnet"|"haiku", at: ISO-8601 UTC datetime}`. PATCH semantics are full-replace (Lead accumulates the list then sends the whole array on each state-transition PATCH; the API does not merge). Field validated by `SubagentModelEntry` Pydantic model with `extra="forbid"`.
+
+JSONB list chosen over a separate `task_spawns` table because: cohort queries we actually need (feature→bug-followup rate by model, per-task spawn count) are easy with JSONB and `parent_task_id`; joins add friction for what will be ad-hoc SQL for the first ~50 tasks of data; the separate-table approach is deferred to when we hit a query the JSONB shape can't answer.
+
+Migration: `0024_tasks_subagent_models` (revision `0024`, down_revision `0023_tasks_task_kind_default_ai`). Applied 2026-05-13. ADD COLUMN is a metadata-only PG 16 operation — no heap rewrite, no downtime. Existing 880+ rows default to `[]`; NULL never appears (verified by count(*) = 0 post-migration). Downgrade drops the column (safe, data is only `[]` before first Lead writes).
+
+Lead protocol (also in CLAUDE.md "Subagent model logging (universal)"): bundle `subagent_models` into every state-transition PATCH alongside `process_status`, `acceptance_criteria`, `completed_at`. One PATCH per transition — never per-spawn. Record every Agent spawn that produces real work output (dev-backend, dev-tester, dev-reviewer, dev-devops, dev-frontend, dev-documentor, dev-researcher, general, etc.). Do NOT record Lead's own Read/Grep/Glob exploration or Skill invocations.
+
+**Timing rationale:** deployed before #885 (tester/reviewer→Sonnet) and #886 (dev-sr-* tier) so the field captures the all-Opus baseline; the before/after comparison is intact in the cohort data.
+
+**Risk:** if the model Literal set (`"opus"|"sonnet"|"haiku"`) ever expands, existing rows with stored values will still pass on GET (Pydantic re-validates on the way out). If a stored model value is removed from the Literal without DB backfill, those GET calls will 500. Document future model-set changes here and backfill `subagent_models` entries if needed.
+
+**Implications:** first AC-10 test (done-flip with `subagent_models` populated) was the #887 close PATCH itself. Reporting endpoint and stats aggregation are explicitly deferred — ad-hoc SQL is sufficient for the first ~50 tasks of data.
+
+## 2026-05-13 — `dev-sr-*` Opus tier + routing rule — Kanban #886
+**Scope:** orchestration / team methodology
+**Decision:** Added two senior-tier specialist agents — `dev-sr-frontend` and `dev-sr-backend` — that explicitly run on Opus (no `model:` frontmatter line → Opus default) and are reserved for design-heavy / new-surface work. The `dev-frontend` and `dev-backend` agents remain at their current model (Opus by default; Sonnet downgrade is a separate follow-up task once the sr- tier is exercised on 3-5 real feature tasks).
+
+Routing rule (default, overridable by Lead per task):
+
+| task_type | New surface (new endpoint/page/migration)? | Default |
+|---|---|---|
+| feature | YES | dev-sr-backend / dev-sr-frontend (Opus) |
+| feature | NO | dev-backend / dev-frontend |
+| refactor / chore / docs | — | dev-backend / dev-frontend |
+| bug | — | dev-backend / dev-frontend; sr- only if architectural mismatch |
+
+Both sr- agents carry a **de-escalation protocol**: if mid-task they discover scope is narrower than expected (no new surface after all), they STOP and report — Lead respawns dev-* instead. This prevents paying Opus cost for what turns out to be incremental work.
+
+Files created: `.claude/agents/dev-sr-frontend.md`, `.claude/agents/dev-sr-backend.md`.
+Files updated: `.claude/teams/dev.md` (roster + tier routing rule subsection), `.claude/teams/general.md` (roster addition).
+
+**Rollback if rule misfires repeatedly:** if Lead observes that sr- spawns are frequently de-escalating (>50% of spawns) or that dev-* spawns are being escalated post-hoc to sr- on bugs, revisit the rule's "new surface" discriminator — the signal is too coarse. Open a follow-up task.
+
+**Deferred:** `dev-frontend` / `dev-backend` Sonnet downgrade — open a follow-up once sr- tier has been exercised on 3-5 real feature tasks. `tasks.subagent_models` JSONB field (#887) captures the before/after baseline.
+
+## 2026-05-13 — Switch `dev-tester` + `dev-reviewer` to Sonnet model — Kanban #885
+**Scope:** orchestration / team methodology
+**Decision:** Added `model: sonnet` to `dev-tester.md` and `dev-reviewer.md` frontmatter (after the `description:` line, mirroring `dev-analyst.md:4`). These agents now default to Sonnet 4.6 instead of Opus.
+
+Rationale: AC discipline (Kanban #797) gates correctness for both roles — test assertions are machine-checkable; reviewer checks are diff-bounded. Design judgment is NOT the load-bearing skill for these two roles; that lives in dev-backend / dev-frontend / the new dev-sr-* tier. Sonnet 4.6 is adequate for correctness-bounded work at significantly lower cost. Mirrors the existing pattern: `dev-analyst.md` and `dev-spec-reviewer.md` already use Sonnet; `dev-documentor.md` and `dev-researcher.md` use Haiku.
+
+Risks and mitigations:
+- **Sonnet may miss subtle design-flaw issues during review.** Mitigation A: `dev-spec-reviewer` (already Sonnet) catches pre-spawn spec ambiguity. Mitigation B: Lead's verify-don't-trust pass catches gross failures. Mitigation C: rollback criterion below.
+- **Tester may miss edge cases that Opus would catch.** Mitigation: Lead monitors rework rate.
+
+**Rollback criterion:** if over the next ~10 tester- or reviewer-touched tasks the rework rate (bug follow-up filed within 3 days of DONE, OR halt_reason='reviewer caught later') rises above the current baseline by a noticeable margin (Lead judgment until measurement infra lands), revert one or both to Opus by removing the `model:` line.
+
+**Note:** changes activate only after Claude Code session restart (new agent files loaded at session start — per memory `agents_load_at_start`).
+
 ## 2026-05-13 — Dashboard becomes the default landing; `NEXT_PUBLIC_PROJECT_NAME` knob retired — Kanban #869
 **Scope:** frontend
 **Decision:** `web/app/page.tsx` now `redirect("/dashboard")` unconditionally. The prior `NEXT_PUBLIC_PROJECT_NAME` env-var that picked a single-project `/p/<name>` landing is removed (not just unused — the read site is gone). Dashboard reshaped: `<section data-aggregate-summary>` (5-lane big-number row + stat strip) → `<section data-cost-summary>` (#871 cost/token rollup) → `<section data-project-grid>` (compact per-project cards), in DOM order locked by Tier-1 smoke byte-offset assertion.

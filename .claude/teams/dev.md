@@ -8,15 +8,31 @@ The universal Lead rules (no editing target-project artifacts, write only `share
 
 | Role | Stack scope | Owns (writes only here) |
 |---|---|---|
-| **dev-frontend** | Next.js, React, TypeScript, UI | `context/projects/<active>/dev-frontend/` |
-| **dev-backend** | FastAPI, Pydantic, business logic, migration files | `context/projects/<active>/dev-backend/` |
+| **dev-sr-frontend** | Next.js, React, TypeScript — NEW pages/surfaces, design-heavy — **Opus tier** | `context/projects/<active>/dev-sr-frontend/` |
+| **dev-sr-backend** | FastAPI, Pydantic — NEW endpoints/migrations/models, design-heavy — **Opus tier** | `context/projects/<active>/dev-sr-backend/` |
+| **dev-frontend** | Next.js, React, TypeScript, UI — modifying existing surfaces | `context/projects/<active>/dev-frontend/` |
+| **dev-backend** | FastAPI, Pydantic, business logic, migration files — modifying existing surfaces | `context/projects/<active>/dev-backend/` |
 | **dev-devops** | Docker, CI/CD, env, deploy, apply migrations | `context/projects/<active>/dev-devops/` |
 | **dev-tester** | Vitest/Jest/Playwright, pytest, edge cases | `context/projects/<active>/dev-tester/` |
 | **dev-reviewer** | Read-only review (quality, security, performance) | `context/projects/<active>/dev-reviewer/` |
 | **dev-documentor** | Navigational docs (architecture map, feature summary, README) — Haiku-class, read-heavy | `_scratch/doc-draft-*.md` (Lead promotes); README.md exception when explicitly briefed |
 | **dev-researcher** | External info gathering (web docs, library reference, comparison facts) — Haiku-class | `_scratch/research-*.md` (Lead reads, embeds into specialist brief or promotes) |
 
-Definitions: [.claude/agents/](.claude/agents/) (the `dev-*` files).
+Definitions: [.claude/agents/](.claude/agents/) (the `dev-*` and `dev-sr-*` files).
+
+### Tier routing rule (Kanban #886, 2026-05-13)
+
+Lead uses the following defaults. **Override is always allowed** — this is a default, not a gate. Surface any override decision in `decisions.md` during the first ~5 sr-spawns so the rule gets stress-tested.
+
+| `task_type` | New surface? (new endpoint / page / migration) | Default agent |
+|---|---|---|
+| `feature` | YES | **dev-sr-backend** or **dev-sr-frontend** (Opus) |
+| `feature` | NO (UI tweak / extend existing endpoint / fix / NIT) | **dev-backend** or **dev-frontend** |
+| `refactor` | — | **dev-backend** or **dev-frontend** |
+| `chore` / `docs` | — | **dev-backend** or **dev-frontend** |
+| `bug` | — | **dev-backend** or **dev-frontend**; Lead escalates to `sr` if bug is an architectural mismatch (wrong data model, wrong endpoint ownership) |
+
+**De-escalation:** both `dev-sr-*` agents carry a de-escalation protocol — if mid-task they discover the scope is narrower than the brief (no new surface after all), they STOP and report to Lead, who respawns `dev-*` instead.
 
 ### When to spawn dev-documentor
 

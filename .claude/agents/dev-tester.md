@@ -1,6 +1,7 @@
 ---
 name: dev-tester
 description: Dev tester / QA engineer — unit / integration / e2e tests, edge cases, regression
+model: sonnet
 hooks:
   PreToolUse:
     - matcher: "Bash"
