@@ -95,11 +95,27 @@ Triggered when the user opens a Kanban task whose title matches `release wrap-up
 
 **Anti-pattern:** running release wrap-up in the same session as the last feature commit → context pollution. Open a fresh session, re-resolve the active project, dedicate the session to wrap-up only.
 
+## Task creation discipline
+
+When Lead creates a new task via `POST /api/tasks`, `acceptance_criteria` **must be in the same curl call body** — never create-then-patch-later.
+
+Rule: before writing the curl command, draft at least 3 ACs. If the task is too vague to write ACs, the description needs more clarity first — clarify scope, then write ACs, then create.
+
+AC format:
+```json
+"acceptance_criteria": [
+  {"text": "...", "status": "pending", "verified_by": null, "verified_at": null, "notes": null}
+]
+```
+
+Incident: 16 tasks (#843–#860, 2026-05-13) created without ACs and required a bulk-patch retroactively.
+
 ## Dev-specific anti-patterns
 
 - Spawning dev-frontend + dev-backend in parallel when the API contract isn't stable → **sequential: backend first**.
 - Skipping dev-tester after an implementation lands → **incomplete cycle**.
 - Letting dev-devops apply a migration before the migration file is reviewed → **review first, then apply**.
 - Marking a task done without step 5b when the task touched routers / migrations / schemas / scaffold templates / env config → **live API smoke skipped**. pytest-only verification missed Kanban #76 (projects.updated_at vacuous-assertion) and would miss any M9-class bug where the test passes for the wrong reason.
+- Creating a task without `acceptance_criteria` in the same POST call → **AC missing at creation; bulk-patch incident 2026-05-13 (#843–#860)**.
 
 Universal anti-patterns are in root CLAUDE.md and [.claude/docs/lessons.md](.claude/docs/lessons.md).
