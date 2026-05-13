@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.constants import ProjectTeam
 
-TeamCode = Literal["dev", "novel"]
+TeamCode = Literal["dev", "novel", "general"]
 
 # Kanban #777: per-project agent-model overrides. Values are constrained to the
 # three Claude tiers we route across via AgentModelLiteral (Pydantic enforces at
@@ -297,22 +298,61 @@ class ProjectStatsRunModeBreakdown(BaseModel):
     auto_headless: int = 0
 
 
+class ProjectStatsCostUsage(BaseModel):
+    """Per-project cost/token aggregates rolled up from `session_runs` (Kanban #871).
+
+    Sums every `session_runs` row whose `session.project_id` matches this project.
+    No soft-delete filter — `sessions` / `session_runs` carry NO `status` column
+    (per db-schema.md: "NO audit trigger on `sessions`, `session_runs`, or
+    `session_compacts`"). Joined via `session_runs.session_id → sessions.id →
+    sessions.project_id` (2 hops; do NOT route via `session_runs.task_id` which
+    is nullable on `ON DELETE SET NULL`).
+
+    All six keys ALWAYS emitted (zero-filled) even when the project has no
+    session_runs — mirrors the `counts` / `run_mode_breakdown` "no-coalescing"
+    contract so the FE renders the dashboard widget without `||0` defaults.
+
+    `total_cost_usd` is serialized as a JSON string by Pydantic v2 default
+    (e.g. `"1.2345"`), mirroring `SessionRunRead.total_cost_usd` exactly.
+    """
+
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_context_chars: int = 0
+    total_cost_usd: Decimal = Decimal("0")
+    # Count of session_runs WHERE budget_warning = true (per-row flag, summed).
+    budget_warning_count: int = 0
+    # Total session_runs for the project — convenient "no usage yet" check on FE
+    # without scanning every numeric field for zero.
+    session_run_count: int = 0
+
+
 class ProjectStatsEntry(BaseModel):
     """Single project's stats row in the batched stats response (Kanban #769).
 
     Powers the cross-project dashboard. One entry per `status=1` project, in
     `projects.created_at ASC` order (deterministic, matches GET /api/projects).
 
-    `counts`: keys are string-form ints `"1".."5"` (mirrors `TaskStatus.ALL`).
-    All five keys always present even when count is 0 — FE renders the lane
-    grid without coalescing.
+    `counts`: keys are string-form ints `"1".."6"` (mirrors `TaskStatus.ALL`).
+    All six keys always present even when count is 0 — FE renders the lane
+    grid without coalescing. `"6"` is the CANCELLED bucket (Kanban #854).
 
     `last_activity_at`: `MAX(tasks.updated_at)` across the project's active
-    (`status=1`) tasks; `None` when the project has no active tasks.
+    (`status=1`) tasks, EXCLUDING cancelled (process_status=6) rows;
+    `None` when the project has no qualifying active tasks. Kanban #854
+    Option A: cancelled work is dead-end and a cancellation flip's
+    `updated_at` bump MUST NOT poke through as "last activity".
+
+    `cost_usage` (Kanban #871): per-project cost/token aggregates from
+    `session_runs`. Always emitted (zero-filled when the project has no
+    session_runs).
 
     Soft-deleted tasks (`status=0`) excluded from BOTH `counts` /
-    `run_mode_breakdown` AND `last_activity_at`. Soft-deleted projects
-    (`projects.status=0`) excluded from the list.
+    `run_mode_breakdown` AND `last_activity_at`. Cancelled tasks
+    (`process_status=6`, Kanban #854) excluded ONLY from
+    `last_activity_at` — they DO appear in `counts["6"]` and
+    `run_mode_breakdown`. Soft-deleted projects (`projects.status=0`)
+    excluded from the list.
     """
 
     id: int
@@ -321,6 +361,7 @@ class ProjectStatsEntry(BaseModel):
     run_mode_breakdown: ProjectStatsRunModeBreakdown
     counts: dict[str, int]
     last_activity_at: datetime | None
+    cost_usage: ProjectStatsCostUsage
 
 
 class ProjectGrantConsent(BaseModel):

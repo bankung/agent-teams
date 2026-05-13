@@ -31,7 +31,10 @@ from src.services.task_interaction import (
     auto_unblock_dependents,
     invalidate_last_answer as _invalidate_last_answer,
 )
-from src.services.task_kind import assert_run_mode_for_kind
+from src.services.task_kind import (
+    assert_run_mode_for_kind,
+    coerce_task_kind_for_interaction,
+)
 from src.services.session_project import (
     assert_body_matches_session,
     assert_task_belongs_to_session,
@@ -134,6 +137,17 @@ async def list_tasks(
             "specific) and `pending` is silently ignored."
         ),
     ),
+    include_cancelled: bool = Query(
+        default=False,
+        description=(
+            "If true, include CANCELLED (process_status=6) rows. By default "
+            "cancelled rows are excluded from the list (parity with the "
+            "soft-delete default-filter pattern — cancelled work is dead-end "
+            "and not relevant to most board / Lead-bootstrap queries). Kanban "
+            "#854. Silently ignored when an explicit `process_status=N` is "
+            "provided (explicit filter wins)."
+        ),
+    ),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     include_deleted: bool = Query(
@@ -154,7 +168,16 @@ async def list_tasks(
         # Kanban #697: convenience shortcut for the Lead-bootstrap "list pending
         # tasks" query. `elif` enforces precedence — explicit `process_status`
         # wins (more specific); `pending` is silently ignored on conflict.
+        # Note: `pending=true` returns ps != 5; CANCELLED (ps=6) is also a
+        # "non-done" code, but cancelled work is dead-end and excluded below
+        # via the `include_cancelled` gate unless explicitly opted in.
         stmt = stmt.where(Task.process_status != TaskStatus.DONE)
+    # Kanban #854: cancelled rows (process_status=6) are excluded by default
+    # — parity with soft-delete semantics for dead-end work. Skipped when an
+    # explicit `process_status=N` filter is provided (the explicit filter is
+    # more specific and wins, same precedence pattern as `pending`).
+    if process_status is None and not include_cancelled:
+        stmt = stmt.where(Task.process_status != TaskStatus.CANCELLED)
     if assigned_role is not None:
         stmt = stmt.where(Task.assigned_role == assigned_role)
     if top_level_only:
@@ -714,13 +737,24 @@ async def create_task(
                 detail=f"blocked_by {payload.blocked_by} belongs to a different project",
             )
 
+    # Kanban #858 (2026-05-13): when interaction_kind IN ('question','decision'),
+    # force task_kind='human' AND run_mode='manual' regardless of caller input.
+    # Silent server-side coerce (Option A) — atomic so the HUMAN↔MANUAL
+    # invariant below doesn't fire on the same call. Reverse 'question'→'work'
+    # PATCHes do NOT auto-revert task_kind (handled separately in update_task).
+    coerced_task_kind, coerced_run_mode = coerce_task_kind_for_interaction(
+        payload.interaction_kind, payload.task_kind, payload.run_mode
+    )
+
     # V3+ T1 (Kanban #706) cross-table validator: task_kind='human' is
     # incompatible with run_mode != 'manual'. Pure function (no DB I/O) so
     # fires BEFORE the consent gate (cheaper check first; both are app-layer
     # cross-validators on the resolved final values). Detail string pinned by
     # source-text-lock test in test_task_kind_recurrence.py — keep in sync with
-    # services/task_kind.py.
-    assert_run_mode_for_kind(payload.task_kind, payload.run_mode)
+    # services/task_kind.py. Runs on the POST-coerce values so a caller-supplied
+    # task_kind='ai' + interaction_kind='question' lands at ('human','manual')
+    # without tripping the assertion.
+    assert_run_mode_for_kind(coerced_task_kind, coerced_run_mode)
 
     # Kanban #750 cross-state validator: is_pending=true requires
     # process_status=2 (in_progress). Pure function (no DB I/O) — fires after
@@ -742,6 +776,10 @@ async def create_task(
     # so the other datetime fields (started_at, completed_at, next_fire_at,
     # scheduled_at) keep landing as TIMESTAMPTZ-native datetimes.
     payload_dict = payload.model_dump()
+    # Kanban #858: persist the post-coerce values, not the raw caller input.
+    # No-op when interaction_kind='work' (coerce returned the originals).
+    payload_dict["task_kind"] = coerced_task_kind
+    payload_dict["run_mode"] = coerced_run_mode
     if payload_dict.get("acceptance_criteria") is not None:
         payload_dict["acceptance_criteria"] = [
             c.model_dump(mode="json") for c in payload.acceptance_criteria
@@ -892,6 +930,31 @@ async def update_task(
     resolved_task_kind = (
         updates.get("task_kind") if "task_kind" in updates else task.task_kind
     )
+
+    # Kanban #858: server-side coerce based on the resolved interaction_kind.
+    # If the resolved value is 'question' or 'decision', force task_kind='human'
+    # + run_mode='manual' (Option A — atomic; keeps the HUMAN↔MANUAL invariant
+    # below from firing on the same call). Reverse 'question'/'decision' → 'work'
+    # is NOT auto-reverted (spawn brief edge case #3) — task_kind stays at the
+    # existing 'human' until the caller explicitly PATCHes it back to 'ai'.
+    resolved_interaction_kind = (
+        updates.get("interaction_kind") if "interaction_kind" in updates
+        else task.interaction_kind
+    )
+    coerced_task_kind, coerced_run_mode = coerce_task_kind_for_interaction(
+        resolved_interaction_kind, resolved_task_kind, resolved_run_mode
+    )
+    # Only write back into `updates` when the coerced value diverges from the
+    # existing row's column — the no-op skip below already detects equality but
+    # we keep `updates` clean so audit-row noise / explicit PATCH semantics stay
+    # tight. Re-pin the resolved values for the assertion + consent gate below.
+    if coerced_task_kind != task.task_kind:
+        updates["task_kind"] = coerced_task_kind
+    if coerced_run_mode != task.run_mode:
+        updates["run_mode"] = coerced_run_mode
+    resolved_task_kind = coerced_task_kind
+    resolved_run_mode = coerced_run_mode
+
     assert_run_mode_for_kind(resolved_task_kind, resolved_run_mode)
 
     # Kanban #750 resolved-final cross-state: is_pending=true requires

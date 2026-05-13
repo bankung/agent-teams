@@ -76,7 +76,7 @@ def test_constants_align_with_general_md() -> None:
     """Sanity-check that integer codes match the standards doc."""
     from src.constants import TaskPriority, TaskRole, TaskStatus
 
-    assert TaskStatus.ALL == (1, 2, 3, 4, 5)
+    assert TaskStatus.ALL == (1, 2, 3, 4, 5, 6)
     assert TaskPriority.ALL == (1, 2, 3, 4)
     assert TaskRole.ALL == (1, 2, 3, 4, 5)
 

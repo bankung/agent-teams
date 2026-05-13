@@ -263,7 +263,7 @@ async def test_post_task_invalid_process_status_returns_422_with_validator_messa
     # FastAPI 422 envelope: {"detail": [{"loc": [...], "msg": "...", ...}, ...]}
     assert "detail" in body and isinstance(body["detail"], list)
     msgs = " | ".join(err["msg"] for err in body["detail"])
-    assert "process_status must be one of (1, 2, 3, 4, 5), got 99" in msgs
+    assert "process_status must be one of (1, 2, 3, 4, 5, 6), got 99" in msgs
     # N8 — pin the field path so renames break the test.
     assert any(err["loc"] == ["body", "process_status"] for err in body["detail"]), (
         f"expected loc=['body','process_status'] in detail; got "
@@ -3953,3 +3953,227 @@ async def test_801_patch_with_datetime_returns_200(client) -> None:
 
     # Cleanup
     await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+# Regression: Kanban #854 — CANCELLED=6 default-exclusion + status_change_reason
+@pytest.mark.asyncio
+async def test_list_tasks_excludes_cancelled_by_default(client) -> None:
+    """`GET /api/tasks` default response MUST omit process_status=6 rows.
+
+    Seed two rows in the project — one TODO, one we PATCH to CANCELLED —
+    and confirm default GET only returns the TODO row.
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    created: list[int] = []
+    try:
+        t_todo = await client.post(
+            "/api/tasks",
+            json={"project_id": project_id, "title": "k854 default-excl todo"},
+            headers=headers,
+        )
+        assert t_todo.status_code == 201, t_todo.text
+        todo_id = t_todo.json()["id"]
+        created.append(todo_id)
+
+        t_cancel = await client.post(
+            "/api/tasks",
+            json={"project_id": project_id, "title": "k854 default-excl victim"},
+            headers=headers,
+        )
+        assert t_cancel.status_code == 201, t_cancel.text
+        cancel_id = t_cancel.json()["id"]
+        created.append(cancel_id)
+
+        # Flip to CANCELLED via PATCH.
+        flip = await client.patch(
+            f"/api/tasks/{cancel_id}",
+            json={"process_status": 6, "status_change_reason": "k854 smoke cancel"},
+            headers=headers,
+        )
+        assert flip.status_code == 200, flip.text
+        assert flip.json()["process_status"] == 6
+        assert flip.json()["status_change_reason"] == "k854 smoke cancel"
+
+        # Default list — cancel_id must NOT appear; todo_id MUST.
+        resp = await client.get("/api/tasks?limit=500", headers=headers)
+        assert resp.status_code == 200, resp.text
+        ids = {t["id"] for t in resp.json()}
+        assert todo_id in ids, "default GET must include the TODO row"
+        assert cancel_id not in ids, (
+            f"default GET must exclude CANCELLED row id={cancel_id}"
+        )
+        # Defensive: no returned row has process_status=6.
+        for t in resp.json():
+            assert t["process_status"] != 6, (
+                f"default GET leaked a cancelled row id={t['id']}"
+            )
+    finally:
+        for tid in created:
+            await client.delete(f"/api/tasks/{tid}", headers=headers)
+
+
+# Regression: Kanban #854
+@pytest.mark.asyncio
+async def test_list_tasks_include_cancelled_opts_in(client) -> None:
+    """`?include_cancelled=true` opts the cancelled rows back in. The TODO
+    row stays included (default behavior is additive, not replacement).
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    created: list[int] = []
+    try:
+        t_todo = await client.post(
+            "/api/tasks",
+            json={"project_id": project_id, "title": "k854 incl todo"},
+            headers=headers,
+        )
+        todo_id = t_todo.json()["id"]
+        created.append(todo_id)
+
+        t_cancel = await client.post(
+            "/api/tasks",
+            json={"project_id": project_id, "title": "k854 incl victim"},
+            headers=headers,
+        )
+        cancel_id = t_cancel.json()["id"]
+        created.append(cancel_id)
+        flip = await client.patch(
+            f"/api/tasks/{cancel_id}",
+            json={"process_status": 6, "status_change_reason": "k854 incl"},
+            headers=headers,
+        )
+        assert flip.status_code == 200, flip.text
+
+        resp = await client.get(
+            "/api/tasks?include_cancelled=true&limit=500", headers=headers
+        )
+        assert resp.status_code == 200, resp.text
+        ids = {t["id"] for t in resp.json()}
+        assert todo_id in ids
+        assert cancel_id in ids, (
+            f"?include_cancelled=true must surface CANCELLED row id={cancel_id}"
+        )
+    finally:
+        for tid in created:
+            await client.delete(f"/api/tasks/{tid}", headers=headers)
+
+
+# Regression: Kanban #854 — explicit process_status filter still works for 6
+@pytest.mark.asyncio
+async def test_list_tasks_explicit_process_status_6_returns_cancelled(client) -> None:
+    """`?process_status=6` explicit filter SHOULD include the cancelled rows
+    (precedence: explicit `process_status` wins over the default cancelled
+    exclusion — same precedence pattern as `pending`).
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    created: list[int] = []
+    try:
+        t = await client.post(
+            "/api/tasks",
+            json={"project_id": project_id, "title": "k854 explicit6 victim"},
+            headers=headers,
+        )
+        tid = t.json()["id"]
+        created.append(tid)
+        await client.patch(
+            f"/api/tasks/{tid}",
+            json={"process_status": 6, "status_change_reason": "k854 explicit6"},
+            headers=headers,
+        )
+
+        resp = await client.get(
+            "/api/tasks?process_status=6&limit=500", headers=headers
+        )
+        assert resp.status_code == 200, resp.text
+        ids = {t["id"] for t in resp.json()}
+        assert tid in ids, (
+            f"explicit ?process_status=6 must include CANCELLED row id={tid}"
+        )
+        for t in resp.json():
+            assert t["process_status"] == 6
+    finally:
+        for tid in created:
+            await client.delete(f"/api/tasks/{tid}", headers=headers)
+
+
+# Regression: Kanban #854 — audit-trigger captures status_change_reason
+@pytest.mark.asyncio
+async def test_patch_cancel_records_reason_in_tasks_history(client) -> None:
+    """`tasks_history` rows snapshot the OLD row (pre-UPDATE state) — this is
+    a property of the existing audit trigger and intentional. To verify that
+    `status_change_reason` is captured by the trigger, we PATCH the field
+    TWICE: the first PATCH sets it; the second PATCH (any column change)
+    causes the trigger to emit a snapshot of the row BETWEEN those two
+    PATCHes — which now carries the reason. This is the load-bearing
+    audit-trail behavior the FE depends on.
+    """
+    from sqlalchemy import select
+
+    from src.db import SessionLocal
+    from src.models.task import TaskHistory
+
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    create = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k854 audit smoke"},
+        headers=headers,
+    )
+    assert create.status_code == 201, create.text
+    task_id = create.json()["id"]
+
+    try:
+        reason = "user clicked cancel — k854 audit"
+        flip = await client.patch(
+            f"/api/tasks/{task_id}",
+            json={"process_status": 6, "status_change_reason": reason},
+            headers=headers,
+        )
+        assert flip.status_code == 200, flip.text
+
+        # Second PATCH — any no-op-ish change. Touch the title so the audit
+        # trigger fires AGAIN, this time capturing the row state set by the
+        # first cancel PATCH (process_status=6 + the reason).
+        second = await client.patch(
+            f"/api/tasks/{task_id}",
+            json={"title": "k854 audit smoke v2"},
+            headers=headers,
+        )
+        assert second.status_code == 200, second.text
+
+        # Read tasks_history rows for this task_id. Trigger writes OLD state;
+        # the SECOND history row (most-recent id) snapshots the row state
+        # AFTER the cancel PATCH but BEFORE the title PATCH — so the snapshot
+        # carries process_status=6 + the reason.
+        async with SessionLocal() as s:
+            rows = (
+                await s.execute(
+                    select(TaskHistory)
+                    .where(TaskHistory.task_id == task_id)
+                    .order_by(TaskHistory.id.desc())
+                )
+            ).scalars().all()
+        assert len(rows) >= 2, (
+            f"expected >=2 tasks_history rows after two PATCHes; got {len(rows)}"
+        )
+        snap_post_cancel = rows[0].snapshot  # OLD state at the title PATCH = post-cancel state
+        assert snap_post_cancel.get("process_status") == 6, snap_post_cancel
+        assert snap_post_cancel.get("status_change_reason") == reason, snap_post_cancel
+        # And the earliest history row snapshots the pre-cancel state — has
+        # the new column key but a NULL value (column existed pre-PATCH but
+        # the row had no reason yet).
+        snap_pre_cancel = rows[1].snapshot
+        assert "status_change_reason" in snap_pre_cancel, snap_pre_cancel
+        assert snap_pre_cancel["status_change_reason"] is None, snap_pre_cancel
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)

@@ -60,7 +60,7 @@ Template for a new endpoint:
 **Response 200:** `[ProjectRead, ...]`
 
 ### GET /api/projects/stats
-**Purpose:** Batched cross-project stats — powers the cross-project dashboard (Kanban #769, 2026-05-13). One entry per active (`status=1`) project in `projects.created_at ASC` order (deterministic; matches `GET /api/projects`). N+1-free: backend computes counts in exactly two SQL round-trips regardless of project count (one list query + one grouped-aggregate over `tasks`).
+**Purpose:** Batched cross-project stats — powers the cross-project dashboard (Kanban #769, 2026-05-13; extended by #871 BE 2026-05-13). One entry per active (`status=1`) project in `projects.created_at ASC` order (deterministic; matches `GET /api/projects`). N+1-free: backend computes everything in exactly three SQL round-trips regardless of project count (project list + tasks GROUP BY + session_runs GROUP BY via sessions).
 **Auth:** none. **Takes NO `X-Project-Id` header** — cross-project read (parity with `GET /api/projects`, `/api/projects/by-name/{name}`). Project endpoints don't carry the gate.
 **Response 200:** `[ProjectStatsEntry, ...]`
 **ProjectStatsEntry shape:**
@@ -70,13 +70,27 @@ Template for a new endpoint:
   "name": "agent-teams",
   "team": "dev",
   "run_mode_breakdown": {"manual": 143, "auto_pickup": 0, "auto_headless": 0},
-  "counts": {"1": 24, "2": 2, "3": 0, "4": 0, "5": 117},
-  "last_activity_at": "2026-05-13T04:30:25.270599Z"
+  "counts": {"1": 24, "2": 2, "3": 0, "4": 0, "5": 117, "6": 0},
+  "last_activity_at": "2026-05-13T04:30:25.270599Z",
+  "cost_usage": {
+    "total_input_tokens": 2102500,
+    "total_output_tokens": 1050800,
+    "total_context_chars": 0,
+    "total_cost_usd": "105.2800",
+    "budget_warning_count": 3,
+    "session_run_count": 8
+  }
 }
 ```
-- `counts` keys are string-form ints `"1".."5"` mirroring `tasks.process_status` (TaskStatus codes per general.md). **All five keys always present** even when count is 0 — FE renders the lane grid without `||0` coalescing.
+- `counts` keys are string-form ints `"1".."6"` mirroring `tasks.process_status` (TaskStatus codes per general.md; `"6"` CANCELLED added by Kanban #854 2026-05-13). **All six keys always present** even when count is 0 — FE renders the lane grid without `||0` coalescing. The lane-row UI iterates a fixed LANES tuple (1..5) and currently DOES NOT render the cancelled count — that surface ships with #870.
 - `run_mode_breakdown` mirrors `tasks.run_mode` ∈ `{manual, auto_pickup, auto_headless}`. **All three keys always present** even when count is 0.
-- `last_activity_at` is `MAX(tasks.updated_at)` across the project's active (`status=1`) tasks; `null` when the project has zero active tasks. Soft-deleted tasks excluded — their typically-newer `updated_at` from the delete flip MUST NOT leak through.
+- `last_activity_at` is `MAX(tasks.updated_at)` across the project's active (`status=1`) tasks **EXCLUDING `process_status=6` (CANCELLED)** — parity with the soft-delete-exclusion semantics; cancellation is dead-end work whose `updated_at` bump must not leak as "freshness". `null` when the project has zero non-cancelled active tasks. Locked by `test_stats_cancelled_excluded_from_last_activity_in_counts` (Kanban #854).
+- `cost_usage` (Kanban #871 BE, 2026-05-13) — per-project rollup of `session_runs` (joined via `sessions.project_id`; do NOT route via the nullable `session_runs.task_id`). **All six keys always present**, zero-filled when the project has zero session_runs (parity with `counts` / `run_mode_breakdown` no-coalescing invariant). Fields:
+  - `total_input_tokens` / `total_output_tokens` / `total_context_chars` (int) — `SUM(...)` across the project's session_runs.
+  - `total_cost_usd` (**JSON string**, NOT number) — `SUM(session_runs.total_cost_usd)`. Pydantic v2 serializes `Decimal` as a JSON string (e.g. `"105.2800"` for stored `Numeric(10,4)` totals; `"0"` for the zero-fill default). Mirrors `SessionRunRead.total_cost_usd`. FE must parse via `Number(x)` / `parseFloat(x)` / Decimal.js — never plain `+x` arithmetic.
+  - `budget_warning_count` (int) — count of `session_runs` rows where `budget_warning = true` for the project.
+  - `session_run_count` (int) — total `session_runs` for the project. Cheapest "no usage yet" empty-state check on FE: `cost_usage.session_run_count === 0`.
+  - `session_runs` / `sessions` have no soft-delete column (per db-schema.md "NO audit trigger" on those tables); no equivalent of the tasks-status filter applies on the cost aggregate.
 - Soft-deleted projects (`projects.status=0`) excluded from the list entirely.
 - Ordering: `projects.created_at ASC` (id ASC tiebreak) — both locked by pytest `test_stats_ordered_by_created_at_asc`.
 **Errors:** none expected — the endpoint takes no params, no header, no body. An empty DB yields `[]`.
@@ -171,7 +185,7 @@ Template for a new endpoint:
   - `{"detail":"Project name '<name>' already exists"}` when `ux_projects_name_active` is violated
   - `{"detail":"Project update conflicts with an existing row"}` (fallback for unknown integrity errors)
   Note: POST `/api/projects` 409 uses `"Project '<name>' already exists"` (no "name " word) — the two strings will be consolidated in a future contract revision.
-- `422` — `team` outside `{"dev","novel"}`
+- `422` — `team` outside `{"dev","novel","general"}` (`'general'` added by Kanban #844, 2026-05-13)
 - `422` — `working_path`/`working_repo` empty string, or `agent_overrides` value not in `{haiku|sonnet|opus}`, or `agent_overrides` key fails `^[a-zA-Z0-9_-]{1,64}$` (Kanban #777). Identical wire shapes to POST `/api/projects`.
 - `422` — `sources` length > 20, `sources[i].url` outside the allowlist, `sources[i].kind` enum miss, or unknown key per `extra="forbid"` (Kanban #778). Identical wire shapes to POST `/api/projects`.
 - `400` — `{"detail":"Cannot activate a soft-deleted project — restore first"}` when PATCH sets `is_active=true` on a row with `status=0`. Restore is a deferred admin path (separate endpoint when UI demands it). Other fields can still be PATCHed on a soft-deleted row.
@@ -207,7 +221,7 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 **Purpose:** List tasks for the session-bound project (paginated, filterable).
 **Auth:** none
 **Headers:** `X-Project-Id: <int>` REQUIRED. List scope is taken from the header — the legacy `?project_id=<int>` query param was REMOVED by Kanban #695. (See top-level Headers section.)
-**Query:** `process_status` (1..5, optional), `pending` (bool, default false — when true, return only rows with `process_status != 5`, i.e., todo + in_progress + review + blocked. Convenience shortcut for the Lead-bootstrap "list pending tasks" query. When both `pending=true` and `process_status=N` are provided, `process_status` wins (more specific) and `pending` is silently ignored — enforced by `elif pending:` in `routers/tasks.py` `list_tasks`. Added 2026-05-10 by Kanban #697.), `assigned_role` (optional), `parent_task_id` (optional, ge=1 — return only direct children of N), `top_level_only` (bool, default false — when true, return only `parent_task_id IS NULL` rows), `limit`, `offset`. Precedence when both `parent_task_id` and `top_level_only` are provided: `top_level_only` takes precedence and `parent_task_id` is silently ignored (`routers/tasks.py` `list_tasks` `if top_level_only: ... elif parent_task_id is not None: ...`). Subtask hierarchy added 2026-05-08 by Kanban #238.
+**Query:** `process_status` (1..6, optional — `6=CANCELLED` added by Kanban #854 2026-05-13), `pending` (bool, default false — when true, return only rows with `process_status != 5` AND `process_status != 6`, i.e., todo + in_progress + review + blocked. Convenience shortcut for the Lead-bootstrap "list pending tasks" query. When both `pending=true` and `process_status=N` are provided, `process_status` wins (more specific) and `pending` is silently ignored — enforced by `elif pending:` in `routers/tasks.py` `list_tasks`. Added 2026-05-10 by Kanban #697.), `include_cancelled` (bool, default false — when true, surface `process_status=6` rows in the default list. Precedence: explicit `?process_status=N` wins over `include_cancelled`; same pattern as `pending`. Added 2026-05-13 by Kanban #854 — cancelled is a terminal dead-end-work state, hidden by default to keep boards clean), `assigned_role` (optional), `parent_task_id` (optional, ge=1 — return only direct children of N), `top_level_only` (bool, default false — when true, return only `parent_task_id IS NULL` rows), `limit`, `offset`. Precedence when both `parent_task_id` and `top_level_only` are provided: `top_level_only` takes precedence and `parent_task_id` is silently ignored (`routers/tasks.py` `list_tasks` `if top_level_only: ... elif parent_task_id is not None: ...`). Subtask hierarchy added 2026-05-08 by Kanban #238.
 **Response 200:** `[TaskRead, ...]`
 **Errors:**
 - `400` — `{"detail":"X-Project-Id header is required for task endpoints"}` when header missing (Kanban #695)
@@ -245,7 +259,7 @@ A future `POST /api/projects/{id}/revoke-consent` will set `auto_run_consent_at`
 
 `run_mode` (`"manual"` | `"auto_pickup"` | `"auto_headless"`, optional, default `"manual"`) — Step 2 execution mode (Kanban #483). `auto_headless` requires `project.auto_run_consent_at IS NOT NULL` — see 400 below.
 
-`task_kind` (`"ai"` | `"human"`, optional, default `"human"`) — V3+ scope-lock 2026-05-10 (Kanban #706). Discriminates AI-runner-driven work from human work. Cross-table rule: `task_kind='human'` MUST pair with `run_mode='manual'`; mismatch → 400 (see Errors below). Validator at `services/task_kind.py` fires BEFORE the consent gate (cheaper pure-function check first).
+`task_kind` (`"ai"` | `"human"`, optional, **default `"ai"`** — flipped from `"human"` by Kanban #858 2026-05-13). V3+ scope-lock 2026-05-10 (Kanban #706). Discriminates AI-runner-driven work from human work. **Cross-table rules at `services/task_kind.py` (BEFORE the consent gate):** (1) `task_kind='human'` MUST pair with `run_mode='manual'`; mismatch → 400. (2) **Kanban #858 interaction-kind coerce:** when resolved `interaction_kind IN ('question','decision')`, the API SILENTLY coerces `task_kind='human'` AND `run_mode='manual'` regardless of caller-supplied values (Option A — atomic; the HUMAN↔MANUAL 400 never fires on question/decision bodies because the coerce runs first). On PATCH: flipping `interaction_kind` to `question`/`decision` also flips `task_kind` + `run_mode`. Reverse (`question/decision → work`) does NOT auto-revert `task_kind`; callers must explicitly PATCH `task_kind="ai"` to revert.
 
 `is_template` (bool, optional, default false) — recurrence template flag. When true, `recurrence_rule` AND `next_fire_at` are required (Pydantic 422; DB CHECK 400 fallback).
 
@@ -580,7 +594,7 @@ Reader takes the per-session lock (V1 — serializes reads behind writes; avoids
 
 `auto_run_consent_at` (datetime ISO-8601 with timezone, or null) added 2026-05-09 by Kanban #483 — per-project consent gate for `tasks.run_mode='auto_headless'` (Mode B / Step 2 architecture). Default null = not consented; non-null = user consented at this timestamp via `POST /api/projects/{id}/grant-consent`.
 
-**`TaskRead`** — `{id:int, project_id:int, parent_task_id:int|null, title, description, process_status:int, priority:int, assigned_role:int|null, run_mode:"manual"|"auto_pickup"|"auto_headless", task_kind:"ai"|"human", is_template:bool, recurrence_rule:str|null, recurrence_timezone:str, next_fire_at:datetime|null, spawned_from_task_id:int|null, scheduled_at:datetime|null, blocked_by:int|null, sort_order:float|null, acceptance_criteria:AcceptanceCriterion[]|null, is_pending:bool, created_at, updated_at, started_at:datetime|null, completed_at:datetime|null}`
+**`TaskRead`** — `{id:int, project_id:int, parent_task_id:int|null, title, description, process_status:int (1..6; 6=CANCELLED added by #854), priority:int, assigned_role:int|null, run_mode:"manual"|"auto_pickup"|"auto_headless", task_kind:"ai"|"human" (default "ai" since #858), task_type:str, is_template:bool, recurrence_rule:str|null, recurrence_timezone:str, next_fire_at:datetime|null, spawned_from_task_id:int|null, scheduled_at:datetime|null, blocked_by:int|null, sort_order:float|null, acceptance_criteria:AcceptanceCriterion[]|null, interaction_kind:"work"|"question"|"decision", question_payload:QuestionPayload|null, resume_context:object|null, halt_reason:str|null, status_change_reason:str|null (Kanban #854), is_pending:bool, created_at, updated_at, started_at:datetime|null, completed_at:datetime|null}` — `status_change_reason` is free-form rationale for a `process_status` flip; min_length=1 on POST/PATCH (empty `""` → 422); audit-trigger snapshots into `tasks_history`; most common pair `{process_status:6, status_change_reason:<text>}` on cancellation.
 
 **`AcceptanceCriterion`** (Kanban #797, shape mirrored at FE in `web/lib/api.ts` since #827) — `{text:str, status:"pending"|"passed"|"failed"|"na", verified_by:str|null, verified_at:datetime|null, notes:str|null}`. JSONB on disk; Pydantic enforces shape at API boundary. NULL on TaskRead.acceptance_criteria = field unset; empty array = explicitly cleared. Hard process_status=5 flip is NOT gated by the API — soft enforcement lives in Lead/agent prompts per CLAUDE.md "Acceptance criteria discipline".
 

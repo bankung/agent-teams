@@ -18,9 +18,9 @@ Three rules, in priority order:
    is recorded in `errors` and the scan continues. Caller decides what to do
    with partial scaffolds; this service does not raise mid-walk.
 
-The file set is hard-coded by team (`dev` / `novel`). Universal files land on
-every team; team-specific files only on that team. Adding a file = edit the
-constants below.
+The file set is hard-coded by team (`dev` / `novel` / `general`). Universal
+files land on every team; team-specific files only on that team. Adding a
+file = edit the constants below.
 
 Path-traversal guard rejects `target_path` that resolves to or under
 `agent_teams_root` so a misconfigured `working_path = "."` can never overwrite
@@ -154,6 +154,21 @@ _NOVEL_FILES: tuple[str, ...] = (
 # directory are silently skipped (see _expand_glob).
 _NOVEL_GLOBS: tuple[str, ...] = ("context/teams/novel/**",)
 
+# Kanban #844 (2026-05-13): generalist team — single agent + single playbook.
+# Both files are drafted by follow-up Kanban #845 (.claude/teams/general.md)
+# and #846 (.claude/agents/general.md); scaffolding a `team='general'`
+# project before those land will record both paths in `report.errors`
+# ("source not found: …"), which is the existing graceful-fallback behavior
+# in _copy_one. The DB row commit is unaffected (best-effort scaffold per
+# the service's contract).
+_GENERAL_FILES: tuple[str, ...] = (
+    ".claude/agents/general.md",
+    ".claude/teams/general.md",
+)
+
+# General team source dir may not exist yet — same _expand_glob skip path.
+_GENERAL_GLOBS: tuple[str, ...] = ("context/teams/general/**",)
+
 
 @dataclass
 class ScaffoldReport:
@@ -176,8 +191,8 @@ def _resolve_manifest(team: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     included; team-specific entries are appended.
 
     Unknown team → log + fall back to dev-only (defensive; the DB CHECK on
-    projects.team already restricts to {'dev','novel'} so this should never
-    fire in production).
+    projects.team already restricts to {'dev','novel','general'} so this
+    should never fire in production).
     """
     files = list(_UNIVERSAL_FILES)
     globs = list(_UNIVERSAL_GLOBS)
@@ -187,6 +202,9 @@ def _resolve_manifest(team: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     elif team == "novel":
         files += _NOVEL_FILES
         globs += _NOVEL_GLOBS
+    elif team == "general":
+        files += _GENERAL_FILES
+        globs += _GENERAL_GLOBS
     else:
         logger.warning(
             "zero_config_scaffold: unknown team %r — falling back to dev manifest",

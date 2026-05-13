@@ -133,13 +133,16 @@ class Task(Base):
     )
 
     # V3+ T1 (Kanban #706): task_kind discriminates AI vs human work.
-    # DB DEFAULT 'human' covers existing rows + INSERT-without-explicit. The
-    # cross-table rule (HUMAN must pair with MANUAL) lives in
-    # src/services/task_kind.py — spans the run_mode column at the app layer.
+    # DB DEFAULT 'ai' (Kanban #858 — flipped from 'human' on 2026-05-13). Most
+    # tasks are agent-driven; 'human' is reserved for interaction_kind in
+    # ('question','decision'), which the router coerces server-side via
+    # services/task_kind.coerce_task_kind_for_interaction. The cross-table
+    # rule (HUMAN must pair with MANUAL) lives in src/services/task_kind.py —
+    # spans the run_mode column at the app layer.
     task_kind: Mapped[str] = mapped_column(
         String(8),
         nullable=False,
-        server_default="human",
+        server_default=text("'ai'"),
     )
 
     # Kanban #803 (2026-05-12): task_type classifies work — bug / feature /
@@ -188,6 +191,11 @@ class Task(Base):
     # NULL = task runs normally. Free-form reason text set by Lead at halt
     # time per the #787 decision matrix.
     halt_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Kanban #854 (2026-05-13): free-form rationale captured on a
+    # process_status flip — most commonly when the user cancels a task
+    # (process_status -> 6). Independent of the value: any PATCH may set it.
+    # NULL = unset. Audit-trigger snapshot captures the field automatically.
+    status_change_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Kanban #830 (2026-05-12): interaction_kind discriminates agent-executed tasks
     # from user-interaction gates. DB DEFAULT 'work' covers existing rows + INSERT.
     interaction_kind: Mapped[str] = mapped_column(

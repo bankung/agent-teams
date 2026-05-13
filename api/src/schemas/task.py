@@ -201,9 +201,13 @@ class TaskCreate(BaseModel):
     # lives in src/services/run_mode.py and fires in router POST/PATCH.
     run_mode: TaskRunModeLiteral = TaskRunMode.MANUAL
     # V3+ T1 (Kanban #706) — task_kind discriminates AI vs human work. Default
-    # 'human' matches the DB DEFAULT; cross-table validator (HUMAN ↔ MANUAL)
-    # lives in src/services/task_kind.py.
-    task_kind: TaskKindLiteral = TaskKind.HUMAN
+    # 'ai' matches the DB DEFAULT (Kanban #858 — flipped from 'human' on
+    # 2026-05-13). The router coerces task_kind='human' server-side when
+    # interaction_kind IN ('question','decision') regardless of caller input,
+    # so the schema default never lies about a question/decision body's
+    # final stored value. Cross-table validator (HUMAN ↔ MANUAL) lives in
+    # src/services/task_kind.py.
+    task_kind: TaskKindLiteral = TaskKind.AI
     # Kanban #803 (2026-05-12) — task_type classifies the work. Default
     # 'feature' matches the DB DEFAULT. No cross-table validator — purely
     # classification metadata.
@@ -246,6 +250,13 @@ class TaskCreate(BaseModel):
     # 422; explicit null = unhalt (PATCH semantics, no _reject_explicit_null
     # validator). Parity with `description`, `working_path`, etc.
     halt_reason: str | None = Field(default=None, min_length=1)
+    # Kanban #854 (2026-05-13): free-form rationale captured on a
+    # process_status flip — most commonly when the user cancels a task
+    # (process_status -> 6). Independent of the value: any PATCH may set
+    # it. None / absent on POST → NULL in DB. min_length=1 rejects ""
+    # at 422 (parity with halt_reason / description). Audit-trigger
+    # snapshot captures the field automatically — no separate plumbing.
+    status_change_reason: str | None = Field(default=None, min_length=1)
     # Kanban #797 (2026-05-12): optional structured exit-criteria array. Each
     # element validated by AcceptanceCriterion (text required, status Literal,
     # etc.). PATCH semantics for the field on TaskUpdate mirror description /
@@ -417,6 +428,14 @@ class TaskUpdate(BaseModel):
     # No _reject_explicit_null validator — parity with `description`,
     # `working_path`, etc.
     halt_reason: str | None = Field(default=None, min_length=1)
+    # Kanban #854 (2026-05-13): PATCH-able. Semantics:
+    #   - key absent      → leave unchanged (exclude_unset=True in router)
+    #   - explicit null   → clear the reason (null IS meaningful)
+    #   - empty string "" → 422 via min_length=1
+    #   - non-empty       → set / overwrite the reason
+    # No _reject_explicit_null validator — parity with halt_reason / description.
+    # Most common use: paired with `{"process_status": 6}` on a cancel PATCH.
+    status_change_reason: str | None = Field(default=None, min_length=1)
     # Kanban #797 (2026-05-12): PATCH-able. Semantics:
     #   - key absent      → leave unchanged (exclude_unset=True in router)
     #   - explicit null   → clear the array (null IS meaningful — column is
@@ -633,6 +652,10 @@ class TaskRead(BaseModel):
     # 0013's nullable=true. Free-form string set by Lead at halt time per the
     # #787 decision matrix; NULL = task runs normally.
     halt_reason: str | None
+    # Kanban #854 (2026-05-13) — free-form rationale captured on a process_status
+    # flip (most commonly cancellation, ps=6). Backfilled to NULL on existing
+    # rows by migration 0022's nullable=true. Audit-trigger snapshot includes it.
+    status_change_reason: str | None
     # Kanban #797 (2026-05-12) — structured exit-criteria. Backfilled to NULL
     # on existing rows by migration 0014's nullable=true. AcceptanceCriterion
     # validates element shape on the way IN (TaskCreate / TaskUpdate); on the

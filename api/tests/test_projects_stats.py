@@ -127,7 +127,7 @@ async def test_stats_project_with_zero_tasks_all_zero_buckets(
         assert entry["team"] == "dev"
 
         # counts — exactly the five string keys, every value 0.
-        assert set(entry["counts"].keys()) == {"1", "2", "3", "4", "5"}, entry
+        assert set(entry["counts"].keys()) == {"1", "2", "3", "4", "5", "6"}, entry
         assert all(v == 0 for v in entry["counts"].values()), entry
 
         # run_mode_breakdown — exactly the three keys, every value 0.
@@ -214,13 +214,15 @@ async def test_stats_counts_and_breakdown_and_last_activity(
         entry = await _stats_entry_for(client, project_id)
         assert entry is not None
 
-        # Counts per process_status.
+        # Counts per process_status. Kanban #854: "6" (CANCELLED) bucket
+        # always present (0 here — no cancellations in this fixture).
         assert entry["counts"] == {
             "1": 3,  # 3 TODO
             "2": 1,
             "3": 1,
             "4": 1,
             "5": 1,
+            "6": 0,
         }, entry
 
         # Run-mode breakdown — 4 manual, 3 auto_pickup, 0 auto_headless.
@@ -254,6 +256,70 @@ async def test_stats_counts_and_breakdown_and_last_activity(
         await client.delete(f"/api/projects/{project_id}")
 
 
+# ---- 2b. Kanban #854: cancelled task counted in counts["6"] but NOT in last_activity_at ----
+
+
+@pytest.mark.asyncio
+async def test_stats_cancelled_excluded_from_last_activity_in_counts(
+    client, scaffold_cleanup
+) -> None:
+    """Kanban #854 — a CANCELLED (process_status=6) task:
+      - DOES appear in counts["6"] (transparency; FE can decide whether to show)
+      - DOES NOT contribute to last_activity_at (parity with the soft-delete
+        exclusion — cancelled work is dead-end, its cancellation flip's
+        updated_at must not poke through as "last activity")
+    Mirrors the soft-delete negative case (test 3) — keep the patterns sibling
+    so any future regression in the stats endpoint surfaces twice.
+    """
+    project = await _make_project(client, scaffold_cleanup, slug="k854-stats")
+    project_id = project["id"]
+
+    try:
+        # Two tasks: one keeper (TODO), one to be cancelled.
+        keeper = await _make_task_http(client, project_id, "k854 stats keeper")
+        victim = await _make_task_http(client, project_id, "k854 stats victim")
+
+        # Flip victim to CANCELLED — bumps updated_at. keeper's updated_at
+        # is older. After the flip the cancelled row's updated_at would be
+        # the lane's max IF the stats endpoint counted it (which it must NOT).
+        await _patch_task(
+            client,
+            project_id,
+            victim["id"],
+            {"process_status": 6, "status_change_reason": "k854 stats smoke"},
+        )
+
+        entry = await _stats_entry_for(client, project_id)
+        assert entry is not None
+
+        # counts: 1 TODO keeper + 1 CANCELLED victim → "1": 1, "6": 1, rest 0.
+        assert entry["counts"] == {
+            "1": 1,
+            "2": 0,
+            "3": 0,
+            "4": 0,
+            "5": 0,
+            "6": 1,
+        }, entry
+
+        # last_activity_at must reflect the keeper (older updated_at) — NOT
+        # the cancelled victim (newer updated_at). This is the regression
+        # gate against the cancellation flip leaking into "freshness".
+        headers = {"X-Project-Id": str(project_id)}
+        keeper_now = await client.get(
+            f"/api/tasks/{keeper['id']}", headers=headers
+        )
+        keeper_updated_at = _parse_ts(keeper_now.json()["updated_at"])
+        assert entry["last_activity_at"] is not None
+        last = _parse_ts(entry["last_activity_at"])
+        assert abs((last - keeper_updated_at).total_seconds()) < 1.0, (
+            f"last_activity_at {last} != keeper updated_at {keeper_updated_at} "
+            "— cancelled task leaked into last_activity_at"
+        )
+    finally:
+        await client.delete(f"/api/projects/{project_id}")
+
+
 # ---- 3. soft-deleted tasks excluded -----------------------------------------
 
 
@@ -280,7 +346,7 @@ async def test_stats_excludes_soft_deleted_tasks(client, scaffold_cleanup) -> No
         assert entry is not None
 
         # Only the keeper counts.
-        assert entry["counts"] == {"1": 1, "2": 0, "3": 0, "4": 0, "5": 0}, entry
+        assert entry["counts"] == {"1": 1, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0}, entry
         assert entry["run_mode_breakdown"] == {
             "manual": 1,
             "auto_pickup": 0,
@@ -420,7 +486,7 @@ async def test_stats_entry_shape_always_full(client) -> None:
             "last_activity_at",
         }, entry
         # counts: 5 string keys, all int.
-        assert set(entry["counts"].keys()) == {"1", "2", "3", "4", "5"}, entry
+        assert set(entry["counts"].keys()) == {"1", "2", "3", "4", "5", "6"}, entry
         assert all(isinstance(v, int) for v in entry["counts"].values()), entry
         # run_mode_breakdown: 3 keys, all int.
         assert set(entry["run_mode_breakdown"].keys()) == {
@@ -437,3 +503,260 @@ async def test_stats_entry_shape_always_full(client) -> None:
         if isinstance(lat, str):
             # Parse must succeed (Z-suffix tolerated).
             _parse_ts(lat)
+
+
+# ---- 8-11. cost_usage sub-object (Kanban #871) ------------------------------
+#
+# These tests exercise the new `cost_usage` aggregate sourced from
+# `session_runs` (joined via `sessions.project_id`). Helpers stand up sessions
+# and runs via the public HTTP API; cost is computed server-side from
+# `(provider, model, input_tokens, output_tokens)` so test setup must mirror
+# the CTX-3 PATCH /api/session_runs/{id} contract — client-supplied
+# `total_cost_usd` is dropped.
+
+
+async def _make_session(client, project_id: int) -> int:
+    """POST /api/sessions and return the session id."""
+    resp = await client.post("/api/sessions", json={"project_id": project_id})
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
+
+
+async def _make_session_run(
+    client,
+    session_id: int,
+    *,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    total_context_chars: int = 0,
+    provider: str = "anthropic",
+    model: str = "claude-opus-4-7",
+    budget_warning: bool = False,
+) -> dict:
+    """POST a session_run then PATCH it with cost-bearing tokens + optional
+    budget_warning. Returns the final SessionRunRead body.
+
+    Cost is server-computed from `(provider, model, input_tokens, output_tokens)`
+    per CTX-3 (#718). For `claude-opus-4-7`: $15/M input + $75/M output.
+    """
+    create_resp = await client.post(f"/api/sessions/{session_id}/runs", json={})
+    assert create_resp.status_code == 201, create_resp.text
+    run_id = create_resp.json()["id"]
+
+    patch_body: dict = {
+        "total_input_tokens": input_tokens,
+        "total_output_tokens": output_tokens,
+        "total_context_chars": total_context_chars,
+    }
+    if input_tokens or output_tokens:
+        patch_body["provider"] = provider
+        patch_body["model"] = model
+    if budget_warning:
+        patch_body["budget_warning"] = True
+    patch_resp = await client.patch(f"/api/session_runs/{run_id}", json=patch_body)
+    assert patch_resp.status_code == 200, patch_resp.text
+    return patch_resp.json()
+
+
+def _session_fs_cleanup_inline(session_id: int) -> None:
+    """Best-effort `_sessions/<id>/` filesystem cleanup. Not fatal if missing."""
+    import shutil
+    from pathlib import Path
+
+    from src.settings import get_settings
+
+    target = Path(get_settings().repo_root) / "_sessions" / str(session_id)
+    if target.exists():
+        shutil.rmtree(target, ignore_errors=True)
+
+
+# ---- 8. zero-session_runs project emits zero-filled cost_usage --------------
+
+
+@pytest.mark.asyncio
+async def test_stats_cost_usage_zero_filled_when_no_session_runs(
+    client, scaffold_cleanup
+) -> None:
+    """Kanban #871 — a project with no session_runs MUST still emit the full
+    `cost_usage` sub-object with every key zero-valued. FE renders without
+    coalescing (mirrors `counts` / `run_mode_breakdown` invariant).
+    """
+    project = await _make_project(client, scaffold_cleanup, slug="k871-zero")
+    try:
+        entry = await _stats_entry_for(client, project["id"])
+        assert entry is not None
+        assert "cost_usage" in entry, entry
+
+        cu = entry["cost_usage"]
+        # All six keys present.
+        assert set(cu.keys()) == {
+            "total_input_tokens",
+            "total_output_tokens",
+            "total_context_chars",
+            "total_cost_usd",
+            "budget_warning_count",
+            "session_run_count",
+        }, cu
+        # Numeric zeros for int fields.
+        assert cu["total_input_tokens"] == 0, cu
+        assert cu["total_output_tokens"] == 0, cu
+        assert cu["total_context_chars"] == 0, cu
+        assert cu["budget_warning_count"] == 0, cu
+        assert cu["session_run_count"] == 0, cu
+        # Decimal serializes as a JSON STRING per Pydantic v2 default
+        # (mirrors `SessionRunRead.total_cost_usd`). Accept any string form
+        # that parses to 0 (e.g. "0", "0.0000").
+        from decimal import Decimal
+
+        assert isinstance(cu["total_cost_usd"], str), cu
+        assert Decimal(cu["total_cost_usd"]) == Decimal("0"), cu
+    finally:
+        await client.delete(f"/api/projects/{project['id']}")
+
+
+# ---- 9. project with 2 session_runs sums correctly --------------------------
+
+
+@pytest.mark.asyncio
+async def test_stats_cost_usage_sums_two_session_runs(
+    client, scaffold_cleanup
+) -> None:
+    """Two session_runs in the same project — cost_usage MUST be the SUM of
+    their per-row tokens / context chars / cost / counts. Uses `claude-opus-4-7`
+    ($15/M input + $75/M output) so cost is determined and test-stable.
+
+    Run 1: 100_000 in + 200_000 out → cost = 100k/1M*15 + 200k/1M*75 = 1.5 + 15.0 = 16.5
+    Run 2: 50_000 in + 80_000 out  → cost = 50k/1M*15 + 80k/1M*75 = 0.75 + 6.0 = 6.75
+    Total: in=150_000, out=280_000, cost=23.25 USD; session_run_count=2.
+    """
+    from decimal import Decimal
+
+    project = await _make_project(client, scaffold_cleanup, slug="k871-two")
+    project_id = project["id"]
+    session_id = await _make_session(client, project_id)
+    try:
+        await _make_session_run(
+            client,
+            session_id,
+            input_tokens=100_000,
+            output_tokens=200_000,
+            total_context_chars=5_000,
+        )
+        await _make_session_run(
+            client,
+            session_id,
+            input_tokens=50_000,
+            output_tokens=80_000,
+            total_context_chars=2_500,
+        )
+
+        entry = await _stats_entry_for(client, project_id)
+        assert entry is not None
+        cu = entry["cost_usage"]
+
+        assert cu["total_input_tokens"] == 150_000, cu
+        assert cu["total_output_tokens"] == 280_000, cu
+        assert cu["total_context_chars"] == 7_500, cu
+        assert cu["session_run_count"] == 2, cu
+        # Cost: SUM(16.5 + 6.75) = 23.25 — Decimal-stringified.
+        assert Decimal(cu["total_cost_usd"]) == Decimal("23.2500"), cu
+        # No budget_warning flips on these runs.
+        assert cu["budget_warning_count"] == 0, cu
+    finally:
+        _session_fs_cleanup_inline(session_id)
+        await client.delete(f"/api/projects/{project_id}")
+
+
+# ---- 10. budget_warning=true count increments correctly ---------------------
+
+
+@pytest.mark.asyncio
+async def test_stats_cost_usage_budget_warning_count(
+    client, scaffold_cleanup
+) -> None:
+    """`budget_warning_count` MUST count session_runs with `budget_warning=true`.
+    Sanity: 3 runs (true, false, true) → budget_warning_count == 2.
+    """
+    project = await _make_project(client, scaffold_cleanup, slug="k871-bw")
+    project_id = project["id"]
+    session_id = await _make_session(client, project_id)
+    try:
+        # Run 1: budget_warning=true (no tokens — just the flag).
+        await _make_session_run(client, session_id, budget_warning=True)
+
+        # After 1 warning-true run, count==1.
+        entry = await _stats_entry_for(client, project_id)
+        assert entry is not None
+        assert entry["cost_usage"]["budget_warning_count"] == 1, entry
+        assert entry["cost_usage"]["session_run_count"] == 1, entry
+
+        # Run 2: budget_warning=false → count stays at 1.
+        await _make_session_run(client, session_id, budget_warning=False)
+        # Run 3: budget_warning=true → count climbs to 2.
+        await _make_session_run(client, session_id, budget_warning=True)
+
+        entry = await _stats_entry_for(client, project_id)
+        assert entry is not None
+        cu = entry["cost_usage"]
+        assert cu["budget_warning_count"] == 2, cu
+        assert cu["session_run_count"] == 3, cu
+    finally:
+        _session_fs_cleanup_inline(session_id)
+        await client.delete(f"/api/projects/{project_id}")
+
+
+# ---- 11. cross-project isolation -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stats_cost_usage_cross_project_isolation(
+    client, scaffold_cleanup
+) -> None:
+    """Two projects each with their own session_runs. Each project's
+    `cost_usage` MUST reflect ONLY its own runs — no cross-project leak via the
+    session/session_run join.
+    """
+    from decimal import Decimal
+
+    proj_a = await _make_project(client, scaffold_cleanup, slug="k871-iso-a")
+    proj_b = await _make_project(client, scaffold_cleanup, slug="k871-iso-b")
+    pid_a, pid_b = proj_a["id"], proj_b["id"]
+    sid_a = await _make_session(client, pid_a)
+    sid_b = await _make_session(client, pid_b)
+    try:
+        # Project A: 1 run, 100_000 in / 0 out → cost 1.5 USD.
+        await _make_session_run(
+            client, sid_a, input_tokens=100_000, output_tokens=0
+        )
+        # Project B: 1 run, 0 in / 200_000 out → cost 15.0 USD; budget_warning=true.
+        await _make_session_run(
+            client,
+            sid_b,
+            input_tokens=0,
+            output_tokens=200_000,
+            budget_warning=True,
+        )
+
+        entry_a = await _stats_entry_for(client, pid_a)
+        entry_b = await _stats_entry_for(client, pid_b)
+        assert entry_a is not None
+        assert entry_b is not None
+
+        cu_a = entry_a["cost_usage"]
+        assert cu_a["total_input_tokens"] == 100_000, cu_a
+        assert cu_a["total_output_tokens"] == 0, cu_a
+        assert cu_a["session_run_count"] == 1, cu_a
+        assert cu_a["budget_warning_count"] == 0, cu_a
+        assert Decimal(cu_a["total_cost_usd"]) == Decimal("1.5000"), cu_a
+
+        cu_b = entry_b["cost_usage"]
+        assert cu_b["total_input_tokens"] == 0, cu_b
+        assert cu_b["total_output_tokens"] == 200_000, cu_b
+        assert cu_b["session_run_count"] == 1, cu_b
+        assert cu_b["budget_warning_count"] == 1, cu_b
+        assert Decimal(cu_b["total_cost_usd"]) == Decimal("15.0000"), cu_b
+    finally:
+        _session_fs_cleanup_inline(sid_a)
+        _session_fs_cleanup_inline(sid_b)
+        await client.delete(f"/api/projects/{pid_a}")
+        await client.delete(f"/api/projects/{pid_b}")

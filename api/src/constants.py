@@ -36,11 +36,24 @@ def in_clause_text(column: str, values: tuple[str, ...]) -> str:
 
 
 class TaskStatus:
-    """tasks.process_status — INTEGER NOT NULL DEFAULT 1, CHECK IN (1..5).
+    """tasks.process_status — INTEGER NOT NULL DEFAULT 1, CHECK IN (1..6).
 
     Renamed from tasks.status -> tasks.process_status by the soft-delete migration
     (2026_05_08_*) so the bare `status` name carries the uniform 0/1 soft-delete
-    flag across every business table. The 1..5 codes themselves are unchanged.
+    flag across every business table.
+
+    Codes:
+      1=TODO, 2=IN_PROGRESS, 3=REVIEW, 4=BLOCKED, 5=DONE, 6=CANCELLED.
+
+    Kanban #854 (2026-05-13) added `CANCELLED=6`. Cancelled rows are excluded
+    from the GET /api/tasks default list (opt back in via `?include_cancelled=true`)
+    and from the `last_activity_at` aggregate on GET /api/projects/stats
+    (parity with soft-delete semantics — a cancelled task is dead-end work, not
+    activity). `counts["6"]` IS emitted on the stats endpoint for transparency.
+
+    Mirror of migration 0022's `_TASK_PROCESS_STATUS_ALL_NEW` (intentionally
+    duplicated — migrations don't import app code, see
+    standards/sqlalchemy/migrations.md).
     """
 
     TODO = 1
@@ -48,8 +61,9 @@ class TaskStatus:
     REVIEW = 3
     BLOCKED = 4
     DONE = 5
+    CANCELLED = 6
 
-    ALL = (TODO, IN_PROGRESS, REVIEW, BLOCKED, DONE)
+    ALL = (TODO, IN_PROGRESS, REVIEW, BLOCKED, DONE, CANCELLED)
 
 
 class RecordStatus:
@@ -65,18 +79,25 @@ class RecordStatus:
 
 
 class ProjectTeam:
-    """projects.team — TEXT NOT NULL DEFAULT 'dev', CHECK team IN ('dev','novel').
+    """projects.team — TEXT NOT NULL DEFAULT 'dev',
+    CHECK team IN ('dev','novel','general').
 
     Drives subagent roster selection (see scaffold service + .claude/teams/<team>.md).
-    Codes 1..5 reserved for dev roles; 11..12 reserved for novel; future teams pick
-    their own ranges. App-layer validates assigned_role per active team's roster
-    (no DB CHECK on tasks.assigned_role after the soft-delete migration).
+    Codes 1..5 reserved for dev roles; 11..12 reserved for novel; 'general' is a
+    domain-agnostic team that uses a single generalist agent (.claude/teams/general.md
+    drafted by Kanban #845, blocked on this task). Future teams pick their own
+    ranges. App-layer validates assigned_role per active team's roster (no DB
+    CHECK on tasks.assigned_role after the soft-delete migration).
+
+    Mirror of migration 0021's `_PROJECT_TEAM_ALL_NEW` (intentionally duplicated —
+    migrations don't import app code, see standards/sqlalchemy/migrations.md).
     """
 
     DEV = "dev"
     NOVEL = "novel"
+    GENERAL = "general"
 
-    ALL = (DEV, NOVEL)
+    ALL = (DEV, NOVEL, GENERAL)
 
 
 class TaskPriority:

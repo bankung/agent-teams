@@ -62,11 +62,15 @@ def _future_iso() -> str:
 # =============================================================================
 
 
-def test_task_create_task_kind_default_is_human() -> None:
+def test_task_create_task_kind_default_is_ai() -> None:
+    """Kanban #858 (2026-05-13): the schema default flipped from 'human' to 'ai'.
+    Most tasks are agent-driven; 'human' is reserved for interaction_kind in
+    ('question','decision') and is coerced server-side by the router. Mirrors
+    migration 0023's column server_default flip."""
     from src.schemas.task import TaskCreate
 
     task = TaskCreate(project_id=1, title="x")
-    assert task.task_kind == TaskKind.HUMAN
+    assert task.task_kind == TaskKind.AI
 
 
 def test_task_create_task_kind_accepts_each_valid_value() -> None:
@@ -315,9 +319,12 @@ async def test_post_task_ai_auto_headless_after_consent_201(
 
 
 @pytest.mark.asyncio
-async def test_post_task_human_manual_default_201(client, scaffold_cleanup) -> None:
-    """Default body (no task_kind / run_mode) → human + manual → 201."""
-    name = _unique_name("human-default")
+async def test_post_task_ai_manual_default_201(client, scaffold_cleanup) -> None:
+    """Default body (no task_kind / no run_mode / interaction_kind='work') →
+    task_kind='ai' + run_mode='manual' → 201. Kanban #858 (2026-05-13): the
+    schema + DB defaults flipped from 'human' to 'ai'; run_mode default stays
+    'manual'."""
+    name = _unique_name("ai-default")
     scaffold_cleanup(name)
     create = await client.post("/api/projects", json=_project_create_payload(name))
     project_id = create.json()["id"]
@@ -326,12 +333,12 @@ async def test_post_task_human_manual_default_201(client, scaffold_cleanup) -> N
     try:
         resp = await client.post(
             "/api/tasks",
-            json={"project_id": project_id, "title": "default human task"},
+            json={"project_id": project_id, "title": "default ai task"},
             headers=headers,
         )
         assert resp.status_code == 201, resp.text
         body = resp.json()
-        assert body["task_kind"] == "human"
+        assert body["task_kind"] == "ai"
         assert body["run_mode"] == "manual"
         await client.delete(f"/api/tasks/{body['id']}", headers=headers)
     finally:
@@ -693,9 +700,10 @@ async def test_patch_task_kind_and_run_mode_together_200(
 @pytest.mark.asyncio
 async def test_seeded_tasks_have_correct_backfill_defaults(client) -> None:
     """All existing tasks (seeded + any user-created via T1 baseline) carry the
-    migration 0007 server_defaults: task_kind='human', is_template=false,
-    recurrence_timezone='UTC', NULL on the rest. Defends server_default
-    correctness on ADD COLUMN."""
+    migration server_defaults. Kanban #858 (2026-05-13) flipped task_kind's
+    column default from 'human' to 'ai' — seed scripts don't set task_kind so
+    test-DB-rebuilt rows now land at 'ai'. is_template / recurrence_timezone /
+    nullable fields unchanged."""
     headers = {"X-Project-Id": "1"}
     resp = await client.get("/api/tasks?limit=500", headers=headers)
     assert resp.status_code == 200
@@ -703,8 +711,8 @@ async def test_seeded_tasks_have_correct_backfill_defaults(client) -> None:
     assert len(tasks) >= 1, "expected at least the seeded tasks"
 
     for t in tasks:
-        assert t["task_kind"] == "human", (
-            f"task {t['id']} backfilled to {t['task_kind']!r} not 'human'"
+        assert t["task_kind"] == "ai", (
+            f"task {t['id']} backfilled to {t['task_kind']!r} not 'ai'"
         )
         assert t["is_template"] is False, (
             f"task {t['id']} backfilled to is_template={t['is_template']!r} not false"

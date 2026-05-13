@@ -5,7 +5,7 @@ lock in the exact error message format the API surfaces so the FE error UX
 won't silently drift if someone refactors the validator wiring again.
 
 Error message contracts (must remain stable):
-- process_status invalid: "process_status must be one of (1, 2, 3, 4, 5), got <repr>"
+- process_status invalid: "process_status must be one of (1, 2, 3, 4, 5, 6), got <repr>"
 - process_status required (POST): "process_status is required"
 - priority invalid:       "priority must be one of (1, 2, 3, 4), got <repr>"
 - assigned_role invalid:  "assigned_role must be NULL or one of (1, 2, 3, 4, 5), got <repr>"
@@ -56,7 +56,7 @@ def test_task_create_defaults_applied() -> None:
 def test_task_create_process_status_invalid_message() -> None:
     with pytest.raises(ValidationError) as ei:
         TaskCreate(project_id=1, title="x", process_status=99)
-    assert "process_status must be one of (1, 2, 3, 4, 5), got 99" in _first_msg(ei.value)
+    assert "process_status must be one of (1, 2, 3, 4, 5, 6), got 99" in _first_msg(ei.value)
 
 
 def test_task_create_priority_invalid_message() -> None:
@@ -131,7 +131,7 @@ def test_task_update_role_none_passes() -> None:
 def test_task_update_process_status_invalid_message() -> None:
     with pytest.raises(ValidationError) as ei:
         TaskUpdate(process_status=99)
-    assert "process_status must be one of (1, 2, 3, 4, 5), got 99" in _first_msg(ei.value)
+    assert "process_status must be one of (1, 2, 3, 4, 5, 6), got 99" in _first_msg(ei.value)
 
 
 def test_task_update_priority_invalid_message() -> None:

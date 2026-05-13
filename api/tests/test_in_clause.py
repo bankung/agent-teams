@@ -21,7 +21,7 @@ from src.constants import (
 
 
 def test_in_clause_status_canonical() -> None:
-    assert in_clause("process_status", TaskStatus.ALL) == "process_status IN (1, 2, 3, 4, 5)"
+    assert in_clause("process_status", TaskStatus.ALL) == "process_status IN (1, 2, 3, 4, 5, 6)"
 
 
 def test_in_clause_priority_canonical() -> None:
@@ -43,7 +43,10 @@ def test_in_clause_uses_comma_space_separator() -> None:
 
 
 def test_in_clause_text_canonical_team_values() -> None:
-    assert in_clause_text("team", ProjectTeam.ALL) == "team IN ('dev', 'novel')"
+    assert (
+        in_clause_text("team", ProjectTeam.ALL)
+        == "team IN ('dev', 'novel', 'general')"
+    )
 
 
 def test_in_clause_text_rejects_apostrophe() -> None:

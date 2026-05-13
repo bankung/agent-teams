@@ -10,8 +10,9 @@ Called from POST /api/projects after the row is committed. Creates:
         <role>/.gitkeep       (per-team roster)
 
 Per-team roster:
-    dev   -> dev-frontend, dev-backend, dev-devops, dev-tester, dev-reviewer
-    novel -> novel-writer, novel-editor
+    dev     -> dev-frontend, dev-backend, dev-devops, dev-tester, dev-reviewer
+    novel   -> novel-writer, novel-editor
+    general -> general (single generalist agent; Kanban #844/#845)
 
 Per-team shared templates are NOT yet implemented — every project gets the dev
 template trio regardless of team. Follow-up: ship novel-specific shared templates
@@ -45,6 +46,13 @@ TEAM_ROSTERS: dict[str, tuple[str, ...]] = {
     ProjectTeam.NOVEL: (
         "novel-writer",
         "novel-editor",
+    ),
+    # Kanban #844 (2026-05-13): single-agent generalist team. The playbook
+    # file `.claude/teams/general.md` is drafted by #845 (blocked on #844);
+    # the role folder is created with .gitkeep so a project scaffolded with
+    # team='general' gets a parking slot for that agent's role-state.
+    ProjectTeam.GENERAL: (
+        "general",
     ),
 }
 

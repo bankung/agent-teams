@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import {
+  cancelTask,
   getTaskBlocks,
   invalidateAnswer,
   patchTask,
@@ -32,7 +33,15 @@ const STATUS_LABEL: Record<number, string> = {
   [TaskStatus.REVIEW]: "review",
   [TaskStatus.BLOCKED]: "blocked",
   [TaskStatus.DONE]: "done",
+  [TaskStatus.CANCELLED]: "cancelled",
 };
+
+// Terminal states — Cancel button is hidden once the task is in one of these
+// (cancelled is already terminal; done means the work shipped).
+const TERMINAL_STATUSES: ReadonlyArray<number> = [
+  TaskStatus.DONE,
+  TaskStatus.CANCELLED,
+];
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
@@ -53,12 +62,26 @@ export function TaskDetail({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [alsoBlocks, setAlsoBlocks] = useState<TaskRead[] | null>(null);
+  // #854 — Cancel-task UI. cancelOpen toggles the inline reason input; reason
+  // is the typed text. Pattern mirrors the existing "Invalidate" answer-history
+  // affordance lower in the drawer — local component state, no portal, no
+  // separate modal layer. Cancel is a destructive-ish terminal flip so the
+  // button is placed BELOW the Status section (not in the header where Close
+  // lives, not next to Save where mis-clicks happen).
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (submitting) return;
-      if (pickerOpen) {
+      // Nested-UI precedence: inner inputs absorb ESC first (cancel-reason,
+      // blocker picker), so a stray ESC in those UIs returns to the
+      // task-detail body instead of dismissing the whole drawer.
+      if (cancelOpen) {
+        setCancelOpen(false);
+        setCancelReason("");
+      } else if (pickerOpen) {
         setPickerOpen(false);
       } else {
         onClose();
@@ -66,7 +89,7 @@ export function TaskDetail({
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [pickerOpen, submitting, onClose]);
+  }, [cancelOpen, pickerOpen, submitting, onClose]);
 
   // Reverse-lookup "Also blocks" — optional affordance. Errors swallowed.
   useEffect(() => {
@@ -105,6 +128,33 @@ export function TaskDetail({
       setSubmitting(false);
     }
   };
+
+  // #854 — Cancel task: PATCH {process_status:6, status_change_reason}. On
+  // success the row disappears from the board (backend excludes ps=6 by
+  // default), so we close the drawer rather than leave the user staring at a
+  // ghost panel. The board's RSC fetch already re-runs via SSE → router.refresh
+  // when the PATCH lands.
+  const handleCancelTask = async () => {
+    if (submitting) return;
+    const reason = cancelReason.trim();
+    if (reason === "") return;
+    setSubmitting(true);
+    try {
+      await cancelTask(projectId, task.id, reason);
+      // Optimistic close — the parent's onPatch path would re-render the
+      // drawer with ps=6, which is fine but pointless. Close instead.
+      setCancelOpen(false);
+      setCancelReason("");
+      onClose();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Cancel failed";
+      onError(`Task #${task.id}: ${msg}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const isTerminal = TERMINAL_STATUSES.includes(task.process_status);
 
   return (
     <div
@@ -179,6 +229,89 @@ export function TaskDetail({
                 </>
               )}
             </dl>
+            {/* #854 — status_change_reason read display. Truncated at ~120
+                chars with the full text on hover-title. Italic + muted so it
+                reads as a footnote on the Status row rather than competing
+                with the priority/role pairs above. The most common case is a
+                cancellation reason on a ps=6 row, but the field is generic —
+                any flip can carry a reason. */}
+            {task.status_change_reason && (
+              <p
+                data-status-change-reason
+                title={task.status_change_reason}
+                className="mt-1 text-xs italic text-zinc-500 dark:text-zinc-400"
+              >
+                {task.process_status === TaskStatus.CANCELLED
+                  ? "Cancelled: "
+                  : "Reason: "}
+                {truncate(task.status_change_reason, 120)}
+              </p>
+            )}
+            {/* #854 — Cancel-task affordance. Hidden on terminal states
+                (DONE / CANCELLED) — re-cancelling is meaningless. Placed
+                BELOW the Status dl, not in the header next to Close, so
+                accidental clicks during dismiss don't flip the task. */}
+            {!isTerminal && (
+              <div className="mt-2" data-cancel-task-control>
+                {!cancelOpen ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCancelOpen(true);
+                      setCancelReason("");
+                    }}
+                    disabled={submitting}
+                    data-cancel-task-trigger
+                    className="rounded border border-zinc-200 bg-white px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-zinc-600 hover:border-red-300 hover:text-red-700 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:border-red-800 dark:hover:text-red-300"
+                  >
+                    Cancel task
+                  </button>
+                ) : (
+                  <div className="flex flex-col gap-1.5 rounded border border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-800 dark:bg-zinc-950/40">
+                    <label
+                      htmlFor="cancel-task-reason"
+                      className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400"
+                    >
+                      Reason for cancellation
+                    </label>
+                    <input
+                      id="cancel-task-reason"
+                      type="text"
+                      value={cancelReason}
+                      onChange={(e) => setCancelReason(e.target.value)}
+                      placeholder="e.g., superseded by #872; not needed for v2"
+                      disabled={submitting}
+                      autoFocus
+                      data-cancel-task-reason-input
+                      className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        disabled={submitting || cancelReason.trim() === ""}
+                        onClick={handleCancelTask}
+                        data-cancel-task-confirm
+                        className="rounded border border-red-300 bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50 dark:border-red-700"
+                      >
+                        Confirm cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCancelOpen(false);
+                          setCancelReason("");
+                        }}
+                        disabled={submitting}
+                        data-cancel-task-dismiss
+                        className="rounded border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-700 hover:border-zinc-300 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300"
+                      >
+                        Back
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </Section>
 
           {task.description && (

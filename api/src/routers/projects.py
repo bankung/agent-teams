@@ -17,24 +17,28 @@ clears other rows; GET /api/projects/active returns 410 Gone (use
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi import status as http_status
-from sqlalchemy import select
+from sqlalchemy import Integer, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
 from sqlalchemy.sql.elements import ClauseElement
 
-from src.constants import RecordStatus, TaskRunMode, TaskStatus
+from src.constants import RecordStatus, TaskRunMode, TaskStatus  # TaskStatus.CANCELLED used by stats
 from src.db import get_or_404, get_session
 from src.models.project import Project
+from src.models.session import Session as SessionModel
+from src.models.session import SessionRun
 from src.models.task import Task
 from src.schemas.project import (
     ProjectCreate,
     ProjectGrantConsent,
     ProjectRead,
+    ProjectStatsCostUsage,
     ProjectStatsEntry,
     ProjectStatsRunModeBreakdown,
     ProjectUpdate,
@@ -123,19 +127,30 @@ async def list_projects_stats(
 
     One entry per active (`status=1`) project in `projects.created_at ASC`
     order (matches GET /api/projects). Each entry carries `counts` (one bucket
-    per `tasks.process_status` 1..5, string keys), `run_mode_breakdown`
+    per `tasks.process_status` 1..6, string keys), `run_mode_breakdown`
     (manual / auto_pickup / auto_headless), and `last_activity_at`
     (MAX(updated_at) of active tasks; None when project has zero active tasks).
 
     Cross-project read — takes NO `X-Project-Id` header (parity with `""`,
     `/active`, `/by-name/{name}`).
 
-    Query strategy (two-query stitch): one SELECT for the project list, one
-    SELECT against `tasks` GROUP BY (project_id, process_status, run_mode)
-    with `MAX(updated_at)` aggregate. Soft-deleted tasks (`status=0`) and
-    soft-deleted projects excluded at SQL. Python loop stitches the buckets
-    onto the project rows. No N+1: exactly two queries regardless of project
-    count.
+    Kanban #854 (2026-05-13) — CANCELLED (process_status=6) is emitted as
+    `counts["6"]` for transparency, but EXCLUDED from `last_activity_at`
+    (Option A: cancelled work is dead-end, parity with the soft-delete
+    exclusion semantics already applied at `status=0`). The
+    `run_mode_breakdown` continues to count every active task regardless of
+    process_status — it tells the user how their project's work is
+    distributed across execution modes, not which tasks are still alive.
+
+    Query strategy (three-query stitch): one SELECT for the project list,
+    one SELECT against `tasks` GROUP BY (project_id, process_status, run_mode)
+    with `MAX(updated_at)` aggregate, and one SELECT against `session_runs`
+    JOIN `sessions` GROUP BY project_id summing cost/token totals (Kanban
+    #871). Soft-deleted tasks (`status=0`) and soft-deleted projects excluded
+    at SQL; `session_runs` / `sessions` carry no soft-delete column (per
+    db-schema.md: NO audit trigger on those tables) so no filter is needed
+    on the cost join. Python loop stitches the buckets onto the project
+    rows. No N+1: exactly three queries regardless of project count.
     """
     # Query 1 — project list in canonical order.
     projects_stmt = (
@@ -166,6 +181,40 @@ async def list_projects_stats(
     )
     agg_rows = (await session.execute(agg_stmt)).all()
 
+    # Query 3 (Kanban #871) — per-project cost/token aggregate via the
+    # session_runs → sessions → projects FK chain. We GROUP BY the session's
+    # project_id (NOT session_runs.task_id — that's nullable ON DELETE SET
+    # NULL, so a run with a deleted task still has a valid session.project_id).
+    # No status filter — neither sessions nor session_runs have a soft-delete
+    # column. Joining against `projects` keeps the query stable when the
+    # project list is empty (parity with the tasks aggregate above).
+    cost_stmt = (
+        select(
+            SessionModel.project_id,
+            func.coalesce(func.sum(SessionRun.total_input_tokens), 0).label(
+                "sum_input_tokens"
+            ),
+            func.coalesce(func.sum(SessionRun.total_output_tokens), 0).label(
+                "sum_output_tokens"
+            ),
+            func.coalesce(func.sum(SessionRun.total_context_chars), 0).label(
+                "sum_context_chars"
+            ),
+            func.coalesce(func.sum(SessionRun.total_cost_usd), 0).label(
+                "sum_cost_usd"
+            ),
+            func.sum(
+                func.cast(SessionRun.budget_warning, Integer)
+            ).label("budget_warning_count"),
+            func.count(SessionRun.id).label("session_run_count"),
+        )
+        .join(SessionModel, SessionModel.id == SessionRun.session_id)
+        .join(Project, Project.id == SessionModel.project_id)
+        .where(Project.status == RecordStatus.ACTIVE)
+        .group_by(SessionModel.project_id)
+    )
+    cost_rows = (await session.execute(cost_stmt)).all()
+
     # Stitch. For each project, initialize all-zero buckets so every key is
     # always present in the response (FE renders without coalescing); then
     # fold each (project_id, process_status, run_mode) bucket into its
@@ -175,6 +224,17 @@ async def list_projects_stats(
             "counts": {str(code): 0 for code in TaskStatus.ALL},
             "run_mode_breakdown": {mode: 0 for mode in TaskRunMode.ALL},
             "last_activity_at": None,
+            # Kanban #871: zero-filled default so projects with zero session_runs
+            # still emit the full cost_usage sub-object — parity with `counts` /
+            # `run_mode_breakdown` "always emit all keys" contract.
+            "cost_usage": {
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
+                "total_context_chars": 0,
+                "total_cost_usd": Decimal("0"),
+                "budget_warning_count": 0,
+                "session_run_count": 0,
+            },
         }
         for p in projects
     }
@@ -186,9 +246,48 @@ async def list_projects_stats(
         # bucket to nothing visible rather than 500 the whole endpoint.
         if run_mode in bucket["run_mode_breakdown"]:
             bucket["run_mode_breakdown"][run_mode] += n
+        # Kanban #854: exclude CANCELLED (process_status=6) rows from
+        # last_activity_at — parity with the soft-delete exclusion (status=0
+        # already filtered at the SQL level above). Cancelled work is
+        # dead-end; its updated_at bump on the cancellation flip MUST NOT
+        # leak into "last activity" or the FE displays a misleading
+        # freshness signal. Counts and run_mode_breakdown still include the
+        # row (visibility into how the project's work distributes).
+        if process_status == TaskStatus.CANCELLED:
+            continue
         cur = bucket["last_activity_at"]
         if max_updated_at is not None and (cur is None or max_updated_at > cur):
             bucket["last_activity_at"] = max_updated_at
+
+    # Fold the cost/token aggregate. project_id from this query MAY be absent
+    # from by_id only if a race deletes the project between Query 1 and Query 3;
+    # be defensive (skip silently — the DELETE flips status=0 which the join's
+    # WHERE clause already filters, so this is paranoia-tier).
+    for (
+        project_id,
+        sum_input_tokens,
+        sum_output_tokens,
+        sum_context_chars,
+        sum_cost_usd,
+        budget_warning_count,
+        session_run_count,
+    ) in cost_rows:
+        bucket = by_id.get(project_id)
+        if bucket is None:
+            continue
+        cu = bucket["cost_usage"]
+        cu["total_input_tokens"] = int(sum_input_tokens)
+        cu["total_output_tokens"] = int(sum_output_tokens)
+        cu["total_context_chars"] = int(sum_context_chars)
+        # SUM(NUMERIC) → Decimal already; cast defensively in case the driver
+        # surfaces a different numeric type for empty-group / all-NULL paths.
+        cu["total_cost_usd"] = (
+            sum_cost_usd if isinstance(sum_cost_usd, Decimal) else Decimal(str(sum_cost_usd))
+        )
+        # SUM(CAST bool AS int) → may be None when the group is empty, but
+        # GROUP BY only emits rows with ≥1 underlying row so this is safe.
+        cu["budget_warning_count"] = int(budget_warning_count or 0)
+        cu["session_run_count"] = int(session_run_count)
 
     return [
         ProjectStatsEntry(
@@ -200,6 +299,7 @@ async def list_projects_stats(
             ),
             counts=by_id[p.id]["counts"],
             last_activity_at=by_id[p.id]["last_activity_at"],
+            cost_usage=ProjectStatsCostUsage(**by_id[p.id]["cost_usage"]),
         )
         for p in projects
     ]

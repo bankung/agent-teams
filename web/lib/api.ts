@@ -94,6 +94,7 @@ export type TaskRead = {
   interaction_kind: "work" | "question" | "decision"; // #834 — task interaction type; default "work"
   question_payload: QuestionPayload | null; // #834 — question/options/history; non-null when interaction_kind != "work"
   resume_context: Record<string, unknown> | null; // #834 — opaque context passed back on resume
+  status_change_reason: string | null; // #854 — free-form rationale captured on a process_status flip (most commonly ps=6 CANCELLED). Audit-trigger snapshot includes it.
   created_at: string;
   updated_at: string;
   started_at: string | null;
@@ -220,23 +221,66 @@ export async function listProjects(
   return jsonFetch<ProjectRead[]>(path);
 }
 
+// ProjectStatsCostUsage — Kanban #871. Per-project token/cost roll-up,
+// nested under ProjectStatsEntry.cost_usage. ALL 6 keys always present
+// (zero-filled when the project has no session_runs) — FE can use
+// `session_run_count === 0` as the cheap empty-state guard.
+//
+// `total_cost_usd` is a JSON STRING, not a number (Pydantic v2 serializes
+// `Decimal` as string for precision). Parse via Number()/parseFloat() before
+// arithmetic; NEVER use the unary `+` coercion (silently returns NaN on
+// non-numeric strings).
+export type ProjectStatsCostUsage = {
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_context_chars: number;
+  total_cost_usd: string;
+  budget_warning_count: number;
+  session_run_count: number;
+};
+
 // ProjectStatsEntry — mirror of GET /api/projects/stats row (Kanban #769).
 // counts: all 5 TaskStatus keys ("1".."5") always present even when zero —
 // FE renders the lane grid without `||0` coalescing. run_mode_breakdown: all
 // 3 keys always present. last_activity_at: MAX(tasks.updated_at) over active
 // tasks; null when project has no active tasks. Ordering preserved by backend
-// (projects.created_at ASC).
+// (projects.created_at ASC). cost_usage: #871 — always present, zero-filled
+// when the project has no session_runs.
 export type ProjectStatsEntry = {
   id: number;
   name: string;
   team: ProjectTeamValue;
   run_mode_breakdown: Record<TaskRunModeValue, number>;
-  counts: Record<"1" | "2" | "3" | "4" | "5", number>;
+  counts: Record<"1" | "2" | "3" | "4" | "5" | "6", number>; // #854 — "6"=CANCELLED added 2026-05-13; dashboard LANES tuple iterates 1..5 only (cancelled count display = #870).
   last_activity_at: string | null;
+  cost_usage: ProjectStatsCostUsage;
 };
 
 export async function getProjectsStats(): Promise<ProjectStatsEntry[]> {
   return jsonFetch<ProjectStatsEntry[]>(`/api/projects/stats`);
+}
+
+// createProject — POST /api/projects body (Kanban #843 FE).
+// Mirrors api/src/schemas/project.py:ProjectCreate. `paths` is required with
+// all 3 lane keys; the modal derives them from working_path (or name when
+// blank) so the user never sees a raw paths form. `working_path` /
+// `working_repo` omitted when blank (Pydantic min_length=1 would 422 on "").
+export type ProjectCreateBody = {
+  name: string;
+  paths: { web: string; api: string; db: string };
+  team: ProjectTeamValue;
+  working_path?: string;
+  working_repo?: string;
+};
+
+export async function createProject(
+  body: ProjectCreateBody,
+): Promise<ProjectRead> {
+  return jsonFetch<ProjectRead>(`/api/projects`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 // grantConsent — V3 consent grant flow (Kanban #407 / #483 follow-up).
@@ -292,6 +336,8 @@ export async function getTask(
 // blocked_by (#771): explicit null clears; positive int sets; key-absent =
 // unchanged. Picker UI (TaskDetail) is the only consumer for now.
 // new_answer / invalidate_last_answer (#834): question/decision answer flow.
+// status_change_reason (#854): free-form rationale paired with a process_status
+// flip (most commonly ps=6 CANCELLED). min_length=1 — backend 422 on "".
 export type TaskPatch = Partial<
   Pick<TaskRead, "process_status" | "priority" | "title" | "blocked_by" | "sort_order">
 > & {
@@ -299,6 +345,7 @@ export type TaskPatch = Partial<
   new_answer_by?: string | null;
   invalidate_last_answer?: boolean | null;
   invalidated_reason?: string | null;
+  status_change_reason?: string | null;
 };
 
 export async function patchTask(
@@ -378,5 +425,21 @@ export async function invalidateAnswer(
   return patchTask(projectId, taskId, {
     invalidate_last_answer: true,
     invalidated_reason: reason,
+  });
+}
+
+// cancelTask — terminal-state flip to process_status=6 (CANCELLED) paired with
+// a required free-form reason (#854). Backend Pydantic guards: process_status
+// must be 6 AND status_change_reason min_length=1. The cancelled row is
+// excluded from the default GET /api/tasks list (must opt-in with
+// ?include_cancelled=true to see it again).
+export async function cancelTask(
+  projectId: number,
+  taskId: number,
+  reason: string,
+): Promise<TaskRead> {
+  return patchTask(projectId, taskId, {
+    process_status: 6 as TaskStatusValue,
+    status_change_reason: reason,
   });
 }

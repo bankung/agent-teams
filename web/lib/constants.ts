@@ -14,6 +14,7 @@ export const TaskStatus = {
   REVIEW: 3,
   BLOCKED: 4,
   DONE: 5,
+  CANCELLED: 6,
 } as const;
 export type TaskStatusValue = typeof TaskStatus[keyof typeof TaskStatus];
 
@@ -37,6 +38,7 @@ export type TaskRoleValue = typeof TaskRole[keyof typeof TaskRole];
 export const ProjectTeam = {
   DEV: "dev",
   NOVEL: "novel",
+  GENERAL: "general",
 } as const;
 export type ProjectTeamValue = typeof ProjectTeam[keyof typeof ProjectTeam];
 
