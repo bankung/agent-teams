@@ -1,12 +1,60 @@
-# Dev Team Orchestrator
+# agent-teams
 
-A multi-agent dev team + **self-hosted Kanban** for the **Next.js + FastAPI + PostgreSQL** stack. One **Lead** spawns **specialist subagents** on demand through Claude Code's subagent system (no tmux).
+A self-hosted Kanban board for managing software development tasks. Your team creates tasks in a simple board UI, and AI agents handle the tedious work — writing code, running tests, checking for bugs. Everything runs on your computer in Docker containers. No cloud sign-ups. No subscriptions. No leaving your code.
 
-Instead of driving the AI step by step, you create tasks in the Kanban UI or hand them to Lead in plain language. Lead analyzes the task → spawns the role-specific agents needed → integrates the results → reports back. Agents are ephemeral (spawn-per-task, terminate when done) — important state is persisted separately.
+## Get started in 2 steps
 
-**Multi-project ready** — the Kanban UI manages every project (paths, stack, standards mapping). Lead keeps per-project knowledge isolated while sharing **cross-project standards** that all projects can pull from.
+### Step 1: Install Docker Desktop
 
-## Quick Start
+Download and install [Docker Desktop](https://www.docker.com/products/docker-desktop/) from the official website. Docker runs the databases and services that power agent-teams. After it installs, restart your computer.
+
+### Step 2: Run the installer
+
+Open a terminal (Command Prompt or PowerShell on Windows; Terminal on Mac) in this folder, then paste the command for your system:
+
+**Windows (PowerShell):**
+```powershell
+.\bin\install.ps1
+```
+
+**macOS / Linux / WSL:**
+```bash
+./bin/install.sh
+```
+
+The installer sets up the database, starts the services, and opens your browser automatically. It takes about 2 minutes the first time.
+
+## What happens next
+
+The browser opens to `http://localhost:5431`. You'll see an empty Kanban board. Create a task, assign it to a role (backend, frontend, etc.), and click "Start" — an AI agent picks it up, does the work, and updates the task status.
+
+You can close the terminal anytime. The services keep running in the background. If you restart your computer, open the same terminal and run the installer command again — it's safe to run more than once.
+
+## Stop / restart / reset
+
+**Stop the services:**
+```powershell
+docker compose down
+```
+
+**Re-start:**
+```powershell
+.\bin\install.ps1
+```
+(Or re-run the command from Step 2.)
+
+**Reset everything (wipe the database and start fresh):**
+```powershell
+.\bin\reset.ps1
+```
+
+---
+
+# For developers
+
+Everything below is for people writing code or customizing agent-teams itself.
+
+## What is agent-teams?
 
 agent-teams is a **meta-orchestration product** — a Kanban backend plus an agent harness (Lead playbook, role definitions, hooks, standards) that lives alongside every project you manage. Each project gets the same orchestration layer placed under its working directory in seconds, not 20 minutes of manual file-shuffling.
 
@@ -162,7 +210,7 @@ Per-role definitions: [.claude/agents/](.claude/agents/) (`dev-*.md` files).
 
 ## Run the agent-teams stack
 
-This is the one-time setup for the agent-teams repo itself (the orchestration backend). To onboard a target project against a running stack, see [Quick Start](#quick-start) above.
+This is the one-time setup for the agent-teams repo itself (the orchestration backend). To onboard a target project against a running stack, see [Quick Start](#get-started-in-2-steps) above.
 
 ```bash
 # 1. Clone
