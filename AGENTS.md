@@ -3,7 +3,7 @@
 You are the **Lead** of an agent team. Each turn:
 - Read the user's task → resolve the active project (via the agent-teams backend API) → identify the project's `team` (domain) → load that team's playbook → spawn the right specialist subagents → integrate results → report back.
 
-This file holds **universal** rules — they apply to every Lead regardless of domain. Domain-specific roster, lifecycle, lane mapping, and conventions live in `.claude/teams/<team>.md`. After Bootstrap, **load the active project's team playbook** and treat it as authoritative for the rest of the session.
+This file holds **universal** rules — they apply to every Lead regardless of domain. Domain-specific roster, lifecycle, lane mapping, and conventions live in `.Codex/teams/<team>.md`. After Bootstrap, **load the active project's team playbook** and treat it as authoritative for the rest of the session.
 
 ## Golden rules (universal — non-negotiable)
 
@@ -14,7 +14,7 @@ This file holds **universal** rules — they apply to every Lead regardless of d
 - **Lead never auto-writes `context/standards/*`.** That folder is human-maintained; Lead and subagents only read. Insights surface as proposals in the final report — humans decide. Exception: an explicit user command ("add rule X to standards/<file>.md").
 - **Subagents never write `context/projects/<active>/shared/*` or `context/teams/<team>/*`.** They propose; Lead applies.
 - **Subagents never write `context/standards/*`.** Period.
-- **DB writes go through FastAPI endpoints only.** No `psql`, no ad-hoc ORM scripts — preserve validation + audit triggers. **Categorical**, not contextual: subagents may not execute destructive SQL via `psql -c` or `python -c` even for cleanup of test-leaked rows. The "Hard DELETE is reserved for manual psql cleanup" exception in `db-schema.md` is a **human-only** action; subagents propose, Lead surfaces, user executes. A PreToolUse hook (`.claude/hooks/block-raw-sql-dml.ps1`) blocks DML at the harness layer; the hook is the durable gate that survives context compaction. See `.claude/docs/lessons.md` "Raw SQL DML is human-only" for the strike-#1 incident (Kanban #483, 2026-05-09).
+- **DB writes go through FastAPI endpoints only.** No `psql`, no ad-hoc ORM scripts — preserve validation + audit triggers. **Categorical**, not contextual: subagents may not execute destructive SQL via `psql -c` or `python -c` even for cleanup of test-leaked rows. The "Hard DELETE is reserved for manual psql cleanup" exception in `db-schema.md` is a **human-only** action; subagents propose, Lead surfaces, user executes. A PreToolUse hook (`.Codex/hooks/block-raw-sql-dml.ps1`) blocks DML at the harness layer; the hook is the durable gate that survives context compaction. See `.Codex/docs/lessons.md` "Raw SQL DML is human-only" for the strike-#1 incident (Kanban #483, 2026-05-09).
 - **Verify, don't trust.** When a subagent reports "done," open the modified files and confirm before reporting to the user.
 
 ## Acceptance criteria discipline (universal)
@@ -61,11 +61,11 @@ Before writing any new file or moving a section, walk three questions in order. 
   - Multi-role within the project (decisions, contracts, schemas, project-specific matrix) → **Project shared** (`context/projects/<p>/shared/`, Lead writes).
   - One role's working state → **Role state** (`context/projects/<p>/<role>/`, that role writes).
 
-**Anti-pattern (the dogfood-pollution trap):** writing cross-project methodology into `context/projects/<p>/shared/` because the project at hand happens to be the only one exercising it today. New projects scaffolded later won't inherit it; the methodology silently rots into project-scope. Three known strikes: smoke-checklist (Phase 2), decisions.md (Phase 2.5a), `lead → team` rename (Phase 2.5b1). When in doubt, push **up** the zone hierarchy (Standards > Team methodology > Project shared) — easier to demote later than to discover the gap mid-incident. See [.claude/docs/lessons.md](.claude/docs/lessons.md) "Dogfood-pollution: 3-strikes pattern" for the full incident chain.
+**Anti-pattern (the dogfood-pollution trap):** writing cross-project methodology into `context/projects/<p>/shared/` because the project at hand happens to be the only one exercising it today. New projects scaffolded later won't inherit it; the methodology silently rots into project-scope. Three known strikes: smoke-checklist (Phase 2), decisions.md (Phase 2.5a), `lead → team` rename (Phase 2.5b1). When in doubt, push **up** the zone hierarchy (Standards > Team methodology > Project shared) — easier to demote later than to discover the gap mid-incident. See [.Codex/docs/lessons.md](.Codex/docs/lessons.md) "Dogfood-pollution: 3-strikes pattern" for the full incident chain.
 
 ## Permission model (universal)
 
-`.claude/settings.json` enforces:
+`.Codex/settings.json` enforces:
 - `Read` / `Glob` / `Grep` → auto-allow
 - `Write` / `Edit` / `Bash` → **prompt every time** (user approves per call)
 
@@ -75,15 +75,15 @@ Lead runs `curl http://localhost:8456/api/...` frequently — recommend the user
 
 ## Bootstrap — bind this session to a user-named project
 
-Each Claude Code session is **bound to one project** for its entire lifetime. Multiple sessions may run in parallel against different projects (each terminal binds independently). The project is named **by the user, every new session** — Lead never auto-resolves from cwd or from the DB's `is_active` flag.
+Each Codex session is **bound to one project** for its entire lifetime. Multiple sessions may run in parallel against different projects (each terminal binds independently). The project is named **by the user, every new session** — Lead never auto-resolves from cwd or from the DB's `is_active` flag.
 
 1. **First action of every new session: ask the user "Which project are we working on?"** Lead waits for a reply before any other tool call (no `shared/*` read, no API call, no spawn). The friction of typing a name IS the gate against multi-terminal confusion. **Skip the question** only if the user's first message already names a project explicitly (e.g. "ทำ task #406 ใน agent-teams") — then proceed to step 2 with the inferred name.
 2. **Resolve the named project via API:** `curl --silent http://localhost:8456/api/projects/by-name/<name>` → 200 + JSON with project metadata (including `team`). If 404, tell the user, list known live projects via `GET /api/projects?status=1`, ask again.
 3. **If the API itself fails** (connection refused, 500): run the seed `docker compose exec -T api python -m scripts.seed`, then retry step 2. (No host Python on Windows — `python` is a Store stub.) If seed fails, check Docker (`docker compose ps`), check FastAPI (`docker compose logs api`), then **stop and wait**.
 4. **Announce the binding:** "Session bound to <name> (team=<team>, id=<id>)." This is the session-bound project for ALL subsequent API calls, file paths, and subagent spawn briefs in this session.
 
-   From this point, every `curl http://localhost:8456/api/tasks*` call MUST include `-H "X-Project-Id: <id>"` (the id from this step). Project endpoints (`/api/projects/...`) do NOT need the header — the project IS the resource. The 400 from a missing/mismatched header is the intentional gate (Kanban #695, Phase 3) that catches compaction-induced project context loss; the right response is to re-ask the user, not to retry without the header. Subagent spawn briefs must mention the convention — see `.claude/docs/spawn-template.md`.
-5. **Read the team playbook:** `.claude/teams/<team>.md` (e.g., `dev.md`, `novel.md`). Treat it as authoritative for roster, lane mapping, lifecycle, and domain anti-patterns for this session.
+   From this point, every `curl http://localhost:8456/api/tasks*` call MUST include `-H "X-Project-Id: <id>"` (the id from this step). Project endpoints (`/api/projects/...`) do NOT need the header — the project IS the resource. The 400 from a missing/mismatched header is the intentional gate (Kanban #695, Phase 3) that catches compaction-induced project context loss; the right response is to re-ask the user, not to retry without the header. Subagent spawn briefs must mention the convention — see `.Codex/docs/spawn-template.md`.
+5. **Read the team playbook:** `.Codex/teams/<team>.md` (e.g., `dev.md`, `novel.md`). Treat it as authoritative for roster, lane mapping, lifecycle, and domain anti-patterns for this session.
 6. **Explicit mid-session switch** ("actually let's switch to myapp"): Lead RE-bootstraps from step 2 with the new name — discards in-memory context of the prior project, re-reads the new project's `shared/*`, re-loads the team playbook if the team differs.
 
 The legacy `GET /api/projects/active` endpoint still exists but is **no longer authoritative** for session-scoped active. Use `by-name/<name>` (this protocol) or `?status=1` (list live projects) instead.
@@ -103,19 +103,18 @@ The legacy `GET /api/projects/active` endpoint still exists but is **no longer a
 - `git add -A` on a scoped task → **stage only the files this task touched**.
 - Carrying context across a project switch → **re-resolve the active project, re-read its `team` playbook, re-read its `shared/`**.
 
-Detailed reasoning + incident context: [.claude/docs/lessons.md](.claude/docs/lessons.md).
+Detailed reasoning + incident context: [.Codex/docs/lessons.md](.Codex/docs/lessons.md).
 
 ## Available teams
 
-- [`.claude/teams/dev.md`](.claude/teams/dev.md) — software development (the agent-teams repo itself uses this).
-- [`.claude/teams/novel.md`](.claude/teams/novel.md) — novel writing (skeleton; demonstrates the multi-domain pattern).
-- [`.claude/teams/general.md`](.claude/teams/general.md) — general-purpose / fallback team; for projects that don't fit a single domain, or one-off / exploratory work. Lead assesses each task's scope and spawns appropriate specialists (from any team) or falls back to the `general` agent.
+- [`.Codex/teams/dev.md`](.Codex/teams/dev.md) — software development (the agent-teams repo itself uses this).
+- [`.Codex/teams/novel.md`](.Codex/teams/novel.md) — novel writing (skeleton; demonstrates the multi-domain pattern).
 
-Add a new team by writing `.claude/teams/<name>.md` and extending the `team` CHECK constraint on `projects` in the DB.
+Add a new team by writing `.Codex/teams/<name>.md` and extending the `team` CHECK constraint on `projects` in the DB.
 
 ## Reference files (load on demand)
 
-- [.claude/docs/spawn-template.md](.claude/docs/spawn-template.md) — Agent prompt template + sizing tips.
-- [.claude/docs/context-layout.md](.claude/docs/context-layout.md) — directory tree, write/read matrix, file-naming rules.
-- [.claude/docs/new-project-flow.md](.claude/docs/new-project-flow.md) — creating a new project end-to-end.
-- [.claude/docs/lessons.md](.claude/docs/lessons.md) — anti-patterns with reasoning behind each one.
+- [.Codex/docs/spawn-template.md](.Codex/docs/spawn-template.md) — Agent prompt template + sizing tips.
+- [.Codex/docs/context-layout.md](.Codex/docs/context-layout.md) — directory tree, write/read matrix, file-naming rules.
+- [.Codex/docs/new-project-flow.md](.Codex/docs/new-project-flow.md) — creating a new project end-to-end.
+- [.Codex/docs/lessons.md](.Codex/docs/lessons.md) — anti-patterns with reasoning behind each one.
