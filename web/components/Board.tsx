@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+
+import { ListView } from "@/components/ListView";
 import {
   DndContext,
   KeyboardSensor,
@@ -91,12 +93,28 @@ function groupByStatus(tasks: TaskRead[]) {
   return groups;
 }
 
+type ViewMode = "board" | "list";
+
 export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
   const router = useRouter();
   const [tasks, setTasks] = useState<TaskRead[]>(initialTasks);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
   const toastIdRef = useRef(1);
+
+  // View toggle — default 'board'; persisted per-project in localStorage.
+  // SSR-safe: initial state always 'board'; hydrated from localStorage in useEffect.
+  const [view, setView] = useState<ViewMode>("board");
+
+  useEffect(() => {
+    const stored = localStorage.getItem(`kanban-view-${project.name}`);
+    if (stored === "list" || stored === "board") setView(stored);
+  }, [project.name]);
+
+  function handleViewChange(v: ViewMode) {
+    setView(v);
+    localStorage.setItem(`kanban-view-${project.name}`, v);
+  }
 
   // Sync local Board state to fresh server-rendered initialTasks whenever the
   // RSC fetch re-runs (triggered by router.refresh() below on SSE events).
@@ -269,6 +287,24 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
             state={connectionState}
             lastEventAt={lastEventAt}
           />
+          <span aria-hidden className="text-zinc-300 dark:text-zinc-600">·</span>
+          <span className="inline-flex items-center rounded-md border border-zinc-200 dark:border-zinc-700 overflow-hidden text-xs">
+            {(["board", "list"] as const).map((v) => (
+              <button
+                key={v}
+                type="button"
+                onClick={() => handleViewChange(v)}
+                aria-pressed={view === v}
+                className={`px-2.5 py-1 capitalize transition-colors ${
+                  view === v
+                    ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 font-semibold"
+                    : "bg-transparent text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                }`}
+              >
+                {v}
+              </button>
+            ))}
+          </span>
           <span className="ml-auto">
             <ThemePicker />
           </span>
@@ -278,24 +314,28 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
           hasHeadlessTask={hasHeadlessTask}
         />
       </header>
-      <DndContext sensors={sensors} onDragEnd={onDragEnd}>
-        <div
-          data-board="dnd"
-          className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-hidden md:grid-cols-3 lg:grid-cols-5"
-        >
-          {COLUMNS.map((col) => (
-            <BoardColumn
-              key={col.key}
-              columnId={col.key}
-              statuses={col.statuses}
-              label={col.label}
-              tasks={col.statuses.flatMap((s) => grouped.get(s) ?? [])}
-              onOpenDetail={onOpenDetail}
-              sortable={col.statuses.includes(TaskStatus.TODO)}
-            />
-          ))}
-        </div>
-      </DndContext>
+      {view === "list" ? (
+        <ListView tasks={tasks} onOpenDetail={onOpenDetail} />
+      ) : (
+        <DndContext sensors={sensors} onDragEnd={onDragEnd}>
+          <div
+            data-board="dnd"
+            className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-hidden md:grid-cols-3 lg:grid-cols-5"
+          >
+            {COLUMNS.map((col) => (
+              <BoardColumn
+                key={col.key}
+                columnId={col.key}
+                statuses={col.statuses}
+                label={col.label}
+                tasks={col.statuses.flatMap((s) => grouped.get(s) ?? [])}
+                onOpenDetail={onOpenDetail}
+                sortable={col.statuses.includes(TaskStatus.TODO)}
+              />
+            ))}
+          </div>
+        </DndContext>
+      )}
       {selectedTask && (
         <TaskDetail
           task={selectedTask}
