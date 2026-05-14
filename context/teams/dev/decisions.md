@@ -21,6 +21,49 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-14 — Claude Code Desktop worktree-per-session is hardcoded; cross-session shared/* invisibility is the friction
+**Scope:** team-playbook / multi-session-safety / lifecycle
+**Proposed by:** lead (NewsAnalyzer session 2026-05-14, verified via `claude-code-guide` agent vs docs.claude.com)
+**Status:** finding + remediation guide — no code change to agent-teams or its dependents.
+
+**Finding:**
+- **Claude Code Desktop hardcodes per-session worktree creation.** Every Desktop session opens a fresh worktree at `.claude/worktrees/<adjective>-<noun>-<6hex>/` and a fresh branch `claude/<adjective>-<noun>-<6hex>` from `main`. There is NO `settings.json` toggle, environment variable, or UI checkbox to disable. Confirmed against [code.claude.com/docs/en/desktop.md](https://code.claude.com/docs/en/desktop.md#work-in-parallel-with-sessions) and [code.claude.com/docs/en/settings.md](https://code.claude.com/docs/en/settings.md#worktree-settings) (retrieved 2026-05-14). The only configurables are: worktree LOCATION, branch PREFIX, auto-archive-after-PR-merge — none of which turn the feature off.
+- **Claude Code CLI** treats worktree as **opt-in** via `claude --worktree <name>`. Without the flag, the session runs directly on the current branch.
+- The interaction with our Lead protocol: `context/projects/<p>/shared/*` writes from session A live on `claude/<A-slug>` branch — invisible to session B that branches from `main` BEFORE A's branch was merged.
+
+**Concrete incident (2026-05-14 NewsAnalyzer session):** User said "มาต่อจากที่ดูกันเมื่อกี้" expecting decisions.md continuity. Prior session (`claude/relaxed-gould-c89537`) had committed `177f467 docs(NewsAnalyzer): lock engine + scope + cost rules in shared/decisions.md` ~30 min earlier, but the branch was never merged. Fresh session (`claude/stoic-archimedes-66ea3b`) branched from `main` saw an empty `decisions.md`. Recovery cost ~5 turns: `git merge --ff-only` + fast-forward of the active worktree. Memory entry: [feedback_no_branch_per_task.md](~/.claude/projects/.../feedback_no_branch_per_task.md) extended with mechanism details + cleanup procedure.
+
+**Why this matters for the dev team specifically:**
+- The session-scoped active project protocol (this file's 2026-05-09 'Session-scoped active project' entry) assumed `shared/*` files are durably accessible across sessions. Worktree-per-session breaks that assumption silently — the file IS durable, it's just on a branch the next session can't see.
+- The Lead-as-sole-writer convention for `shared/*` is undermined: technically Lead writes, but the WRITE is invisible to the next Lead unless the worktree branch lands on main.
+- Phase 3's `X-Project-Id` header (lock entry 2026-05-09 cross-ref to #695) gates against DB-side mis-binding under compaction, but cannot help with filesystem-side state (decisions.md, shared/docs/, etc.).
+
+**Remediation options (Lead-side, no harness change required):**
+
+1. **Always ff-push worktree branch to main BEFORE session close.** Pattern: `git push origin <worktree-branch>:main` (works if branch is a clean ancestor of main) OR `git checkout main && git merge --ff-only <worktree-branch>`. This is the safest workflow for solo users on Desktop. Codify in the session-close routine.
+
+2. **Encourage CLI for solo work where Desktop UI features aren't needed.** Direct-on-main eliminates the cross-session invisibility entirely. User's call per session — Lead surfaces the choice rather than picking.
+
+3. **Worktree cleanup on Windows requires post-session manual step.** The harness holds file handles on `.claude/worktrees/<slug>/` while a Claude Code instance is running. Mid-session `rm -rf` returns "Device or resource busy". Document the post-close PowerShell sequence in any spawn brief that creates orphan worktrees.
+
+4. **Don't ship Lead-protocol changes that depend on filesystem-side cross-session durability without a harness-side guarantee that worktrees merge.** Current Lead-bootstrap reads `shared/decisions.md` — fine as long as point (1) is followed. Anything fancier (e.g., "next Lead picks up halt_reason from previous Lead's shared/* file") would compound the failure mode.
+
+**Reasoning:**
+- The friction is real but the fix is procedural (commit + ff-merge before close), not architectural. Pivoting agent-teams to avoid filesystem-side cross-session state would be over-engineering for a solo user.
+- The Lead-protocol documents (CLAUDE.md, .claude/teams/dev.md) already assume `shared/*` is the source of truth between sessions; surfacing the worktree caveat closes the implicit-assumption gap.
+- Recording in team-methodology rather than agent-teams's project-shared because the finding applies to every dev project orchestrated via agent-teams (NewsAnalyzer, Writing, agent-teams dogfood, future projects) — Q2 of the Q0-Q2 framework places this firmly in team methodology.
+
+**Implications:**
+- Next agent-teams session that hits a "shared/* write from prior session not visible" symptom should (a) check `git branch -a --contains <expected-commit>` to locate the orphan branch, (b) `git merge --ff-only <branch>` if clean fast-forward possible, (c) update memory if a new failure mode surfaces.
+- Lead's session-close routine SHOULD include: `git push origin <branch>` (preserve work) + offer to ff-merge to main if applicable + warn about cleanup.
+- A user-facing item that may warrant filing as a Kanban task: "Session close hook — auto-ff-merge to main on clean exit." Out of scope for this entry; deferred to user.
+- Memory record at [`feedback_no_branch_per_task.md`](~/.claude/projects/.../feedback_no_branch_per_task.md) carries the cross-session-applicable shape; this entry carries the agent-teams-project narrative + Q0-Q2 placement rationale.
+
+**Cross-references:**
+- 2026-05-09 'Session-scoped active project' entry above — multi-terminal binding gap, the spiritual sibling to this one (DB-side; this one is filesystem-side).
+- Memory: `feedback_no_branch_per_task.md` (mechanism + cleanup procedure detail).
+- Recovery example: `agent-teams` git log 2026-05-14 — `git merge --ff-only claude/relaxed-gould-c89537` on local main + `git push -u origin claude/stoic-archimedes-66ea3b` (feature branch push pattern).
+
 ## 2026-05-12 — Decay policy locked: 3 classes (perishable / review-on-touch / evergreen) + 4 demote triggers + frontmatter contract
 **Scope:** bucket-architecture / lifecycle (governs `context/projects/<p>/shared/docs/` + `context/teams/dev/` writes — does NOT apply to standards, decisions logs, or `_scratch/`)
 **Proposed by:** user (clarification request after promote/demote discussion on dev-researcher dnd-kit doc — Kanban #812)
