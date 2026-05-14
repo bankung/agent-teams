@@ -247,7 +247,8 @@
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('process_status=',d['process_status'],'completed_at=',d['completed_at'],'subagent_models=',len\\(d['subagent_models']\\),'entries','all_ac=',all\\(c['status']=='passed' for c in d['acceptance_criteria']\\)\\)\")",
       "Bash(curl --silent -H \"X-Project-Id: 1\" http://localhost:8456/api/tasks/885 -o _scratch/885.json)",
       "Bash(curl --silent -H \"X-Project-Id: 1\" http://localhost:8456/api/tasks/886 -o _scratch/886.json)",
-      "Bash(Remove-Item _scratch/patch-885-done.json, _scratch/patch-886-done.json, _scratch/patch-887-done.json, _scratch/patch-887-resp.json -ErrorAction SilentlyContinue)"
+      "Bash(Remove-Item _scratch/patch-885-done.json, _scratch/patch-886-done.json, _scratch/patch-887-done.json, _scratch/patch-887-resp.json -ErrorAction SilentlyContinue)",
+      "Bash(curl --silent -H \"X-Project-Id: 1\" \"http://localhost:8456/api/tasks?process_status=1&limit=30\")"
     ],
     "ask": [
       "Write(/context/projects/*/shared/**)",
