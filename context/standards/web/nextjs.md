@@ -49,6 +49,20 @@ docker compose up -d --no-deps web
 2. From the main repo root: `docker compose -p agent-teams up -d --no-deps web` (re-attaches web to the main network)
 3. Verify: `docker ps --format "{{.Names}} {{.Image}}"` — web should show `agent-teams-web` (image), not `<worktree-slug>-web`.
 
+### Bind-mount path caveat — `restart` won't pick up worktree-only files
+
+If the running `agent-teams-web` container was originally `up`-ed from the **main repo**, its `/app` bind-mount points at `<main-repo>/web`. A `docker compose -p agent-teams restart web` from a worktree directory **does NOT rebind** the mount — the container keeps serving the main repo's `web/`, so new files created under `.claude/worktrees/<slug>/web/` (e.g., `web/public/agentboard-icons.svg`, new components) will be invisible to the container. `tsc --noEmit` against the worktree source still passes; the live curl still shows stale HTML or 404s for the new assets.
+
+**To rebind the container to the worktree's `web/`:** from the worktree directory, run `docker compose -p agent-teams up -d --no-deps --build web`. This recreates the container with the worktree path as the bind source.
+
+**Verify the rebind landed:**
+```powershell
+docker inspect agent-teams-web --format '{{range .Mounts}}{{.Source}}{{println}}{{end}}'
+# Source should point under .claude\worktrees\<slug>\web (NOT the main repo)
+```
+
+Observed in Kanban #914 (2026-05-14): a worktree-only `web/public/agentboard-icons.svg` 404'd via curl after `restart`; succeeded after `up -d --no-deps --build`.
+
 Worked example: Kanban #875 smoke loop ran `docker compose up -d --no-deps web` from `.claude/worktrees/festive-bartik-04b551/` → web ended up on `festive-bartik-04b551_default` network → cross-page fetches to `/api/*` returned errors until web was re-attached to `agent-teams_default`.
 
 ### Worked examples — 4-strike pattern (2026-05-13)
@@ -71,3 +85,40 @@ Worked example: Kanban #875 smoke loop ran `docker compose up -d --no-deps web` 
 - ✅ `web/components/**` — shared components
 - ❌ `api/**` — FastAPI rebuilds per request (no in-process bundle cache)
 - ❌ `context/**` — read at session start, not live-watched
+
+---
+
+## Icon kit — `agentboard-icons.svg`
+
+Adopted in Kanban #914 (2026-05-14). Single SVG sprite at `web/public/agentboard-icons.svg` (31 UI icons at 24×24 viewBox + 5 app icon sizes). Consumed via `web/components/Icon.tsx`:
+
+```tsx
+<Icon name="add-task" size={14} aria-hidden />            // decorative
+<Icon name="status-done" size={16} aria-label="Done" />   // semantic
+```
+
+Pass `name` WITHOUT the `icon-` prefix. The component renders `<svg><use href="/agentboard-icons.svg#icon-{name}"/></svg>`. Decorative icons (paired with text) get `aria-hidden`; standalone icons need `aria-label`.
+
+### Inventory
+
+**Functional (18):** `lead-agent`, `spawn`, `task-card`, `board`, `multi-project`, `run`, `dev-agent`, `writer-agent`, `backlog`, `status-running`, `status-done`, `status-blocked`, `status-queued`, `add-task`, `agent-config`, `sprint`, `alert`, `logs`.
+
+**Agents + run-modes (8):** `human-agent`, `ai-agent`, `manual-run`, `auto-run`, `tooltip`, `info`, `view-board`, `view-list`.
+
+**App sizes (5, native viewBox):** `app-512`, `app-192`, `app-48`, `app-32`, `app-16` — reserved for favicon + PWA manifest; not yet wired (separate follow-up).
+
+### Color palette
+
+Adopt these as Tailwind theme tokens when the next palette pass lands (out of scope #914):
+
+| Token | Hex | Intended use |
+|---|---|---|
+| `agent-ai` | `#7C3AED` | AI-agent accent, hexagon-head badges, primary brand purple |
+| `agent-ai-light` | `#C4B5FD` | AI-agent fill (light), secondary surfaces inside app icons |
+| `accent-warn` | `#F59E0B` | Manual-run / status-queued / lightning glyphs / soft-warn signals |
+| `accent-done` | `#10B981` | Status-done check, auto-run cycle arcs |
+| `accent-done-light` | `#34D399` | Status-done lighter variant, app-icon highlights |
+| `accent-blocked` | `#EF4444` | Status-blocked / alert dot / hard error signal |
+| `surface-app` | `#1A1A2E` | App icon background, dark-surface anchor |
+
+Each status icon in the sprite hard-codes its semantic color (e.g., `icon-status-done` uses `#10B981` regardless of `currentColor`); functional icons use `currentColor` so they inherit text color. Don't override status-icon colors via `className` — they are intentionally fixed for color-coded recognition.

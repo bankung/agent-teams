@@ -12,6 +12,7 @@ import {
   type TaskRoleValue,
   type TaskStatusValue,
 } from "@/lib/constants";
+import { Icon } from "./Icon";
 
 // Trigger button + dialog for POST /api/tasks (Kanban #855 FE).
 // Visual pattern mirrors NewProjectModal: zinc-bordered panel, focus on first
@@ -153,10 +154,11 @@ export function NewTaskModal({ projectId }: Props) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="inline-flex items-center rounded border border-zinc-300 bg-white px-2 py-1 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-400 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
+        className="inline-flex items-center gap-1.5 rounded border border-zinc-300 bg-white px-2 py-1 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-400 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
         data-new-task-trigger
       >
-        + New task
+        <Icon name="add-task" size={14} aria-hidden />
+        <span>New task</span>
       </button>
       {open && (
         <div

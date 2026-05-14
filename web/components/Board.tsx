@@ -27,6 +27,7 @@ import { sortDoneLane, sortLaneTasks } from "@/lib/sortLaneTasks";
 import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
 import { BoardColumn } from "@/components/BoardColumn";
 import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
+import { Icon } from "@/components/Icon";
 import { NewTaskModal } from "@/components/NewTaskModal";
 import { ProjectConsentBanner } from "@/components/ProjectConsentBanner";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
@@ -282,13 +283,14 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
                 type="button"
                 onClick={() => handleViewChange(v)}
                 aria-pressed={view === v}
-                className={`px-2.5 py-1 capitalize transition-colors ${
+                className={`inline-flex items-center px-2.5 py-1 capitalize transition-colors ${
                   view === v
                     ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 font-semibold"
                     : "bg-transparent text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
                 }`}
               >
-                {v}
+                <Icon name={v === "board" ? "view-board" : "view-list"} size={14} aria-hidden />
+                <span className="ml-1.5">{v}</span>
               </button>
             ))}
           </span>
