@@ -299,7 +299,10 @@
       "Bash(git remote *)",
       "Bash(git commit -m 'chore: allowlist accretion from session *)",
       "Bash(git commit -m 'chore: gitignore .firecrawl/ + context/projects/test-*/ *)",
-      "Bash(git commit -m 'chore: allowlist accretion \\(post-rewrite\\) *)"
+      "Bash(git commit -m 'chore: allowlist accretion \\(post-rewrite\\) *)",
+      "Bash(git commit -m 'docs\\(readme\\): document Ollama support + headless engine landing — Phase 4 close *)",
+      "Bash(git commit *)",
+      "Bash(git merge --no-ff feat/langgraph-phase4 -m 'Merge branch '\\\\''feat/langgraph-phase4'\\\\'' — Phase 4 LangGraph headless engine *)"
     ],
     "ask": [
       "Write(/context/projects/*/shared/**)",
