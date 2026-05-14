@@ -248,7 +248,17 @@
       "Bash(curl --silent -H \"X-Project-Id: 1\" http://localhost:8456/api/tasks/885 -o _scratch/885.json)",
       "Bash(curl --silent -H \"X-Project-Id: 1\" http://localhost:8456/api/tasks/886 -o _scratch/886.json)",
       "Bash(Remove-Item _scratch/patch-885-done.json, _scratch/patch-886-done.json, _scratch/patch-887-done.json, _scratch/patch-887-resp.json -ErrorAction SilentlyContinue)",
-      "Bash(curl --silent -H \"X-Project-Id: 1\" \"http://localhost:8456/api/tasks?process_status=1&limit=30\")"
+      "Bash(curl --silent -H \"X-Project-Id: 1\" \"http://localhost:8456/api/tasks?process_status=1&limit=30\")",
+      "Bash(curl --silent -H \"X-Project-Id: 1\" \"http://localhost:8456/api/tasks?severity=blocker\")",
+      "Bash(Select-Object id, title, process_status, priority, severity, parent_task_id)",
+      "Bash(Format-Table -AutoSize)",
+      "PowerShell(curl.exe --silent -H \"X-Project-Id: 1\" \"http://localhost:8456/api/tasks?severity=blocker&process_status=1\" -o \"_scratch/blockers_todo.json\"; \\(Get-Content \"_scratch/blockers_todo.json\" | ConvertFrom-Json\\) | Select-Object id, title, process_status, priority, severity, parent_task_id | Format-Table -AutoSize)",
+      "PowerShell($t = \\(Get-Content \"_scratch/blockers_todo.json\" | ConvertFrom-Json\\)[0]; $t | ConvertTo-Json -Depth 5)",
+      "PowerShell($tasks = Get-Content \"_scratch/blockers_todo.json\" | ConvertFrom-Json; $tasks | Where-Object { $_.priority -eq 1 } | Select-Object id, title, parent_task_id, blocked_by, started_at, assigned_role | Format-Table -AutoSize -Wrap)",
+      "Bash(curl --silent -H \"X-Project-Id: 1\" \"http://localhost:8456/api/tasks/859\" -o \"_scratch/t859.json\")",
+      "Bash(curl --silent -H \"X-Project-Id: 1\" \"http://localhost:8456/api/tasks/860\" -o \"_scratch/t860.json\")",
+      "Bash(git stash *)",
+      "Bash(git restore *)"
     ],
     "ask": [
       "Write(/context/projects/*/shared/**)",
