@@ -94,19 +94,31 @@ def backend_specialist_node(state: AgentState) -> dict:
     extend this into a ReAct loop with tool access (Kanban API read/write,
     git, etc.). For #850 the AC only requires "at least ONE specialist node"
     that actually exercises the LLM path.
+
+    Prompt shape (revised Kanban #907): generic technical-assistant persona +
+    explicit anti-scaffolding directive. The earlier "FastAPI + PostgreSQL
+    specialist / produce a plan" framing was biasing the LLM toward project
+    scaffolding even when the brief was orthogonal (smoke #902/#906 wander
+    incident, 2026-05-14). Task id is intentionally NOT stamped into the
+    HumanMessage — it already rides in the checkpoint thread_id + supervisor's
+    SystemMessage; the brief is sent verbatim so the model mirrors its shape
+    (definition → definition, code → code, list → list).
     """
     brief = state.get("brief", "")
-    task_id = state.get("task_id", "?")
     model = make_chat_model()
     prompt = [
         SystemMessage(
             content=(
-                "You are dev-backend, a FastAPI + PostgreSQL specialist. "
-                "Given the task brief below, produce a concise plan or answer. "
-                "Keep responses focused — no preamble, no apology."
+                "You are an expert technical assistant. Answer the user's question or "
+                "request directly and concisely. "
+                "Do not propose unrelated scaffolding, project plans, requirements "
+                "lists, or implementation steps unless explicitly asked. "
+                "If the request asks for a definition, give the definition. "
+                "If it asks for code, give code. If it asks for a list, give a list. "
+                "Prefer accurate brevity over verbose explanation."
             )
         ),
-        HumanMessage(content=f"Task #{task_id}\n\nBrief:\n{brief}"),
+        HumanMessage(content=brief),
     ]
     response = model.invoke(prompt)
     content = response.content if isinstance(response.content, str) else str(response.content)

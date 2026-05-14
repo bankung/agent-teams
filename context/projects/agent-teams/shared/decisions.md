@@ -62,6 +62,16 @@ Template:
 
 **Smoke verified end-to-end:** seeded task #890 (TODO + ai + auto_pickup + role=2) → worker picked it up → transitioned TODO → IN_PROGRESS → DONE with started_at/completed_at stamped and final_result in status_change_reason. 65/65 unit tests green.
 
+**Decision (#907 — backend_specialist prompt wander fix):** Real-LLM smoke 2026-05-14 produced identical "wander into FastAPI/PostgreSQL scaffolding" output for two unrelated models (llama3.2:3b #902, qwen3:8b #906) given orthogonal prompts (e.g. "List 3 reasons to use Pydantic over dataclasses"). Identical wander across models = system-prompt bias, not model quality. Root cause: three contributors in `backend_specialist_node` — (1) narrow persona "FastAPI + PostgreSQL specialist" (domain anchor), (2) "produce a concise plan" framing (biased toward designing things), (3) "Task #N\n\nBrief:\n..." HumanMessage wrapper (added project-ticket framing).
+
+**Fix:** persona replaced with generic "expert technical assistant"; explicit anti-scaffolding directive ("Do not propose unrelated scaffolding, project plans, requirements lists, or implementation steps unless explicitly asked"); shape-mirroring examples (definition → definition, code → code, list → list); brief sent verbatim as HumanMessage (no "Task #N" wrapper — task_id already rides in checkpoint thread_id + supervisor's SystemMessage).
+
+**Regression guard:** `langgraph/tests/test_nodes_prompt.py` mocks `make_chat_model`, captures the prompt list, asserts (a) no FastAPI/PostgreSQL/specialist/"produce a plan" anchors in SystemMessage, (b) HumanMessage equals brief verbatim, (c) function return shape preserved. 8 new tests; total suite 91/91 green.
+
+**Smoke retest:** #908 — same Pydantic prompt that wandered on #902/#906 — now produces accurate focused answer addressing Pydantic in 5.5s. Verified end-to-end on test-headless project.
+
+**Decision:** keep `nodes.py` "dumb" — no per-role personas yet. Supervisor's job is routing, not prompt customization. Per-role personas wait for Phase 5 real specialists.
+
 **Decision (#891 — Ollama provider for free local LLM testing):** Third provider branch in `langgraph/llm.py`. `langchain-ollama==1.1.0` pinned. Free local LLM via host-side `ollama` process reached at `http://host.docker.internal:11434`. No API key required. Provider switch remains `.env`-only (`LANGGRAPH_LLM_PROVIDER=ollama` + optional `OLLAMA_MODEL=qwen2.5:7b`).
 
 **Locked rules (#891):**
