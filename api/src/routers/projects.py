@@ -254,14 +254,9 @@ async def list_projects_stats(
         cu["total_input_tokens"] = int(sum_input_tokens)
         cu["total_output_tokens"] = int(sum_output_tokens)
         cu["total_context_chars"] = int(sum_context_chars)
-        # SUM(NUMERIC) → Decimal already; cast defensively in case the driver
-        # surfaces a different numeric type for empty-group / all-NULL paths.
-        cu["total_cost_usd"] = (
-            sum_cost_usd if isinstance(sum_cost_usd, Decimal) else Decimal(str(sum_cost_usd))
-        )
-        # SUM(CAST bool AS int) → may be None when the group is empty, but
-        # GROUP BY only emits rows with ≥1 underlying row so this is safe.
-        cu["budget_warning_count"] = int(budget_warning_count or 0)
+        # SQL-side COALESCE(SUM(...), 0) on Numeric column → Decimal, never None.
+        cu["total_cost_usd"] = sum_cost_usd
+        cu["budget_warning_count"] = int(budget_warning_count)
         cu["session_run_count"] = int(session_run_count)
 
     return [
