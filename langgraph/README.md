@@ -61,23 +61,67 @@ docker compose stop langgraph
 ## Switching LLM providers
 
 Two env-vars control the provider; defaults make the Anthropic path work
-without configuration once `ANTHROPIC_API_KEY` is set in `.env`.
+without configuration once `ANTHROPIC_API_KEY` is set in `.env`. Switching
+providers is a `.env` change + container restart — no code edits.
 
 ```env
 LANGGRAPH_LLM_PROVIDER=anthropic   # or: openai
 ANTHROPIC_API_KEY=sk-ant-...        # required when provider=anthropic
 OPENAI_API_KEY=sk-...               # required when provider=openai
-ANTHROPIC_MODEL=claude-sonnet-4-6   # optional override
-OPENAI_MODEL=gpt-4o                 # optional override
+ANTHROPIC_MODEL=claude-sonnet-4-6   # optional override (default shown)
+OPENAI_MODEL=gpt-4o                 # optional override (default shown)
 ```
 
-Restart the container after changing `.env`:
+### Anthropic → OpenAI
+
+```env
+LANGGRAPH_LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+# ANTHROPIC_API_KEY may stay set; it's only consulted when provider=anthropic.
+```
 
 ```sh
-docker compose up -d --no-deps langgraph
+docker compose restart langgraph
 ```
 
-The actual provider factory (`make_chat_model()`) lands in Kanban #853.
+### OpenAI → Anthropic
+
+```env
+LANGGRAPH_LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+```sh
+docker compose restart langgraph
+```
+
+### Model overrides
+
+`ANTHROPIC_MODEL` / `OPENAI_MODEL` override the default model per provider —
+e.g., set `ANTHROPIC_MODEL=claude-opus-4-7` to swap the model without touching
+the SDK selector. Names are validated at startup: lowercase letters, digits,
+dot, hyphen only. The common copy-paste gotcha — `claude_sonnet_4_6`
+(underscores) vs `claude-sonnet-4-6` (hyphens) — is caught with an explicit
+error message.
+
+### Why a restart is required
+
+The factory reads `os.getenv(...)` once during the FastAPI lifespan probe
+(`make_chat_model().invoke("ping")`); subsequent `/invoke` calls reuse the
+same model instance. Changing `.env` mid-run has no effect until the lifespan
+re-runs. `docker compose restart langgraph` is the cheapest way to force it.
+
+### Fail-fast behaviour
+
+The container refuses to start (lifespan raises `RuntimeError`) if:
+
+- the configured provider's API key is unset or whitespace-only;
+- `LANGGRAPH_LLM_PROVIDER` is anything other than `anthropic` / `openai`;
+- the chosen model name fails the shape regex; or
+- the `invoke("ping")` probe to the provider itself fails.
+
+Better to refuse `docker compose up` than to look healthy and crash on the
+first `/invoke`. Logs name exactly which env-var to set.
 
 ## Rebuilding after a pyproject edit
 

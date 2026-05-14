@@ -31,6 +31,17 @@ Template:
 - **`/invoke` contract (locked for #852):** `POST {task_id, brief, assigned_role}` → `200 {task_id, assigned_role, final_result, halt_reason, messages[]}`. `halt_reason != null` = pause signal (route to user review); `final_result` = artifact to write back to the Kanban task.
 - **`make_chat_model() -> BaseChatModel` signature stable** — #853 replaces the `llm.py` shim from #850 without changing the public contract; specialist nodes don't import `ChatAnthropic`/`ChatOpenAI` directly.
 
+**Decision (#853 — multi-provider llm factory):** Replaced `langgraph/llm.py` shim with production factory. Public surface (stable):
+- `make_chat_model(model: str | None = None) -> BaseChatModel` — back-compatible with #850's no-arg signature; optional override.
+- `resolve_provider() -> Literal["anthropic", "openai"]` — normalizes + validates `LANGGRAPH_LLM_PROVIDER`; used by `/ok`.
+- `resolve_model(provider: str | None = None) -> str` — defaults from `DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"` / `DEFAULT_OPENAI_MODEL = "gpt-4o"`; overridable via `ANTHROPIC_MODEL` / `OPENAI_MODEL`.
+
+**Locked rules (#853 additions):**
+- **Model-name shape regex** `^[a-z0-9][a-z0-9.\-]*$` — catches `claude_sonnet_4_6` (underscore typo) at startup, names the offending env-var in the error.
+- **Whitespace-trimmed API keys** — env-var set to `"   "` (trailing-space `.env` mishap) treated as unset; surfaces at lifespan instead of mid-run auth failure.
+- **Lazy SDK imports** — `langchain_anthropic` / `langchain_openai` imported INSIDE the matching provider branch; Anthropic-only deployment never pays the OpenAI module-load cost.
+- **30 unit tests** (`langgraph/tests/test_llm.py`) pin: provider normalization, unknown-provider error shape, default/override resolution, underscore-typo rejection, missing-key error pointer (must NOT name the other provider's key).
+
 **Reasoning:** Phase 4 goal is provider-agnostic headless execution. Hand-rolled supervisor gives full control over routing + state; prebuilt is being deprecated. `AsyncPostgresSaver` is the only production-grade saver (`MemorySaver` evaporates on restart). Fail-fast on missing API key avoids the "healthy container, sudden first-call death" anti-pattern that misleads ops.
 
 **Implications:** #853 will replace `langgraph/llm.py` (drop-in upgrade of the shim — fuller error messages, model-name validation, unit tests). #852 will add a poll loop that calls `GET /api/tasks/next-autorun` then `POST http://langgraph:8000/invoke` then PATCHes the task; uses the locked `/invoke` contract above. AGENTS.md (#848) is the Codex CLI counterpart and may run independently. Phase 4 umbrella (#849) closes when all four children + an end-to-end smoke land.
