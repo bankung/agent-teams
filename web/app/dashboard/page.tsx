@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { getProjectsStats, type ProjectStatsEntry } from "@/lib/api";
+import { DashboardRefresher } from "@/components/DashboardRefresher";
 import { NewProjectModal } from "@/components/NewProjectModal";
 import { ThemePicker } from "@/components/ThemePicker";
 
@@ -434,6 +435,7 @@ export default async function DashboardPage() {
           {stats.length} project{stats.length === 1 ? "" : "s"}
         </span>
         <span className="ml-auto flex items-center gap-2">
+          <DashboardRefresher />
           <NewProjectModal />
           <ThemePicker />
         </span>
