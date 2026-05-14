@@ -69,17 +69,7 @@ function groupByStatus(tasks: TaskRead[]) {
     const bucket = groups.get(task.process_status);
     if (bucket) bucket.push(task);
   }
-  // #772 — render order per lane matches the backend ORDER BY:
-  // sort_order ASC NULLS LAST, created_at ASC. The legacy priority/id sort
-  // is preserved as a tiebreaker for lanes where nothing has sort_order set
-  // yet (the bulk of pre-#772 data) by composing the two stable sorts.
-  // Run priority/id first, then sortLaneTasks — stable sort guarantees ties
-  // on sort_order/created_at keep the priority-ordered position.
-  //
-  // #826 — Done lane breaks the pattern: it sorts by `updated_at DESC`
-  // (newest-closed on top). priority/id pre-sort is skipped there because
-  // updated_at is the dominant signal and breaking ties on id DESC inside
-  // sortDoneLane is the deterministic fallback.
+  // #772 #826 — lane sort: sortLaneTasks (TODO..REVIEW), sortDoneLane (DONE); details in shared/decisions.md
   for (const [ps, bucket] of groups.entries()) {
     if (ps === TaskStatus.DONE) {
       const sorted = sortDoneLane(bucket);
@@ -118,20 +108,12 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
     localStorage.setItem(`kanban-view-${project.name}`, v);
   }
 
-  // Sync local Board state to fresh server-rendered initialTasks whenever the
-  // RSC fetch re-runs (triggered by router.refresh() below on SSE events).
-  // initialTasks identity changes per RSC render, so a referential-equality
-  // effect is the right hook here — no diff needed; the prop IS the canonical
-  // snapshot at refresh time.
+  // Sync local tasks state to server snapshot on each RSC refresh
   useEffect(() => {
     setTasks(initialTasks);
   }, [initialTasks]);
 
-  // Real-time push (Kanban #783). On any tasks-row change for this project,
-  // call router.refresh() — re-runs the RSC fetch, sends new initialTasks down
-  // via the prop sync effect above. Hook handles 100ms debounce + 5-event /
-  // 250ms hard-cap burst coalescing internally; one flush triggers one
-  // router.refresh() (Next 14 dedupes anyway, but we keep the surface narrow).
+  // #783 — SSE-driven router.refresh(); 100ms debounce + 5-event hard cap in hook
   const onRowChange = useCallback(() => {
     router.refresh();
   }, [router]);
@@ -180,10 +162,9 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
       const taskId = Number(active.id);
       const original = tasks.find((t) => t.id === taskId);
       if (!original) return;
-      if (original.task_kind === "ai") return; // belt-and-suspenders (sortable is also disabled)
+      if (original.task_kind === "ai") return;
 
-      // Resolve drop target: either a column (over.id is the column key string)
-      // or another task (over.id is a numeric task id).
+      // Drop target: column key string = cross-lane, number = same/cross-lane task
       let newPs: TaskStatusValue | undefined;
       let overTask: TaskRead | undefined;
       if (typeof over.id === "string") {
@@ -195,7 +176,7 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
       }
       if (newPs === undefined) return;
 
-      // Cross-lane drag → PATCH process_status (existing #709 path).
+      // Cross-lane: PATCH process_status; same-lane: reorderTask via sort_order
       if (original.process_status !== newPs) {
         setTasks((prev) =>
           prev.map((t) =>
@@ -218,20 +199,12 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
         return;
       }
 
-      // Same-lane drop. Within-lane reorder is wired ONLY for the TODO lane
-      // per #772 spawn brief. Other lanes: silent no-op (no PATCH, no toast —
-      // visual transform snaps back when the SortableContext clears its drag
-      // state on drop).
+      // Same-lane reorder only in TODO lane (#772); other lanes: silent no-op
       if (newPs !== TaskStatus.TODO) return;
       if (!overTask) return;
       if (overTask.id === original.id) return;
 
-      // Decide before_id vs after_id from the rendered lane order. The lane
-      // array passed to BoardColumn is the canonical SortableContext order
-      // (sortLaneTasks-sorted). oldIndex < newIndex means active moved
-      // downward → it should land AFTER over. oldIndex > newIndex means it
-      // moved upward → BEFORE over. Equal would mean dropped on itself
-      // (handled above by the id-equality guard).
+      // after_id: active moved down (anchor below); before_id: moved up (#772)
       const laneIds = (grouped.get(TaskStatus.TODO) ?? []).map((t) => t.id);
       const oldIndex = laneIds.indexOf(original.id);
       const newIndex = laneIds.indexOf(overTask.id);
@@ -241,13 +214,7 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
           ? { after_id: overTask.id }
           : { before_id: overTask.id };
 
-      // NOTE: NO optimistic local mutation here. The dnd-kit transform shows
-      // the new position visually during the drag; on drop the transform
-      // clears and the card snaps back to the original rendered position
-      // until the server response merges in. On 422, no merge happens →
-      // cards remain in the pre-drag order (snap-back). On 200, the merged
-      // task carries the new sort_order and sortLaneTasks (in groupByStatus)
-      // re-orders the lane on the next render.
+      // #772 — within-lane: no optimistic mutation (dnd-kit transform handles visual; snap-back on 422). Details: shared/decisions.md 2026-05-14
       reorderTask(project.id, taskId, body)
         .then((server) => {
           setTasks((prev) => prev.map((t) => (t.id === taskId ? server : t)));

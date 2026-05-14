@@ -43,30 +43,18 @@ from src.services.session_project import (
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
-# Source-text-locked detail string (#122 pattern). Wire contract — drift
-# breaks any FE that string-matches it. Used by both:
-#  - the IntegrityError fallback for `ck_tasks_scheduled_xor_template` (POST + PATCH)
-#  - the resolved-final XOR application-layer guard on PATCH
-# Pinned by test_post_task_400_detail_strings_are_pinned_in_router_source +
-# the new tests in test_tasks_scheduled_at.py.
+# Source-text-locked (#122). Pinned by test_post_task_400_detail_strings + test_tasks_scheduled_at
 _DETAIL_SCHEDULED_XOR_TEMPLATE = (
     "scheduled_at is incompatible with is_template=true "
     "(use recurrence_rule for templates)"
 )
 
-# Source-text-locked detail string for POST /api/tasks/{id}/fire-now (Kanban
-# #707, T2). Wire contract — drift breaks any FE/CLI that string-matches it.
-# Pinned by test_fire_now_detail_string_pinned_in_router_source.
+# Source-text-locked (#122). Pinned by test_fire_now_detail_string_pinned_in_router_source
 _DETAIL_FIRE_NOW_NOT_TEMPLATE_TEMPLATE = (
     "Task id={task_id} is not a template; fire-now only applies to is_template=true"
 )
 
-# Validator status-code policy (Kanban #771, locked 2026-05-12 by user):
-# cross-row business-rule rejections (cycle, FK target deleted/cross-project,
-# self-reference) return 422 — semantically Unprocessable Entity per RFC 4918.
-# The parent_task_id validators above still return 400 (locked 2026-05-08,
-# pre-policy) and remain as legacy; do NOT migrate this slice — separate
-# cleanup task. New validators in this file SHOULD use 422 going forward.
+# #771 cross-row rejections → 422; parent_task_id legacy → 400 (do not migrate)
 
 # Kanban #771: maximum depth for the PATCH-time blocked_by cycle walk. Pins a
 # defensive upper bound — real chains are expected to be 1-3 deep. Hitting 10
@@ -88,16 +76,10 @@ _SORT_ORDER_MIN_GAP = 1e-9
 
 
 def _opt_int_str(v: int | None) -> str:
-    """Render an Optional[int] as JSON-conformant text for wire-contract
-    detail strings. `None` → `"null"` (NOT Python's `"None"`) so clients
-    string-matching the detail can rely on JSON-shaped values. Module-level
-    so future cross-row validators can reuse it.
-    """
+    """None → 'null' (JSON), int → str. For wire-contract detail strings."""
     return "null" if v is None else str(v)
 
-# Process-status transitions that auto-stamp a lifecycle timestamp (when not
-# already set). Order doesn't matter — at most one entry fires per PATCH
-# (process_status is a single value).
+# Auto-stamp started_at / completed_at on ps=2 / ps=5 transitions
 _STATUS_TIMESTAMP_FIELDS: dict[int, str] = {
     TaskStatus.IN_PROGRESS: "started_at",
     TaskStatus.DONE: "completed_at",
@@ -336,27 +318,10 @@ async def _enforce_blocker_order_constraint(
     target_process_status: int,
     target_sort_order: float | None,
 ) -> None:
-    """Kanban #772 cross-row constraint.
-
-    Walks the blocker chain starting from `target_blocked_by` up to depth
-    `_REORDER_BLOCKER_CHAIN_DEPTH`. For each blocker B in the chain that is
-    in the SAME lane (`process_status == TODO`) as the target AND whose
-    `sort_order` is non-null AND whose target sort_order is also non-null,
-    enforce `target.sort_order >= B.sort_order`. Violation → 422 with the
-    specific (target, B) pair in the detail.
-
-    Only fires when BOTH the target and its blocker are in
-    `process_status=1` (TODO) — the FE only renders the same-lane blocker
-    constraint inside the TODO lane (per the locked design 2026-05-12).
-    Cross-lane blockers are out of scope for ordering enforcement.
-
-    Skip rule: if `target_sort_order` is None, the target is not yet
-    densified; ordering is irrelevant. Same for any blocker with NULL
-    sort_order on the chain — that link is skipped (but the walk
-    continues).
-
-    Detail strings are source-text-locked by
-    test_reorder_detail_strings_pinned_in_router_source — keep in sync.
+    """#772 — walk blocker chain (depth ≤ _REORDER_BLOCKER_CHAIN_DEPTH); enforce
+    target.sort_order >= B.sort_order for same-lane (TODO) blockers with non-null
+    sort_orders. Violation → 422 with (target, B) pair. Detail strings pinned by
+    test_reorder_detail_strings_pinned_in_router_source.
     """
     # No blocker chain → nothing to enforce.
     if target_blocked_by is None or target_sort_order is None:
@@ -404,22 +369,9 @@ async def _materialize_null_sort_orders_in_lane(
     process_status: int,
     exclude_task_id: int | None = None,
 ) -> None:
-    """Kanban #772: first-reorder densifier.
-
-    Scans the lane (same project_id + process_status + status=1) in
-    (sort_order NULLS LAST, created_at ASC) order. For each row whose
-    sort_order is NULL, assigns floor floats 1.0, 2.0, 3.0, … BUT only
-    AFTER skipping rows that already have a sort_order (those keep their
-    existing values — we only fill NULLs without disturbing densified
-    rows). The numbering for the NULL block starts at
-    (max(existing sort_order in lane) + 1.0) if any non-null exists, else
-    1.0. This preserves total order across the lane.
-
-    `exclude_task_id`: when the caller is about to set a sort_order on a
-    specific task in the same call, exclude it from the densification so
-    the subsequent write isn't a no-op overwritten by the materializer.
-
-    Lane stays small (<30 rows in practice). Loaded all-at-once.
+    """#772 — first-reorder densifier. Fills NULL sort_orders in the lane with
+    floor floats starting at (max non-null + 1.0). Existing non-null values are
+    preserved. `exclude_task_id` skips a row about to be set by the caller.
     """
     stmt = (
         select(Task)
@@ -451,14 +403,8 @@ async def _redensify_lane(
     project_id: int,
     process_status: int,
 ) -> None:
-    """Kanban #819: full lane re-densification — overwrites ALL sort_orders.
-
-    When float-64 midpoint arithmetic collapses a gap (computed new_sort_order
-    within _SORT_ORDER_MIN_GAP of either anchor), assign 1.0, 2.0, 3.0, … to
-    every active row in the lane in (sort_order ASC NULLS LAST, created_at ASC)
-    order, preserving relative position. The ORM identity map propagates the
-    new values to any already-loaded anchor objects in the caller's scope —
-    no session.refresh() needed.
+    """#819 — overwrite all sort_orders: 1.0, 2.0, … preserving relative position.
+    ORM identity map propagates; no session.refresh() needed.
     """
     stmt = (
         select(Task)
@@ -486,33 +432,16 @@ async def reorder_task(
     session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
 ) -> Task:
-    """Kanban #772: anchor-based within-lane reorder.
+    """#772 — anchor-based within-lane reorder.
 
-    Body: `{before_id?: int, after_id?: int}` (at least one). The moved
-    task lands JUST BELOW `before_id.sort_order` and / or JUST ABOVE
-    `after_id.sort_order`, depending on which anchor(s) are supplied:
-      - both → averaged between them.
-      - before only → averaged between before_id and the largest sort_order
-        strictly less than it in the same lane (or `before_id - 1.0` if
-        none).
-      - after only → averaged between after_id and the smallest sort_order
-        strictly greater than it in the same lane (or `after_id + 1.0` if
-        none).
+    Body: `{before_id?: int, after_id?: int}` (≥1 required). Both → averaged.
+    Before only → averaged between before_id and the largest smaller sort_order
+    in lane (or before_id - 1.0). After only → mirrored.
 
-    Same-lane invariant: target, before_id, after_id MUST all share the
-    SAME `process_status`. Cross-lane reorder is OUT of scope (422).
+    Same-lane invariant: target + anchors share process_status (else 422).
+    NULL anchor sort_order → densify lane first (floor floats, atomic).
 
-    On any anchor with NULL sort_order, the server first densifies the
-    lane (assigning floor floats 1.0, 2.0, … in NULLS LAST + created_at
-    ASC order) atomically inside the transaction. First-reorder
-    materialization keeps subsequent reorders constraint-free.
-
-    Blocker-order constraint: T.sort_order >= B.sort_order when T's
-    blocker chain (depth ≤ 10) contains any B in the same lane with a
-    non-null sort_order. Violation → 422 with the specific (T, B) pair.
-
-    Detail strings are pinned by
-    test_reorder_detail_strings_pinned_in_router_source.
+    Detail strings pinned by test_reorder_detail_strings_pinned_in_router_source.
     """
     task = await get_or_404(
         session, Task, detail=f"Task id={task_id} not found", id=task_id
@@ -595,14 +524,7 @@ async def reorder_task(
     # session.refresh() here — that would re-read from the DB and clobber
     # the pre-commit mutation.
 
-    # Compute the new sort_order from the anchors. Per the locked design:
-    #   - "before_id" is the row that should come AFTER the moved task →
-    #     moved.sort_order MUST be less than before_id.sort_order.
-    #   - "after_id" is the row that should come BEFORE the moved task →
-    #     moved.sort_order MUST be greater than after_id.sort_order.
-    # When both are supplied, the moved task lands between them: average.
-    # Extracted as an inner helper so the collapse guard (Kanban #819) can
-    # recompute after re-densification without duplicating the branches.
+    # Both anchors → average. before only → below before_id. after only → above after_id (#772)
     async def _compute_sort_order() -> float:
         if before_anchor is not None and after_anchor is not None:
             # both anchors. The smaller is after_anchor.sort_order; the larger
@@ -653,12 +575,7 @@ async def reorder_task(
 
     new_sort_order = await _compute_sort_order()
 
-    # Kanban #819: gap-collapse guard. Float-64 midpoint arithmetic exhausts
-    # after ~52 halvings in the same interval; when the computed position is
-    # within _SORT_ORDER_MIN_GAP of either anchor we re-densify the entire
-    # lane with integer floor values (1.0, 2.0, …) and recompute. Both
-    # operations happen inside the existing transaction — atomic with the
-    # final sort_order write below.
+    # #819 — float gap collapse: re-densify + recompute atomically
     anchor_sort_orders = [
         a.sort_order
         for a in (before_anchor, after_anchor)
@@ -696,11 +613,7 @@ async def create_task(
     session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
 ) -> Task:
-    # Kanban #695: header is the canonical session-bound project. Body's
-    # project_id is defense-in-depth — must match the header (header wins on
-    # conflict; mismatch → 400 with locked detail). This fires BEFORE the
-    # parent-task / consent / FK validations so a stale body is rejected
-    # immediately.
+    # #695 — header is canonical project; body project_id is defense-in-depth (must match)
     assert_body_matches_session(payload.project_id, session_project_id)
 
     # Subtask parent validation (Kanban #238). Same-project enforcement is
@@ -768,36 +681,20 @@ async def create_task(
     # test in test_routes_smoke.py — keep in sync with services/run_mode.py.
     await assert_consent_for_run_mode(session, payload.project_id, payload.run_mode)
 
-    # Kanban #801: AcceptanceCriterion.verified_at is `datetime | None`. The
-    # default `model_dump()` leaves datetime objects in the nested list of
-    # dicts, which SQLAlchemy's JSONB json_serializer cannot encode → 500.
-    # `mode='json'` recursively coerces datetime → ISO-format string before
-    # the value reaches the JSONB column. Scoped to acceptance_criteria only
-    # so the other datetime fields (started_at, completed_at, next_fire_at,
-    # scheduled_at) keep landing as TIMESTAMPTZ-native datetimes.
+    # #801 — model_dump(mode='json') coerces datetime → str for JSONB writes; pattern reused for sibling fields below. See standards/sqlalchemy/orm.md.
     payload_dict = payload.model_dump()
-    # Kanban #858: persist the post-coerce values, not the raw caller input.
-    # No-op when interaction_kind='work' (coerce returned the originals).
+    # #858 — persist post-coerce values (no-op when interaction_kind='work')
     payload_dict["task_kind"] = coerced_task_kind
     payload_dict["run_mode"] = coerced_run_mode
     if payload_dict.get("acceptance_criteria") is not None:
         payload_dict["acceptance_criteria"] = [
             c.model_dump(mode="json") for c in payload.acceptance_criteria
         ]
-    # Kanban #887: SubagentModelEntry.at is `datetime`. Same Kanban #801 pattern
-    # — `mode='json'` coerces datetime → ISO-format string before the value
-    # reaches the JSONB column. The list may be empty (default) — always coerce
-    # for consistency (empty list no-ops silently).
+    # same #801 pattern
     payload_dict["subagent_models"] = [
         e.model_dump(mode="json") for e in payload.subagent_models
     ]
-    # Kanban #830: QuestionPayload.answer_history contains `answered_at:
-    # datetime | None` — same serialization hazard as AcceptanceCriterion
-    # (Kanban #801 pattern). `mode='json'` coerces nested datetime →
-    # ISO-format string before reaching the JSONB column. `resume_context`
-    # is free-form dict; model_dump() already returns JSON-safe scalars for
-    # plain-dict fields, but run through mode='json' for symmetry + safety
-    # (non-JSON-native scalars in caller-supplied dicts would otherwise 500).
+    # same #801 pattern
     if payload_dict.get("question_payload") is not None:
         payload_dict["question_payload"] = payload.question_payload.model_dump(mode="json")
     if payload_dict.get("resume_context") is not None:
@@ -855,13 +752,7 @@ async def update_task(
 
     updates = payload.model_dump(exclude_unset=True)
 
-    # Kanban #801: AcceptanceCriterion.verified_at is `datetime | None`. The
-    # default `model_dump()` leaves datetime objects in the nested list of
-    # dicts, which SQLAlchemy's JSONB json_serializer cannot encode → 500.
-    # `mode='json'` recursively coerces datetime → ISO-format string before
-    # the value reaches the JSONB column. Scoped to acceptance_criteria only;
-    # explicit-null PATCH (key present, value None) skips re-dumping since
-    # there's nothing to coerce.
+    # same #801 pattern (explicit-null PATCH skips re-dumping)
     if (
         "acceptance_criteria" in updates
         and updates["acceptance_criteria"] is not None
@@ -870,21 +761,12 @@ async def update_task(
         updates["acceptance_criteria"] = [
             c.model_dump(mode="json") for c in payload.acceptance_criteria
         ]
-    # Kanban #887: SubagentModelEntry.at is `datetime`. Same Kanban #801 pattern
-    # — `mode='json'` coerces datetime → ISO-format string before the value
-    # reaches the JSONB column. Only fires when the key is in the body and the
-    # list is non-null (null value means key absent semantics mismatch; TaskUpdate
-    # accepts None to mean "not in body" via exclude_unset, but the column is
-    # NOT NULL so null is never written — the condition below is a safety guard).
+    # same #801 pattern
     if "subagent_models" in updates:
         updates["subagent_models"] = [
             e.model_dump(mode="json") for e in payload.subagent_models
         ]
-    # Kanban #830: same Kanban #801 pattern for question_payload / resume_context.
-    # Explicit-null PATCH (key present, value None) skips re-dumping (no data to
-    # coerce). question_payload is a QuestionPayload model instance — use its
-    # model_dump(mode='json'). resume_context is a plain dict — pull the already
-    # JSON-coerced value from payload.model_dump(mode='json') for safety.
+    # same #801 pattern
     if (
         "question_payload" in updates
         and updates["question_payload"] is not None

@@ -10,12 +10,7 @@ import type {
   TaskKindValue,
 } from "./constants";
 
-// Source — one entry in ProjectRead.sources (#778). Curated reference URL or
-// local path that an agent / human may need while working on the project.
-// `label` / `kind` are optional human metadata; `kind` is free-form (common
-// values: doc | spec | repo | dashboard | other) and rendered as a chip when
-// present. Local paths (no `scheme://`) are rendered as plain text — browsers
-// can't navigate to them.
+// Source — #778 curated reference; label/kind optional; non-http rendered as plain text
 export type Source = {
   url: string;
   label?: string;
@@ -122,10 +117,7 @@ export class HttpError extends Error {
   }
 }
 
-// Base URL split: BROWSER_API_URL for client-bundle fetches; SERVER_API_URL for SSR
-// inside the web container (set INTERNAL_API_URL=http://api:8456 — see
-// shared/api-contracts.md "Conventions"). Selection: typeof window === 'undefined'.
-
+// INTERNAL_API_URL for SSR; NEXT_PUBLIC_API_URL for browser
 const BROWSER_API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8456";
 const SERVER_API_URL = process.env.INTERNAL_API_URL ?? BROWSER_API_URL;
@@ -134,11 +126,7 @@ function apiBaseUrl(): string {
   return typeof window === "undefined" ? SERVER_API_URL : BROWSER_API_URL;
 }
 
-// formatDetail — render the parsed FastAPI `detail` field as a single string.
-// 400 / 404: `detail` is a string (route-locked source text). 422: Pydantic
-// returns an array of `{ type, loc, msg, input, ... }` error objects — join
-// the human-readable msgs. Returns null for unknown shapes so callers fall
-// back to the status-line.
+// formatDetail — 400/404: string detail; 422: join Pydantic msgs
 function formatDetail(detail: unknown): string | null {
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail)) {
@@ -166,11 +154,7 @@ async function jsonFetch<T>(
     body?: string;
   },
 ): Promise<T> {
-  // BACKEND_FAILURE_INJECT — test-only knob (Kanban #761). When set in a
-  // non-production env, synthesize a 500 before hitting the real backend.
-  // Use case: dev-tester probes for app/error.tsx routing on non-404 throws
-  // (WARN-1 follow-up from #760). Guarded by NODE_ENV so a misconfigured
-  // prod build cannot accidentally inject failures.
+  // #761 — BACKEND_FAILURE_INJECT: test-only synthetic 500; guarded by NODE_ENV
   if (
     process.env.NODE_ENV !== "production" &&
     process.env.BACKEND_FAILURE_INJECT === "true"
@@ -206,10 +190,7 @@ export async function getProjectByName(name: string): Promise<ProjectRead> {
   );
 }
 
-// listProjects — V3 project switcher data source (Kanban #407).
-// `status=1` is the documented migration path from the deprecated /active endpoint
-// (api-contracts.md L62-65); backend filters soft-deleted by default. No X-Project-Id
-// header — project endpoints are project-scoped by URL, not by header.
+// #407 — status=1 filter; no X-Project-Id header (project endpoint)
 type ListProjectsOpts = { status?: 0 | 1 };
 
 export async function listProjects(
@@ -221,15 +202,7 @@ export async function listProjects(
   return jsonFetch<ProjectRead[]>(path);
 }
 
-// ProjectStatsCostUsage — Kanban #871. Per-project token/cost roll-up,
-// nested under ProjectStatsEntry.cost_usage. ALL 6 keys always present
-// (zero-filled when the project has no session_runs) — FE can use
-// `session_run_count === 0` as the cheap empty-state guard.
-//
-// `total_cost_usd` is a JSON STRING, not a number (Pydantic v2 serializes
-// `Decimal` as string for precision). Parse via Number()/parseFloat() before
-// arithmetic; NEVER use the unary `+` coercion (silently returns NaN on
-// non-numeric strings).
+// #871 — token/cost roll-up; total_cost_usd is STRING (Decimal); use parseFloat, not unary +
 export type ProjectStatsCostUsage = {
   total_input_tokens: number;
   total_output_tokens: number;
@@ -239,13 +212,7 @@ export type ProjectStatsCostUsage = {
   session_run_count: number;
 };
 
-// ProjectStatsEntry — mirror of GET /api/projects/stats row (Kanban #769).
-// counts: all 5 TaskStatus keys ("1".."5") always present even when zero —
-// FE renders the lane grid without `||0` coalescing. run_mode_breakdown: all
-// 3 keys always present. last_activity_at: MAX(tasks.updated_at) over active
-// tasks; null when project has no active tasks. Ordering preserved by backend
-// (projects.created_at ASC). cost_usage: #871 — always present, zero-filled
-// when the project has no session_runs.
+// #769/#871 — stats row; counts["1".."6"] always present; cost_usage zero-filled
 export type ProjectStatsEntry = {
   id: number;
   name: string;
@@ -329,18 +296,7 @@ export async function getTask(
   });
 }
 
-// PATCH /api/tasks/{id} — partial update; minimal subset for T4 drag-drop.
-// Wider set (title/priority/assigned_role/run_mode/task_kind/is_template/...) is
-// accepted by the API per shared/api-contracts.md; expand the type as new
-// mutation surfaces land.
-// blocked_by (#771): explicit null clears; positive int sets; key-absent =
-// unchanged. Picker UI (TaskDetail) is the only consumer for now.
-// new_answer / invalidate_last_answer (#834): question/decision answer flow.
-// status_change_reason (#854): free-form rationale paired with a process_status
-// flip (most commonly ps=6 CANCELLED). min_length=1 — backend 422 on "".
-// run_mode (#860): flip 'manual' → 'auto_pickup' to enqueue an AI task for the
-// autorun loop. Skip 'auto_headless' from FE — backend rejects with 400 when
-// project lacks consent.
+// PATCH /api/tasks/{id} — partial update; blocked_by explicit null clears (#771); run_mode #860; status_change_reason #854
 export type TaskPatch = Partial<
   Pick<TaskRead, "process_status" | "priority" | "title" | "blocked_by" | "sort_order" | "run_mode">
 > & {
@@ -366,11 +322,7 @@ export async function patchTask(
   });
 }
 
-// POST /api/tasks/{id}/reorder — anchor-based within-lane sort_order write
-// (Kanban #772). Body: {before_id?, after_id?} — at least one required. Server
-// computes the new sort_order atomically with same-lane + blocker-order checks.
-// 422 on cross-lane anchor, soft-deleted anchor, blocker-order violation, or
-// shape error (same id in both anchors / both omitted).
+// #772 — anchor-based reorder; 422 on cross-lane/deleted/blocker-order violation
 export type TaskReorderBody = {
   before_id?: number;
   after_id?: number;
@@ -391,9 +343,7 @@ export async function reorderTask(
   });
 }
 
-// GET /api/tasks/{id}/blocks — reverse-lookup for blocked_by (Kanban #771).
-// Returns active tasks whose blocked_by == id (dependents). Used by TaskDetail
-// for the optional "Also blocks" affordance. Soft-deleted excluded by API.
+// #771 — reverse blocked_by lookup; soft-deleted excluded
 export async function getTaskBlocks(
   projectId: number,
   id: number,
@@ -403,9 +353,7 @@ export async function getTaskBlocks(
   });
 }
 
-// submitAnswer — append an answer to a question/decision task (#834).
-// Delegates to patchTask; callers get the full updated TaskRead back so they
-// can call onPatch(updated) to refresh the drawer without a separate GET.
+// #834 — append answer via patchTask; returns updated TaskRead
 export async function submitAnswer(
   projectId: number,
   taskId: number,
@@ -418,8 +366,7 @@ export async function submitAnswer(
   });
 }
 
-// invalidateAnswer — flip the last valid answer to is_valid=false (#834).
-// Requires a non-empty reason; backend enforces the same constraint.
+// #834 — invalidate last valid answer; reason required
 export async function invalidateAnswer(
   projectId: number,
   taskId: number,
@@ -431,11 +378,7 @@ export async function invalidateAnswer(
   });
 }
 
-// cancelTask — terminal-state flip to process_status=6 (CANCELLED) paired with
-// a required free-form reason (#854). Backend Pydantic guards: process_status
-// must be 6 AND status_change_reason min_length=1. The cancelled row is
-// excluded from the default GET /api/tasks list (must opt-in with
-// ?include_cancelled=true to see it again).
+// #854 — PATCH ps=6 + reason; cancelled rows excluded from default list
 export async function cancelTask(
   projectId: number,
   taskId: number,

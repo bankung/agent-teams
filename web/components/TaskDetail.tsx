@@ -36,8 +36,7 @@ const STATUS_LABEL: Record<number, string> = {
   [TaskStatus.CANCELLED]: "cancelled",
 };
 
-// Terminal states — Cancel button is hidden once the task is in one of these
-// (cancelled is already terminal; done means the work shipped).
+// Terminal states — Cancel/Done hide the Cancel button
 const TERMINAL_STATUSES: ReadonlyArray<number> = [
   TaskStatus.DONE,
   TaskStatus.CANCELLED,
@@ -47,10 +46,7 @@ function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
-// TaskDetail — right-side drawer panel (#771).
-// Aesthetic mirrors ProjectConsentGrantModal (backdrop + Escape + click-outside).
-// Drawer (not centered modal) keeps the Board visible — useful for cross-task
-// blocker picking later.
+// TaskDetail — right-side drawer (#771); backdrop + Escape + click-outside, #818
 export function TaskDetail({
   task,
   allTasks,
@@ -62,12 +58,7 @@ export function TaskDetail({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [alsoBlocks, setAlsoBlocks] = useState<TaskRead[] | null>(null);
-  // #854 — Cancel-task UI. cancelOpen toggles the inline reason input; reason
-  // is the typed text. Pattern mirrors the existing "Invalidate" answer-history
-  // affordance lower in the drawer — local component state, no portal, no
-  // separate modal layer. Cancel is a destructive-ish terminal flip so the
-  // button is placed BELOW the Status section (not in the header where Close
-  // lives, not next to Save where mis-clicks happen).
+  // #854 — inline cancel; state: cancelOpen / cancelReason
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
 
@@ -75,9 +66,7 @@ export function TaskDetail({
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (submitting) return;
-      // Nested-UI precedence: inner inputs absorb ESC first (cancel-reason,
-      // blocker picker), so a stray ESC in those UIs returns to the
-      // task-detail body instead of dismissing the whole drawer.
+      // Nested ESC precedence: inner UIs absorb ESC before drawer (#854)
       if (cancelOpen) {
         setCancelOpen(false);
         setCancelReason("");
@@ -91,7 +80,6 @@ export function TaskDetail({
     return () => document.removeEventListener("keydown", onKey);
   }, [cancelOpen, pickerOpen, submitting, onClose]);
 
-  // Reverse-lookup "Also blocks" — optional affordance. Errors swallowed.
   useEffect(() => {
     let cancelled = false;
     setAlsoBlocks(null);
@@ -129,11 +117,7 @@ export function TaskDetail({
     }
   };
 
-  // #854 — Cancel task: PATCH {process_status:6, status_change_reason}. On
-  // success the row disappears from the board (backend excludes ps=6 by
-  // default), so we close the drawer rather than leave the user staring at a
-  // ghost panel. The board's RSC fetch already re-runs via SSE → router.refresh
-  // when the PATCH lands.
+  // #854 — PATCH ps=6 + reason; close drawer on success
   const handleCancelTask = async () => {
     if (submitting) return;
     const reason = cancelReason.trim();
@@ -141,8 +125,6 @@ export function TaskDetail({
     setSubmitting(true);
     try {
       await cancelTask(projectId, task.id, reason);
-      // Optimistic close — the parent's onPatch path would re-render the
-      // drawer with ps=6, which is fine but pointless. Close instead.
       setCancelOpen(false);
       setCancelReason("");
       onClose();
@@ -192,9 +174,7 @@ export function TaskDetail({
       }}
     >
       <aside
-        // #818 — responsive width. w-full lets the drawer shrink on mobile;
-        // tier breakpoints (480 → 640 → 720) match desktop / wider-desktop;
-        // 90vw cap prevents full-screen takeover on narrow viewports.
+        // #818 — responsive width; tier breakpoints 480→640→720; details in shared/decisions.md
         className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[90vw] flex-col overflow-y-auto border-l border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 sm:max-w-[480px] md:max-w-[640px] lg:max-w-[720px]"
         onMouseDown={(e) => e.stopPropagation()}
       >
@@ -229,10 +209,9 @@ export function TaskDetail({
         </header>
 
         {/* Body */}
-        {/* #859 — gap-6 between sections; Section/QuestionInteractionSection/AcceptanceCriteriaSection use gap-2 internally */}
+        {/* #859 — gap-6 between sections; see Section/QuestionInteractionSection */}
         <div className="flex flex-col gap-6 px-4 py-4 text-sm">
-          {/* #818 — Status / priority / role as a label-aligned grid.
-              fixed 120px label column makes the pairs scan vertically. */}
+          {/* #818 — fixed 120px label column */}
           <Section label="Status">
             <dl className="grid grid-cols-[120px_1fr] gap-y-1 text-sm">
               <dt className="text-zinc-500 dark:text-zinc-400">Status</dt>
@@ -252,12 +231,7 @@ export function TaskDetail({
                 </>
               )}
             </dl>
-            {/* #854 — status_change_reason read display. Truncated at ~120
-                chars with the full text on hover-title. Italic + muted so it
-                reads as a footnote on the Status row rather than competing
-                with the priority/role pairs above. The most common case is a
-                cancellation reason on a ps=6 row, but the field is generic —
-                any flip can carry a reason. */}
+            {/* #854 — reason display; truncated, italic */}
             {task.status_change_reason && (
               <p
                 data-status-change-reason
@@ -284,10 +258,7 @@ export function TaskDetail({
                 </button>
               </div>
             )}
-            {/* #854 — Cancel-task affordance. Hidden on terminal states
-                (DONE / CANCELLED) — re-cancelling is meaningless. Placed
-                BELOW the Status dl, not in the header next to Close, so
-                accidental clicks during dismiss don't flip the task. */}
+            {/* #854 — Cancel: hidden on terminal states */}
             {!isTerminal && (
               <div className="mt-2" data-cancel-task-control>
                 {!cancelOpen ? (
@@ -359,8 +330,7 @@ export function TaskDetail({
             </Section>
           )}
 
-          {/* #834 — question/decision interaction. Rendered above AC section
-              when interaction_kind is not "work". Work tasks: no section. */}
+          {/* #834 — question/decision section; hidden for work tasks */}
           {task.interaction_kind !== "work" && (
             <QuestionInteractionSection
               task={task}
@@ -370,9 +340,7 @@ export function TaskDetail({
             />
           )}
 
-          {/* #827 — acceptance_criteria. Read-only display. Section is
-              ALWAYS rendered so the user sees the "(none defined)" cue when
-              criteria are missing — that's the visible discipline gate. */}
+          {/* #827 — AC section always rendered (discipline gate) */}
           <AcceptanceCriteriaSection criteria={task.acceptance_criteria} />
 
           {task.parent_task_id !== null && (
@@ -493,10 +461,7 @@ export function TaskDetail({
   );
 }
 
-// #818 — Section header treatment. Slightly heavier than the prior
-// text-[11px]/medium for clearer scan-ability; consistent across every
-// section incl. the new Acceptance criteria block.
-// #859 — gap-2 between header and body; mirrored on QuestionInteractionSection + AcceptanceCriteriaSection below.
+// #818 #859 — heavier header + gap-2 for scan-ability; mirrored on Question/AC sections
 function Section({
   label,
   children,
@@ -514,8 +479,7 @@ function Section({
   );
 }
 
-// QuestionInteractionSection — answer UI for question/decision tasks (#834).
-// Rendered above AcceptanceCriteriaSection when interaction_kind != "work".
+// #834 — answer UI for question/decision tasks
 function QuestionInteractionSection({
   task,
   projectId,
@@ -741,11 +705,7 @@ function QuestionInteractionSection({
   );
 }
 
-// AcceptanceCriteriaSection — read-only AC display (#827).
-// Header shows "<passed>/<total>" summary when criteria are present.
-// Empty/null → italic "(none defined)" cue; this section is rendered even
-// when AC is null so the discipline-gate (per shared/decisions.md
-// 2026-05-12) is visually surfaced rather than hidden.
+// #827 — read-only AC display; always rendered (shows "(none defined)" cue when empty)
 const AC_STATUS_BADGE: Record<AcceptanceCriterion["status"], {
   glyph: string;
   className: string;

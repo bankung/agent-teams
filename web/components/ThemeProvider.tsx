@@ -23,7 +23,7 @@ function isTheme(value: unknown): value is Theme {
   return value === "light" || value === "dark" || value === "system";
 }
 
-// Resolve effective dark/light from a stored Theme. `system` consults matchMedia.
+// Resolve effective dark/light; 'system' consults matchMedia
 function resolveDark(theme: Theme): boolean {
   if (theme === "dark") return true;
   if (theme === "light") return false;
@@ -37,12 +37,10 @@ function applyDarkClass(isDark: boolean) {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  // Start with "system" so SSR matches the inline FOUC script default; client
-  // mount immediately reconciles from localStorage in the effect below.
+  // SSR: start 'system'; client reconciles from localStorage in effect
   const [theme, setThemeState] = useState<Theme>("system");
 
-  // Hydrate from localStorage on mount. Wrapped in try/catch — Safari private
-  // mode + locked-down embedded WebViews can throw SecurityError on access.
+  // Hydrate: wrapped in try/catch for Safari private mode
   useEffect(() => {
     let stored: string | null = null;
     try {
@@ -55,7 +53,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     applyDarkClass(resolveDark(initial));
   }, []);
 
-  // Track OS preference changes while in `system` mode.
+  // Listen for OS preference change while in 'system' mode
   useEffect(() => {
     if (theme !== "system") return;
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -69,8 +67,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     try {
       window.localStorage.setItem(STORAGE_KEY, next);
     } catch {
-      // Private-mode / quota-exceeded: theme still applies in-memory + on DOM
-      // for this session; persistence silently skipped.
+      // Private-mode / quota-exceeded: theme applies in-memory; persistence skipped
     }
     applyDarkClass(resolveDark(next));
   };

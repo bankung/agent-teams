@@ -40,23 +40,16 @@ from src.constants import (
     TaskType,
 )
 
-# Wire-level enum for tasks.run_mode. Stays in lockstep with TaskRunMode.ALL via
-# the import-time guard at the bottom of this module — same pattern as
-# schemas/project.py (TeamCode <-> ProjectTeam.ALL).
+# Wire enum for tasks.run_mode; lockstep guard at module bottom
 TaskRunModeLiteral = Literal["manual", "auto_pickup", "auto_headless"]
 
-# V3+ T1 (Kanban #706): wire-level enum for tasks.task_kind. Stays in lockstep
-# with TaskKind.ALL via the import-time guard at the bottom of this module.
+# Wire enum for tasks.task_kind (#706); lockstep guard at module bottom
 TaskKindLiteral = Literal["ai", "human"]
 
-# Kanban #803 (2026-05-12): wire-level enum for tasks.task_type. Stays in
-# lockstep with TaskType.ALL via the import-time guard at the bottom of this
-# module — same pattern as TaskKindLiteral / TaskRunModeLiteral.
+# Wire enum for tasks.task_type (#803); lockstep guard at module bottom
 TaskTypeLiteral = Literal["bug", "feature", "chore", "docs", "refactor"]
 
-# Kanban #830 (2026-05-12): wire-level enum for tasks.interaction_kind. Stays
-# in lockstep with TaskInteractionKind.ALL via the import-time guard at the
-# bottom of this module — same pattern as the other Literal guards.
+# Wire enum for tasks.interaction_kind (#830); lockstep guard at module bottom
 InteractionKindLiteral = Literal["work", "question", "decision"]
 
 ProcessStatusCode = Annotated[
@@ -74,15 +67,8 @@ def _make_code_validator(
     null_phrase: str = "",
 ) -> Callable[[Any], int | None]:
     """Build a validator closure for an integer-code field.
-
-    - `field_label`: name shown in error messages (e.g. "process_status").
-    - `allowed`: the canonical ALL tuple from src.constants.
-    - `required=True` → raise on None ("<label> is required"); used by TaskCreate.
-    - `required=False` → return None on None; used by TaskUpdate (and for the
-      nullable `assigned_role` column on TaskCreate).
-    - `null_phrase`: when set (e.g. "NULL or "), prefixes the "must be one of"
-      error so callers see "must be NULL or one of (...)" — preserves the
-      existing assigned_role message.
+    `required=True` raises on None; `required=False` returns None.
+    `null_phrase` (e.g. "NULL or ") prefixes the "must be one of" error.
     """
     error_prefix = f"{field_label} must be {null_phrase}one of {allowed}"
 

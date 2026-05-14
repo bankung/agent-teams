@@ -1,9 +1,6 @@
 "use client";
 
-// ConnectionStateBadge — small colored dot + label reflecting the live SSE
-// subscription state. Mounts in the Board header (next to ProjectSwitcher).
-//
-// Kanban #783.
+// #783 — SSE connection state badge; mounts in Board header
 
 import type { ConnectionState } from "@/lib/useRowChangedEvents";
 

@@ -12,7 +12,6 @@ type Props = {
   onOpenDetail: (task: TaskRead) => void;
 };
 
-// Status display map
 const STATUS_LABEL: Record<number, string> = {
   [TaskStatus.TODO]: "TODO",
   [TaskStatus.IN_PROGRESS]: "In progress",
@@ -29,7 +28,6 @@ const STATUS_CLASS: Record<number, string> = {
   [TaskStatus.DONE]: "text-green-700 bg-green-50 dark:text-green-300 dark:bg-green-900/30",
 };
 
-// Priority display map
 const PRIORITY_LABEL: Record<number, string> = {
   [TaskPriority.LOW]: "P1 low",
   [TaskPriority.NORMAL]: "P2 normal",
@@ -37,7 +35,6 @@ const PRIORITY_LABEL: Record<number, string> = {
   [TaskPriority.URGENT]: "P4 urgent",
 };
 
-// Role display map (short labels for table)
 const ROLE_SHORT: Record<number, string> = {
   [TaskRole.FRONTEND]: "FE",
   [TaskRole.BACKEND]: "BE",
@@ -46,7 +43,6 @@ const ROLE_SHORT: Record<number, string> = {
   [TaskRole.REVIEWER]: "Reviewer",
 };
 
-// Column definitions
 type SortKey = "id" | "title" | "process_status" | "priority" | "task_kind" | "run_mode" | "assigned_role" | "updated_at";
 type SortDir = "asc" | "desc";
 
@@ -72,7 +68,6 @@ const COLUMNS: { key: SortKey; label: string }[] = [
   { key: "updated_at", label: "Updated" },
 ];
 
-// Available status filter values
 const STATUS_OPTIONS = [
   { value: TaskStatus.TODO, label: "TODO" },
   { value: TaskStatus.IN_PROGRESS, label: "In progress" },
@@ -150,13 +145,11 @@ function compareTasks(a: TaskRead, b: TaskRead, key: SortKey, dir: SortDir): num
 }
 
 export function ListView({ tasks, onOpenDetail }: Props) {
-  // Filter state
   const [selectedStatuses, setSelectedStatuses] = useState<Set<number>>(new Set());
   const [selectedPriority, setSelectedPriority] = useState(0);
   const [selectedKind, setSelectedKind] = useState("");
   const [selectedRole, setSelectedRole] = useState(-1);
 
-  // Sort state — default: updated_at DESC
   const [sortKey, setSortKey] = useState<SortKey>("updated_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 

@@ -26,16 +26,7 @@ from src.routers import tasks as tasks_router
 from src.services.row_changed_listener import start_listener, stop_listener
 from src.settings import get_settings
 
-# Project-scoped logging — uvicorn does NOT propagate non-uvicorn loggers
-# to stdout by default. Attach a StreamHandler directly to the `src` umbrella
-# logger (pointed at sys.stdout). Kanban #739 v2 — `basicConfig` attaches to
-# stderr, which uvicorn `--reload` workers do not forward to docker the same
-# way as stdout; surgical handler attachment bypasses that gap entirely.
-# Idempotent under uvicorn `--reload` re-import. Propagation is left enabled
-# so pytest's caplog (which installs a handler at root) can still capture
-# WARNING records from `src.routers.*` in existing test suites — and since
-# production root never gains a handler (no `basicConfig` call), there is no
-# duplicate-emit risk in live runs.
+# #739 — attach StreamHandler to 'src' logger for stdout; propagate=True for pytest caplog
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _src_logger = logging.getLogger("src")
 _src_logger.setLevel(logging.INFO)
@@ -77,9 +68,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     global _scheduler
 
-    # Kanban #782 — boot the row_changed SSE broker before the scheduler so
-    # tests / smoke ordering is deterministic. stop_listener runs in the
-    # cleanup branch regardless of how the lifespan exits.
+    # #782 — boot SSE broker before scheduler
     await start_listener()
 
     disabled = os.environ.get("APP_SCHEDULER_DISABLE", "false").lower() == "true"

@@ -1,16 +1,6 @@
 "use client";
 
-// useRowChangedEvents — subscribes to GET /api/events/stream (SSE) for the
-// session-bound project. Routes parsed `row_changed` payloads to caller-supplied
-// callbacks; surfaces a `connectionState` + `lastEventAt` for header badge UX.
-//
-// Payload is a HINT — always refetch via REST after the callback. Server
-// guarantees no payload-as-canonical-state (per Kanban #782 design). The hook
-// is a thin browser-EventSource wrapper; it does NOT cache or coalesce data,
-// only event arrival timing (debounce buffer flushes a SINGLE notification per
-// burst to the caller).
-//
-// Kanban #783 — frontend half of real-time push.
+// #783 — SSE hook for row_changed events; debounce 100ms + 5-event hard cap; HINT only — always refetch via REST
 
 import { useEffect, useRef, useState } from "react";
 
@@ -51,10 +41,7 @@ const HARD_FLUSH_COUNT = 5;
 // current window. Independent of debounceMs; whichever fires first wins.
 const HARD_FLUSH_MS = 250;
 
-// API base for the EventSource URL. Mirrors the browser/SSR split in
-// web/lib/api.ts but EventSource is browser-only — we never read this server-
-// side (guarded by typeof window check below). The cookie-style absolute URL
-// keeps fetch + EventSource pointing at the same origin.
+// EventSource URL; mirrors browser split in api.ts but browser-only
 function apiBaseUrl(): string {
   return process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8456";
 }
@@ -68,9 +55,7 @@ export function useRowChangedEvents(
     useState<ConnectionState>("connecting");
   const [lastEventAt, setLastEventAt] = useState<Date | null>(null);
 
-  // Stable refs over the latest callback values + debounce knob so the
-  // EventSource effect doesn't tear down on every parent re-render. Caller
-  // can pass inline arrow functions safely.
+  // Stable refs for callbacks + debounce knob — safe for inline arrow functions
   const onTaskChangeRef = useRef(onTaskChange);
   const onProjectChangeRef = useRef(onProjectChange);
   const debounceMsRef = useRef(debounceMs);
@@ -81,7 +66,6 @@ export function useRowChangedEvents(
   }, [onTaskChange, onProjectChange, debounceMs]);
 
   useEffect(() => {
-    // EventSource is a browser-only API. SSR / Node test env: no-op.
     if (typeof window === "undefined") return;
 
     const url =
@@ -90,9 +74,7 @@ export function useRowChangedEvents(
       (projectId !== undefined ? `?project_id=${projectId}` : "");
     const es = new EventSource(url);
 
-    // Per-burst debounce buffer. Trailing-edge flush via setTimeout; reset on
-    // every new event until either (a) trailing timer fires, (b) buffer hits
-    // HARD_FLUSH_COUNT, or (c) HARD_FLUSH_MS elapsed since first event.
+    // Per-burst buffer: trailing-edge flush; hard cap at HARD_FLUSH_COUNT / HARD_FLUSH_MS
     let buffer: RowChangedEvent[] = [];
     let firstEventMs: number | null = null;
     let trailingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -118,10 +100,7 @@ export function useRowChangedEvents(
       const batch = buffer;
       buffer = [];
       firstEventMs = null;
-      // Fire one callback per event — caller decides how to coalesce on its
-      // side (typical: a single router.refresh() regardless of count, which
-      // Next 14 dedupes anyway). We don't merge here because tasks vs projects
-      // events route to different callbacks.
+      // Route events to task/project callbacks; caller coalesces (e.g. router.refresh())
       for (const ev of batch) {
         if (ev.table === "tasks") {
           onTaskChangeRef.current?.(ev);
@@ -136,7 +115,6 @@ export function useRowChangedEvents(
       trailingTimer = setTimeout(flush, debounceMsRef.current);
       if (firstEventMs === null) {
         firstEventMs = Date.now();
-        // Independent hard-cap timer; survives debounce-reset.
         if (hardCapTimer !== null) clearTimeout(hardCapTimer);
         hardCapTimer = setTimeout(flush, HARD_FLUSH_MS);
       }
@@ -147,9 +125,7 @@ export function useRowChangedEvents(
       try {
         parsed = JSON.parse(msg.data) as RowChangedEvent;
       } catch {
-        // Malformed payload — drop silently. (Server is the only writer; if
-        // this fires, it's a contract drift and the next REST refetch will
-        // still reconcile state.)
+        // Malformed payload: drop silently; REST refetch will reconcile
         return;
       }
       setLastEventAt(new Date());
@@ -166,10 +142,7 @@ export function useRowChangedEvents(
     };
 
     const onError = () => {
-      // Browser auto-reconnects on transient drop. We surface "reconnecting"
-      // for visibility but do not close — closing would defeat the built-in
-      // reconnect. EventSource has no public "is it actually retrying?" flag,
-      // so this state is a best-effort hint.
+      // Browser auto-reconnects; we surface 'reconnecting' as a hint but don't close
       setConnectionState("reconnecting");
     };
 
@@ -178,7 +151,7 @@ export function useRowChangedEvents(
     es.addEventListener("error", onError);
 
     return () => {
-      // Strict mode-safe: idempotent close + clear timers.
+      // Cleanup: close EventSource + clear timers + reset state
       es.removeEventListener("row_changed", onRowChanged as EventListener);
       es.removeEventListener("open", onOpen);
       es.removeEventListener("error", onError);

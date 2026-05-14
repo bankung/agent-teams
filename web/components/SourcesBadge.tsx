@@ -6,13 +6,7 @@ import type { Source } from "@/lib/api";
 
 type Props = { sources: Source[] };
 
-// Mirror api/src/schemas/project.py SourceEntry._url_shape allowlist (Kanban #778).
-// Anything outside this list — including javascript:, data:, vbscript:, file:// (intentional;
-// browsers can't navigate to file:// from a remote-served page anyway) — renders as plain text,
-// NOT as a clickable <a>. Locks against XSS bypass via comment-prefix payloads like
-// javascript://%0aalert(1)// where rel="noopener noreferrer" does NOT block scheme execution.
-// Asymmetry vs backend: API allowlist includes `file` (curated reference paths), FE excludes
-// it from the clickable set since remote-served pages can't navigate to file://.
+// #778 — allowlist-only clickable URLs; mirrors api SourceEntry._url_shape; excludes file://
 const ALLOWED_SCHEMES = ["http", "https", "ref"] as const;
 const SCHEME_RE = new RegExp(`^(?:${ALLOWED_SCHEMES.join("|")})://`, "i");
 
@@ -20,10 +14,7 @@ function isExternal(url: string): boolean {
   return SCHEME_RE.test(url);
 }
 
-// SourcesBadge — small project-header affordance that lists curated reference
-// URLs for the active project (#778). Renders nothing when `sources` is empty —
-// no "Sources (0)" placeholder noise. Popover pattern mirrors ProjectSwitcher
-// (outside-click + Escape close, lazy state, z-20 panel).
+// #778 — curated source list popover; empty → renders null
 export function SourcesBadge({ sources }: Props) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);

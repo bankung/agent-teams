@@ -55,22 +55,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
-# Kanban #793 — settings.json substitution.
-#
-# The byte-level filter lives in `services.zero_config_scaffold.substitute_settings_json`
-# (shared with the GET /api/scaffold/{team}/files endpoint per Kanban #795).
-# This thin wrapper just handles the on-disk read/write half so the POST
-# auto-scaffold path stays a single tidy call.
+# #793 — settings.json substitution after scaffold; see substitute_settings_json service
 
 
 def _substitute_settings_json(target: Path, project: Project) -> None:
-    """Read, filter, and rewrite a freshly-scaffolded settings.json in place.
-
-    Wraps the pure-bytes `substitute_settings_json` helper with filesystem I/O.
-    Missing/unparseable settings.json is a warning, not an exception — the
-    scaffold itself is best-effort and a failure here must not roll back the
-    DB row (Kanban #793 contract: DB is the source of truth).
-    """
+    """Read, filter, write settings.json. Failure is non-fatal — DB row is source of truth (#793)."""
     settings_path = target / ".claude" / "settings.json"
     if not settings_path.exists():
         logger.warning(
@@ -160,10 +149,7 @@ async def list_projects_stats(
     )
     projects = list((await session.execute(projects_stmt)).scalars().all())
 
-    # Query 2 — GROUP BY aggregate across active tasks of active projects.
-    # Joining to projects (vs. filtering Task.project_id IN [...]) keeps the
-    # SQL stable when projects is empty (no IN-clause edge case) and lets
-    # PG's planner pick the join order.
+    # Query 2 — GROUP BY aggregate across active tasks of active projects (join keeps SQL stable when projects is empty)
     agg_stmt = (
         select(
             Task.project_id,
@@ -181,13 +167,7 @@ async def list_projects_stats(
     )
     agg_rows = (await session.execute(agg_stmt)).all()
 
-    # Query 3 (Kanban #871) — per-project cost/token aggregate via the
-    # session_runs → sessions → projects FK chain. We GROUP BY the session's
-    # project_id (NOT session_runs.task_id — that's nullable ON DELETE SET
-    # NULL, so a run with a deleted task still has a valid session.project_id).
-    # No status filter — neither sessions nor session_runs have a soft-delete
-    # column. Joining against `projects` keeps the query stable when the
-    # project list is empty (parity with the tasks aggregate above).
+    # Query 3 (#871) — per-project cost/token aggregate via session_runs → sessions → projects (GROUP BY session.project_id; task_id is nullable ON DELETE SET NULL)
     cost_stmt = (
         select(
             SessionModel.project_id,
@@ -215,18 +195,13 @@ async def list_projects_stats(
     )
     cost_rows = (await session.execute(cost_stmt)).all()
 
-    # Stitch. For each project, initialize all-zero buckets so every key is
-    # always present in the response (FE renders without coalescing); then
-    # fold each (project_id, process_status, run_mode) bucket into its
-    # project's tallies and update last_activity_at = max-so-far.
+    # Stitch: per-project all-zero buckets; fold agg_rows + cost_rows
     by_id: dict[int, dict] = {
         p.id: {
             "counts": {str(code): 0 for code in TaskStatus.ALL},
             "run_mode_breakdown": {mode: 0 for mode in TaskRunMode.ALL},
             "last_activity_at": None,
-            # Kanban #871: zero-filled default so projects with zero session_runs
-            # still emit the full cost_usage sub-object — parity with `counts` /
-            # `run_mode_breakdown` "always emit all keys" contract.
+            # #871 — zero-filled default; parity with always-emit-all-keys contract
             "cost_usage": {
                 "total_input_tokens": 0,
                 "total_output_tokens": 0,
@@ -403,12 +378,7 @@ async def create_project(
     if payload.agent_overrides is not None:
         data["agent_overrides"] = payload.agent_overrides
 
-    # Kanban #778: sources is a list of `SourceEntry` at the Pydantic boundary.
-    # OMIT the key when None so the ORM's Python-side `default=list` fires (DB
-    # server_default '[]'::jsonb is the safety net). When present, materialize
-    # each SourceEntry as a plain dict for JSONB storage — model_dump strips
-    # the None-valued optional fields out so we don't persist `label: null` /
-    # `kind: null` noise (parity with `acceptance_criteria` storage).
+    # #778 — OMIT when None (ORM default=list); model_dump(exclude_none=True) strips null label/kind
     if payload.sources is not None:
         data["sources"] = [
             entry.model_dump(exclude_none=True) for entry in payload.sources
@@ -537,10 +507,7 @@ async def update_project(
             detail="Cannot activate a soft-deleted project — restore first",
         )
 
-    # Kanban #694, Phase 2: setting `is_active=true` no longer clears other
-    # rows' is_active. Multiple rows may legitimately be active simultaneously
-    # under session-scoped binding. The atomic-clear was load-bearing on the
-    # dropped `ux_projects_active_one` invariant.
+    # #694 Phase 2 — no atomic-clear of other is_active rows
 
     # Skip writes where the new value equals the existing one — keeps PATCHes
     # that touch only some fields from bumping `updated_at` (and from writing

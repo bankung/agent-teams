@@ -16,6 +16,20 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-14 — TaskDetail Run button + within-lane snap-back rationale (Kanban #860 + #889 prep)
+**Scope:** frontend / shared
+**Decision (Run button — #860):** TaskDetail drawer renders a "Run" primary button when `process_status === TODO && task_kind === 'ai' && run_mode === 'manual'`. Click flips `run_mode` from `'manual'` to `'auto_pickup'` via `patchTask`. The FE does NOT directly PATCH `process_status`; the consuming autorun loop (`GET /api/tasks/next-autorun`) stamps `process_status → 2` on pickup.
+
+**Reasoning — `auto_pickup` not `auto_headless`:** both satisfy the next-autorun selector (`api/src/routers/tasks.py:214-231` filter `run_mode IN ('auto_pickup','auto_headless')`). `auto_headless` triggers the consent gate at `services/run_mode.py:assert_consent_for_run_mode` — a project without `auto_run_consent_at` would 400. `auto_pickup` is universally safe (consent check returns immediately for non-`auto_headless`). Run button works uniformly across consented + non-consented projects.
+
+**Reasoning — `run_mode === 'manual'` visibility guard (beyond AC1–3):** hide the button on already-queued tasks. Re-flipping `run_mode` on auto-* rows would be a no-op write bumping `updated_at` for no behavioral change. The `RunModeBadge` in the drawer header already conveys queued state.
+
+**Decision (Board within-lane no-optimistic — #772 supplement):** within-lane drag-reorder in the TODO lane does NOT mutate local state optimistically. dnd-kit's transform shows the new position during the drag; on drop the transform clears and the card snaps back to the prior render order until the server PATCH response merges in. On 422 → no merge → cards stay in pre-drag order ("snap-back"). On 200 → merged task carries the new `sort_order` and `sortLaneTasks` reorders on next render. This is **distinct** from the cross-lane optimistic-update pattern locked at 2026-05-11 (#709) — within-lane is reorder-only (no `process_status` flip) and dnd-kit visual transform already provides the "where will it land" feedback; a second optimistic state mutation would race the server response.
+
+**Forward-looking (Run button):** the actual consuming autorun loop is Phase 4 LangGraph (#849/#850–853) territory and may not be running yet. The button captures intent today; when the loop lands, zero FE changes needed.
+
+**Implications:** any future FE that needs to "start a task" follows the Run button pattern — write `run_mode`, never `process_status`. Direct `process_status` PATCH skips the autorun queue and all agent-loop side effects (AC stamping, `subagent_models` accumulation, smoke probes). Cross-table validators (`task_kind='human'` × non-manual → 400 at `services/task_kind.py`) protect against obvious misuse; the FE's `task_kind === 'ai'` gate keeps requests below that line.
+
 ## 2026-05-13 — `tasks.subagent_models` JSONB audit log — Kanban #887
 **Scope:** backend / shared / CLAUDE.md (Lead protocol)
 **Decision:** Added `tasks.subagent_models JSONB NOT NULL DEFAULT '[]'` — an append-only audit log of subagent spawns per task. Each element: `{agent: str, model: "opus"|"sonnet"|"haiku", at: ISO-8601 UTC datetime}`. PATCH semantics are full-replace (Lead accumulates the list then sends the whole array on each state-transition PATCH; the API does not merge). Field validated by `SubagentModelEntry` Pydantic model with `extra="forbid"`.
