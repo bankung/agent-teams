@@ -59,6 +59,21 @@ If the user switches project mid-session, re-resolve the active project (call AP
 ## Bootstrap fallback can go stale
 The DB is the single source of truth. If pre-scaffold or hardcoded fallbacks linger in CLAUDE.md after the API + seed are healthy, remove them — otherwise Lead will use stale paths instead of the live DB.
 
+## Cross-project platform edits
+
+**Symptom.** A session bound to project X (X ≠ `agent-teams`) directly edits files under agent-teams' platform surfaces — `.claude/agents/*`, `.claude/teams/*`, or `context/teams/<team>/*`. The change lands in agent-teams' git history without an agent-teams Kanban task, no AC gate, no review pass, no agent-teams Lead context for the change's implications.
+
+**Why it's wrong.** These zones are agent-teams Lead's ownership (per the storage architecture). The Kanban discipline + acceptance_criteria gate + Lead's verification on the platform repo are bypassed. The change author also lacks visibility into how the platform file interacts with other team agents.
+
+**Worse symptom — project context in the wrong repo.** Auto-scaffold (POST `/api/projects`) currently writes `context/projects/<name>/` into agent-teams' bind-mounted `/repo`, regardless of where the project's code actually lives. So external projects (NewsAnalyzer, novel-drift, Writing, etc.) end up with their decisions / role state hosted inside agent-teams' git history. "Context lives with code" is broken; agent-teams becomes a content store coupled to N projects' release cadence. Tracked in Kanban #941 — audit + architectural decision pending.
+
+**Strikes (2026-05-14 → 2026-05-15):**
+1. NewsAnalyzer parallel sessions wrote `context/projects/NewsAnalyzer/shared/decisions.md` + role-state dirs into agent-teams across many commits (2b76dd1, d1f756e, 2ac5523, f7004d4, 89e32de, b976a86, ...). NewsAnalyzer's own repo at `C:\Users\banku\Documents\Personal\Projects\WebApp\NewsAnalyzer\` does NOT have `context/projects/NewsAnalyzer/` — it lives only in agent-teams.
+2. NewsAnalyzer session 2026-05-15 also edited `context/teams/dev/decisions.md` (+43 lines, agent-teams platform team-methodology file) without a Kanban task on agent-teams.
+3. novel-drift parallel session 2026-05-14 → 2026-05-15 edited `.claude/agents/novel-proofreader.md` twice (creation + Cat 10-13 additions). agent-teams Lead committed both batches (847b48a + 642346b) without raising the cross-project pattern at the time — Lead complicity.
+
+**Rule going forward.** From a non-agent-teams session, when work needs to touch an agent-teams platform file: file a Kanban task on agent-teams (`X-Project-Id: 1`), then either switch sessions or defer. Do not stage / commit / push from cross-project. Lead in agent-teams sessions: when parallel-session WIP appears in `git status`, **don't silently commit** — surface the cross-project pattern to the user before deciding.
+
 ## Dogfood-pollution: 3-strikes pattern
 **Symptom.** Cross-team or cross-project methodology accidentally lives inside one project's `shared/` zone (or inside one project's column / file structure). New projects scaffolded later don't inherit it; the methodology silently rots into project-scope. The agent-teams repo (the dogfood project) is the worst offender because Lead works inside it daily and forgets that `shared/` is project-scope.
 
