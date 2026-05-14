@@ -207,7 +207,8 @@ export function TaskDetail({
         </header>
 
         {/* Body */}
-        <div className="flex flex-col gap-4 px-4 py-4 text-sm">
+        {/* #859 — gap-6 between sections; Section/QuestionInteractionSection/AcceptanceCriteriaSection use gap-2 internally */}
+        <div className="flex flex-col gap-6 px-4 py-4 text-sm">
           {/* #818 — Status / priority / role as a label-aligned grid.
               fixed 120px label column makes the pairs scan vertically. */}
           <Section label="Status">
@@ -459,6 +460,7 @@ export function TaskDetail({
 // #818 — Section header treatment. Slightly heavier than the prior
 // text-[11px]/medium for clearer scan-ability; consistent across every
 // section incl. the new Acceptance criteria block.
+// #859 — gap-2 between header and body; mirrored on QuestionInteractionSection + AcceptanceCriteriaSection below.
 function Section({
   label,
   children,
@@ -467,7 +469,7 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="flex flex-col gap-1.5">
+    <section className="flex flex-col gap-2">
       <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
         {label}
       </h3>
@@ -542,7 +544,7 @@ function QuestionInteractionSection({
 
   return (
     <section
-      className="flex flex-col gap-1.5"
+      className="flex flex-col gap-2"
       data-question-interaction
       data-interaction-kind={task.interaction_kind}
     >
@@ -752,7 +754,7 @@ function AcceptanceCriteriaSection({
       : "Acceptance criteria";
 
   return (
-    <section className="flex flex-col gap-1.5" data-acceptance-criteria>
+    <section className="flex flex-col gap-2" data-acceptance-criteria>
       <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
         {headerLabel}
       </h3>
