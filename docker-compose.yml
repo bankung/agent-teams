@@ -48,6 +48,16 @@ services:
       # The whole repo is bind-mounted at /repo so the project auto-scaffold
       # can write context/projects/<name>/ from inside the container.
       REPO_ROOT: /repo
+      # LLM provider config for POST /api/tasks/ai-parse (Kanban #856). Shared
+      # contract with the langgraph service below — same env vars so ops sets
+      # provider + keys ONCE for the whole stack. api scope is anthropic +
+      # openai only (ollama is langgraph-only in this release; the parser
+      # rejects ollama with 503).
+      LANGGRAPH_LLM_PROVIDER: ${LANGGRAPH_LLM_PROVIDER:-anthropic}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
     ports:
       - "${API_PORT:-8456}:8456"
     volumes:

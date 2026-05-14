@@ -22,7 +22,15 @@ from sqlalchemy.sql.elements import ClauseElement
 from src.constants import RecordStatus, TaskInteractionKind, TaskRunMode, TaskStatus
 from src.db import get_or_404, get_session
 from src.models.task import Task
+from src.schemas.ai_task import ParseRequest, ParseResponse
 from src.schemas.task import NextAutorunResponse, TaskCreate, TaskRead, TaskReorder, TaskUpdate
+from src.services.ai_task_parser import (
+    AiCallFailed,
+    AiCallTimeout,
+    AiUnparseable,
+    MissingApiKey as AiMissingApiKey,
+    parse_task_text,
+)
 from src.services.is_pending import assert_is_pending_with_process_status
 from src.services.recurrence import fire_template, next_cron_fire
 from src.services.run_mode import assert_consent_for_run_mode
@@ -270,6 +278,48 @@ async def get_next_autorun(
         pending_questions=question_rows,
         blocked_count=blocked_count,
     )
+
+
+@router.post("/ai-parse", response_model=ParseResponse)
+async def ai_parse_task(
+    payload: ParseRequest,
+    session_project_id: int = Depends(require_project_id_header),
+) -> ParseResponse:
+    """Parse free-text into a proposed TaskCreate body (Kanban #856).
+
+    Read-only: does NOT create a row. The FE (Kanban #857) renders the
+    proposal in an editable pre-fill form; user confirms via the existing
+    POST /api/tasks.
+
+    Provider chosen by LANGGRAPH_LLM_PROVIDER env var (shared with the
+    langgraph service so ops sets it once). API scope is anthropic +
+    openai; ollama is rejected here (langgraph-only in this release).
+
+    Error contract:
+    - 422 — Pydantic validation (empty / oversized `text`, unknown keys)
+            OR LLM returned a structurally invalid proposal.
+    - 502 — provider call failed (network / 5xx / malformed response).
+    - 503 — provider not configured (api key env var unset).
+    - 504 — provider exceeded the 10s wall budget.
+    """
+    try:
+        proposed = await parse_task_text(
+            text=payload.text, project_id=session_project_id
+        )
+    except AiMissingApiKey as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except AiCallTimeout as exc:
+        raise HTTPException(
+            status_code=504, detail="AI provider timeout"
+        ) from exc
+    except AiUnparseable as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except AiCallFailed as exc:
+        raise HTTPException(
+            status_code=502, detail=f"AI provider error: {exc}"
+        ) from exc
+
+    return ParseResponse(proposed=proposed)
 
 
 @router.get("/{task_id}", response_model=TaskRead)
