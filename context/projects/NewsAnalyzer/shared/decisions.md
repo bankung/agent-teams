@@ -15,6 +15,50 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-14 (PM) — Pivot scraping: Cloud → firecrawl-simple self-host (supersedes lock #2)
+**Scope:** shared (backend pipeline + devops)
+**Proposed by:** user (pivot during T2 #910 work — preferred local/self-host over external SaaS dependency)
+**Status:** LOCKED 2026-05-14 — replaces "Firecrawl Cloud free tier" from earlier 2026-05-14 entry (lock #2).
+
+**Decision:** Add **firecrawl-simple** (devflowinc fork — MIT-friendly stripped variant of upstream Firecrawl) as 4 services in NewsAnalyzer's existing `docker-compose.yml`. Pipeline talks to it via firecrawl-py SDK with `api_url=http://firecrawl-api:3002` (compose-internal hostname).
+
+**Service composition (firecrawl-simple):**
+1. `firecrawl-api` — main scrape endpoint, host-side port **7030** (internal 3002)
+2. `firecrawl-worker` — background scrape job consumer
+3. `firecrawl-puppeteer` — headless browser service
+4. `firecrawl-redis` — message queue + cache (separate from NewsAnalyzer's main redis on 7079 to keep concerns isolated)
+
+**Why firecrawl-simple over full Firecrawl:**
+- NewsAnalyzer load is tiny (4 sources × 2/day = 240 scrapes/mo ≈ 0.005/min) — full Firecrawl's RabbitMQ + Postgres + extract layer is unused overhead.
+- 4 services vs 5; ~3 GB RAM vs 8 GB; faster first-build; fewer setup pain points (no RabbitMQ-race-condition footgun, no `pg_cron` init).
+- MIT-friendly fork sidesteps the AGPL-3.0 license question entirely.
+- We do all LLM analysis with `claude -p` (lock #1) — Firecrawl's `/v1/extract` is not needed.
+
+**Why over Cloud (the original lock #2):**
+- Zero external SaaS dependency — single source of failure removed.
+- No `FIRECRAWL_API_KEY` provisioning friction (self-host accepts any non-empty key when `USE_DB_AUTHENTICATION=false`).
+- Local network = no rate-limit concern (free tier was 500/mo; trivial headroom but mental tax of monitoring).
+
+**Why over standalone Firecrawl (not in compose):**
+- One `docker compose up` brings the whole stack — no second compose stack to manage.
+- Reuses NewsAnalyzer's existing `newsanalyzer` network; compose-internal DNS handles service discovery.
+
+**Reasoning (broader):**
+- Self-host is the more durable choice for a project meant to run unattended for months — eliminates surprise pricing/policy/quota changes from the SaaS vendor.
+- The cost of adding 4 containers is one-time setup pain (~30 min specialist task) vs ongoing recurring tax of SaaS-key management. Amortizes fast.
+
+**Implications:**
+- **Supersedes** the "Firecrawl Cloud free tier (500/mo)" portion of lock #2 (2026-05-14 entry above). The rest of lock #2 (RSS sources stay on feedparser; 4 scrape sources covered by Firecrawl) is unchanged.
+- T2 (Kanban #910) HALTED on AC-7 — it had assumed Cloud + `FIRECRAWL_API_KEY` env var. The scraper.py code from T2 is mostly reusable (SDK calls unchanged — just `api_url` added). Resolution: file T5 (this pivot's implementation); T5's smoke AC subsumes T2 AC-7; T2 closes once T5 lands with a note "AC-7 verified via T5 smoke".
+- New env vars in `pipeline/app/config.py`: `firecrawl_api_url: str = "http://firecrawl-api:3002"` (default compose-internal); `firecrawl_api_key: str = "dev-key"` (any non-empty; auth disabled in firecrawl-simple).
+- Resource baseline now ~3 GB RAM dedicated to Firecrawl services. Surfaces as a host-requirement note for the project's README.
+- Future option (out of scope for now): if `/v1/extract` LLM-integration becomes useful, switch to full upstream Firecrawl. firecrawl-py SDK call sites stay the same; only compose services change. Defer until a real use-case demands it.
+
+**Cross-references:**
+- Original lock #2: this same date entry below, point 2. Marked superseded inline.
+- Research source: `_scratch/research-firecrawl-selfhost-2026-05-14.md`.
+- Implementation: Kanban T5 (to be filed; will subsume T2 AC-7 smoke).
+
 ## 2026-05-14 — Engine, scope, scraping, cost rules (planning lock — backfill = Option A)
 **Scope:** shared (all roles)
 **Proposed by:** lead (with user)
