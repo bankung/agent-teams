@@ -124,14 +124,15 @@ The command registers the project in the Kanban and scaffolds the orchestration 
 
 Recently shipped:
 
+- ✅ **AI task creation** — Click "AI Task" in the board header, describe what you want in plain English, and an LLM proposes the fields (title, description, type, priority, role) for you to review and tweak before confirming.
+- ✅ **Manual task creation form** — "+ New task" button in the board header opens a modal with all task fields; no API call needed.
+- ✅ **Dashboard live updates** — Cross-project dashboard auto-refreshes on every task / project change via the same SSE stream the per-project board uses.
 - ✅ **Headless agent engine (Phase 4)** — `langgraph` Docker service polls the Kanban, runs tasks through a supervisor → specialist graph, and persists state via `AsyncPostgresSaver`. Multi-provider (Anthropic / OpenAI / Ollama).
 - ✅ **Multi-AI provider support** — `LANGGRAPH_LLM_PROVIDER` env-var switches between three providers with no code change.
 - ✅ **Run button in task drawer** — One-click flip `run_mode` from manual to auto_pickup, queuing the task for the headless engine.
 
 Still on the roadmap:
 
-- **Manual task creation form** — Add a "New Task" button in the Kanban UI so you can create tasks without the API
-- **AI task creation** — Type a task in plain English in the Kanban UI, and AI proposes the fields for review before saving
 - **Specialist tools** — Give the AI agents file-edit / shell / git tools so they can actually make code changes (today they generate plans + answers but don't yet write code on their own)
 - **Human-in-the-loop resume** — Question/decision tasks that pause the agent and resume from a Postgres checkpoint when you answer
 - **MCP server adapter** — Expose the Kanban as an MCP tool so other AI clients (Claude Desktop, Cursor) can trigger agents
@@ -140,7 +141,6 @@ Still on the roadmap:
 ## Known issues
 
 - **Windows + Docker Next.js stale bundle**: On Windows with Docker Desktop, the Next.js dev server sometimes serves cached HTML after file edits. Workaround: run `docker compose restart web` after editing files in `web/app/` or `web/components/`. (Not an issue on Mac/Linux.)
-- **Flaky test in full suite**: `test_777_edge_soft_delete_recreate_isolates_working_path` fails when running the full pytest suite but passes in isolation. Cross-test state pollution under investigation. Does not affect production behavior.
 - **Ollama on Linux compose**: `host.docker.internal` does not auto-resolve on plain Linux Docker (works transparently on Mac/Windows Docker Desktop). Workaround: add `extra_hosts: ["host.docker.internal:host-gateway"]` to the `langgraph` service in `docker-compose.yml`.
 - **Specialists are still text-only**: The headless engine currently produces text plans and answers (stored in `status_change_reason`) but does not yet edit files or run shell commands. Real tool use is the next milestone (see "Still on the roadmap" above).
 
