@@ -1,18 +1,17 @@
-# Block curl with -X DELETE (or --request DELETE) at the harness layer.
+# Force a permission prompt for curl -X DELETE (or --request DELETE) regardless
+# of how the allowlist matched.
 #
 # Codified after the user noticed that the trailing-wildcard allowlist patterns
 # (e.g. `Bash(curl --silent -H "X-Project-Id: <pid>" "http://localhost:8456:*)`)
 # accept any suffix — including a `-X DELETE` that follows the wildcard's anchor
-# position. This hook hard-blocks DELETE regardless of how the allowlist matched,
-# so accidental DELETE-via-wildcard is impossible from a session.
+# position. This hook overrides allowlist auto-approval and routes every curl
+# DELETE through the normal permission prompt, so the user gets a deliberate
+# yes/no on each one. No hook-toggle gymnastics required for intentional
+# DELETEs — just click "yes" at the prompt.
 #
 # Both Lead's main session AND every subagent inherit this hook from
 # .claude/settings.json — the enforcement is harness-side, immune to context
 # compaction or agent-definition skim.
-#
-# Intentional DELETE (e.g., cleaning a leaked test row, hard-removing a
-# soft-deleted project): the user temporarily comments this hook out, runs the
-# DELETE, and re-enables. The friction IS the safety gate.
 
 $payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
 $cmd = $payload.tool_input.command
@@ -31,16 +30,15 @@ if ($firstWord -notmatch '^curl(\.exe)?$') { exit 0 }
 # Match `-X DELETE` or `--request DELETE` (case-insensitive, word-boundary).
 if ($cmd -match '(?i)(?:^|\s)(?:-X|--request)\s+DELETE\b') {
     $reason = @"
-curl -X DELETE blocked by .claude/hooks/block-curl-delete.ps1.
+curl DELETE detected — forcing permission prompt (overriding allowlist).
 
 The trailing-wildcard allowlist patterns (Bash(curl ... :*)) accept any suffix,
-which would let `-X DELETE` slip in via the wildcard tail. This hook hard-blocks
-DELETE regardless of how the allowlist matched.
+which would let `-X DELETE` slip in via the wildcard tail. This hook routes
+every curl DELETE through the normal permission prompt so the user gets a
+deliberate yes/no on each one.
 
-To run an intentional DELETE:
-  1. Comment out the block-curl-delete.ps1 hook in .claude/settings.json
-  2. Run the DELETE manually in this session
-  3. Re-enable the hook
+If you (the user) intend this DELETE: click "yes" at the prompt.
+Otherwise: click "no".
 
 Preferred alternatives for routine task removal:
   - Soft-delete via API: PATCH /api/tasks/{id} with {"process_status": 6}
@@ -49,12 +47,12 @@ Preferred alternatives for routine task removal:
     $output = @{
         hookSpecificOutput = @{
             hookEventName            = "PreToolUse"
-            permissionDecision       = "deny"
+            permissionDecision       = "ask"
             permissionDecisionReason = $reason
         }
     } | ConvertTo-Json -Compress -Depth 4
     Write-Output $output
-    exit 2
+    exit 0
 }
 
 exit 0
