@@ -106,5 +106,68 @@ services:
       retries: 5
       start_period: 30s
 
+  # ---------------------------------------------------------------------------
+  # langgraph — Phase 4 LangGraph engine (Kanban #849/#851).
+  # Headless graph runner; shares the existing `db` service via an isolated
+  # `langgraph` schema (created at startup by the graph app — see #850).
+  # Stub graph in graph.py until #850 lands; CMD will switch to a langgraph
+  # server invocation once the real StateGraph is defined.
+  # ---------------------------------------------------------------------------
+  langgraph:
+    build:
+      context: ./langgraph
+      dockerfile: Dockerfile
+    container_name: agent-teams-langgraph
+    depends_on:
+      db:
+        condition: service_healthy
+      # Kanban #852 — the langgraph worker polls the api service immediately on
+      # startup. Without this dep langgraph can win the start race, fail its
+      # first GET /api/tasks/next-autorun, log + idle-sleep, and recover only on
+      # the next poll. Cheap to add; cleaner first-tick logs.
+      api:
+        condition: service_healthy
+    environment:
+      # Inside the compose network the hostname is `db` (not localhost). The
+      # ?options=-c%20search_path=langgraph URL-encodes a SET search_path so
+      # the connection lands in the langgraph schema by default. The schema
+      # itself is CREATEd at startup by the graph app (#850) before
+      # AsyncPostgresSaver.setup() runs (Option B in the bootstrap research).
+      DATABASE_URI: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/agent_teams?options=-c%20search_path=langgraph
+      LANGGRAPH_LLM_PROVIDER: ${LANGGRAPH_LLM_PROVIDER:-anthropic}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+      # Kanban #891 — Ollama provider (free local LLM). Only consulted when
+      # LANGGRAPH_LLM_PROVIDER=ollama. host.docker.internal reaches the host's
+      # Ollama process on Mac + Win Docker Desktop; on Linux compose, add
+      # `extra_hosts: ["host.docker.internal:host-gateway"]` to this service.
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      # Kanban #852 — background worker config. The worker polls the api
+      # service (compose-internal hostname `api`, port 8456). LANGGRAPH_PROJECT_ID
+      # is REQUIRED — the lifespan refuses to start without it.
+      LANGGRAPH_PROJECT_ID: ${LANGGRAPH_PROJECT_ID:-1}
+      LANGGRAPH_POLL_INTERVAL_SEC: ${LANGGRAPH_POLL_INTERVAL_SEC:-30}
+      LANGGRAPH_KANBAN_API_BASE: ${LANGGRAPH_KANBAN_API_BASE:-http://api:8456}
+      REPO_ROOT: /repo
+    ports:
+      - "${LANGGRAPH_PORT:-8465}:8000"
+    volumes:
+      # Bind repo root rw so #850's code edits hot-reload during dev (same
+      # pattern as the api service). For prod, bake the graph into the image
+      # via `langgraph build` and drop this mount.
+      - .:/repo
+    restart: unless-stopped
+    healthcheck:
+      # python -c (not curl) — the langgraph image is python:3.12-slim and
+      # does not include curl.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ok')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+
 volumes:
   agent-teams-pgdata:

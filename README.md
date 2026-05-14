@@ -60,7 +60,7 @@ Those tools are **in-editor completions** — they auto-suggest the next line or
 
 ### Does my code get sent to the cloud?
 
-No. Everything runs in Docker on your machine. The AI models (Claude via Anthropic) do run in the cloud, but your code is sent to the model as plain text in the prompt (like asking a question). The model never stores your code — it generates a response and that response is discarded after the agent finishes. If you're concerned about proprietary logic, you can audit what gets sent by reading the agent's prompt before it runs, or use a local model (not yet supported; on the roadmap).
+No. Everything runs in Docker on your machine. Cloud AI models (Claude via Anthropic, GPT-4 via OpenAI) do run in the cloud — your code is sent to the model as plain text in the prompt (like asking a question). The model never stores your code — it generates a response and that response is discarded after the agent finishes. If you're concerned about proprietary logic, you can audit what gets sent by reading the agent's prompt before it runs, **or run a local model via Ollama** — all inference stays on your machine and never touches the network.
 
 ### Do I need to know how to code to use this?
 
@@ -68,7 +68,13 @@ No, not for **using** agent-teams. You describe tasks in plain English: "add a d
 
 ### Which AI models does it support?
 
-agent-teams uses Anthropic's Claude (Opus, Sonnet, Haiku) by default. You provide an API key in the `.env` file. Support for OpenAI (GPT-4, etc.) and local models (Ollama, Llama, etc.) is on the roadmap.
+Three providers are supported, switchable via a single environment variable (`LANGGRAPH_LLM_PROVIDER` in `.env`):
+
+- **Anthropic Claude** (Opus, Sonnet, Haiku) — default; requires `ANTHROPIC_API_KEY`
+- **OpenAI** (GPT-4o, GPT-4o-mini) — requires `OPENAI_API_KEY`
+- **Ollama** (Llama 3, Qwen 2.5/3, Mistral, Gemma, etc.) — local; no API key, no cloud, no cost. Install [Ollama](https://ollama.com/) on your machine, `ollama pull <model>`, then set `OLLAMA_MODEL=<model>` in `.env`. See [langgraph/README.md](langgraph/README.md) for the full setup.
+
+Switching providers requires no code change — edit `.env` and `docker compose restart langgraph`.
 
 ### How do agents run — do I have to babysit them?
 
@@ -76,7 +82,7 @@ There are two modes:
 
 1. **Interactive (CLI mode)** — You run Claude Code in a terminal and the Lead agent works alongside you. Every file write or shell command prompts you for approval before it happens. Best for people who want full control over what the agent does, or are working on sensitive codebases. This is what you get out of the box.
 
-2. **Full-auto (headless mode)** — Agents run unattended in the background. Write and edit operations are pre-approved; the agent picks up tasks from the queue, works through them, and moves on to the next one without you watching. Best for overnight runs, parallel projects, or routine work you trust the agent to handle. Headless mode is in active development (on the roadmap).
+2. **Full-auto (headless mode)** — Agents run unattended in a Docker container (`langgraph` service). The agent polls the Kanban for tasks marked `task_kind=ai` + `run_mode=auto_pickup` (or `auto_headless` with project consent), picks them up, executes through the LangGraph engine, and PATCHes the result back. No per-action approval prompts. Best for overnight runs, parallel projects, or routine work you trust the agent to handle. State is checkpointed in Postgres so a container restart resumes mid-task.
 
 Both modes use the same Kanban board — you can see what agents did (and didn't do) in the task history.
 
@@ -116,13 +122,18 @@ The command registers the project in the Kanban and scaffolds the orchestration 
 
 ## What's next
 
-The roadmap includes:
+Recently shipped:
+
+- ✅ **Headless agent engine (Phase 4)** — `langgraph` Docker service polls the Kanban, runs tasks through a supervisor → specialist graph, and persists state via `AsyncPostgresSaver`. Multi-provider (Anthropic / OpenAI / Ollama).
+- ✅ **Multi-AI provider support** — `LANGGRAPH_LLM_PROVIDER` env-var switches between three providers with no code change.
+- ✅ **Run button in task drawer** — One-click flip `run_mode` from manual to auto_pickup, queuing the task for the headless engine.
+
+Still on the roadmap:
 
 - **Manual task creation form** — Add a "New Task" button in the Kanban UI so you can create tasks without the API
 - **AI task creation** — Type a task in plain English in the Kanban UI, and AI proposes the fields for review before saving
-- **Run button in task drawer** — One-click to start an AI agent directly from the task detail view
-- **Headless agent engine (Phase 4)** — Run agents without needing the terminal open, with proper checkpointing and human-in-the-loop pauses
-- **Multi-AI provider support** — Swap between Claude, OpenAI, and local models with an environment variable
+- **Specialist tools** — Give the AI agents file-edit / shell / git tools so they can actually make code changes (today they generate plans + answers but don't yet write code on their own)
+- **Human-in-the-loop resume** — Question/decision tasks that pause the agent and resume from a Postgres checkpoint when you answer
 - **MCP server adapter** — Expose the Kanban as an MCP tool so other AI clients (Claude Desktop, Cursor) can trigger agents
 - **Per-project agent roster** — Enable/disable specific agents per project; add custom roles (tech writer, SA, data analyst, etc.)
 
@@ -130,8 +141,8 @@ The roadmap includes:
 
 - **Windows + Docker Next.js stale bundle**: On Windows with Docker Desktop, the Next.js dev server sometimes serves cached HTML after file edits. Workaround: run `docker compose restart web` after editing files in `web/app/` or `web/components/`. (Not an issue on Mac/Linux.)
 - **Flaky test in full suite**: `test_777_edge_soft_delete_recreate_isolates_working_path` fails when running the full pytest suite but passes in isolation. Cross-test state pollution under investigation. Does not affect production behavior.
-- **Broken internal links in Sources badge**: `ref://` sources render as browser links which produce 404 errors. Fix in progress.
-- **Cosmetic timestamp bug on dashboard**: Under rare clock-skew conditions, timestamps can show "−N seconds ago" instead of positive values. One-line fix pending.
+- **Ollama on Linux compose**: `host.docker.internal` does not auto-resolve on plain Linux Docker (works transparently on Mac/Windows Docker Desktop). Workaround: add `extra_hosts: ["host.docker.internal:host-gateway"]` to the `langgraph` service in `docker-compose.yml`.
+- **Specialists are still text-only**: The headless engine currently produces text plans and answers (stored in `status_change_reason`) but does not yet edit files or run shell commands. Real tool use is the next milestone (see "Still on the roadmap" above).
 
 ---
 

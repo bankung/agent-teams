@@ -16,6 +16,77 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-14 — Phase 4 LangGraph headless engine (Kanban #849 chain — #851 + #850)
+**Scope:** devops / backend / shared
+**Decision (#851 — Docker scaffold):** New `langgraph` Docker service (built locally via `langgraph/Dockerfile`; no upstream prebuilt image) on host port `8465` → container `8000`. Pinned: `langgraph==1.2.0`, `langgraph-checkpoint-postgres==3.1.0`, `langgraph-cli==0.4.26`, `langchain-anthropic==1.4.3`, `langchain-openai==1.2.1`, `fastapi==0.136.1`, `uvicorn==0.46.0`. New envvars in `.env.example`: `LANGGRAPH_PORT`, `LANGGRAPH_LLM_PROVIDER` (anthropic|openai, default anthropic), `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_MODEL` (default `claude-sonnet-4-6`), `OPENAI_MODEL` (default `gpt-4o`).
+
+**Decision (#850 — graph definition):** Hand-rolled `StateGraph` + `conditional_edges` (skipping the prebuilt `langgraph-supervisor` package per LangChain's current guidance). `AsyncPostgresSaver` checkpointing in a separate `langgraph` schema on the existing `agent_teams` DB. Supervisor (Lead) node routes by `assigned_role` integer (1=frontend, 2=backend, 3=devops, 4=tester, 5=reviewer; mirrors `api/src/constants.py::TaskRole`). #850 ships ONE real specialist (`backend_specialist`) calling `make_chat_model().invoke(...)`; frontend/devops/tester/reviewer/general are stubs returning canned `final_result` (real implementations land via #853 + later).
+
+**Locked rules:**
+- **Schema bootstrap = Option B** — app-startup `CREATE SCHEMA IF NOT EXISTS langgraph;` runs in `graph.py` lifespan BEFORE `await saver.setup()`. Portable across existing DB volumes (no initdb script, no `docker compose down -v` required). Documented in `langgraph/README.md`.
+- **`DATABASE_URI` is normalized at app layer.** Compose ships `?options=-c%20search_path=langgraph`; psycopg 3.3's URI parser rejects the literal inner `=`, so `graph._normalize_pg_uri()` re-encodes it as `%3D`. Keeps docker-compose.yml unchanged and tolerates any URI source.
+- **LLM fail-fast in lifespan** — container refuses to start (lifespan raises `RuntimeError`) if the configured provider's API key is unset OR if `model.invoke("ping")` fails. Better than a healthy container that crashes on first `/invoke`. Documented in spawn brief + reproduced in lifespan log line.
+- **`AsyncPostgresSaver` tables live in `langgraph.*` schema, managed by `saver.setup()` — NOT by Alembic.** Do not mirror in `db-schema.md`'s `public.*` table list; do not write Alembic migrations against them.
+- **`thread_id = "task-{task_id}"`** is the checkpoint key convention. #852's poll loop must use the same format to resume paused tasks.
+- **`/invoke` contract (locked for #852):** `POST {task_id, brief, assigned_role}` → `200 {task_id, assigned_role, final_result, halt_reason, messages[]}`. `halt_reason != null` = pause signal (route to user review); `final_result` = artifact to write back to the Kanban task.
+- **`make_chat_model() -> BaseChatModel` signature stable** — #853 replaces the `llm.py` shim from #850 without changing the public contract; specialist nodes don't import `ChatAnthropic`/`ChatOpenAI` directly.
+
+**Decision (#853 — multi-provider llm factory):** Replaced `langgraph/llm.py` shim with production factory. Public surface (stable):
+- `make_chat_model(model: str | None = None) -> BaseChatModel` — back-compatible with #850's no-arg signature; optional override.
+- `resolve_provider() -> Literal["anthropic", "openai"]` — normalizes + validates `LANGGRAPH_LLM_PROVIDER`; used by `/ok`.
+- `resolve_model(provider: str | None = None) -> str` — defaults from `DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"` / `DEFAULT_OPENAI_MODEL = "gpt-4o"`; overridable via `ANTHROPIC_MODEL` / `OPENAI_MODEL`.
+
+**Locked rules (#853 additions):**
+- **Model-name shape regex** `^[a-z0-9][a-z0-9.\-]*$` — catches `claude_sonnet_4_6` (underscore typo) at startup, names the offending env-var in the error.
+- **Whitespace-trimmed API keys** — env-var set to `"   "` (trailing-space `.env` mishap) treated as unset; surfaces at lifespan instead of mid-run auth failure.
+- **Lazy SDK imports** — `langchain_anthropic` / `langchain_openai` imported INSIDE the matching provider branch; Anthropic-only deployment never pays the OpenAI module-load cost.
+- **30 unit tests** (`langgraph/tests/test_llm.py`) pin: provider normalization, unknown-provider error shape, default/override resolution, underscore-typo rejection, missing-key error pointer (must NOT name the other provider's key).
+
+**Decision (#852 — Kanban worker integration):** New `langgraph/worker.py` — asyncio polling task started in `graph.py` lifespan AFTER graph compile + LLM probe. Reads `LANGGRAPH_PROJECT_ID` (REQUIRED — no fallback; CLAUDE.md "session-bound project must be named" extends to background workers), `LANGGRAPH_POLL_INTERVAL_SEC` (default 30), `LANGGRAPH_KANBAN_API_BASE` (default `http://api:8456`).
+
+**Per-task lifecycle (LOCKED):**
+- `GET /api/tasks/next-autorun` (with `X-Project-Id` header) → if `next_task` is null, idle-sleep
+- Else: `PATCH process_status=2, started_at=now` → `compiled_graph.ainvoke(initial_state, config={"configurable": {"thread_id": f"task-{task_id}"}})`
+- On success (final_state.halt_reason is None): `PATCH {process_status:5, completed_at, status_change_reason: final_result[:400]}`
+- On `halt_reason != null` (question/decision): `PATCH {process_status:4 BLOCKED, halt_reason, is_pending:true, status_change_reason}`
+- On exception (any graph error): `PATCH {process_status:4 BLOCKED, halt_reason: "langgraph error: <ExcType>: <msg>"}` (NO `is_pending` — that flag means "awaiting human answer", not "crashed")
+
+**Locked rules (#852):**
+- **Initial state shape into `ainvoke`:** `{task_id, brief: description or title, assigned_role, messages: [], intermediate_results: {}}`. Brief prefers description (the spec) over title.
+- **`is_pending=true` set ONLY on halt-from-graph**, never on exception-BLOCKED. Verified by test.
+- **Error isolation invariant:** every iteration body wrapped in try/except inside `run_worker_loop`; only `asyncio.CancelledError` propagates. One bad task NEVER crashes the loop.
+- **Shutdown grace 5s** — `task.cancel()` + `asyncio.wait_for(task, timeout=5.0)` in lifespan. In-flight `ainvoke` calls abandoned on cancel; task stays IN_PROGRESS (recoverable via #852b resume).
+- **PATCH non-200 = abandon iteration, log, continue** — no tight retry loop, no poisoned state. Next poll re-evaluates.
+- **Worker reads `graph_module.graph` each iteration** (module passed in, not the compiled object) — avoids circular import + supports future hot-reload.
+- **`status_change_reason` is the result-stashing channel** (NOT `description` — description is immutable spec; reason renders in TaskDetail drawer per #854). Truncated at 400 chars.
+
+**Smoke verified end-to-end:** seeded task #890 (TODO + ai + auto_pickup + role=2) → worker picked it up → transitioned TODO → IN_PROGRESS → DONE with started_at/completed_at stamped and final_result in status_change_reason. 65/65 unit tests green.
+
+**Decision (#907 — backend_specialist prompt wander fix):** Real-LLM smoke 2026-05-14 produced identical "wander into FastAPI/PostgreSQL scaffolding" output for two unrelated models (llama3.2:3b #902, qwen3:8b #906) given orthogonal prompts (e.g. "List 3 reasons to use Pydantic over dataclasses"). Identical wander across models = system-prompt bias, not model quality. Root cause: three contributors in `backend_specialist_node` — (1) narrow persona "FastAPI + PostgreSQL specialist" (domain anchor), (2) "produce a concise plan" framing (biased toward designing things), (3) "Task #N\n\nBrief:\n..." HumanMessage wrapper (added project-ticket framing).
+
+**Fix:** persona replaced with generic "expert technical assistant"; explicit anti-scaffolding directive ("Do not propose unrelated scaffolding, project plans, requirements lists, or implementation steps unless explicitly asked"); shape-mirroring examples (definition → definition, code → code, list → list); brief sent verbatim as HumanMessage (no "Task #N" wrapper — task_id already rides in checkpoint thread_id + supervisor's SystemMessage).
+
+**Regression guard:** `langgraph/tests/test_nodes_prompt.py` mocks `make_chat_model`, captures the prompt list, asserts (a) no FastAPI/PostgreSQL/specialist/"produce a plan" anchors in SystemMessage, (b) HumanMessage equals brief verbatim, (c) function return shape preserved. 8 new tests; total suite 91/91 green.
+
+**Smoke retest:** #908 — same Pydantic prompt that wandered on #902/#906 — now produces accurate focused answer addressing Pydantic in 5.5s. Verified end-to-end on test-headless project.
+
+**Decision:** keep `nodes.py` "dumb" — no per-role personas yet. Supervisor's job is routing, not prompt customization. Per-role personas wait for Phase 5 real specialists.
+
+**Decision (#891 — Ollama provider for free local LLM testing):** Third provider branch in `langgraph/llm.py`. `langchain-ollama==1.1.0` pinned. Free local LLM via host-side `ollama` process reached at `http://host.docker.internal:11434`. No API key required. Provider switch remains `.env`-only (`LANGGRAPH_LLM_PROVIDER=ollama` + optional `OLLAMA_MODEL=qwen2.5:7b`).
+
+**Locked rules (#891):**
+- **Per-provider regex split** — anthropic/openai keep strict `^[a-z0-9][a-z0-9.\-]*$` (catches `claude_sonnet_4_6` underscore-typo); ollama uses widened `^[a-z0-9][a-zA-Z0-9._:\-]*$` to accept tag conventions like `llama3.2:3b-instruct-q4_K_M` (case-significant quant labels). Two constants + `_model_re_for(provider)` helper instead of one combined pattern with runtime branching — keeps strict guard byte-identical.
+- **Defaults:** `DEFAULT_OLLAMA_MODEL="llama3.2"`, `DEFAULT_OLLAMA_BASE_URL="http://host.docker.internal:11434"`.
+- **No `_require_api_key()` call on ollama branch** — explicit skip with comment.
+- **Linux compose caveat:** `host.docker.internal` does not auto-resolve on plain Linux; add `extra_hosts: ["host.docker.internal:host-gateway"]` to the langgraph service if needed. NOT added unconditionally — Mac/Win Desktop resolve it transparently and the project's primary dev env is Windows.
+- **18 new tests** in `langgraph/tests/test_llm.py` (resolve_model + 5 tag-shape parametrizations + regression guard for anthropic underscore + 6 make_chat_model variants). Suite total 83/83.
+
+**DEFERRED to follow-up #852b (HITL resume):** consume `resume_tasks` from `next-autorun`; when a halted task's answer lands, resume the graph from its persisted LangGraph checkpoint (`thread_id="task-{task_id}"`) rather than starting fresh; PATCH `process_status` back from BLOCKED → IN_PROGRESS → DONE. Worker currently logs an INFO line when it sees non-empty `resume_tasks` and ignores them.
+
+**Reasoning:** Phase 4 goal is provider-agnostic headless execution. Hand-rolled supervisor gives full control over routing + state; prebuilt is being deprecated. `AsyncPostgresSaver` is the only production-grade saver (`MemorySaver` evaporates on restart). Fail-fast on missing API key avoids the "healthy container, sudden first-call death" anti-pattern that misleads ops.
+
+**Implications:** #853 will replace `langgraph/llm.py` (drop-in upgrade of the shim — fuller error messages, model-name validation, unit tests). #852 will add a poll loop that calls `GET /api/tasks/next-autorun` then `POST http://langgraph:8000/invoke` then PATCHes the task; uses the locked `/invoke` contract above. AGENTS.md (#848) is the Codex CLI counterpart and may run independently. Phase 4 umbrella (#849) closes when all four children + an end-to-end smoke land.
+
 ## 2026-05-14 — TaskDetail Run button + within-lane snap-back rationale (Kanban #860 + #889 prep)
 **Scope:** frontend / shared
 **Decision (Run button — #860):** TaskDetail drawer renders a "Run" primary button when `process_status === TODO && task_kind === 'ai' && run_mode === 'manual'`. Click flips `run_mode` from `'manual'` to `'auto_pickup'` via `patchTask`. The FE does NOT directly PATCH `process_status`; the consuming autorun loop (`GET /api/tasks/next-autorun`) stamps `process_status → 2` on pickup.

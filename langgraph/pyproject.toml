@@ -1,0 +1,62 @@
+# langgraph engine package — Phase 4 (Kanban #851 scaffold).
+# Versions pinned 2026-05-14 from PyPI latest stable. Re-validate when LangGraph
+# 2.x lands or langchain-* bumps a major (perishable; LangGraph moves fast).
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-teams-langgraph"
+version = "0.1.0"
+description = "LangGraph engine container for agent-teams (supervisor + specialist subagents)."
+requires-python = ">=3.12"
+dependencies = [
+    # Core graph runtime + Postgres checkpoint backend.
+    "langgraph==1.2.0",
+    "langgraph-checkpoint-postgres==3.1.0",
+    "langgraph-cli==0.4.26",
+    # LLM provider adapters (multi-provider via LANGGRAPH_LLM_PROVIDER).
+    "langchain-anthropic==1.4.3",
+    "langchain-openai==1.2.1",
+    # Ollama adapter (Kanban #891) — free local LLM via the host's Ollama
+    # process (http://host.docker.internal:11434). 1.1.0 is the latest stable
+    # on PyPI 2026-05-14; requires langchain-core>=1.2.21,<2 (compatible).
+    "langchain-ollama==1.1.0",
+    "langchain-core==1.4.0",
+    # FastAPI server for the stub /ok endpoint (#851); #850 may swap to a
+    # langgraph-cli built image where uvicorn comes in transitively.
+    "fastapi==0.136.1",
+    "uvicorn[standard]==0.46.0",
+    # AsyncPostgresSaver wants psycopg (v3) as its driver.
+    "psycopg[binary]>=3.2,<4",
+    # HTTP client for the Kanban poll worker (Kanban #852). Also a transitive
+    # dep of langchain-anthropic/openai; pinning explicitly here documents the
+    # direct-use contract and lets us bump independently if needed.
+    "httpx>=0.27,<1",
+]
+
+[project.optional-dependencies]
+# Test deps — kept out of the prod image install path. Pinned 2026-05-14.
+# Install in dev / CI with `pip install -e .[test]`.
+test = [
+    "pytest==8.3.4",
+    # Async test support for the worker (Kanban #852). The worker's poll loop
+    # and _poll_once are coroutines; pytest-asyncio's auto-mode lets us mark
+    # individual cases with @pytest.mark.asyncio without per-file boilerplate.
+    "pytest-asyncio==0.25.0",
+]
+
+[tool.setuptools]
+# Flat-layout: each .py at the langgraph/ root is a top-level module inside
+# the container (WORKDIR /app; sources copied to /app/*.py). #850 added
+# state, nodes, llm alongside the existing graph module; #852 adds worker.
+py-modules = ["graph", "state", "nodes", "llm", "worker"]
+
+[tool.pytest.ini_options]
+# Run with `pytest tests/` from /app inside the container, or
+# `docker compose exec -T langgraph pytest tests/`.
+testpaths = ["tests"]
+# pytest-asyncio auto-mode: any `async def test_*` is collected as a coroutine
+# test without per-test @pytest.mark.asyncio. Strict-mode would require the
+# marker on every async test; auto-mode keeps the test files clean.
+asyncio_mode = "auto"

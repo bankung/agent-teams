@@ -1,0 +1,10 @@
+{
+  "dockerfile_lines": [],
+  "graphs": {
+    "supervisor": "./graph.py:graph"
+  },
+  "env": ".env",
+  "python_version": "3.12",
+  "dependencies": ["."],
+  "_note": "graph symbol is populated by FastAPI lifespan at /app/graph.py — `langgraph dev` and `langgraph build` can pick it up once the lifespan has run. For the current Docker CMD (uvicorn graph:app) this file is informational; #853/#852 may switch the CMD to a `langgraph` invocation."
+}
