@@ -12,6 +12,7 @@ The universal Lead rules live in root `CLAUDE.md`. This file holds novel-specifi
 |---|---|---|
 | **novel-writer** | Drafts new chapters and scenes from outline | `context/projects/<active>/novel-writer/` |
 | **novel-editor** | Line edits, copy edits, voice/tone consistency | `context/projects/<active>/novel-editor/` |
+| **novel-proofreader** | **Sentence-level Thai naturalness pass — flag translatese, propose rewrites (read-only on prose)** | `context/projects/<active>/novel-proofreader/` |
 
 (More roles to add as needed: `novel-researcher`, `novel-plot-architect`, `novel-beta-reader`.)
 
@@ -32,6 +33,7 @@ Concrete framework folders (e.g., `context/standards/voice/`, `context/standards
 |---|---|
 | novel-writer | `voice` + `structure` |
 | novel-editor | `voice` + `structure` + `markup` |
+| novel-proofreader | `voice` + `markup` |
 
 `context/standards/general.md` injects into every role regardless.
 
@@ -43,18 +45,22 @@ Within `team='novel'` projects:
 |---|---|
 | 11 | novel-writer |
 | 12 | novel-editor |
+| 13 | novel-proofreader |
 
 Code range 11-20 reserved for novel domain (dev domain uses 1-10). Each team's playbook owns its own range.
+
+> **NOTE 2026-05-14:** DB CHECK constraint on `tasks.assigned_role` is currently 1-5 (dev codes) only. Novel codes 11-13 are not yet usable in task `assigned_role`. Tracked as agent-teams task **#926** (extend CHECK constraint). Until #926 lands, file novel tasks with `assigned_role: null` and note role in description.
 
 ## Lifecycle (skeleton)
 
 1. **Outline first.** A new chapter or scene begins as user-supplied outline + decisions in `shared/outline.md` (Lead-curated).
 2. **Research before writing.** If unfamiliar setting/facts, spawn a research-style agent (TBD) before drafting.
 3. **Draft.** Spawn novel-writer with outline + voice standards + continuity notes.
-4. **Edit pass.** After draft lands, spawn novel-editor for line edits.
+4. **Edit pass.** After draft lands, spawn novel-editor for line edits + voice/structural consistency.
 5. **Continuity check.** Editor cross-references with `shared/continuity.md` (named characters, established facts).
-6. **Revise.** Loop back to writer with editor's notes if structural changes are needed.
-7. **Lock.** Lead writes the final chapter into `shared/chapters/<n>.md`.
+6. **Proofread pass.** Spawn novel-proofreader for sentence-level Thai naturalness — flag translatese, propose rewrites (proposals only; Lead applies). **Critical for Thai-language projects where AI-drafted prose often reads translated.**
+7. **Revise.** Loop back to writer with editor's notes if structural changes are needed.
+8. **Lock.** Lead applies proofreader proposals + writes final chapter into `shared/chapters/<n>.md`.
 
 (Same shape as the dev team lifecycle: `shared/` is the canonical artifact; role folders carry working state.)
 
