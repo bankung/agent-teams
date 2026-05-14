@@ -16,6 +16,23 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-14 — Worktree-Docker drift restore recipe (post-#914 incident chain)
+**Scope:** devops / frontend / shared
+**Decision (recipe codification):** Two Docker drift states observed when a worktree session touches `web/` were captured + recovery codified:
+- **Drift A** — `docker compose up` ran from worktree dir without `-p agent-teams` → web container claimed under `<worktree-slug>` compose project + separate network → web↔api fetches broken. Symptom user-visible as "เว็บหายครับ" mid-session 2026-05-14 (post-#875).
+- **Drift B** — `docker compose -p agent-teams up -d --no-deps --build web` ran from worktree dir (legitimately needed mid-task to serve worktree-only files like `web/public/agentboard-icons.svg`) → container's `/app` bind-mount points at worktree path → container breaks if worktree removed; main-repo edits invisible. Observed post-#914 + recovered.
+
+**Recipe location:** Canonical playbook lives at [`context/standards/web/nextjs.md`](../../../standards/web/nextjs.md) "End-of-worktree-session restore — mandatory checklist": diagnose (compose ls + inspect Mounts.Source) → drift-A `docker compose -p <slug> down` → sync main worktree (`git pull --rebase`; investigate diverging-branches before discarding any local commit) → drift-B `docker compose -p agent-teams up -d --no-deps --build web` from main repo → verify (sprite + /p + /api curls all 200).
+
+**Subagent contract update:** `.claude/agents/dev-frontend.md` Section 2b now mandates an end-of-task **mount-source report line** whenever the subagent used `up --build` (vs. plain `restart`). Lead reads the line to decide if the restore recipe needs running before session-end.
+
+**Reasoning:** Both drifts are silent on first contact — `tsc --noEmit` passes; the symptom only surfaces when a curl hits a network-split or path-missing endpoint. Without the report-line discipline, Lead has to manually `docker inspect` after every dev-frontend close, which is brittle. The standards file gives a single playbook entry to point any future incident at; the agent file pre-empts the need.
+
+**Implications:**
+- Future worktree sessions: subagents that use `up --build` MUST report mount source. Lead's session-end summary lists whether the restore recipe needs running.
+- The user's recall-side memory at `feedback_worktree_docker_restore.md` carries the same recipe in Lead-recall form (separate from project-shared codification).
+- 2 strikes today = codification trigger threshold met. If a 3rd strike occurs with the recipe in place, escalate to a hook (PreToolUse on bare `docker compose up`).
+
 ## 2026-05-14 — Pandoc md→docx conversion workflow (Kanban #814)
 **Scope:** devops / shared
 **Decision (install method):** Docker `pandoc/core` image (no host install on Windows). Verified working with `pandoc 3.9.0.2`. Invocation pattern: `docker run --rm -v "${PWD}:/data" pandoc/core /data/<input>.md -o /data/<output>.docx`.
