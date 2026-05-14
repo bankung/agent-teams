@@ -62,6 +62,15 @@ Template:
 
 **Smoke verified end-to-end:** seeded task #890 (TODO + ai + auto_pickup + role=2) → worker picked it up → transitioned TODO → IN_PROGRESS → DONE with started_at/completed_at stamped and final_result in status_change_reason. 65/65 unit tests green.
 
+**Decision (#891 — Ollama provider for free local LLM testing):** Third provider branch in `langgraph/llm.py`. `langchain-ollama==1.1.0` pinned. Free local LLM via host-side `ollama` process reached at `http://host.docker.internal:11434`. No API key required. Provider switch remains `.env`-only (`LANGGRAPH_LLM_PROVIDER=ollama` + optional `OLLAMA_MODEL=qwen2.5:7b`).
+
+**Locked rules (#891):**
+- **Per-provider regex split** — anthropic/openai keep strict `^[a-z0-9][a-z0-9.\-]*$` (catches `claude_sonnet_4_6` underscore-typo); ollama uses widened `^[a-z0-9][a-zA-Z0-9._:\-]*$` to accept tag conventions like `llama3.2:3b-instruct-q4_K_M` (case-significant quant labels). Two constants + `_model_re_for(provider)` helper instead of one combined pattern with runtime branching — keeps strict guard byte-identical.
+- **Defaults:** `DEFAULT_OLLAMA_MODEL="llama3.2"`, `DEFAULT_OLLAMA_BASE_URL="http://host.docker.internal:11434"`.
+- **No `_require_api_key()` call on ollama branch** — explicit skip with comment.
+- **Linux compose caveat:** `host.docker.internal` does not auto-resolve on plain Linux; add `extra_hosts: ["host.docker.internal:host-gateway"]` to the langgraph service if needed. NOT added unconditionally — Mac/Win Desktop resolve it transparently and the project's primary dev env is Windows.
+- **18 new tests** in `langgraph/tests/test_llm.py` (resolve_model + 5 tag-shape parametrizations + regression guard for anthropic underscore + 6 make_chat_model variants). Suite total 83/83.
+
 **DEFERRED to follow-up #852b (HITL resume):** consume `resume_tasks` from `next-autorun`; when a halted task's answer lands, resume the graph from its persisted LangGraph checkpoint (`thread_id="task-{task_id}"`) rather than starting fresh; PATCH `process_status` back from BLOCKED → IN_PROGRESS → DONE. Worker currently logs an INFO line when it sees non-empty `resume_tasks` and ignores them.
 
 **Reasoning:** Phase 4 goal is provider-agnostic headless execution. Hand-rolled supervisor gives full control over routing + state; prebuilt is being deprecated. `AsyncPostgresSaver` is the only production-grade saver (`MemorySaver` evaporates on restart). Fail-fast on missing API key avoids the "healthy container, sudden first-call death" anti-pattern that misleads ops.

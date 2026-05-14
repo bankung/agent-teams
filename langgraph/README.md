@@ -13,7 +13,7 @@ port `${LANGGRAPH_PORT:-8465}` (container always listens on 8000).
 | File | Purpose |
 |---|---|
 | `Dockerfile` | `python:3.12-slim` base; installs deps from `pyproject.toml`. CMD `uvicorn graph:app` (stub) — will change when #850 swaps to a LangGraph server. |
-| `pyproject.toml` | Pinned deps: langgraph, langgraph-checkpoint-postgres, langgraph-cli, langchain-anthropic, langchain-openai, fastapi, uvicorn, psycopg[binary]. |
+| `pyproject.toml` | Pinned deps: langgraph, langgraph-checkpoint-postgres, langgraph-cli, langchain-anthropic, langchain-openai, langchain-ollama (#891), fastapi, uvicorn, psycopg[binary]. |
 | `langgraph.json` | LangGraph CLI config — points the future `supervisor` graph at `./graph.py:graph`. Unused by the stub CMD but in place for #850's `langgraph build` workflow. |
 | `graph.py` | FastAPI app + compiled StateGraph + lifespan. Stub replaced by #850; #852 adds the Kanban worker task to the lifespan. |
 | `worker.py` | (#852) Background asyncio task — polls `GET /api/tasks/next-autorun` and feeds picked tasks through the compiled graph, then PATCHes the result back. Started/stopped by `graph.py`'s lifespan. |
@@ -66,11 +66,13 @@ without configuration once `ANTHROPIC_API_KEY` is set in `.env`. Switching
 providers is a `.env` change + container restart — no code edits.
 
 ```env
-LANGGRAPH_LLM_PROVIDER=anthropic   # or: openai
+LANGGRAPH_LLM_PROVIDER=anthropic   # or: openai, ollama
 ANTHROPIC_API_KEY=sk-ant-...        # required when provider=anthropic
 OPENAI_API_KEY=sk-...               # required when provider=openai
 ANTHROPIC_MODEL=claude-sonnet-4-6   # optional override (default shown)
 OPENAI_MODEL=gpt-4o                 # optional override (default shown)
+OLLAMA_MODEL=llama3.2               # ollama-only; see Ollama section below
+OLLAMA_BASE_URL=http://host.docker.internal:11434  # ollama-only
 ```
 
 ### Anthropic → OpenAI
@@ -117,12 +119,64 @@ re-runs. `docker compose restart langgraph` is the cheapest way to force it.
 The container refuses to start (lifespan raises `RuntimeError`) if:
 
 - the configured provider's API key is unset or whitespace-only;
-- `LANGGRAPH_LLM_PROVIDER` is anything other than `anthropic` / `openai`;
+- `LANGGRAPH_LLM_PROVIDER` is anything other than `anthropic` / `openai` / `ollama`;
 - the chosen model name fails the shape regex; or
 - the `invoke("ping")` probe to the provider itself fails.
 
 Better to refuse `docker compose up` than to look healthy and crash on the
 first `/invoke`. Logs name exactly which env-var to set.
+
+### Provider option: Ollama (free local) — Kanban #891
+
+[Ollama](https://ollama.com/) runs LLMs locally on the host (no paid API
+key, no network round-trip, model weights cached on disk). Use it for
+smoke-testing the full Phase 4 stack without spending on Anthropic / OpenAI
+credit, or for offline / privacy-sensitive workloads.
+
+Ollama runs as a separate **host** process (NOT a compose service). The
+`langgraph` container reaches it via `host.docker.internal:11434`.
+
+```sh
+# 1. Install Ollama on the host (Mac / Win / Linux one-liner at ollama.com/download)
+# 2. Pull a model — small + fast default:
+ollama pull llama3.2
+# Or better quality / slower:
+ollama pull qwen2.5:7b
+```
+
+```env
+# 3. In .env:
+LANGGRAPH_LLM_PROVIDER=ollama
+OLLAMA_MODEL=llama3.2                              # or qwen2.5:7b, mistral, etc.
+OLLAMA_BASE_URL=http://host.docker.internal:11434  # leave default unless remote
+# ANTHROPIC_API_KEY / OPENAI_API_KEY may stay blank — ollama needs no key.
+```
+
+```sh
+# 4. Restart:
+docker compose restart langgraph
+
+# 5. Verify provider switched:
+docker compose logs langgraph | grep -i provider
+curl http://localhost:8465/ok   # should report provider=ollama
+```
+
+**Fail-fast caveat:** if Ollama is not running (or no model is pulled), the
+lifespan probe `make_chat_model().invoke("ping")` fails at startup with a
+connection error — same behaviour as a missing API key. Pull the model and
+restart the container.
+
+**Linux compose note:** `host.docker.internal` does not auto-resolve on some
+Linux Docker installs. Add this to the `langgraph` service in
+`docker-compose.yml` if you hit a DNS failure:
+
+```yaml
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+```
+
+Mac + Windows Docker Desktop resolves the hostname automatically; this
+mapping is only needed on plain Linux compose.
 
 ## Kanban poll worker (Kanban #852)
 
@@ -170,6 +224,7 @@ time.
 | langgraph-cli | 0.4.26 |
 | langchain-anthropic | 1.4.3 |
 | langchain-openai | 1.2.1 |
+| langchain-ollama | 1.1.0 |
 | langchain-core | 1.4.0 |
 | fastapi | 0.136.1 |
 | uvicorn[standard] | 0.46.0 |

@@ -139,6 +139,12 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+      # Kanban #891 — Ollama provider (free local LLM). Only consulted when
+      # LANGGRAPH_LLM_PROVIDER=ollama. host.docker.internal reaches the host's
+      # Ollama process on Mac + Win Docker Desktop; on Linux compose, add
+      # `extra_hosts: ["host.docker.internal:host-gateway"]` to this service.
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       # Kanban #852 — background worker config. The worker polls the api
       # service (compose-internal hostname `api`, port 8456). LANGGRAPH_PROJECT_ID
       # is REQUIRED — the lifespan refuses to start without it.

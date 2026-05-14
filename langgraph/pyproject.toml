@@ -18,6 +18,10 @@ dependencies = [
     # LLM provider adapters (multi-provider via LANGGRAPH_LLM_PROVIDER).
     "langchain-anthropic==1.4.3",
     "langchain-openai==1.2.1",
+    # Ollama adapter (Kanban #891) — free local LLM via the host's Ollama
+    # process (http://host.docker.internal:11434). 1.1.0 is the latest stable
+    # on PyPI 2026-05-14; requires langchain-core>=1.2.21,<2 (compatible).
+    "langchain-ollama==1.1.0",
     "langchain-core==1.4.0",
     # FastAPI server for the stub /ok endpoint (#851); #850 may swap to a
     # langgraph-cli built image where uvicorn comes in transitively.

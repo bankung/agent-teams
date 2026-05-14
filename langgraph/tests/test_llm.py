@@ -17,6 +17,8 @@ import pytest
 import llm
 from llm import (
     DEFAULT_ANTHROPIC_MODEL,
+    DEFAULT_OLLAMA_BASE_URL,
+    DEFAULT_OLLAMA_MODEL,
     DEFAULT_OPENAI_MODEL,
     make_chat_model,
     resolve_model,
@@ -37,6 +39,10 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "OPENAI_API_KEY",
         "ANTHROPIC_MODEL",
         "OPENAI_MODEL",
+        # Kanban #891 — Ollama env-vars also scrubbed so tests don't inherit
+        # whatever the docker-compose langgraph env block injects.
+        "OLLAMA_MODEL",
+        "OLLAMA_BASE_URL",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -50,7 +56,20 @@ def test_resolve_provider_default_is_anthropic() -> None:
     assert resolve_provider() == "anthropic"
 
 
-@pytest.mark.parametrize("value", ["anthropic", "openai", "ANTHROPIC", "OpenAI", "  anthropic  "])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "anthropic",
+        "openai",
+        "ANTHROPIC",
+        "OpenAI",
+        "  anthropic  ",
+        # Kanban #891 — ollama provider accepted with same normalization rules.
+        "ollama",
+        "OLLAMA",
+        "  Ollama  ",
+    ],
+)
 def test_resolve_provider_accepts_normalized_values(
     monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
@@ -65,8 +84,12 @@ def test_resolve_provider_rejects_unknown(monkeypatch: pytest.MonkeyPatch, value
         resolve_provider()
     msg = str(excinfo.value)
     assert "Unknown LANGGRAPH_LLM_PROVIDER" in msg
-    # Error message must point the operator at the fix.
-    assert "anthropic" in msg and "openai" in msg
+    # Error message must point the operator at the fix — Kanban #891 added
+    # ollama so all three valid values must appear so the operator sees the
+    # full menu when picking a fix.
+    assert "anthropic" in msg
+    assert "openai" in msg
+    assert "ollama" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +239,152 @@ def test_make_chat_model_invalid_model_override(monkeypatch: pytest.MonkeyPatch)
 def test_default_model_constants_are_canonical() -> None:
     assert DEFAULT_ANTHROPIC_MODEL == "claude-sonnet-4-6"
     assert DEFAULT_OPENAI_MODEL == "gpt-4o"
+    # Kanban #891 — ollama defaults pinned here to catch a future drift.
+    assert DEFAULT_OLLAMA_MODEL == "llama3.2"
+    assert DEFAULT_OLLAMA_BASE_URL == "http://host.docker.internal:11434"
     # Constants must themselves pass the model-name regex (catches a future
     # typo in this file).
     assert llm._MODEL_NAME_RE.match(DEFAULT_ANTHROPIC_MODEL)
     assert llm._MODEL_NAME_RE.match(DEFAULT_OPENAI_MODEL)
+    assert llm._OLLAMA_MODEL_NAME_RE.match(DEFAULT_OLLAMA_MODEL)
+
+
+# ---------------------------------------------------------------------------
+# Ollama provider (Kanban #891) — free local LLM via http://host.docker.internal:11434.
+# Construction-only: ChatOllama does NOT call the server in __init__, so these
+# tests pass without an Ollama server running.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_model_default_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "ollama")
+    assert resolve_model() == DEFAULT_OLLAMA_MODEL
+
+
+def test_resolve_model_override_ollama_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ollama tag overrides via OLLAMA_MODEL; tag may include `:` for size/quant."""
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5:7b")
+    assert resolve_model() == "qwen2.5:7b"
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "llama3.2",
+        "qwen2.5:7b",
+        "llama3.2:3b-instruct-q4_K_M",
+        "mistral:7b-instruct",
+        # Kanban #891 — minimal tag (no colon, no dot) still valid.
+        "phi3",
+    ],
+)
+def test_resolve_model_accepts_ollama_tag_shapes(
+    monkeypatch: pytest.MonkeyPatch, tag: str
+) -> None:
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_MODEL", tag)
+    assert resolve_model() == tag
+
+
+def test_anthropic_underscore_typo_still_rejected_after_ollama_widening(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard for the per-provider regex split (Kanban #891).
+
+    Widening the regex to accept `_`/`:` for ollama MUST NOT loosen the
+    anthropic check — `claude_sonnet_4_6` (underscore-typo) is the canonical
+    gotcha; if this passes, the per-provider split has collapsed into a
+    single permissive regex by accident.
+    """
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude_sonnet_4_6")
+    with pytest.raises(RuntimeError) as excinfo:
+        resolve_model()
+    assert "Invalid model name" in str(excinfo.value)
+
+
+def test_make_chat_model_ollama_happy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default Ollama path: provider=ollama, no other env-vars. Returns
+    ChatOllama with the default model + base_url.
+    """
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "ollama")
+    model = make_chat_model()
+    assert type(model).__name__ == "ChatOllama"
+    assert getattr(model, "model", None) == DEFAULT_OLLAMA_MODEL
+    assert getattr(model, "base_url", None) == DEFAULT_OLLAMA_BASE_URL
+
+
+def test_make_chat_model_ollama_honors_base_url_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OLLAMA_BASE_URL override (e.g., running Ollama on the same host as the
+    langgraph container in non-Docker dev, or on a remote box)."""
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    model = make_chat_model()
+    assert type(model).__name__ == "ChatOllama"
+    assert getattr(model, "base_url", None) == "http://localhost:11434"
+
+
+def test_make_chat_model_ollama_honors_model_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5:7b")
+    model = make_chat_model()
+    assert getattr(model, "model", None) == "qwen2.5:7b"
+
+
+def test_make_chat_model_ollama_requires_no_api_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole point of ollama: no paid keys needed. With provider=ollama
+    and ALL three API key env-vars unset, make_chat_model() must NOT raise.
+
+    Regression guard for the obvious bug — accidentally calling
+    _require_api_key("ollama") would fail unhelpfully ("ANTHROPIC_API_KEY
+    unset") on an ollama deployment.
+    """
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "ollama")
+    # delenv on all three to be explicit; the autouse fixture already deletes
+    # ANTHROPIC_API_KEY + OPENAI_API_KEY, but pin it here for the regression
+    # test to be self-contained.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    model = make_chat_model()
+    assert type(model).__name__ == "ChatOllama"
+
+
+def test_make_chat_model_ollama_empty_base_url_falls_back_to_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Whitespace-only OLLAMA_BASE_URL counts as unset — common .env mishap.
+    Matches the empty-API-key handling for anthropic/openai.
+    """
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "   ")
+    model = make_chat_model()
+    assert getattr(model, "base_url", None) == DEFAULT_OLLAMA_BASE_URL
+
+
+def test_make_chat_model_ollama_explicit_model_arg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caller passes model= explicitly, bypassing OLLAMA_MODEL env-var."""
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_MODEL", "mistral")
+    model = make_chat_model(model="qwen2.5:7b")
+    # Explicit arg wins over env.
+    assert getattr(model, "model", None) == "qwen2.5:7b"
+
+
+def test_make_chat_model_ollama_invalid_model_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even the widened ollama regex rejects spaces / uppercase."""
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_MODEL", "Llama 3.2")  # space + uppercase
+    with pytest.raises(RuntimeError) as excinfo:
+        make_chat_model()
+    assert "Invalid model name" in str(excinfo.value)
