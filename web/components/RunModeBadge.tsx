@@ -1,4 +1,5 @@
 import type { TaskRunModeValue } from "@/lib/constants";
+import { Icon } from "./Icon";
 
 type Props = { mode: TaskRunModeValue };
 
@@ -10,20 +11,7 @@ export function RunModeBadge({ mode }: Props) {
         title="manual"
         className="inline-flex items-center text-zinc-600 dark:text-zinc-400"
       >
-        <svg
-          viewBox="0 0 16 16"
-          width="14"
-          height="14"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M3 12V4l2.5 4L8 4v8" />
-          <path d="M10 12V4l2.5 4L15 4v8" />
-        </svg>
+        <Icon name="manual-run" size={14} />
       </span>
     );
   }
@@ -38,22 +26,7 @@ export function RunModeBadge({ mode }: Props) {
       title={title}
       className="inline-flex items-center rounded px-1 py-0.5 text-emerald-700 bg-emerald-50 dark:text-emerald-300 dark:bg-emerald-900/30"
     >
-      <svg
-        viewBox="0 0 16 16"
-        width="14"
-        height="14"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <path d="M13 8a5 5 0 1 1-1.5-3.5" />
-        <path d="M13 2v3h-3" />
-        <path d="M6 11l2-5 2 5" />
-        <path d="M6.7 9.5h2.6" />
-      </svg>
+      <Icon name="auto-run" size={14} />
     </span>
   );
 }

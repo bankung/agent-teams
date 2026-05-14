@@ -11,6 +11,7 @@ import { TaskKindBadge } from "./TaskKindBadge";
 import { PendingBadge } from "./PendingBadge";
 import { RecurrenceIndicator } from "./RecurrenceIndicator";
 import { StepCounter } from "./StepCounter";
+import { Icon } from "./Icon";
 
 type Props = {
   task: TaskRead;
@@ -99,18 +100,19 @@ export function TaskCard({ task, onOpenDetail }: Props) {
             <span
               title={`Blocked by #${task.blocked_by}`}
               data-blocked-by-chip
-              className="inline-flex items-center rounded bg-red-50 px-1.5 py-0.5 text-[11px] font-medium text-red-700 dark:bg-red-900/30 dark:text-red-300"
+              className="inline-flex items-center gap-1 rounded bg-red-50 px-1.5 py-0.5 text-[11px] font-medium text-red-700 dark:bg-red-900/30 dark:text-red-300"
             >
-              ⛔ #{task.blocked_by}
+              <Icon name="status-blocked" size={11} />
+              #{task.blocked_by}
             </span>
           )}
           {(task.interaction_kind === "question" || task.interaction_kind === "decision") && (
             <span
               title={task.interaction_kind === "decision" ? "Decision needed" : "Question for user"}
               data-interaction-kind={task.interaction_kind}
-              className="inline-flex items-center rounded bg-violet-50 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300"
+              className="inline-flex items-center gap-1 rounded bg-violet-50 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300"
             >
-              {task.interaction_kind === "decision" ? "⚡" : "❓"}
+              {task.interaction_kind === "decision" ? <Icon name="alert" size={11} /> : <Icon name="tooltip" size={11} />}
             </span>
           )}
           <RunModeBadge mode={task.run_mode} />

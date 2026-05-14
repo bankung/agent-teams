@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { Source } from "@/lib/api";
+import { Icon } from "./Icon";
 
 type Props = { sources: Source[] };
 
@@ -50,12 +51,10 @@ export function SourcesBadge({ sources }: Props) {
         onClick={() => setOpen((v) => !v)}
         className="inline-flex items-center gap-1 rounded border border-zinc-200 bg-white px-2 py-0.5 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
       >
+        <Icon name="logs" size={12} />
         <span>Sources</span>
         <span className="tabular-nums text-zinc-500 dark:text-zinc-400">
           {sources.length}
-        </span>
-        <span aria-hidden className="text-zinc-400 dark:text-zinc-500">
-          ▾
         </span>
       </button>
       {open && (

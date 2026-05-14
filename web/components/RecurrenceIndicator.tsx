@@ -1,4 +1,5 @@
 import type { TaskRead } from "@/lib/api";
+import { Icon } from "./Icon";
 
 type Props = { task: TaskRead };
 
@@ -14,14 +15,16 @@ export function RecurrenceIndicator({ task }: Props) {
         ? `next fire: ${formatted} (${task.recurrence_timezone})`
         : "next fire: (pending)";
     return (
-      <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400" title={title}>
+      <div className="mt-1 inline-flex items-center gap-1 text-[11px] text-zinc-500 dark:text-zinc-400" title={title}>
+        <Icon name="sprint" size={11} />
         {task.recurrence_rule}
       </div>
     );
   }
   if (task.spawned_from_task_id !== null) {
     return (
-      <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400 tabular-nums">
+      <div className="mt-1 inline-flex items-center gap-1 text-[11px] text-zinc-500 dark:text-zinc-400 tabular-nums">
+        <Icon name="spawn" size={11} />
         from #{task.spawned_from_task_id}
       </div>
     );
