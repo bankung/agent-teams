@@ -131,11 +131,17 @@ Worked example: Kanban #875 smoke loop ran `docker compose up -d --no-deps web` 
 Adopted in Kanban #914 (2026-05-14). Single SVG sprite at `web/public/agentboard-icons.svg` (31 UI icons at 24×24 viewBox + 5 app icon sizes). Consumed via `web/components/Icon.tsx`:
 
 ```tsx
-<Icon name="add-task" size={14} aria-hidden />            // decorative
-<Icon name="status-done" size={16} aria-label="Done" />   // semantic
+<Icon name="add-task" size={14} />                        // decorative — omit aria-label
+<Icon name="status-done" size={16} aria-label="Done" />   // semantic — pass aria-label
 ```
 
-Pass `name` WITHOUT the `icon-` prefix. The component renders `<svg><use href="/agentboard-icons.svg#icon-{name}"/></svg>`. Decorative icons (paired with text) get `aria-hidden`; standalone icons need `aria-label`.
+Pass `name` WITHOUT the `icon-` prefix. The component renders `<svg><use href="/agentboard-icons.svg#icon-{name}"/></svg>`.
+
+**a11y contract** (don't pass `aria-hidden` directly — it's not a prop and TypeScript will reject it):
+- **Decorative icon** (paired with visible text, e.g. inside a chip whose parent already has `aria-label` / `title`): omit `aria-label`. The component sets `aria-hidden={true}` on the `<svg>` automatically so screen readers don't duplicate the label.
+- **Semantic icon** (standalone — the icon IS the label): pass `aria-label="..."`. The component sets `role="img"` and skips `aria-hidden`.
+
+Codified after Kanban #915 (2026-05-14): spawn briefs originally wrote `<Icon name="..." aria-hidden />` literally; that's a TS error against the component signature. The doc now matches the implementation.
 
 ### Inventory
 
