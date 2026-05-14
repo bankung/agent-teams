@@ -296,6 +296,36 @@ export async function getTask(
   });
 }
 
+// createTask — POST /api/tasks body (Kanban #855 FE). Mirrors
+// api/src/schemas/task.py:TaskCreate. Only the fields the manual-create modal
+// exposes are typed here; backend defaults (task_type='feature', task_kind='ai',
+// run_mode='manual', etc.) cover the rest. project_id is required by the schema
+// even though X-Project-Id is also sent — the header is the auth gate, the body
+// field is the persisted FK.
+export type TaskCreateBody = {
+  project_id: number;
+  title: string;
+  description?: string;
+  process_status?: TaskStatusValue;
+  priority?: TaskPriorityValue;
+  assigned_role?: TaskRoleValue;
+  blocked_by?: number;
+};
+
+export async function createTask(
+  projectId: number,
+  body: TaskCreateBody,
+): Promise<TaskRead> {
+  return jsonFetch<TaskRead>(`/api/tasks`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Project-Id": String(projectId),
+    },
+    body: JSON.stringify(body),
+  });
+}
+
 // PATCH /api/tasks/{id} — partial update; blocked_by explicit null clears (#771); run_mode #860; status_change_reason #854
 export type TaskPatch = Partial<
   Pick<TaskRead, "process_status" | "priority" | "title" | "blocked_by" | "sort_order" | "run_mode">

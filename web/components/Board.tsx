@@ -27,6 +27,7 @@ import { sortDoneLane, sortLaneTasks } from "@/lib/sortLaneTasks";
 import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
 import { BoardColumn } from "@/components/BoardColumn";
 import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
+import { NewTaskModal } from "@/components/NewTaskModal";
 import { ProjectConsentBanner } from "@/components/ProjectConsentBanner";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { SourcesBadge } from "@/components/SourcesBadge";
@@ -291,7 +292,8 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
               </button>
             ))}
           </span>
-          <span className="ml-auto">
+          <span className="ml-auto flex items-center gap-2">
+            <NewTaskModal projectId={project.id} />
             <ThemePicker />
           </span>
         </div>
