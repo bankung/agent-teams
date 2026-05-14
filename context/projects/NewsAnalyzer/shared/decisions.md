@@ -15,6 +15,73 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-14 (evening) — Phase 0 Wave 1 closure (T3/T4/T5/T7) + T5 implementation deltas
+**Scope:** shared (backend + devops + docs)
+**Proposed by:** lead (closing report from 4 parallel specialists)
+**Status:** LOCKED 2026-05-14 — addendum to lock #2 / lock #5 / lock #6 implementations.
+
+**Decision:** Phase 0 Wave 1 closed. 4 tasks landed on NewsAnalyzer main:
+- **Kanban #913 (T5)** — firecrawl-simple compose integration, commit `1498747`
+- **Kanban #922 (T3)** — AIRecommendation + AgentRun + BackfillJob + DecisionTag FK + Alembic migration, commit `f4cd4d2`
+- **Kanban #923 (T4)** — PRD + ARCHITECTURE sync to 7 decision locks, commit `55004bc`
+- **Kanban #925 (T7)** — gitignore pipeline/celerybeat-schedule, commit `93310d3`
+
+Plus **Kanban #910 (T2)** — flipped to DONE; AC-7 subsumed by T5 live-scrape smoke (kaohoon + thunhoon both returned real Article rows via firecrawl-simple).
+
+**T5 implementation deltas (vs brief expectations — supersedes specific assumptions in the 2026-05-14 PM pivot entry):**
+1. **Image source:** brief assumed `ghcr.io/devflowinc/firecrawl-simple-*`; reality is no such ghcr image is published. Upstream `firecrawl-simple/docker-compose.yaml` itself ships **`trieve/firecrawl:v0.0.55`** + **`trieve/puppeteer-service-ts:v0.0.13`** (both on Docker Hub, verified via hub.docker.com/v2/repositories/trieve/firecrawl/tags). NewsAnalyzer's compose uses those prebuilt tags directly. Total image pull ~8.4 GB.
+2. **Health endpoint:** firecrawl-simple does NOT expose `/health` bare (404). Real endpoints: `/v1/health/liveness`, `/v1/health/readiness`, `/serverHealthCheck` — all return 200. Healthcheck uses `/v1/health/liveness`. The trieve/firecrawl image is `node:20-slim`-derived and lacks `wget`/`curl` — healthcheck shell uses `node -e "fetch(...)"` and worker uses `pgrep -f node`.
+3. **Env vars:** `ALLOW_LOCAL_WEBHOOKS=false` and `BLOCK_MEDIA=false` are upstream-Firecrawl-only — firecrawl-simple silently ignores them. Setting them is harmless future-proofing. `USE_DB_AUTHENTICATION=false` is the load-bearing one (lets any non-empty key pass).
+4. **Scraper SDK bug fixes** (carried forward from T2 #910's incomplete state — required to make T5 AC-6 smoke pass):
+   - `scrape_url(url, formats=[...])` → `scrape_url(url, params={"formats": [...]})` (firecrawl-py 1.6.3 signature mismatch — was raising TypeError).
+   - `"html"` → `"rawHtml"` (firecrawl-simple's `/v1/scrape` enum value; `"html"` returned 400 Bad Request).
+   - SDK pinned at `firecrawl-py==1.6.3`. Future SDK bumps to 2.x may change the params shape — surface during bump.
+5. **scraper.py architecture:** T2 #910 had already consolidated 4 source classes through a single lazy `_get_client()` singleton (not 4 separate `FirecrawlApp` init sites as the T5 brief assumed). One init covers all 4 classes (KaohoonScraper / ThunhoonScraper / BangkokBizNewsScraper / ThansettakijScraper).
+
+**T3 design decisions (record for future archaeology):**
+1. **Single Alembic migration `20260514_0001_schema_additions_phase0.py`** — co-exists with the existing `Base.metadata.create_all()` in `backend/app/main.py` lifespan. `create_all` outraces alembic on backend startup, leaving alembic in an awkward "tables exist, alembic doesn't know" state. **Follow-up tech-debt:** replace `create_all` with `alembic upgrade head` in lifespan to make migration the single source of truth (separate task — out of T3 scope; main.py wasn't in T3 file list).
+2. **PG enums use lowercase VALUES, not Python enum NAMES** — required `Enum(MyEnum, values_callable=lambda x: [e.value for e in x], name="...")` on the ORM column because Pydantic Literal types use lowercase strings (`"extraction"`) for API stability. Default SQLAlchemy stores uppercase NAMES (`"EXTRACTION"`) which mismatched the PG enum definition. Opposite of the existing SourceType/SourcePriority pattern — chose API-stability over codebase-consistency.
+3. **Pydantic Out schemas use `Literal[...]` + `_enum_to_str` `field_validator(mode="before")`** to bridge ORM enum instances → Literal types cleanly. Stable against future enum renames.
+4. **AgentRun.event_id is nullable** because some calls (dedup, language_detect) aren't event-scoped.
+5. **`call_ai` gains optional `event_id` kwarg** (default None) — backward-compat with existing Step1/Step2 callers.
+6. **AgentRun logging is non-fatal** — wrapped in try/except logging at WARNING. Lock #6 telemetry MUST NOT break the AI call (backend hiccup ≠ pipeline death). Mock mode skips logging.
+7. **Inferred cost rates** baked at: claude-sonnet-4-6 = $3/$15 per MTok, claude-haiku-4-5 = $0.80/$4 per MTok, fallback to Sonnet rates for unknown models (over-estimate beats silent-zero). Revisit when Anthropic publishes new prices.
+8. **BackfillJob.source_name is plain String UNIQUE column, NOT FK to news_sources.id** — keeps backfill tracking decoupled from the seed-table id stability.
+
+**Status changes recorded:**
+- T2 #910: HALTED → DONE (AC-7 verified-via-T5)
+- T3 #922: TODO → DONE (8/8 ACs passed)
+- T4 #923: TODO → DONE (7/7 ACs passed)
+- T5 #913: TODO → DONE (7/7 ACs passed)
+- T7 #925: TODO → DONE (4/4 ACs passed)
+- T6 #924: blocked_by=922 → now actionable (T3 schema landed; T6 backfill impl can spawn in next session)
+
+**Coordination note:** T4 #923 commit `55004bc` had mild scope-bleed — accidentally removed `pipeline/celerybeat-schedule` from index during docs sync (T7's territory). T7 specialist confirmed net effect is consistent (file off-index, on-disk, ignored); no rework needed. Flagged as anti-pattern reminder: `git add -A` on a scoped task violates the file-ownership rule.
+
+**Standards insights proposed for human review (NOT auto-applied):**
+- `context/standards/docker/compose.md` add: "Node-base service images (e.g. `node:20-slim`-derived `trieve/firecrawl`) often lack `wget`/`curl` — healthchecks must use `node -e 'fetch(...)'` or `pgrep -f <process>` rather than `wget`/`curl` in CMD-SHELL (silent unhealthy state otherwise)."
+- `context/standards/sqlalchemy/` add: "SQLAlchemy `Enum()` column needs `values_callable=lambda x: [e.value for e in x]` when the API contract uses lowercase enum values (matches Pydantic Literal pattern). Default stores uppercase NAMES, which mismatches PG enum definitions when the Pydantic Literal type uses lowercase."
+- `context/standards/pydantic/` add: "Bridge ORM enum instances → Pydantic Literal types with `field_validator(mode='before')` calling a `_enum_to_str` helper. Stable against ORM enum renames."
+
+**Open follow-ups (NOT yet filed as Kanban tasks):**
+- `Base.metadata.create_all()` → `alembic upgrade head` migration source-of-truth swap (T3 specialist flagged).
+- ThunhoonScraper article-acceptance regex tunes — currently matches `/about` and `/contact` (T5 smoke surfaced; not a stack failure).
+- 2 external-site rendering timeouts on kaohoon.com `/news` and `/news/local` listing pages (slow Hero/Ulixee render) — neither a stack issue.
+
+**Implications:**
+- T6 (#924) can spawn next session — backfill Option A implementation (Celery beat + cursor + low-priority lane) now that BackfillJob model is on main.
+- T5 smoke proved end-to-end scrape path: pipeline container → firecrawl-api:3002 (compose-internal) → kaohoon.com/thunhoon.com → Article rows. The Phase 0 scraping stack is operational.
+- Phase 0 schema (4 new tables/columns + Pydantic schemas + Alembic migration) is on main and `alembic upgrade head` applies cleanly. Phase 1 work (AI pipeline integration) can start using AIRecommendation + AgentRun seams.
+
+**Cross-references:**
+- T5 commit: `1498747` on main (NewsAnalyzer)
+- T3 commit: `f4cd4d2` on main (NewsAnalyzer)
+- T4 commit: `55004bc` on main (NewsAnalyzer)
+- T7 commit: `93310d3` on main (NewsAnalyzer)
+- T6 (next session): Kanban #924
+
+---
+
 ## 2026-05-14 (PM) — Pivot scraping: Cloud → firecrawl-simple self-host (supersedes lock #2)
 **Scope:** shared (backend pipeline + devops)
 **Proposed by:** user (pivot during T2 #910 work — preferred local/self-host over external SaaS dependency)
