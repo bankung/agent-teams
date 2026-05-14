@@ -58,3 +58,9 @@ _scratch/*
 # DB rows live in `sessions` / `session_runs` / `session_compacts`; markdown
 # content (session.md + archive/ + cards/) lives here. Never commit content.
 /_sessions/
+
+# Firecrawl research cache — local-only, ephemeral (#849 research notes live in _scratch/)
+.firecrawl/
+
+# Sandbox test projects — created via POST /api/projects for LangGraph smoke
+context/projects/test-*/
