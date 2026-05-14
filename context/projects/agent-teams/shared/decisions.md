@@ -16,6 +16,29 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-14 — Pandoc md→docx conversion workflow (Kanban #814)
+**Scope:** devops / shared
+**Decision (install method):** Docker `pandoc/core` image (no host install on Windows). Verified working with `pandoc 3.9.0.2`. Invocation pattern: `docker run --rm -v "${PWD}:/data" pandoc/core /data/<input>.md -o /data/<output>.docx`.
+**Decision (allowlist):** `.claude/settings.json` carries both `Bash(pandoc:*)` (literal AC2; covers future native install) and `Bash(docker run *)` (broad, pre-existing — covers the docker route in use today).
+**Decision (output-path restriction):** pandoc conversions write to `_scratch/` OR `context/projects/<active>/shared/docs/<project>/` only. No code-level enforcement yet — contract-only; reviewer/Lead audits.
+**Decision (trigger contract):** A task triggers the pandoc workflow when its description carries the literal substring `output_format: docx`, OR a natural-language phrase matching `convert <file>.md to docx`. Lead-level Bash post-content-production; never auto-triggered.
+**Reasoning:** pandoc native install requires winget + admin or .msi side-effect on user's PATH; docker route is zero-install, zero-PATH-impact, and Docker is already pre-required for the agent-teams stack. AC2 literal `Bash(pandoc:*)` is retained for future-proofing if user ever installs natively.
+**Implications:**
+- Lead may invoke pandoc conversions without user prompt (allowlist covers it).
+- Smoke artifacts (`_scratch/pandoc-smoke-input.md`, `_scratch/pandoc-smoke-output.docx`) remain as evidence; cleanup is a separate decision.
+- PDF output, branded templates, `dev-publisher` role are explicitly OUT of scope this slice.
+
+## 2026-05-14 — Windows + Docker Next.js stale-bundle gotcha codified (Kanban #876)
+**Scope:** frontend / devops / shared
+**Decision (codification):** Promoted from `_scratch/doc-draft-windows-docker-nextjs.md` to [`context/standards/web/nextjs.md`](../../../../standards/web/nextjs.md) — new file under the previously-empty `standards/web/` directory. Covers symptom, root cause, mandatory smoke loop, 4-strike incident log (#769, #778, #869, #871), and scope (Windows-only).
+**Decision (AC4 — agent embedding):** YES, embed the smoke loop in [`.claude/agents/dev-frontend.md`](../../../../../.claude/agents/dev-frontend.md). Added a "2b. Windows + Docker stale-bundle smoke loop (MANDATORY on Windows hosts)" section to the Workflow with a pointer to the full standards file. Recommendation from dev-documentor accepted as-is.
+**Adjacent codification (2026-05-14 follow-up):** Added "Worktree safety — always pass `-p agent-teams` to `docker compose`" section to `context/standards/web/nextjs.md` + matching one-line callout in `.claude/agents/dev-frontend.md` Section 2b. Trigger: #875 dev-frontend ran `docker compose up -d --no-deps web` from `.claude/worktrees/festive-bartik-04b551/` → web container was claimed under a `festive-bartik-04b551` compose project on a separate network → web↔api fetches broke until user spotted it and Lead recovered via `docker compose -p <slug> down` + `docker compose -p agent-teams up -d --no-deps web` from main repo root.
+**Reasoning:** 4-strike pattern in dev-frontend lanes within a 24-hour window proves the gotcha is high-frequency on this codebase + host combo. 10-second smoke-loop overhead per FE task is acceptable vs the 2-commit-later rediscovery cost. Standards lives as cross-project canonical (web standards lane); agent file carries the operational reminder so subagent doesn't need to re-derive the rule.
+**Implications:**
+- All future `dev-frontend` spawns receive the smoke-loop rule in their agent definition (no re-briefing per task needed).
+- macOS/Linux dev-frontend sessions can skip the restart step (documented in both files).
+- Permanent fix (polling watch / Turbopack / mount tuning) is OUT of scope — flagged in standards as separate research if value materializes.
+
 ## 2026-05-14 — Phase 4 LangGraph headless engine (Kanban #849 chain — #851 + #850)
 **Scope:** devops / backend / shared
 **Decision (#851 — Docker scaffold):** New `langgraph` Docker service (built locally via `langgraph/Dockerfile`; no upstream prebuilt image) on host port `8465` → container `8000`. Pinned: `langgraph==1.2.0`, `langgraph-checkpoint-postgres==3.1.0`, `langgraph-cli==0.4.26`, `langchain-anthropic==1.4.3`, `langchain-openai==1.2.1`, `fastapi==0.136.1`, `uvicorn==0.46.0`. New envvars in `.env.example`: `LANGGRAPH_PORT`, `LANGGRAPH_LLM_PROVIDER` (anthropic|openai, default anthropic), `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_MODEL` (default `claude-sonnet-4-6`), `OPENAI_MODEL` (default `gpt-4o`).

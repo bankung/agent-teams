@@ -231,9 +231,9 @@ function CostSummary({ stats }: { stats: ProjectStatsEntry[] }) {
         {totalWarnings > 0 ? (
           <span
             className="inline-flex items-center rounded bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
-            title={`${totalWarnings} session run${totalWarnings === 1 ? "" : "s"} flagged over budget`}
+            title={`${totalWarnings} session run${totalWarnings === 1 ? "" : "s"} flagged budget-warned`}
           >
-            ⚠ {totalWarnings} run{totalWarnings === 1 ? "" : "s"} over budget
+            ⚠ {totalWarnings} run{totalWarnings === 1 ? "" : "s"} budget-warned
           </span>
         ) : null}
       </div>
@@ -402,7 +402,7 @@ function CompactProjectCard({ entry }: { entry: ProjectStatsEntry }) {
             {hasBudgetWarning ? (
               <span
                 className="ml-auto inline-flex items-center rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
-                title={`${cu.budget_warning_count} run${cu.budget_warning_count === 1 ? "" : "s"} flagged over budget`}
+                title={`${cu.budget_warning_count} run${cu.budget_warning_count === 1 ? "" : "s"} flagged budget-warned`}
               >
                 ⚠ {cu.budget_warning_count}
               </span>

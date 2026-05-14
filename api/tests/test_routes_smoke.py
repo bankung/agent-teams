@@ -2757,7 +2757,11 @@ async def test_777_edge_soft_delete_recreate_isolates_working_path(
     assert create_b.json()["working_path"] == "/b"
 
     # Fetch via list w/ include_deleted to confirm A's working_path stayed "/a".
-    list_resp = await client.get("/api/projects?include_deleted=1")
+    # limit=500: the test DB accumulates rows across the suite; without an
+    # explicit limit the default 50-row page may not reach this test's rows
+    # (cross-suite pagination fragility — parity with other include_deleted
+    # callers in this file which already pass limit=500).
+    list_resp = await client.get("/api/projects?include_deleted=1&limit=500")
     assert list_resp.status_code == 200, list_resp.text
     by_id = {row["id"]: row for row in list_resp.json()}
     assert id_a in by_id, f"soft-deleted id={id_a} not in include_deleted list"
@@ -2770,6 +2774,68 @@ async def test_777_edge_soft_delete_recreate_isolates_working_path(
 
     # Clean up — soft-delete the live B row.
     await client.delete(f"/api/projects/{id_b}")
+
+
+# Regression: Kanban #884
+@pytest.mark.asyncio
+async def test_regression_884_include_deleted_list_respects_limit_pagination(
+    client, scaffold_cleanup
+) -> None:
+    """Guard: GET /api/projects?include_deleted=true is still paginated.
+
+    Root cause of the test_777_edge_soft_delete_recreate_isolates_working_path
+    flake (Kanban #884): that test called include_deleted without an explicit
+    limit. Once the test-DB accumulated >50 project rows across the suite the
+    default 50-row page no longer included the test's freshly-created rows.
+
+    This test pins the contract: include_deleted does NOT disable pagination.
+    A caller that creates a row and wants to find it by id in the include_deleted
+    list MUST pass limit=500 (or an offset) — the default limit=50 can omit rows
+    from a test DB that accumulated many rows.
+
+    Proof: we create two projects, soft-delete the first, then verify:
+    1. limit=1&include_deleted=true returns exactly 1 row (pagination is active).
+    2. limit=500&include_deleted=true contains both rows.
+    """
+    name_p = scaffold_cleanup(_unique_name("proj-884-regression-p"))
+    name_q = scaffold_cleanup(_unique_name("proj-884-regression-q"))
+
+    # Create P then Q so their IDs are adjacent and in a known order.
+    resp_p = await client.post("/api/projects", json=_project_create_payload(name_p))
+    assert resp_p.status_code == 201, resp_p.text
+    id_p = resp_p.json()["id"]
+
+    resp_q = await client.post("/api/projects", json=_project_create_payload(name_q))
+    assert resp_q.status_code == 201, resp_q.text
+    id_q = resp_q.json()["id"]
+    assert id_q > id_p  # sequential — confirms IDs are monotone
+
+    # Soft-delete P.
+    del_p = await client.delete(f"/api/projects/{id_p}")
+    assert del_p.status_code == 204
+
+    # POSITIVE path: limit=500 surfaces both rows (including soft-deleted P).
+    full_resp = await client.get("/api/projects?include_deleted=true&limit=500")
+    assert full_resp.status_code == 200, full_resp.text
+    full_ids = {row["id"] for row in full_resp.json()}
+    assert id_p in full_ids, (
+        f"soft-deleted id={id_p} must appear with include_deleted=true&limit=500"
+    )
+    assert id_q in full_ids, (
+        f"active id={id_q} must appear with include_deleted=true&limit=500"
+    )
+
+    # NEGATIVE path: limit=1 returns exactly 1 row — pagination is active.
+    # This is the key assertion: include_deleted does NOT bypass pagination.
+    paged_resp = await client.get("/api/projects?include_deleted=true&limit=1")
+    assert paged_resp.status_code == 200, paged_resp.text
+    assert len(paged_resp.json()) == 1, (
+        "include_deleted=true with limit=1 must return exactly 1 row — "
+        "pagination must still apply (Kanban #884 regression guard)"
+    )
+
+    # Cleanup — soft-delete Q (P already deleted above).
+    await client.delete(f"/api/projects/{id_q}")
 
 
 @pytest.mark.asyncio

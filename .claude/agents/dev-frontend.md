@@ -59,6 +59,20 @@ Every `Write` / `Edit` / `Bash` will prompt the user — **never assume approval
 - If a standard mandates pattern A but existing code uses pattern B → flag in the final report. Never silently change.
 - If you hit a contract mismatch (frontend needs a field the API doesn't expose), stop and report — never guess at API shape.
 
+### 2b. Windows + Docker stale-bundle smoke loop (MANDATORY on Windows hosts)
+
+After ANY edit under `web/app/**` or `web/components/**`, you **must not report done** until the smoke loop confirms the dev server picked up your changes. The Next.js file-watcher silently misses Windows-host bind-mount edits — `tsc --noEmit` passing is NOT sufficient.
+
+Loop:
+1. `docker compose exec -T web npx tsc --noEmit` → exit 0, no output
+2. `curl http://localhost:5431/<route>` (or PowerShell `Invoke-WebRequest`) — grep for a distinctive string from your edit
+3. If new content is NOT in the response → `docker compose -p agent-teams restart web`, wait for "ready on" log, re-fetch
+4. Repeat until the response carries your edit; only then report done
+
+**Worktree safety:** ALWAYS pass `-p agent-teams` to `docker compose` when running from a worktree dir (`.claude/worktrees/<slug>/`). Omitting it makes Compose name the project after the worktree folder, claims web under a separate network, and breaks web↔api fetches. Full rule + recovery: [`context/standards/web/nextjs.md`](../../context/standards/web/nextjs.md) "Worktree safety" section.
+
+Full root cause + 4-strike incident log: [`context/standards/web/nextjs.md`](../../context/standards/web/nextjs.md). macOS/Linux hosts may skip the restart step (this gotcha is Windows-specific).
+
 ### 3. Compact step (mandatory before return)
 Before sending your final reply to Lead, **do all of the following:**
 
