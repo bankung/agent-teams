@@ -33,7 +33,11 @@ function formatRelative(iso: string | null): string {
   if (iso === null) return "no activity yet";
   const then = new Date(iso).getTime();
   if (Number.isNaN(then)) return "—";
-  const diffMs = Date.now() - then;
+  // Clamp to >=0 — guards against server `MAX(updated_at)` being slightly in
+  // the future relative to the browser clock (NTP / clock-skew). Without this,
+  // a positive skew renders "-Nm ago"; with it, future timestamps fall through
+  // to the `m < 1` branch → "just now". (Kanban #873, follow-up to #869.)
+  const diffMs = Math.max(0, Date.now() - then);
   const m = Math.floor(diffMs / 60_000);
   if (m < 1) return "just now";
   if (m < 60) return `${m}m ago`;
