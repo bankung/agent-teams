@@ -258,7 +258,10 @@
       "Bash(curl --silent -H \"X-Project-Id: 1\" \"http://localhost:8456/api/tasks/859\" -o \"_scratch/t859.json\")",
       "Bash(curl --silent -H \"X-Project-Id: 1\" \"http://localhost:8456/api/tasks/860\" -o \"_scratch/t860.json\")",
       "Bash(git stash *)",
-      "Bash(git restore *)"
+      "Bash(git restore *)",
+      "Bash(curl --silent -H \"X-Project-Id: 1\" \"http://localhost:8456/api/tasks/868\" -o _scratch/t868.json)",
+      "Bash(curl --silent -H \"X-Project-Id: 1\" \"http://localhost:8456/api/tasks/873\" -o _scratch/t873.json)",
+      "Bash(curl --silent -H \"X-Project-Id: 1\" \"http://localhost:8456/api/tasks/874\" -o _scratch/t874.json)"
     ],
     "ask": [
       "Write(/context/projects/*/shared/**)",
