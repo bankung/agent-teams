@@ -106,5 +106,50 @@ services:
       retries: 5
       start_period: 30s
 
+  # ---------------------------------------------------------------------------
+  # langgraph — Phase 4 LangGraph engine (Kanban #849/#851).
+  # Headless graph runner; shares the existing `db` service via an isolated
+  # `langgraph` schema (created at startup by the graph app — see #850).
+  # Stub graph in graph.py until #850 lands; CMD will switch to a langgraph
+  # server invocation once the real StateGraph is defined.
+  # ---------------------------------------------------------------------------
+  langgraph:
+    build:
+      context: ./langgraph
+      dockerfile: Dockerfile
+    container_name: agent-teams-langgraph
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Inside the compose network the hostname is `db` (not localhost). The
+      # ?options=-c%20search_path=langgraph URL-encodes a SET search_path so
+      # the connection lands in the langgraph schema by default. The schema
+      # itself is CREATEd at startup by the graph app (#850) before
+      # AsyncPostgresSaver.setup() runs (Option B in the bootstrap research).
+      DATABASE_URI: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/agent_teams?options=-c%20search_path=langgraph
+      LANGGRAPH_LLM_PROVIDER: ${LANGGRAPH_LLM_PROVIDER:-anthropic}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+      REPO_ROOT: /repo
+    ports:
+      - "${LANGGRAPH_PORT:-8465}:8000"
+    volumes:
+      # Bind repo root rw so #850's code edits hot-reload during dev (same
+      # pattern as the api service). For prod, bake the graph into the image
+      # via `langgraph build` and drop this mount.
+      - .:/repo
+    restart: unless-stopped
+    healthcheck:
+      # python -c (not curl) — the langgraph image is python:3.12-slim and
+      # does not include curl.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ok')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+
 volumes:
   agent-teams-pgdata:
