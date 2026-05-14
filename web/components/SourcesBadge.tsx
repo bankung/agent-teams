@@ -6,11 +6,14 @@ import type { Source } from "@/lib/api";
 
 type Props = { sources: Source[] };
 
-// #778 — allowlist-only clickable URLs; mirrors api SourceEntry._url_shape; excludes file://
-const ALLOWED_SCHEMES = ["http", "https", "ref"] as const;
+// #868 — FE clickable allowlist is INTENTIONALLY narrower than BE accepted schemes.
+// BE SourceEntry._url_shape accepts http/https/ref/file (see api/src/schemas/project.py);
+// FE renders <a> only for http(s) — ref://, file://, and absolute paths render as
+// non-clickable text (browser nav to ref:// / file:// is broken / unsafe).
+const ALLOWED_SCHEMES = ["http", "https"] as const;
 const SCHEME_RE = new RegExp(`^(?:${ALLOWED_SCHEMES.join("|")})://`, "i");
 
-function isExternal(url: string): boolean {
+function isClickable(url: string): boolean {
   return SCHEME_RE.test(url);
 }
 
@@ -64,13 +67,13 @@ export function SourcesBadge({ sources }: Props) {
         >
           {sources.map((s, i) => {
             const text = s.label && s.label.length > 0 ? s.label : s.url;
-            const external = isExternal(s.url);
+            const clickable = isClickable(s.url);
             return (
               <div
                 key={`${s.url}-${i}`}
                 className="flex items-center justify-between gap-2 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800/50"
               >
-                {external ? (
+                {clickable ? (
                   <a
                     href={s.url}
                     target="_blank"
@@ -82,8 +85,9 @@ export function SourcesBadge({ sources }: Props) {
                   </a>
                 ) : (
                   <span
-                    className="min-w-0 flex-1 truncate text-zinc-500 dark:text-zinc-400"
+                    className="min-w-0 flex-1 select-text truncate font-mono text-xs text-zinc-500 dark:text-zinc-400"
                     title={s.url}
+                    data-non-clickable-source
                   >
                     {text}
                   </span>
