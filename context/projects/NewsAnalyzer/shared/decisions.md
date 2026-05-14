@@ -15,10 +15,10 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
-## 2026-05-14 — Engine, scope, scraping, cost rules (planning lock — pending user confirm on backfill option)
+## 2026-05-14 — Engine, scope, scraping, cost rules (planning lock — backfill = Option A)
 **Scope:** shared (all roles)
 **Proposed by:** lead (with user)
-**Status:** DRAFT — captured mid-conversation before user pauses to update Claude. Resume with backfill decision (A/B/C) when user returns.
+**Status:** LOCKED 2026-05-14 — all 6 sub-decisions confirmed. Backfill resolved to Option A (background trickle via Max 20x quota) in continuation session.
 
 **Decisions:**
 
@@ -45,10 +45,12 @@ Template for a new entry:
 
 5. **Human is the sole decision-maker.** AI emits `AIRecommendation` (Bullish/Bearish/Neutral + reasoning + confidence + per-agent breakdown). User reviews in Frontend, then submits `UserDecision` (extends PRD's `DecisionTag` with `ai_recommendation_id` FK). No auto-trade, no execution integration ever — out of scope.
 
-6. **Backfill 1 year — PENDING USER DECISION (A/B/C):**
-   - **(A)** Background trickle using Max 20x quota — free, but ~2-4 weeks elapsed time.
-   - **(B)** One-time burst via API key + Anthropic Batch API (50% discount) — estimated ~$10-30, completes in 1-2 days.
-   - **(C)** Defer choice — ship live ingestion first, decide when Phase 1B (backfill) actually begins.
+6. **Backfill 1 year — LOCKED: Option A (background trickle via Max 20x quota).**
+   - Free in $ terms — uses the same Max 20x quota the live pipeline runs on.
+   - Tradeoff accepted: ~2-4 weeks elapsed wall-time to fill 1y history (rate-limit bounded). Runs in parallel with live ingestion from Phase 1 launch.
+   - Implementation hint: separate `BackfillJob` row tracks per-source progress (last-fetched-date cursor); pipeline runs backfill calls in low-priority lane behind live calls so daily quota doesn't starve fresh data.
+   - Rejected: Option B (API key + Batch API ~$10-30, 1-2 days) — keeps $0-MVP story intact + avoids `ANTHROPIC_API_KEY` introduction at this phase. Revisit only if a future analysis use-case demands faster history (e.g., backtesting before Phase 1B closes).
+   - Rejected: Option C (defer) — chose to lock now so backfill design seams (BackfillJob model, low-priority lane) land with Phase 0 scaffold instead of retrofitting later.
 
 **Reasoning:**
 - User has Max 20x → marginal LLM cost = 0 during MVP. Picking CLI over API key avoids burning real $ until product proves out.
