@@ -326,6 +326,45 @@ export async function createTask(
   });
 }
 
+// parseTaskText — POST /api/tasks/ai-parse (Kanban #857 FE / #856 BE).
+// Sends free text (1..2000 chars); returns a proposed TaskCreate subset for the
+// FE to pre-fill an editable preview form. The FE then calls createTask with
+// the (possibly edited) fields.
+//
+// Status contract (per api/src/routes/tasks_ai_parse.py):
+//   200 → { proposed: ParsedTaskProposal }
+//   422 → empty text OR LLM produced an invalid proposal
+//   502 → provider 5xx / network
+//   503 → provider not configured (LANGGRAPH_LLM_PROVIDER unset / unsupported,
+//          or ANTHROPIC_API_KEY empty)
+//   504 → provider exceeded 10s wall
+export type ParsedTaskProposal = {
+  title: string;
+  description: string;
+  task_type: "bug" | "feature" | "chore" | "docs" | "refactor";
+  priority: TaskPriorityValue;
+  assigned_role: TaskRoleValue | null;
+  blocked_by: number | null;
+};
+
+export async function parseTaskText(
+  projectId: number,
+  text: string,
+): Promise<ParsedTaskProposal> {
+  const envelope = await jsonFetch<{ proposed: ParsedTaskProposal }>(
+    `/api/tasks/ai-parse`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Project-Id": String(projectId),
+      },
+      body: JSON.stringify({ text }),
+    },
+  );
+  return envelope.proposed;
+}
+
 // PATCH /api/tasks/{id} — partial update; blocked_by explicit null clears (#771); run_mode #860; status_change_reason #854
 export type TaskPatch = Partial<
   Pick<TaskRead, "process_status" | "priority" | "title" | "blocked_by" | "sort_order" | "run_mode">

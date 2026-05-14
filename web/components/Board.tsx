@@ -28,6 +28,7 @@ import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
 import { BoardColumn } from "@/components/BoardColumn";
 import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
 import { Icon } from "@/components/Icon";
+import { AiTaskModal } from "@/components/AiTaskModal";
 import { NewTaskModal } from "@/components/NewTaskModal";
 import { ProjectConsentBanner } from "@/components/ProjectConsentBanner";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
@@ -295,6 +296,7 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
             ))}
           </span>
           <span className="ml-auto flex items-center gap-2">
+            <AiTaskModal projectId={project.id} />
             <NewTaskModal projectId={project.id} />
             <ThemePicker />
           </span>
