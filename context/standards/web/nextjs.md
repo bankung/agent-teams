@@ -63,6 +63,44 @@ docker inspect agent-teams-web --format '{{range .Mounts}}{{.Source}}{{println}}
 
 Observed in Kanban #914 (2026-05-14): a worktree-only `web/public/agentboard-icons.svg` 404'd via curl after `restart`; succeeded after `up -d --no-deps --build`.
 
+### End-of-worktree-session restore — mandatory checklist
+
+A worktree session that touched `web/` will leave the `agent-teams-web` container in one of two drift states:
+- (a) Container claimed under a `<worktree-slug>` compose project (separate network → web↔api broken)
+- (b) Container bound to the worktree path (works during the session; breaks when the worktree is removed; main-repo edits invisible until rebind)
+
+**Before closing a worktree session (or before another session reuses main):**
+
+1. **Sync main first** — from the main repo root (NOT the worktree):
+   ```bash
+   git status --short              # confirm clean working tree
+   git pull --rebase origin main   # ff or rebase local main onto origin
+   ```
+   If `git pull --rebase` fails with "Not possible to fast-forward" + "Diverging branches", the main repo has a local commit that diverged from what was just pushed via the worktree. Investigate the divergent local commit before rebasing (it may be the user's work). If it's safe to rebase, the working tree usually carries the same content as the incoming origin commits and a `git checkout -- <file>` discard of the noise modifications + retry pull is the recipe.
+
+2. **Rebind web container to main repo path** — from the main repo root:
+   ```bash
+   docker compose -p agent-teams up -d --no-deps --build web
+   ```
+   This rebuilds the web image from main's `web/` and recreates the container with `/app` mounted at `<main-repo>/web` (NOT the worktree).
+
+3. **Verify rebind landed**:
+   ```bash
+   docker inspect agent-teams-web --format '{{range .Mounts}}{{.Source}}{{println}}{{end}}'
+   # Source should be <main-repo>\web (NOT under .claude\worktrees\<slug>\web)
+
+   curl --output /dev/null --write-out "%{http_code}\n" http://localhost:5431/p/agent-teams   # 200
+   curl --output /dev/null --write-out "%{http_code}\n" http://localhost:8456/api/projects     # 200
+   ```
+
+4. **Worktree is now safe to remove**:
+   ```bash
+   git worktree remove .claude/worktrees/<slug>
+   git branch -D claude/<slug>    # only after worktree is gone
+   ```
+
+**Anti-pattern caught (2026-05-14, end of festive-bartik-04b551 session):** skipping step 1 → `git pull --rebase` later in main worktree silently fails with diverging-branches (user's NewsAnalyzer local commit blocks ff). Always sync BEFORE rebinding; rebind from a clean known-good main.
+
 Worked example: Kanban #875 smoke loop ran `docker compose up -d --no-deps web` from `.claude/worktrees/festive-bartik-04b551/` → web ended up on `festive-bartik-04b551_default` network → cross-page fetches to `/api/*` returned errors until web was re-attached to `agent-teams_default`.
 
 ### Worked examples — 4-strike pattern (2026-05-13)

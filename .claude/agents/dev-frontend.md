@@ -71,6 +71,16 @@ Loop:
 
 **Worktree safety:** ALWAYS pass `-p agent-teams` to `docker compose` when running from a worktree dir (`.claude/worktrees/<slug>/`). Omitting it makes Compose name the project after the worktree folder, claims web under a separate network, and breaks web↔api fetches. Full rule + recovery: [`context/standards/web/nextjs.md`](../../context/standards/web/nextjs.md) "Worktree safety" section.
 
+**`restart` vs `up --build` decision:**
+- Default: `docker compose -p agent-teams restart web` — keeps the existing bind-mount, fast.
+- ESCALATE to `docker compose -p agent-teams up -d --no-deps --build web` ONLY when worktree-only files (new files that don't exist in the main repo's `web/` yet) need to be served. Restart alone won't pick them up because the container's bind-mount points at the main repo. `up --build` recreates the container with the worktree path as the bind source. Mid-task this is fine; the Lead's end-of-session restore step rebinds back to main.
+
+**End-of-task mount report (REQUIRED if you ran `up --build`):**
+At the end of your final report, include a line:
+> "Web container mount source: `<output of docker inspect agent-teams-web --format '{{range .Mounts}}{{.Source}}{{println}}{{end}}' | head -1>`"
+
+So Lead knows whether to run the end-of-worktree-session restore recipe (in `context/standards/web/nextjs.md` "End-of-worktree-session restore — mandatory checklist"). If you used only `restart`, you can skip this line.
+
 Full root cause + 4-strike incident log: [`context/standards/web/nextjs.md`](../../context/standards/web/nextjs.md). macOS/Linux hosts may skip the restart step (this gotcha is Windows-specific).
 
 ### 3. Compact step (mandatory before return)
