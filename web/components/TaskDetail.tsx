@@ -12,7 +12,7 @@ import {
   type AnswerHistoryEntry,
   type TaskRead,
 } from "@/lib/api";
-import { TaskStatus } from "@/lib/constants";
+import { TaskKind, TaskRunMode, TaskStatus } from "@/lib/constants";
 import { computeBlockedByExclusionSet } from "@/lib/cycleExclusion";
 import { PendingBadge } from "./PendingBadge";
 import { RunModeBadge } from "./RunModeBadge";
@@ -156,6 +156,28 @@ export function TaskDetail({
 
   const isTerminal = TERMINAL_STATUSES.includes(task.process_status);
 
+  // #860 — show Run for TODO+ai+manual; auto_pickup over auto_headless skips consent gate. Details: shared/decisions.md 2026-05-14
+  const canRun =
+    task.process_status === TaskStatus.TODO &&
+    task.task_kind === TaskKind.AI &&
+    task.run_mode === TaskRunMode.MANUAL;
+
+  const handleRun = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      const updated = await patchTask(projectId, task.id, {
+        run_mode: TaskRunMode.AUTO_PICKUP,
+      });
+      onPatch(updated);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Run failed";
+      onError(`Task #${task.id}: ${msg}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <div
       role="dialog"
@@ -247,6 +269,20 @@ export function TaskDetail({
                   : "Reason: "}
                 {truncate(task.status_change_reason, 120)}
               </p>
+            )}
+            {/* #860 — Run: flips run_mode manual→auto_pickup; see canRun guard above */}
+            {canRun && (
+              <div className="mt-2" data-run-task-control>
+                <button
+                  type="button"
+                  onClick={handleRun}
+                  disabled={submitting}
+                  data-run-task-trigger
+                  className="rounded border border-violet-300 bg-violet-600 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-white hover:bg-violet-700 disabled:opacity-50 dark:border-violet-700 dark:bg-violet-700 dark:hover:bg-violet-600"
+                >
+                  {submitting ? "Queuing…" : "Run"}
+                </button>
+              </div>
             )}
             {/* #854 — Cancel-task affordance. Hidden on terminal states
                 (DONE / CANCELLED) — re-cancelling is meaningless. Placed

@@ -338,8 +338,11 @@ export async function getTask(
 // new_answer / invalidate_last_answer (#834): question/decision answer flow.
 // status_change_reason (#854): free-form rationale paired with a process_status
 // flip (most commonly ps=6 CANCELLED). min_length=1 — backend 422 on "".
+// run_mode (#860): flip 'manual' → 'auto_pickup' to enqueue an AI task for the
+// autorun loop. Skip 'auto_headless' from FE — backend rejects with 400 when
+// project lacks consent.
 export type TaskPatch = Partial<
-  Pick<TaskRead, "process_status" | "priority" | "title" | "blocked_by" | "sort_order">
+  Pick<TaskRead, "process_status" | "priority" | "title" | "blocked_by" | "sort_order" | "run_mode">
 > & {
   new_answer?: string | null;
   new_answer_by?: string | null;
