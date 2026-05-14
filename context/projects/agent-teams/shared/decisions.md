@@ -16,6 +16,25 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-14 — Phase 4 LangGraph headless engine (Kanban #849 chain — #851 + #850)
+**Scope:** devops / backend / shared
+**Decision (#851 — Docker scaffold):** New `langgraph` Docker service (built locally via `langgraph/Dockerfile`; no upstream prebuilt image) on host port `8465` → container `8000`. Pinned: `langgraph==1.2.0`, `langgraph-checkpoint-postgres==3.1.0`, `langgraph-cli==0.4.26`, `langchain-anthropic==1.4.3`, `langchain-openai==1.2.1`, `fastapi==0.136.1`, `uvicorn==0.46.0`. New envvars in `.env.example`: `LANGGRAPH_PORT`, `LANGGRAPH_LLM_PROVIDER` (anthropic|openai, default anthropic), `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_MODEL` (default `claude-sonnet-4-6`), `OPENAI_MODEL` (default `gpt-4o`).
+
+**Decision (#850 — graph definition):** Hand-rolled `StateGraph` + `conditional_edges` (skipping the prebuilt `langgraph-supervisor` package per LangChain's current guidance). `AsyncPostgresSaver` checkpointing in a separate `langgraph` schema on the existing `agent_teams` DB. Supervisor (Lead) node routes by `assigned_role` integer (1=frontend, 2=backend, 3=devops, 4=tester, 5=reviewer; mirrors `api/src/constants.py::TaskRole`). #850 ships ONE real specialist (`backend_specialist`) calling `make_chat_model().invoke(...)`; frontend/devops/tester/reviewer/general are stubs returning canned `final_result` (real implementations land via #853 + later).
+
+**Locked rules:**
+- **Schema bootstrap = Option B** — app-startup `CREATE SCHEMA IF NOT EXISTS langgraph;` runs in `graph.py` lifespan BEFORE `await saver.setup()`. Portable across existing DB volumes (no initdb script, no `docker compose down -v` required). Documented in `langgraph/README.md`.
+- **`DATABASE_URI` is normalized at app layer.** Compose ships `?options=-c%20search_path=langgraph`; psycopg 3.3's URI parser rejects the literal inner `=`, so `graph._normalize_pg_uri()` re-encodes it as `%3D`. Keeps docker-compose.yml unchanged and tolerates any URI source.
+- **LLM fail-fast in lifespan** — container refuses to start (lifespan raises `RuntimeError`) if the configured provider's API key is unset OR if `model.invoke("ping")` fails. Better than a healthy container that crashes on first `/invoke`. Documented in spawn brief + reproduced in lifespan log line.
+- **`AsyncPostgresSaver` tables live in `langgraph.*` schema, managed by `saver.setup()` — NOT by Alembic.** Do not mirror in `db-schema.md`'s `public.*` table list; do not write Alembic migrations against them.
+- **`thread_id = "task-{task_id}"`** is the checkpoint key convention. #852's poll loop must use the same format to resume paused tasks.
+- **`/invoke` contract (locked for #852):** `POST {task_id, brief, assigned_role}` → `200 {task_id, assigned_role, final_result, halt_reason, messages[]}`. `halt_reason != null` = pause signal (route to user review); `final_result` = artifact to write back to the Kanban task.
+- **`make_chat_model() -> BaseChatModel` signature stable** — #853 replaces the `llm.py` shim from #850 without changing the public contract; specialist nodes don't import `ChatAnthropic`/`ChatOpenAI` directly.
+
+**Reasoning:** Phase 4 goal is provider-agnostic headless execution. Hand-rolled supervisor gives full control over routing + state; prebuilt is being deprecated. `AsyncPostgresSaver` is the only production-grade saver (`MemorySaver` evaporates on restart). Fail-fast on missing API key avoids the "healthy container, sudden first-call death" anti-pattern that misleads ops.
+
+**Implications:** #853 will replace `langgraph/llm.py` (drop-in upgrade of the shim — fuller error messages, model-name validation, unit tests). #852 will add a poll loop that calls `GET /api/tasks/next-autorun` then `POST http://langgraph:8000/invoke` then PATCHes the task; uses the locked `/invoke` contract above. AGENTS.md (#848) is the Codex CLI counterpart and may run independently. Phase 4 umbrella (#849) closes when all four children + an end-to-end smoke land.
+
 ## 2026-05-14 — TaskDetail Run button + within-lane snap-back rationale (Kanban #860 + #889 prep)
 **Scope:** frontend / shared
 **Decision (Run button — #860):** TaskDetail drawer renders a "Run" primary button when `process_status === TODO && task_kind === 'ai' && run_mode === 'manual'`. Click flips `run_mode` from `'manual'` to `'auto_pickup'` via `patchTask`. The FE does NOT directly PATCH `process_status`; the consuming autorun loop (`GET /api/tasks/next-autorun`) stamps `process_status → 2` on pickup.

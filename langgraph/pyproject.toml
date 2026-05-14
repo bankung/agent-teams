@@ -27,6 +27,20 @@ dependencies = [
     "psycopg[binary]>=3.2,<4",
 ]
 
+[project.optional-dependencies]
+# Test deps — kept out of the prod image install path. Pinned 2026-05-14.
+# Install in dev / CI with `pip install -e .[test]`.
+test = [
+    "pytest==8.3.4",
+]
+
 [tool.setuptools]
-# Single-module package — graph.py at the root. No discovery needed.
-py-modules = ["graph"]
+# Flat-layout: each .py at the langgraph/ root is a top-level module inside
+# the container (WORKDIR /app; sources copied to /app/*.py). #850 added
+# state, nodes, llm alongside the existing graph module.
+py-modules = ["graph", "state", "nodes", "llm"]
+
+[tool.pytest.ini_options]
+# Run with `pytest tests/` from /app inside the container, or
+# `docker compose exec -T langgraph pytest tests/`.
+testpaths = ["tests"]

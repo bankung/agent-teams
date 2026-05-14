@@ -12,6 +12,7 @@
 - **Timestamps:** `created_at timestamptz NOT NULL DEFAULT now()`, `updated_at timestamptz NOT NULL DEFAULT now()` — router bumps `updated_at` manually on PATCH (server_default only fires on INSERT). Could move to a PG trigger later if more write paths appear.
 - **Soft delete:** yes — every business table has `status SMALLINT NOT NULL DEFAULT 1 CHECK (status IN (0, 1))` where `1=active`, `0=deleted`. Application code never issues SQL DELETE; the audit trigger captures flag flips as `'U'`. Hard DELETE is reserved for manual psql cleanup. See [decisions.md](decisions.md) 2026-05-05 entry. The 1-5 lifecycle column on `tasks` was renamed `status → process_status` in migration `0002_soft_delete_and_lead` (2026-05-08) to free `status` for the uniform soft-delete name.
 - **Audit:** `tasks_history` is populated by PG trigger; application code does NOT insert there
+- **Externally-managed schemas:** the `langgraph` schema in this DB holds LangGraph checkpoint tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`), created and migrated by `AsyncPostgresSaver.setup()` in the `langgraph` container (Kanban #850, 2026-05-14). **NOT managed by Alembic.** Do not add them to the table list below; do not write Alembic migrations against them. The `langgraph` schema itself is created at app startup via `CREATE SCHEMA IF NOT EXISTS langgraph;` in the graph lifespan (Option B from #851).
 
 ## Tables
 
