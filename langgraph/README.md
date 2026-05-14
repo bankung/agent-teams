@@ -15,7 +15,8 @@ port `${LANGGRAPH_PORT:-8465}` (container always listens on 8000).
 | `Dockerfile` | `python:3.12-slim` base; installs deps from `pyproject.toml`. CMD `uvicorn graph:app` (stub) — will change when #850 swaps to a LangGraph server. |
 | `pyproject.toml` | Pinned deps: langgraph, langgraph-checkpoint-postgres, langgraph-cli, langchain-anthropic, langchain-openai, fastapi, uvicorn, psycopg[binary]. |
 | `langgraph.json` | LangGraph CLI config — points the future `supervisor` graph at `./graph.py:graph`. Unused by the stub CMD but in place for #850's `langgraph build` workflow. |
-| `graph.py` | Stub FastAPI app. Replaced wholesale by #850. |
+| `graph.py` | FastAPI app + compiled StateGraph + lifespan. Stub replaced by #850; #852 adds the Kanban worker task to the lifespan. |
+| `worker.py` | (#852) Background asyncio task — polls `GET /api/tasks/next-autorun` and feeds picked tasks through the compiled graph, then PATCHes the result back. Started/stopped by `graph.py`'s lifespan. |
 | `__init__.py` | Package marker (empty). |
 | `.gitignore` | `__pycache__/`, `.venv/`, `*.egg-info/`. |
 
@@ -122,6 +123,31 @@ The container refuses to start (lifespan raises `RuntimeError`) if:
 
 Better to refuse `docker compose up` than to look healthy and crash on the
 first `/invoke`. Logs name exactly which env-var to set.
+
+## Kanban poll worker (Kanban #852)
+
+The lifespan starts a background asyncio task — `worker.py:run_worker_loop` —
+right after the graph compiles and the LLM probe succeeds. It polls
+`GET /api/tasks/next-autorun` on the compose-internal api hostname every
+`LANGGRAPH_POLL_INTERVAL_SEC` seconds (default 30) using the `X-Project-Id`
+header from `LANGGRAPH_PROJECT_ID`.
+
+Per task: PATCH `process_status=2` (IN_PROGRESS) → `graph.ainvoke(...)` →
+PATCH `process_status=5` (DONE) on success, or `process_status=4` (BLOCKED)
+plus `is_pending=true` if the graph returned `halt_reason`, or
+`process_status=4` with `halt_reason="langgraph error: ..."` if `ainvoke`
+raised.
+
+HITL resume (consuming `resume_tasks` from next-autorun and re-running halted
+tasks from their checkpoint) is **deferred to #852b** — the worker logs a
+single line per poll when resume_tasks is non-empty so the gap is visible
+in container logs.
+
+Required env-var: `LANGGRAPH_PROJECT_ID` (positive integer). Optional:
+`LANGGRAPH_POLL_INTERVAL_SEC`, `LANGGRAPH_KANBAN_API_BASE`.
+
+The worker stops within ~5 seconds of `docker compose stop langgraph` —
+the lifespan cancels the asyncio task and waits with a 5s grace.
 
 ## Rebuilding after a pyproject edit
 

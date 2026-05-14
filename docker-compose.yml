@@ -121,6 +121,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      # Kanban #852 — the langgraph worker polls the api service immediately on
+      # startup. Without this dep langgraph can win the start race, fail its
+      # first GET /api/tasks/next-autorun, log + idle-sleep, and recover only on
+      # the next poll. Cheap to add; cleaner first-tick logs.
+      api:
+        condition: service_healthy
     environment:
       # Inside the compose network the hostname is `db` (not localhost). The
       # ?options=-c%20search_path=langgraph URL-encodes a SET search_path so
@@ -133,6 +139,12 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+      # Kanban #852 — background worker config. The worker polls the api
+      # service (compose-internal hostname `api`, port 8456). LANGGRAPH_PROJECT_ID
+      # is REQUIRED — the lifespan refuses to start without it.
+      LANGGRAPH_PROJECT_ID: ${LANGGRAPH_PROJECT_ID:-1}
+      LANGGRAPH_POLL_INTERVAL_SEC: ${LANGGRAPH_POLL_INTERVAL_SEC:-30}
+      LANGGRAPH_KANBAN_API_BASE: ${LANGGRAPH_KANBAN_API_BASE:-http://api:8456}
       REPO_ROOT: /repo
     ports:
       - "${LANGGRAPH_PORT:-8465}:8000"

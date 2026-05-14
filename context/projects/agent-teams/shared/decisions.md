@@ -42,6 +42,28 @@ Template:
 - **Lazy SDK imports** — `langchain_anthropic` / `langchain_openai` imported INSIDE the matching provider branch; Anthropic-only deployment never pays the OpenAI module-load cost.
 - **30 unit tests** (`langgraph/tests/test_llm.py`) pin: provider normalization, unknown-provider error shape, default/override resolution, underscore-typo rejection, missing-key error pointer (must NOT name the other provider's key).
 
+**Decision (#852 — Kanban worker integration):** New `langgraph/worker.py` — asyncio polling task started in `graph.py` lifespan AFTER graph compile + LLM probe. Reads `LANGGRAPH_PROJECT_ID` (REQUIRED — no fallback; CLAUDE.md "session-bound project must be named" extends to background workers), `LANGGRAPH_POLL_INTERVAL_SEC` (default 30), `LANGGRAPH_KANBAN_API_BASE` (default `http://api:8456`).
+
+**Per-task lifecycle (LOCKED):**
+- `GET /api/tasks/next-autorun` (with `X-Project-Id` header) → if `next_task` is null, idle-sleep
+- Else: `PATCH process_status=2, started_at=now` → `compiled_graph.ainvoke(initial_state, config={"configurable": {"thread_id": f"task-{task_id}"}})`
+- On success (final_state.halt_reason is None): `PATCH {process_status:5, completed_at, status_change_reason: final_result[:400]}`
+- On `halt_reason != null` (question/decision): `PATCH {process_status:4 BLOCKED, halt_reason, is_pending:true, status_change_reason}`
+- On exception (any graph error): `PATCH {process_status:4 BLOCKED, halt_reason: "langgraph error: <ExcType>: <msg>"}` (NO `is_pending` — that flag means "awaiting human answer", not "crashed")
+
+**Locked rules (#852):**
+- **Initial state shape into `ainvoke`:** `{task_id, brief: description or title, assigned_role, messages: [], intermediate_results: {}}`. Brief prefers description (the spec) over title.
+- **`is_pending=true` set ONLY on halt-from-graph**, never on exception-BLOCKED. Verified by test.
+- **Error isolation invariant:** every iteration body wrapped in try/except inside `run_worker_loop`; only `asyncio.CancelledError` propagates. One bad task NEVER crashes the loop.
+- **Shutdown grace 5s** — `task.cancel()` + `asyncio.wait_for(task, timeout=5.0)` in lifespan. In-flight `ainvoke` calls abandoned on cancel; task stays IN_PROGRESS (recoverable via #852b resume).
+- **PATCH non-200 = abandon iteration, log, continue** — no tight retry loop, no poisoned state. Next poll re-evaluates.
+- **Worker reads `graph_module.graph` each iteration** (module passed in, not the compiled object) — avoids circular import + supports future hot-reload.
+- **`status_change_reason` is the result-stashing channel** (NOT `description` — description is immutable spec; reason renders in TaskDetail drawer per #854). Truncated at 400 chars.
+
+**Smoke verified end-to-end:** seeded task #890 (TODO + ai + auto_pickup + role=2) → worker picked it up → transitioned TODO → IN_PROGRESS → DONE with started_at/completed_at stamped and final_result in status_change_reason. 65/65 unit tests green.
+
+**DEFERRED to follow-up #852b (HITL resume):** consume `resume_tasks` from `next-autorun`; when a halted task's answer lands, resume the graph from its persisted LangGraph checkpoint (`thread_id="task-{task_id}"`) rather than starting fresh; PATCH `process_status` back from BLOCKED → IN_PROGRESS → DONE. Worker currently logs an INFO line when it sees non-empty `resume_tasks` and ignores them.
+
 **Reasoning:** Phase 4 goal is provider-agnostic headless execution. Hand-rolled supervisor gives full control over routing + state; prebuilt is being deprecated. `AsyncPostgresSaver` is the only production-grade saver (`MemorySaver` evaporates on restart). Fail-fast on missing API key avoids the "healthy container, sudden first-call death" anti-pattern that misleads ops.
 
 **Implications:** #853 will replace `langgraph/llm.py` (drop-in upgrade of the shim — fuller error messages, model-name validation, unit tests). #852 will add a poll loop that calls `GET /api/tasks/next-autorun` then `POST http://langgraph:8000/invoke` then PATCHes the task; uses the locked `/invoke` contract above. AGENTS.md (#848) is the Codex CLI counterpart and may run independently. Phase 4 umbrella (#849) closes when all four children + an end-to-end smoke land.

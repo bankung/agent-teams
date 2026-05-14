@@ -25,6 +25,10 @@ dependencies = [
     "uvicorn[standard]==0.46.0",
     # AsyncPostgresSaver wants psycopg (v3) as its driver.
     "psycopg[binary]>=3.2,<4",
+    # HTTP client for the Kanban poll worker (Kanban #852). Also a transitive
+    # dep of langchain-anthropic/openai; pinning explicitly here documents the
+    # direct-use contract and lets us bump independently if needed.
+    "httpx>=0.27,<1",
 ]
 
 [project.optional-dependencies]
@@ -32,15 +36,23 @@ dependencies = [
 # Install in dev / CI with `pip install -e .[test]`.
 test = [
     "pytest==8.3.4",
+    # Async test support for the worker (Kanban #852). The worker's poll loop
+    # and _poll_once are coroutines; pytest-asyncio's auto-mode lets us mark
+    # individual cases with @pytest.mark.asyncio without per-file boilerplate.
+    "pytest-asyncio==0.25.0",
 ]
 
 [tool.setuptools]
 # Flat-layout: each .py at the langgraph/ root is a top-level module inside
 # the container (WORKDIR /app; sources copied to /app/*.py). #850 added
-# state, nodes, llm alongside the existing graph module.
-py-modules = ["graph", "state", "nodes", "llm"]
+# state, nodes, llm alongside the existing graph module; #852 adds worker.
+py-modules = ["graph", "state", "nodes", "llm", "worker"]
 
 [tool.pytest.ini_options]
 # Run with `pytest tests/` from /app inside the container, or
 # `docker compose exec -T langgraph pytest tests/`.
 testpaths = ["tests"]
+# pytest-asyncio auto-mode: any `async def test_*` is collected as a coroutine
+# test without per-test @pytest.mark.asyncio. Strict-mode would require the
+# marker on every async test; auto-mode keeps the test files clean.
+asyncio_mode = "auto"

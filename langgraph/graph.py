@@ -27,8 +27,10 @@ without going through the FastAPI app.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import sys
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
@@ -41,6 +43,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
+import worker as worker_module
 from llm import make_chat_model
 from nodes import (
     backend_specialist_node,
@@ -63,6 +66,13 @@ graph: Any = None
 checkpointer: AsyncPostgresSaver | None = None
 provider_name: str = "?"
 graph_ready: bool = False
+# Background poll loop (Kanban #852). Created in lifespan after the graph is
+# compiled + LLM probe succeeds; cancelled on shutdown.
+worker_task: asyncio.Task[None] | None = None
+# Grace period to let the worker finish its current iteration after cancel.
+# Short on purpose: a stuck httpx request will still be force-cancelled when
+# this elapses, and the OS process exit will tear down the connection.
+_WORKER_SHUTDOWN_GRACE_SEC = 5.0
 
 
 def _normalize_pg_uri(uri: str) -> str:
@@ -138,7 +148,7 @@ async def _ensure_schema(uri: str) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global graph, checkpointer, provider_name, graph_ready
+    global graph, checkpointer, provider_name, graph_ready, worker_task
 
     raw_uri = os.getenv("DATABASE_URI")
     if not raw_uri:
@@ -183,10 +193,44 @@ async def lifespan(app: FastAPI):
         graph_ready = True
         logger.info("graph compiled — supervisor + 6 specialist nodes wired")
 
+        # 5) Start the Kanban poll worker (Kanban #852). MUST come after the
+        # graph is compiled — the worker reads `graph_module.graph` on each
+        # iteration and assumes it is non-None when graph_ready is set. We
+        # pass the current module rather than the compiled graph object so a
+        # future hot-reload can swap `graph` in place without restarting the
+        # worker.
+        graph_module = sys.modules[__name__]
+        worker_task = asyncio.create_task(
+            worker_module.run_worker_loop(graph_module), name="langgraph-kanban-worker"
+        )
+        logger.info("kanban worker started (asyncio task)")
+
         try:
             yield
         finally:
             graph_ready = False
+            # Cancel + wait for the worker before tearing down the saver — the
+            # worker's last iteration may still be issuing PATCH requests, and
+            # we want to give it a brief window to land them before the
+            # FastAPI app process exits.
+            if worker_task is not None and not worker_task.done():
+                logger.info("cancelling kanban worker")
+                worker_task.cancel()
+                try:
+                    await asyncio.wait_for(
+                        worker_task, timeout=_WORKER_SHUTDOWN_GRACE_SEC
+                    )
+                except asyncio.CancelledError:
+                    pass
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "kanban worker did not exit within %.1fs of cancel; continuing shutdown",
+                        _WORKER_SHUTDOWN_GRACE_SEC,
+                    )
+                except Exception:
+                    # Don't let a crash in the worker block lifespan shutdown.
+                    logger.exception("kanban worker raised during shutdown")
+            worker_task = None
             graph = None
             checkpointer = None
             logger.info("lifespan shutdown — saver context exiting")
