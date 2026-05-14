@@ -15,6 +15,37 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-14 (late evening) — Bug fix: Dashboard 'Fetch Now' stub (T8 stopgap closed; T9/T10/T11 filed as B-breakdown)
+**Scope:** shared (backend pipeline)
+**Proposed by:** lead (user-reported bug; diagnosed during session)
+**Status:** T8 LOCKED + DONE 2026-05-14; T9/T10/T11 filed for next session.
+
+**Decision:** Phase 0 Dashboard 'Fetch Now' button was firing a stubbed Celery task (`run_full_fetch` returned `articles_found=0` in 0.156s with TODO-stubbed scrapers/RSS-readers). Diagnosed root cause: **NOT caused by recent T1-T7 cleanup** — the stubs in `_run_full_fetch_async` have been present since the initial scaffold commit `ccceb9d`. T1/T2/T3/T5 never touched the stub block; T2's commit only dropped the Playwright async_api import.
+
+**Fix (T8 #932 — stopgap, Option C):** Replace `_run_full_fetch_async` body with delegation to `_run_scrape_only_async` (which is fully implemented since `6be13bc`: 4 scrapers concurrent via Firecrawl-simple, cooperative pause/stop, per-source progress, per-article persistence via BackendClient, lock acquisition+release). Single commit `595ee16` on NewsAnalyzer main, +23/-78 in `pipeline/app/workers/tasks.py`. Smoke verified: 12 articles persisted (3 per source × 4 sources, SCRAPE_DEV_LIMIT=3 cap), 170.92s end-to-end, cooldown 429 still works.
+
+**B breakdown — remaining 3 follow-ups filed:**
+- **T9 #933** — Add RSS readers (8 feeds) to fetch path. `rss_reader.py` is fully implemented; just needs wiring into the Celery task path alongside the 4 scrapers.
+- **T10 #934** — Implement `NewsDeduplicator` (currently 11-TODO stub; each article becomes its own event in placeholder state). Recommended embedding choice: sentence-transformers `paraphrase-multilingual-MiniLM-L12-v2` (local, free, Thai-capable, ~5GB RAM cost).
+- **T11 #935** — Un-stub `run_analysis_for_event` + trigger `AIPipeline.run_full_pipeline()` per new event after fetch+dedup. `blocked_by=934`. AIPipeline class itself is already implemented (Sonnet prompts + ID-mapping for categorical fields).
+
+After T9+T10+T11 land, the stopgap T8 delegation retires — `run_full_fetch` becomes the canonical full pipeline (fetch → dedup → AI) rather than a thin delegator.
+
+**Reasoning:** Splitting B (full implementation) into T8+T9+T10+T11 keeps PRs reviewable in isolation: T8 fixes the user-visible bug (~30 min specialist), T9 is mechanical RSS-wiring, T10 is the only design-heavy task (embedding choice), T11 closes the AI loop. The user requested the breakdown explicitly so the stopgap could land first without waiting for T10's design decisions.
+
+**Implications:**
+- **Dashboard FetchButton now works** — clicking it produces real articles. The button hits the lock-controlled `/ingest/run` path (Pipeline → run_full_fetch → delegate to scrape-only). The `/scrape` page button hits the same scrape-only path directly with its own UI (per-source progress display, pause/stop controls).
+- **Articles persist 1:1 with events until T10 lands** — `events_processed=articles_found` until real dedup groups multi-source coverage of the same story.
+- **No AI analysis triggers yet** — T11 covers that. Until then, the dashboard shows raw articles without AI summary/sentiment/recommendation.
+- **Dead imports** in `pipeline/app/workers/tasks.py:31-34` (AIPipeline, NewsDeduplicator, fetch_all_rss_feeds, run_all_scrapers) kept intentionally — T9/T10/T11 will re-use them. Removing now means T11 adds them back. Not worth the churn.
+
+**Cross-references:**
+- T8 commit: `595ee16` on NewsAnalyzer main.
+- Pre-existing working code studied for delegation: `_run_scrape_only_async` (`pipeline/app/workers/tasks.py:142-406`).
+- Scaffold-era stub origin: initial commit `ccceb9d` (`feat: initial project scaffold and documentation`).
+
+---
+
 ## 2026-05-14 (evening) — Phase 0 Wave 1 closure (T3/T4/T5/T7) + T5 implementation deltas
 **Scope:** shared (backend + devops + docs)
 **Proposed by:** lead (closing report from 4 parallel specialists)
