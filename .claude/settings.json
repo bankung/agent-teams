@@ -284,7 +284,12 @@
       "Bash(git commit -m 'chore: allowlist accretion \\(post-rewrite\\) *)",
       "Bash(git commit -m 'docs\\(readme\\): document Ollama support + headless engine landing — Phase 4 close *)",
       "Bash(git commit *)",
-      "Bash(git merge --no-ff feat/langgraph-phase4 -m 'Merge branch '\\\\''feat/langgraph-phase4'\\\\'' — Phase 4 LangGraph headless engine *)"
+      "Bash(git merge --no-ff feat/langgraph-phase4 -m 'Merge branch '\\\\''feat/langgraph-phase4'\\\\'' — Phase 4 LangGraph headless engine *)",
+      "Bash(curl -s \"https://raw.githubusercontent.com:*)",
+      "Bash(curl -s \"https://api.github.com:*)",
+      "Bash(curl -sL \"https://pypi.org:*)",
+      "Bash(curl --silent -H \"X-Project-Id: 567\" \"http://localhost:8456:*)",
+      "Bash(curl --silent -H \"X-Project-Id: 567\" http://localhost:8456:*)"
     ],
     "ask": [
       "Write(/context/projects/*/shared/**)",
@@ -308,6 +313,11 @@
           {
             "type": "command",
             "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-raw-sql-dml.ps1\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-curl-delete.ps1\"",
             "timeout": 5
           }
         ]
