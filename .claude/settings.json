@@ -297,7 +297,9 @@
       "Bash(git filter-branch *)",
       "Bash(FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --msg-filter 'sed \"/^Co-Authored-By: Claude/d\"' -- --branches)",
       "Bash(git remote *)",
-      "Bash(git commit -m 'chore: allowlist accretion from session *)"
+      "Bash(git commit -m 'chore: allowlist accretion from session *)",
+      "Bash(git commit -m 'chore: gitignore .firecrawl/ + context/projects/test-*/ *)",
+      "Bash(git commit -m 'chore: allowlist accretion \\(post-rewrite\\) *)"
     ],
     "ask": [
       "Write(/context/projects/*/shared/**)",
