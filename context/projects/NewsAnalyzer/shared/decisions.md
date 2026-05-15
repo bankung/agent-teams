@@ -15,6 +15,44 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-15 — Phase 1 sequencing + T10 dedup choice + T12 Firecrawl resilience filed
+**Scope:** shared (planning lock)
+**Proposed by:** user (answered 4 sequencing questions 2026-05-15)
+**Status:** LOCKED 2026-05-15.
+
+**Decisions:**
+
+1. **T10 NewsDeduplicator embedding choice = Option B** (fuzzy match + 3-day date window via `rapidfuzz` + `pythainlp`). ~50 MB RAM, deterministic, no model download. Option A (sentence-transformers `paraphrase-multilingual-MiniLM-L12-v2`, ~5 GB RAM) **noted as future upgrade path** when Phase 1B scale demands paraphrase-tolerant matching beyond what fuzzy ratio captures. Option C (Anthropic embeddings API) **rejected** — conflicts with lock #1 (no `ANTHROPIC_API_KEY` in pipeline). Locked because user explicitly chose lighter Phase 1 footprint over richer semantic matching.
+
+2. **T12 Firecrawl resilience layer FILED (#991)** — user clarification: firecrawl-simple HAS internal fallback engines (cheerio → fire-engine → playwright-service cascade); it just costs more per crawl when it escalates. T12 wraps `_scrape()` with retry+backoff, adds pre-flight health check (avoids 680s dead time when firecrawl-api is down), records per-scrape `engine_tier` to `scrape_logs` table (new column via Alembic migration), and emits structured WARN log on expensive escalations OR retry exhaustion OR pre-flight fail. **No engine-restoration** (Playwright/BS4 stays removed per lock #2); resilience is about Firecrawl's own cascade visibility + recovery, not adding a parallel engine.
+
+3. **Sequencing of remaining work = sequential** (verify each step before next; ไม่เร่ง เน้นถูกต้อง):
+   1. Merge cleanup ✅ DONE (commit `b976a86` on agent-teams main; branch `claude/stoic-archimedes-66ea3b` merged via prior turn).
+   2. T9 #933 — Add RSS readers (8 feeds) to fetch path.
+   3. T10 #934 — NewsDeduplicator real impl (Option B locked above).
+   4. T11 #935 — Wire AI analysis pipeline (`blocked_by=934`). Closes original Option B scope; retires T8 stopgap delegation.
+   5. T12 #991 — Firecrawl resilience (retry + pre-flight + engine-tier reporting).
+   6. T6 #924 — Backfill Option A implementation (was unblocked when T3 landed; user chose to defer until after T12).
+
+4. **No parallel spawning in this wave** — Step 0 visual-verify after each task lands before spawning next. This is the explicit "correctness over speed" mode per user 2026-05-15.
+
+**Reasoning:**
+- User's chosen sequence + Option B reflect Phase 1 sizing priority: prove the fetch + dedup + AI loop with a small-footprint stack first, then upgrade individual components (embeddings, resilience) when scale or quality demands it.
+- T12 lands after T11 (not before) because resilience on a 0-feature pipeline is low-leverage; resilience on a fully-wired pipeline catches real production failure modes.
+- T6 backfill last because it's the only piece that consumes meaningful Max 20x quota — best landed when the live pipeline is fully proven and observable.
+
+**Implications:**
+- Specialist for T10 will use `rapidfuzz.fuzz.token_sort_ratio` + `pythainlp.tokenize.word_tokenize` (mode='newmm') for Thai title normalization. Calibrate similarity threshold ~0.75 (rapidfuzz is more forgiving than embedding cosine).
+- Specialist for T12 has 3 engine-tier extraction options (response field if firecrawl-simple exposes / duration heuristic / container log parse) — choice documented in commit.
+- Each task closure includes a visual smoke verify (click 'Fetch Now' in browser, watch articles appear) before spawning the next specialist.
+
+**Cross-references:**
+- T10 task PATCH: Kanban #934 description prepended with LOCKED Option B note (2026-05-15).
+- T12 task filed: Kanban #991 (this addendum).
+- 2026-05-14 (late evening) entry below covers T8 closure + B breakdown context.
+
+---
+
 ## 2026-05-14 (late evening) — Bug fix: Dashboard 'Fetch Now' stub (T8 stopgap closed; T9/T10/T11 filed as B-breakdown)
 **Scope:** shared (backend pipeline)
 **Proposed by:** lead (user-reported bug; diagnosed during session)
