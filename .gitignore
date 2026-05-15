@@ -64,3 +64,6 @@ _scratch/*
 
 # Sandbox test projects — created via POST /api/projects for LangGraph smoke
 context/projects/test-*/
+
+# Private / confidential strategic docs — per-machine, NEVER committed.
+_private/
