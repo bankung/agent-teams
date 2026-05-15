@@ -15,6 +15,56 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-15 (late afternoon) — T10 #934 closed — fuzzy-match NewsDeduplicator landed; memory cost confirmed
+**Scope:** shared (backend pipeline)
+**Proposed by:** lead (closing report from dev-backend specialist)
+**Status:** T10 DONE 2026-05-15 (commit `b83ee8b`).
+
+**What landed:**
+- `pipeline/app/services/deduplicator.py` rewritten with `rapidfuzz.fuzz.token_sort_ratio` + `pythainlp.tokenize.word_tokenize(engine='newmm')`. Threshold **0.75**, date window **±3 days**. Two-pass `group_articles` (match-against-existing then intra-batch); primary article = highest-priority source (high > normal > low).
+- `embed_text()` signature change: now returns `str` (pythainlp-normalized title) rather than `list[float]` — documented in module docstring. Callers are inside-module only, so safe.
+- Backend: `GET /events/recent?days=N` + `POST /events/with-articles` (atomic event-create + article-link). Existing `POST /articles/{id}/link-event` reused for add-to-existing path.
+- BackendClient: `list_recent_events(days=7)` + `create_event_with_articles(...)` added. `set_article_event` spec name reused existing `link_article_to_event(article_id, event_id, is_primary)`.
+- Pipeline `tasks.py`: dedup pass between source fan-out and `complete_ingest`. Cooperative-stop respected between groups. Worker log emits `Grouped N articles into M events (X new, Y added to existing)`.
+- 13 unit tests in `pipeline/tests/test_deduplicator.py`, all passing. Tests cover: Thai tokenization, similarity range, similar-title grouping, unrelated-title separation, date-window rejection, English near-match grouping, find_existing_event match/reject/threshold, group_articles 3-case flow, primary-source selection.
+
+**Memory cost — sizing assumption update (important for future decisions):**
+- Pre-T10 pipeline container RSS: **82.95 MiB**
+- Post-T10 pipeline container RSS: **316–323 MiB** (steady-state)
+- Delta: **~234 MB** (pythainlp loads its Thai dict + corpus eagerly on `import`; rapidfuzz itself is ~2 MB)
+- The T10 spec estimated +50 MB total; actual is ~5× that estimate. **However** Option A (sentence-transformers) was estimated at +5 GB, so Option B is still ~21× smaller. The Option B verdict holds; **234 MB is the new reference number for future sizing decisions**.
+- Worker cold-start adds ~3 s for pythainlp's corpus load. Acceptable for a daemon; worth noting if worker is ever made short-lived.
+
+**Smoke evidence (two consecutive fetch runs 2026-05-15 ~10:53 UTC):**
+- Run 1 (task `92b13e1e`): 15 articles → 15 events (15 new, 0 added to existing).
+- Run 2 (task `1870ffe4`): 15 articles → 15 events (15 new, 0 added to existing).
+- DB post-smoke: 135 articles, 30 events, 30 article-event links. **Zero multi-article events** during smoke because live coverage was disjoint stories (max pairwise similarity computed < 0.50, far below the 0.75 threshold).
+- Multi-article grouping verified via unit tests — `test_two_similar_thai_titles_same_date_group_together` proves the path works end-to-end. Production exposure depends on overlapping-coverage events landing in the ±3-day window (will surface naturally over time).
+
+**Threshold tuning notes:**
+- 0.75 left at locked value (max observed similarity < 0.50 in live smoke; well above noise floor; no false-positives).
+- ±3 day window left at locked value (no edge cases surfaced).
+- Recalibrate when Phase 1B widens coverage and multi-source same-story coverage actually appears.
+
+**Open follow-ups (not yet filed; surface to user for decision):**
+- **Orphan pre-T10 articles (~105):** T10 only operates on the new batch in each fetch run. Articles ingested before T10 have no event linkage. A backfill task could iterate orphan articles + run them through `group_articles` against same-window events. Optional; not blocking T11.
+- **Memory deviation:** if strict +100 MB budget enforcement is required, file a follow-up task to swap pythainlp for a lighter Thai tokenizer (regex char splitter, ~10 MB) — at the cost of less-accurate Thai word segmentation. Lead's recommendation: accept the 234 MB deviation; Option B's verdict holds vs Option A regardless.
+
+**Standards proposals (NOT auto-applied — for human MA):**
+- `context/standards/python/external-clients.md` (from T9 + T10 both): document the get-or-create pattern + the "fetch existing context before mutating" pattern used in T10's dedup pass.
+- `context/standards/python/dependency-sizing.md` (new): standardize that "lightweight" dependency claims must include a measured import-time RSS delta before locking. T10 spec said ~50 MB but actual was 234 MB. Pin this as a checklist item for future Option-A-vs-B decisions.
+
+**API contract updates (proposal for `context/projects/NewsAnalyzer/shared/api-contracts.md`):**
+- `GET /events/recent?days=N` — returns NewsEventOut[] for events created in last N days (1-30, default 7). Used by Pipeline dedup pass.
+- `POST /events/with-articles?primary_article_id=<int>&article_ids=<int>...` — atomic event-create + article-link. Replaces older "POST /events then POST /articles/{id}/link-event" sequence on the new-event path.
+
+**Cross-references:**
+- T10 commit: `b83ee8b` on NewsAnalyzer main.
+- 2026-05-15 entry (sequencing) above locked T10 = Option B and 0.75 threshold / ±3 day window.
+- Next in queue: T11 #935 (un-stub `run_analysis_for_event` + wire AIPipeline per event). `blocked_by=934` resolves now that T10 is DONE.
+
+---
+
 ## 2026-05-15 (mid-afternoon) — T9 #933 closed — RSS readers (7 feeds, not 8) wired into fetch path
 **Scope:** shared (backend pipeline + frontend)
 **Proposed by:** lead (closing report from dev-backend specialist)
