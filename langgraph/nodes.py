@@ -19,6 +19,17 @@ All nodes return PARTIAL state dicts. LangGraph merges them via the reducer
 declared on each TypedDict field (messages → add_messages; everything else →
 last-write-wins). `backend_specialist_node` is `async` because tool
 invocations are coroutines; LangGraph happily awaits async node functions.
+
+## HITL (human-in-the-loop) emission (Kanban #986)
+
+Any specialist that needs user input mid-execution calls
+`hitl.request_user_input(payload)` (re-exported here for convenience). On the
+first call within a node it raises GraphInterrupt → LangGraph checkpoints
+state → worker PATCHes the task to BLOCKED + halt_reason. On resume (worker
+invokes `graph.ainvoke(Command(resume=<answer>))`), the function returns the
+user's answer string. The payload dict shape mirrors Kanban's question_payload
+column (`{"question": ..., "options": [...]}`) so the worker can forward it
+to the DB unchanged. See `hitl.py` for the engine-side glue + validation rules.
 """
 
 from __future__ import annotations
@@ -31,6 +42,7 @@ import httpx
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from audit import record_tool_invocation
+from hitl import request_user_input  # noqa: F401 — re-exported for specialist authors
 from llm import make_chat_model, resolve_provider
 from state import AgentState
 from tools import (

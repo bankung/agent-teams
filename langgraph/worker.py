@@ -21,10 +21,16 @@ Lifecycle for one polled task:
      On exception inside ainvoke:
        PATCH {process_status: 4, halt_reason: "langgraph error: ..."} -> BLOCKED
 
-Out of scope for #852 (deferred to #852b):
-  - Consuming `resume_tasks` from the next-autorun payload.  This worker
-    ignores that list and logs a single line per poll when it's non-empty.
-  - Driving the question/decision interactive UX.
+HITL resume (Kanban #986): after the normal next-autorun handling, the worker
+also walks `pending_questions` and resumes any task that:
+  - is BLOCKED with halt_reason in {'question', 'decision'}, AND
+  - has at least one valid answer in question_payload.answer_history newer
+    than the last cursor stored in resume_context.last_consumed_answered_at.
+For each such task it validates the answer, calls
+`hitl.resume_graph(...)` with `Command(resume=<answer>)`, and PATCHes the
+result back. Validation failures + checkpoint-missing + engine-crash all map
+to structured halt_reason strings (see hitl.HITLError subclasses); the
+worker NEVER raw-concatenates the answer into the prompt (design doc §5.3).
 
 Error isolation invariant: one bad task MUST NOT crash the loop.  Every
 iteration body is wrapped in try/except inside `run_worker_loop` — only
@@ -42,6 +48,14 @@ from typing import Any
 
 import httpx
 
+from hitl import (
+    CheckpointMissingError,
+    EngineCrashError,
+    HITLError,
+    InvalidAnswerError,
+    resume_graph,
+    validate_answer,
+)
 from llm import resolve_model, resolve_provider
 
 logger = logging.getLogger("langgraph.worker")
@@ -162,7 +176,19 @@ async def _poll_once(
     cfg: WorkerConfig,
     headers: dict[str, str],
 ) -> None:
-    """One polling tick.  GET next-autorun, optionally pick + invoke + PATCH."""
+    """One polling tick.  GET next-autorun, optionally pick + invoke + PATCH.
+
+    Order of work per tick (each step is best-effort and isolated):
+      a. Process HITL resumes for pending_questions whose answer_history has
+         advanced since the last resume cursor — done BEFORE picking a new
+         next_task so resumed work doesn't starve under a steady inflow.
+      b. (Legacy #852b note) `resume_tasks` (BLOCKED tasks whose dependency
+         blocker is now DONE) — the api returns these but the worker does NOT
+         drive them through the graph (no checkpoint to resume from; their
+         halt_reason was set by Lead, not by the engine). Logged at INFO only.
+      c. Pick `next_task` and run it through the normal IN_PROGRESS → DONE /
+         BLOCKED path.
+    """
     # 1) Poll the Kanban for the next eligible task.
     resp = await client.get(f"{cfg.api_base}/api/tasks/next-autorun", headers=headers)
     if resp.status_code != 200:
@@ -172,12 +198,30 @@ async def _poll_once(
         return
     payload = resp.json()
 
-    # HITL resume is deferred (#852b). Log once per poll when there's pending
-    # work the worker isn't yet equipped to handle, so operators see it in logs.
+    # 1a) HITL resume — walk pending_questions and resume any task whose
+    # answer_history has advanced since the last consumed cursor. Errors are
+    # caught + logged per-task; one bad resume MUST NOT block the rest of
+    # the tick (parity with run_worker_loop's loop-isolation contract).
+    pending_questions = payload.get("pending_questions") or []
+    for q_task in pending_questions:
+        try:
+            await _maybe_resume_hitl_task(client, graph_module, cfg, q_task, headers)
+        except Exception:
+            logger.exception(
+                "hitl resume crashed for task %s; continuing tick",
+                q_task.get("id"),
+            )
+
+    # 1b) The api's `resume_tasks` field is for BLOCKED-by-dependency tasks
+    # (blocker now DONE) — those have NO engine checkpoint (their halt was
+    # set by Lead via halt_reason text), so the worker can't ainvoke(Command)
+    # them. Log once per poll so the gap remains visible.
     resume_tasks = payload.get("resume_tasks") or []
     if resume_tasks:
         logger.info(
-            "next-autorun returned %d resume_tasks — HITL resume not yet implemented (see #852b)",
+            "next-autorun returned %d resume_tasks (dependency-resumable) — "
+            "not consumed by the engine (no checkpoint state); HITL resume "
+            "consumes pending_questions instead",
             len(resume_tasks),
         )
 
@@ -329,3 +373,257 @@ async def _patch_task(
 def _now_iso() -> str:
     """UTC ISO-8601 timestamp the API accepts on PATCH (started_at, completed_at)."""
     return datetime.now(timezone.utc).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# HITL resume (Kanban #986)
+# ---------------------------------------------------------------------------
+
+
+def _last_valid_answer(question_payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Return the last entry in answer_history with is_valid=True, or None.
+
+    Walks backwards (newest first) so a long history is cheap. None when the
+    payload is missing, answer_history is empty, or every entry is invalidated.
+    """
+    if not question_payload:
+        return None
+    history = question_payload.get("answer_history") or []
+    for entry in reversed(history):
+        if entry.get("is_valid"):
+            return entry
+    return None
+
+
+def _needs_resume(task: dict[str, Any]) -> tuple[bool, str | None]:
+    """Decide whether `task` is HITL-paused with an unconsumed answer.
+
+    Returns (needs_resume, answer_value). `needs_resume=False` (the common
+    case — task is awaiting input, not yet answered) returns (False, None)
+    without raising. Idempotency contract: a task already resumed (cursor
+    advanced past the newest answer) returns (False, None) so the worker
+    skips it.
+    """
+    halt = task.get("halt_reason")
+    # Only paused-for-HITL tasks are candidates. halt_reason='question' or
+    # 'decision' is the worker-stamped marker; LLM-stamped halt_reason strings
+    # (e.g., 'tool_permission_review: ...') are NOT auto-resumable here.
+    if halt not in ("question", "decision"):
+        return False, None
+    answer = _last_valid_answer(task.get("question_payload"))
+    if answer is None:
+        return False, None
+    answered_at = answer.get("answered_at")
+    if not answered_at:
+        # Malformed entry (shouldn't happen with append_answer's shape) —
+        # treat as not resumable rather than crash the tick.
+        return False, None
+    # Idempotency cursor: resume_context.last_consumed_answered_at carries the
+    # ISO timestamp of the most recent answer the worker has consumed for
+    # this task. If the latest valid answer's answered_at is <= that cursor,
+    # the worker has already resumed (or attempted to) — skip.
+    ctx = task.get("resume_context") or {}
+    cursor = ctx.get("last_consumed_answered_at")
+    if cursor is not None and answered_at <= cursor:
+        return False, None
+    return True, answer.get("value")
+
+
+async def _maybe_resume_hitl_task(
+    client: httpx.AsyncClient,
+    graph_module: ModuleType,
+    cfg: WorkerConfig,
+    task: dict[str, Any],
+    headers: dict[str, str],
+) -> None:
+    """Inspect one pending_questions task; resume it if it has an unconsumed answer.
+
+    No-op on tasks that aren't HITL-paused (halt_reason mismatch), have no
+    valid answer, or whose latest answer was already consumed. Otherwise
+    delegates to `_resume_hitl_task` which does the actual graph invoke +
+    PATCH.
+    """
+    needs, raw_answer = _needs_resume(task)
+    if not needs:
+        return
+    await _resume_hitl_task(client, graph_module, cfg, task, raw_answer, headers)
+
+
+async def _resume_hitl_task(
+    client: httpx.AsyncClient,
+    graph_module: ModuleType,
+    cfg: WorkerConfig,
+    task: dict[str, Any],
+    raw_answer: Any,
+    headers: dict[str, str],
+) -> None:
+    """Resume a single HITL-paused task with `raw_answer` from answer_history.
+
+    Sequence:
+      1. Validate the answer against question_payload (strict — Q3=A).
+      2. Resolve compiled graph from graph_module; if missing, PATCH BLOCKED.
+      3. Call `hitl.resume_graph(...)` — wraps `graph.ainvoke(Command(resume=...))`.
+      4. Map the final state to a PATCH body:
+           - halt_reason absent → DONE (process_status=5, completed_at, etc.)
+           - halt_reason present → BLOCKED (process_status=4, halt_reason carried)
+           - HITLError raised → BLOCKED with halt_reason = error's halt_code
+      5. Stamp resume_context.last_consumed_answered_at on the PATCH so a
+         duplicate poll doesn't re-resume.
+    """
+    task_id = task["id"]
+    question_payload = task.get("question_payload")
+    # Capture the answered_at NOW so we can stamp the cursor on the PATCH.
+    # _last_valid_answer was just called inside _needs_resume; re-derive here
+    # so this helper stays callable independently for testing.
+    last_answer = _last_valid_answer(question_payload)
+    answered_at = (last_answer or {}).get("answered_at")
+
+    # 1) Validate.
+    try:
+        validated = validate_answer(question_payload, raw_answer)
+    except InvalidAnswerError as exc:
+        logger.warning(
+            "hitl resume: task %d invalid answer (%s): %s",
+            task_id,
+            exc.halt_code,
+            exc,
+        )
+        await _patch_task(
+            client,
+            cfg,
+            headers,
+            task_id,
+            _build_resume_halt_body(exc, answered_at),
+        )
+        return
+
+    # 2) Resolve graph.
+    compiled = getattr(graph_module, "graph", None)
+    if compiled is None:
+        logger.error(
+            "hitl resume: graph_module.graph is None — PATCHing task %d BLOCKED",
+            task_id,
+        )
+        await _patch_task(
+            client,
+            cfg,
+            headers,
+            task_id,
+            {
+                "process_status": STATUS_BLOCKED,
+                "halt_reason": "langgraph error: compiled_graph not initialized",
+            },
+        )
+        return
+
+    # 3) Invoke resume.
+    try:
+        final_state = await resume_graph(compiled, task_id, validated)
+    except CheckpointMissingError as exc:
+        logger.warning("hitl resume: task %d checkpoint missing", task_id)
+        await _patch_task(
+            client,
+            cfg,
+            headers,
+            task_id,
+            _build_resume_halt_body(exc, answered_at),
+        )
+        return
+    except EngineCrashError as exc:
+        logger.exception("hitl resume: task %d engine crash", task_id)
+        await _patch_task(
+            client,
+            cfg,
+            headers,
+            task_id,
+            _build_resume_halt_body(exc, answered_at),
+        )
+        return
+    except asyncio.CancelledError:
+        logger.info("hitl resume: task %d interrupted by shutdown", task_id)
+        raise
+
+    # 4) Map final state to PATCH body.
+    halt = final_state.get("halt_reason") if isinstance(final_state, dict) else None
+    final_result = ""
+    if isinstance(final_state, dict):
+        final_result = (final_state.get("final_result") or "").strip()
+    # Also check for a fresh __interrupt__ — the graph paused again (multi-step
+    # HITL). Treat as BLOCKED with halt_reason='question' (default; the node's
+    # own emission semantics would have set halt_reason if it wanted a
+    # different value).
+    fresh_interrupt = (
+        isinstance(final_state, dict) and final_state.get("__interrupt__")
+    )
+
+    if halt is None and not fresh_interrupt:
+        body: dict[str, Any] = {
+            "process_status": STATUS_DONE,
+            "completed_at": _now_iso(),
+            "status_change_reason": (final_result or "(resumed; no final_result)")[
+                :_REASON_MAX
+            ],
+            # Clear halt_reason now that the engine finished — leaving it set
+            # would keep the FE banner up.
+            "halt_reason": None,
+            "is_pending": False,
+            "resume_context": _stamped_resume_context(
+                task.get("resume_context"), answered_at
+            ),
+        }
+    else:
+        # Either an explicit halt_reason from a node or a fresh interrupt.
+        if fresh_interrupt and halt is None:
+            halt_value = "question"
+        else:
+            halt_value = str(halt) if halt is not None else "question"
+        body = {
+            "process_status": STATUS_BLOCKED,
+            "halt_reason": halt_value[:_HALT_REASON_MAX],
+            "is_pending": True,
+            "status_change_reason": (final_result or f"halted: {halt_value}")[
+                :_REASON_MAX
+            ],
+            "resume_context": _stamped_resume_context(
+                task.get("resume_context"), answered_at
+            ),
+        }
+
+    await _patch_task(client, cfg, headers, task_id, body)
+    logger.info(
+        "hitl resume: task %d resumed; halt=%s",
+        task_id,
+        body.get("halt_reason"),
+    )
+
+
+def _build_resume_halt_body(
+    exc: HITLError, answered_at: str | None
+) -> dict[str, Any]:
+    """PATCH body for a HITL failure (invalid answer / missing checkpoint / crash).
+
+    Always BLOCKED + is_pending=true + halt_reason from the exception's
+    halt_code. The cursor is stamped so a duplicate poll doesn't retry the
+    same broken answer endlessly (the user must invalidate + re-answer to
+    create a new cursor target).
+    """
+    return {
+        "process_status": STATUS_BLOCKED,
+        "halt_reason": exc.as_halt_reason()[:_HALT_REASON_MAX],
+        "is_pending": True,
+        "status_change_reason": str(exc)[:_REASON_MAX],
+        "resume_context": _stamped_resume_context(None, answered_at),
+    }
+
+
+def _stamped_resume_context(
+    existing: dict[str, Any] | None, answered_at: str | None
+) -> dict[str, Any]:
+    """Return a resume_context dict with `last_consumed_answered_at` set.
+
+    Preserves any other keys the caller had stashed (free-form per the schema).
+    """
+    base = dict(existing or {})
+    if answered_at:
+        base["last_consumed_answered_at"] = answered_at
+    return base
