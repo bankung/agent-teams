@@ -16,6 +16,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from decimal import Decimal as _Decimal
+
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -24,6 +26,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     SmallInteger,
     String,
     Text,
@@ -259,6 +262,25 @@ class Task(Base):
     # same lane when both ps=TODO) lives app-side in routers/tasks.py.
     sort_order: Mapped[float | None] = mapped_column(
         DOUBLE_PRECISION,
+        nullable=True,
+    )
+
+    # Kanban #944 (2026-05-16): per-task LLM-cost estimation captured on
+    # done-flip (process_status: <5 → 5). All three NULL until first close;
+    # idempotent re-flip preserves the first-close values. Heuristic shape
+    # documented in migration 0025's docstring and
+    # src/services/task_cost_estimator.py. Read-only on the wire (TaskRead
+    # exposes; TaskCreate / TaskUpdate do NOT — server-computed only).
+    estimated_input_tokens: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    estimated_output_tokens: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    estimated_cost_usd: Mapped[_Decimal | None] = mapped_column(
+        Numeric(10, 4),
         nullable=True,
     )
 

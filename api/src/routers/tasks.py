@@ -10,6 +10,8 @@ returns the row regardless of soft-delete status (per standards/postgresql/soft-
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi import status as http_status
 from sqlalchemy import or_, select
@@ -21,6 +23,7 @@ from sqlalchemy.sql.elements import ClauseElement
 
 from src.constants import RecordStatus, TaskInteractionKind, TaskRunMode, TaskStatus
 from src.db import get_or_404, get_session
+from src.models.session import SessionRun
 from src.models.task import Task
 from src.schemas.ai_task import ParseRequest, ParseResponse
 from src.schemas.task import NextAutorunResponse, TaskCreate, TaskRead, TaskReorder, TaskUpdate
@@ -34,6 +37,7 @@ from src.services.ai_task_parser import (
 from src.services.is_pending import assert_is_pending_with_process_status
 from src.services.recurrence import fire_template, next_cron_fire
 from src.services.run_mode import assert_consent_for_run_mode
+from src.services.task_cost_estimator import estimate_task_cost
 from src.services.task_interaction import (
     append_answer,
     auto_unblock_dependents,
@@ -50,6 +54,8 @@ from src.services.session_project import (
 )
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+logger = logging.getLogger(__name__)
 
 # Source-text-locked (#122). Pinned by test_post_task_400_detail_strings + test_tasks_scheduled_at
 _DETAIL_SCHEDULED_XOR_TEMPLATE = (
@@ -1073,6 +1079,49 @@ async def update_task(
         field = _STATUS_TIMESTAMP_FIELDS.get(new_process_status)
         if field is not None and getattr(task, field) is None:
             updates.setdefault(field, func.now())
+
+    # Kanban #944 (2026-05-16): per-task LLM-cost estimation on done-flip.
+    # Fires only when the PATCH transitions process_status from <5 to 5 AND
+    # the task has never been estimated before (idempotent re-flip: a row
+    # whose estimated_cost_usd is non-null preserves the first-close values).
+    # Estimator failures (unknown model, etc.) are swallowed + logged so a
+    # cost-estimation bug never blocks a done flip. The status_change_reason
+    # for output-char counting is the resolved value (payload if present, else
+    # the existing row's stored value).
+    if (
+        new_process_status == TaskStatus.DONE
+        and task.process_status < TaskStatus.DONE
+        and task.estimated_cost_usd is None
+    ):
+        try:
+            runs_result = await session.execute(
+                select(SessionRun).where(SessionRun.task_id == task_id)
+            )
+            runs = list(runs_result.scalars())
+            # Build a snapshot object that reflects the resolved-final values
+            # for the heuristic — the PATCH may set status_change_reason in
+            # the SAME body that closes the task (the typical use-case).
+            resolved_reason = (
+                updates.get("status_change_reason")
+                if "status_change_reason" in updates
+                else task.status_change_reason
+            )
+
+            class _Snap:
+                title = task.title
+                description = task.description
+                status_change_reason = resolved_reason
+
+            est = estimate_task_cost(_Snap(), runs)
+            updates.setdefault("estimated_input_tokens", est["tokens_in"])
+            updates.setdefault("estimated_output_tokens", est["tokens_out"])
+            updates.setdefault("estimated_cost_usd", est["cost_usd"])
+        except Exception as exc:  # noqa: BLE001 - swallow + log; never crash the PATCH
+            logger.warning(
+                "task %s: cost estimation failed (%s); leaving estimate fields NULL",
+                task_id,
+                exc,
+            )
 
     # Skip writes where the new value equals the existing one — reduces audit-row
     # noise on PATCHes that touch only some fields. The lifecycle stamping above

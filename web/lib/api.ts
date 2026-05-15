@@ -90,6 +90,13 @@ export type TaskRead = {
   question_payload: QuestionPayload | null; // #834 — question/options/history; non-null when interaction_kind != "work"
   resume_context: Record<string, unknown> | null; // #834 — opaque context passed back on resume
   status_change_reason: string | null; // #854 — free-form rationale captured on a process_status flip (most commonly ps=6 CANCELLED). Audit-trigger snapshot includes it.
+  // #944 — per-task LLM-cost estimate; populated on done-flip. Null on legacy
+  // rows + tasks that never reached DONE. estimated_cost_usd is the BE Decimal
+  // serialized as a string (e.g. "0.0001", 4 decimals) — keep as string on
+  // the wire to avoid float rounding.
+  estimated_input_tokens: number | null;
+  estimated_output_tokens: number | null;
+  estimated_cost_usd: string | null;
   created_at: string;
   updated_at: string;
   started_at: string | null;

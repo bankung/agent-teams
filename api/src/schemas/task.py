@@ -27,6 +27,7 @@ from __future__ import annotations
 import zoneinfo
 from collections.abc import Callable
 from datetime import datetime
+from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from croniter import croniter
@@ -744,6 +745,14 @@ class TaskRead(BaseModel):
     question_payload: QuestionPayload | None
     # Kanban #830 — free-form JSONB. Any | None at read time (no shape constraint).
     resume_context: dict[str, Any] | None
+    # Kanban #944 (2026-05-16) — per-task LLM-cost estimate captured on
+    # done-flip (process_status: <5 → 5). NULL until first close; idempotent
+    # re-flip preserves the first-close values. Read-only — TaskCreate /
+    # TaskUpdate do NOT accept these (server-computed only).
+    # Backfilled to NULL on existing rows by migration 0025's nullable=true.
+    estimated_input_tokens: int | None
+    estimated_output_tokens: int | None
+    estimated_cost_usd: Decimal | None
 
 
 class NextAutorunResponse(BaseModel):

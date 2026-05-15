@@ -46,6 +46,14 @@ function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
+// #944 — compact tokens (847 / 12k / 1.2M). Matches BE estimator output;
+// 4-decimal "$X.XXXX" cost kept verbatim from the wire string.
+function formatTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${Math.round(n / 100) / 10}k`.replace(/\.0k$/, "k");
+  return `${Math.round(n / 100_000) / 10}M`.replace(/\.0M$/, "M");
+}
+
 // TaskDetail — right-side drawer (#771); backdrop + Escape + click-outside, #818
 export function TaskDetail({
   task,
@@ -195,6 +203,7 @@ export function TaskDetail({
             >
               {task.title}
             </h2>
+            <CostStrip task={task} />
           </div>
           <button
             type="button"
@@ -458,6 +467,33 @@ export function TaskDetail({
         </div>
       </aside>
     </div>
+  );
+}
+
+// #944 — compact cost strip rendered under the task title in the header.
+// Hidden entirely when all 3 estimate fields are null (legacy / never-closed tasks).
+// Format: "~$0.0001 · 12k in / 4k out" — primary cost left, token breakdown right.
+function CostStrip({ task }: { task: TaskRead }) {
+  const cost = task.estimated_cost_usd;
+  const inTok = task.estimated_input_tokens;
+  const outTok = task.estimated_output_tokens;
+  if (cost === null && inTok === null && outTok === null) return null;
+
+  const parts: string[] = [];
+  if (cost !== null) parts.push(`~$${cost}`);
+  if (inTok !== null || outTok !== null) {
+    const inStr = inTok !== null ? `${formatTokens(inTok)} in` : "— in";
+    const outStr = outTok !== null ? `${formatTokens(outTok)} out` : "— out";
+    parts.push(`${inStr} / ${outStr}`);
+  }
+
+  return (
+    <p
+      data-cost-strip
+      className="mt-1 text-xs text-zinc-500 dark:text-zinc-400"
+    >
+      {parts.join(" · ")}
+    </p>
   );
 }
 
