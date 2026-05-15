@@ -20,8 +20,17 @@ feature-flagged OFF, see `tools/http/__init__.py`). Permission gate in
 """
 
 from .base import InvokeContext, Tier, Tool, ToolInput, ToolResult
+from .iteration_limit import MAX_TOOL_LOOP_ITERATIONS, TOOL_LOOP_HALT_REASON
 from .permission_gate import PermissionDecision, check_permission
 from .registry import GLOBAL_REGISTRY, ToolNotFoundError, ToolRegistry
+from .sandbox import (
+    OUTPUT_CAP_BYTES,
+    OUTPUT_CAP_MARKER,
+    apply_output_cap,
+    apply_sandbox,
+    check_hard_kill_drift,
+    fs_boundary_check,
+)
 
 # Trigger registration side-effects. The order doesn't matter (each tool's
 # `name` attr is unique by design), but we list them for readability.
@@ -33,12 +42,20 @@ from . import http  # noqa: F401  — registers http_get, http_post (unless prov
 __all__ = [
     "GLOBAL_REGISTRY",
     "InvokeContext",
+    "MAX_TOOL_LOOP_ITERATIONS",
+    "OUTPUT_CAP_BYTES",
+    "OUTPUT_CAP_MARKER",
     "PermissionDecision",
+    "TOOL_LOOP_HALT_REASON",
     "Tier",
     "Tool",
     "ToolInput",
     "ToolNotFoundError",
     "ToolRegistry",
     "ToolResult",
+    "apply_output_cap",
+    "apply_sandbox",
+    "check_hard_kill_drift",
     "check_permission",
+    "fs_boundary_check",
 ]

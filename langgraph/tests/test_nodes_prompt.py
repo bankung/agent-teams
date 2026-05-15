@@ -1,4 +1,4 @@
-"""Prompt-shape regression tests for backend_specialist_node (Kanban #907).
+"""Prompt-shape regression tests for backend_specialist_node (Kanban #907 + #981).
 
 Real-LLM smoke runs against test-headless (project 590) on 2026-05-14 produced
 identical wander patterns across two unrelated models (llama3.2:3b #902 +
@@ -14,6 +14,12 @@ plan-noun returns, Task-N wrapper returns) trips here BEFORE another real-LLM
 smoke cycle is needed. We mock `make_chat_model` at the `nodes` module level
 (it's imported `from llm import make_chat_model`, so the binding lives on
 `nodes`) and capture the prompt list passed to `.invoke()`.
+
+#981 made `backend_specialist_node` `async def` to accommodate the tool-use
+loop. Existing prompt tests still cover the no-tools fallback path: when
+`tools_config` is None (the test default — we don't stub the api), the loop
+falls back to single-shot inference. So the SystemMessage + HumanMessage
+shape assertions remain load-bearing.
 """
 
 from __future__ import annotations
@@ -32,16 +38,39 @@ def _install_capture(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """Patch nodes.make_chat_model to a fake whose .invoke() records the prompt.
 
     Returns a dict that will have key 'prompt' populated after the node runs.
+    The fake exposes ONLY `invoke` (sync) — no `ainvoke` — which exercises
+    the `_ainvoke_model` sync-fallback path. This is the cheapest way to
+    keep these tests independent of asyncio mocking machinery.
     """
     captured: dict[str, Any] = {}
 
     def _invoke(prompt: list[Any]) -> AIMessage:
         captured["prompt"] = prompt
+        # No tool_calls attribute → loop exits immediately on first turn
+        # (the post-#981 single-shot path).
         return AIMessage(content="MOCKED")
 
     fake_model = SimpleNamespace(invoke=_invoke)
     monkeypatch.setattr(nodes, "make_chat_model", lambda: fake_model)
+    # Force the no-tools fallback by stubbing the tools_config fetch.
+    # The prompt tests don't care about tool wiring; they only need the
+    # first model.invoke() to receive [SystemMessage, HumanMessage].
+    async def _fake_fetch(project_id):  # type: ignore[no-untyped-def]
+        return None
+
+    monkeypatch.setattr(nodes, "_fetch_tools_config", _fake_fetch)
     return captured
+
+
+def _run(state: dict[str, Any]) -> dict[str, Any]:
+    """Run the (async) node from a sync test context.
+
+    The existing tests were sync; #981 promoted the node to `async def`.
+    Wrapping each call in `asyncio.run` keeps the test file shape unchanged.
+    """
+    import asyncio
+
+    return asyncio.run(backend_specialist_node(state))
 
 
 def test_backend_prompt_drops_fastapi_postgres_specialist_plan_anchors(
@@ -63,7 +92,7 @@ def test_backend_prompt_drops_fastapi_postgres_specialist_plan_anchors(
         "brief": "List 3 reasons to use Pydantic over dataclasses",
         "assigned_role": 2,
     }
-    backend_specialist_node(state)
+    _run(state)
 
     sys_msg = captured["prompt"][0]
     assert isinstance(sys_msg, SystemMessage)
@@ -86,7 +115,7 @@ def test_backend_prompt_contains_generic_persona_and_anti_scaffolding(
         "brief": "anything",
         "assigned_role": 2,
     }
-    backend_specialist_node(state)
+    _run(state)
 
     sys_lower = captured["prompt"][0].content.lower()
     assert "expert technical assistant" in sys_lower
@@ -102,7 +131,7 @@ def test_backend_prompt_brief_sent_verbatim_no_task_n_wrapper(
     captured = _install_capture(monkeypatch)
     brief = "List 3 reasons to use Pydantic over dataclasses"
     state = {"task_id": 42, "brief": brief, "assigned_role": 2}
-    backend_specialist_node(state)
+    _run(state)
 
     human_msg = captured["prompt"][1]
     assert isinstance(human_msg, HumanMessage)
@@ -121,7 +150,7 @@ def test_backend_prompt_returns_state_contract(
     """
     _install_capture(monkeypatch)
     state = {"task_id": 7, "brief": "what is JWT", "assigned_role": 2}
-    out = backend_specialist_node(state)
+    out = _run(state)
 
     assert isinstance(out, dict)
     assert "messages" in out
@@ -148,7 +177,7 @@ def test_backend_prompt_preserves_brief_across_shapes(
     """
     captured = _install_capture(monkeypatch)
     state = {"task_id": 100, "brief": brief, "assigned_role": 2}
-    backend_specialist_node(state)
+    _run(state)
 
     human_msg = captured["prompt"][1]
     assert human_msg.content == brief
@@ -163,7 +192,7 @@ def test_backend_prompt_empty_brief_does_not_crash(
     """
     captured = _install_capture(monkeypatch)
     state = {"task_id": 1, "assigned_role": 2}  # no brief key at all
-    out = backend_specialist_node(state)
+    out = _run(state)
 
     assert captured["prompt"][1].content == ""
     assert "final_result" in out

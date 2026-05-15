@@ -1,4 +1,4 @@
-"""Specialist-tool audit-trail wiring — langgraph-side (Kanban #980).
+"""Specialist-tool audit-trail wiring — langgraph-side (Kanban #980 + #981).
 
 Thin HTTP wrapper that the specialist tool-use loop calls AFTER every
 tool invocation to record one row in the `tool_calls` audit table.
@@ -7,19 +7,22 @@ langgraph container does NOT share a source tree with the api
 container (separate pyproject + container — see worker.py preamble),
 so direct DB writes from here are intentionally avoided.
 
-This module is the langgraph-side surface. Wiring it into the
-specialist-node tool-use loop is the job of **Kanban #981**; #980 just
-ships the callable + the audit table.
+Endpoint contract (matches `api/src/routers/tool_calls.py::create_tool_call`):
 
-Note: as of #980 the FastAPI side exposes `record_tool_call` as a
-Python service (no public POST endpoint — clients cannot insert audit
-rows). For #981's wiring choice see the design lock in Lead's spawn
-brief: the cleaner option is to run the writer inside the api
-container's process (the api and langgraph containers share a DB and
-the langgraph container's tool-use loop posts heartbeats via the api
-already — adding a private POST endpoint for audit rows is the natural
-next slice). Until that endpoint lands, `record_tool_invocation` is a
-no-op stub that logs the call (so #981 has a clear seam to fill).
+    POST {API_BASE}/api/tasks/{task_id}/tool-calls
+    Headers: X-Project-Id: <project_id> (required)
+             Content-Type: application/json
+    Body:    {tool_name, tier, input_args, result, permission_decision}
+    Success: 201 Created + ToolCallRead body (we discard the body —
+             the langgraph side already knows what it wrote)
+
+Failure isolation (Kanban #949 Q9 lock): the audit log is a forensic
+aid, not a hard dependency. A transport-layer failure (connection
+refused, 5xx, timeout) is LOGGED but does NOT raise — the loop
+continues. The DB-side commit happens BEFORE the api returns 201
+(synchronous-write invariant on the api side), so a 2xx response is
+proof of durability. Only on the langgraph side do we tolerate
+transport flakiness.
 """
 
 from __future__ import annotations
@@ -32,9 +35,13 @@ import httpx
 
 logger = logging.getLogger("langgraph.audit")
 
-# Same env-var as the worker; same default. Kept as a module-level
-# constant so #981 can import it directly when wiring the POST call.
+# Same env-var as the worker; same default. The compose-internal hostname
+# resolves to the api service from inside the langgraph container.
 DEFAULT_API_BASE = "http://api:8456"
+
+# Module-level httpx timeout for audit POSTs. Smaller than the worker's 30s
+# because audit calls are tiny + frequent — we want them snappy or failed.
+_AUDIT_TIMEOUT_S: float = 5.0
 
 
 def _api_base() -> str:
@@ -48,6 +55,19 @@ def _api_base() -> str:
         .strip()
         .rstrip("/")
     )
+
+
+def _project_id_header() -> dict[str, str]:
+    """Build the X-Project-Id header from the worker's env-var.
+
+    Mirrors `worker.WorkerConfig`: `LANGGRAPH_PROJECT_ID` is the source
+    of truth for which project this engine is bound to. Missing / empty
+    → empty dict (the api endpoint returns 400, which the caller logs).
+    """
+    pid = os.getenv("LANGGRAPH_PROJECT_ID", "").strip()
+    if not pid:
+        return {}
+    return {"X-Project-Id": pid}
 
 
 async def record_tool_invocation(
@@ -74,34 +94,12 @@ async def record_tool_invocation(
       - Builds the POST payload synchronously (raises on bad inputs so
         bugs surface loudly in dev — the loop's invariant is "every
         invocation has an audit row").
-      - **Stub for #980:** logs the payload at INFO level and returns.
-        The actual POST to FastAPI lands in **#981** alongside the
-        sandbox-enforcement wiring; the writer service
-        (`api/src/services/tool_call_writer.py`) is already in place
-        and tested at the model layer.
-
-    Failure isolation: this function MUST NOT raise on transport
-    errors. The audit log is a forensic aid, not a hard dependency of
-    the agent loop — losing one row is better than crashing a running
-    task. (The synchronous-write invariant in Q9 lives on the api side,
-    inside the `record_tool_call` service: the api commits before
-    returning. On the langgraph side, "synchronous" means "we await the
-    HTTP call before continuing the loop"; we still tolerate transport
-    failure.)
+      - Issues a synchronous POST via httpx.AsyncClient (5s timeout).
+      - Logs a WARNING on transport failure or non-201 response and
+        returns without raising — see module docstring.
     """
     payload = _build_payload(task_id, tool, input_args, result, decision)
-    # #980 ships the stub. #981 replaces the body with the real POST.
-    # The stub logs at INFO so dev can grep for "tool_call_audit" while
-    # exercising the worker + specialist node end-to-end.
-    logger.info(
-        "tool_call_audit (stub): task=%d tool=%s tier=%s decision=%s success=%s duration_ms=%s",
-        task_id,
-        payload["tool_name"],
-        payload["tier"],
-        payload["permission_decision"],
-        payload["result"]["success"],
-        payload["result"]["duration_ms"],
-    )
+    await _post_audit_row(task_id, payload)
 
 
 def _build_payload(
@@ -116,11 +114,35 @@ def _build_payload(
     Tolerates a `result` that's already a dict (the loop may have
     serialised it before logging) OR a Pydantic v2 model (the typical
     case — `ToolResult`). Same for `decision` (enum value or str).
+
+    NOTE: `task_id` is in the URL path, NOT the body — the api endpoint
+    derives it from `/api/tasks/{task_id}/tool-calls`. We keep the
+    `task_id` kwarg here for signature stability and as a sanity field
+    for log lines, but it's not serialised into the POST body. Per the
+    `ToolCallCreate` Pydantic schema (extra='forbid'), including
+    `task_id` would 422.
     """
     if hasattr(result, "model_dump"):
         result_dict = result.model_dump()
     else:
         result_dict = dict(result)
+
+    # ToolResult has 6 fields (success/error_code/error_msg/output/
+    # retry_safe/duration_ms). The api-side ToolCallResult uses the
+    # exact same shape — pass through. If the dict has unknown extras
+    # (forward-compat fields, etc.) we filter to the known set so the
+    # api's `extra='forbid'` doesn't 422 us.
+    _KNOWN_RESULT_KEYS = {
+        "success",
+        "error_code",
+        "error_msg",
+        "output",
+        "retry_safe",
+        "duration_ms",
+    }
+    filtered_result = {
+        k: v for k, v in result_dict.items() if k in _KNOWN_RESULT_KEYS
+    }
 
     tier_value = (
         tool.tier.value if hasattr(tool.tier, "value") else str(tool.tier)
@@ -130,36 +152,47 @@ def _build_payload(
     )
 
     return {
-        "task_id": task_id,
         "tool_name": tool.name,
         "tier": tier_value,
         "input_args": dict(input_args or {}),
-        "result": result_dict,
+        "result": filtered_result,
         "permission_decision": decision_value,
     }
 
 
-# ---------------------------------------------------------------------------
-# Forward-compat slot for #981 — keep the call site stable so the only
-# diff in #981 is uncommenting these lines + wiring them into
-# `record_tool_invocation`. The endpoint URL + payload shape are pinned
-# here to make the #981 spawn brief trivial.
-# ---------------------------------------------------------------------------
+async def _post_audit_row(task_id: int, payload: dict[str, Any]) -> None:
+    """POST the audit payload synchronously; log + swallow transport errors.
 
-
-async def _post_audit_row(payload: dict[str, Any]) -> None:  # pragma: no cover
-    """#981 will route record_tool_invocation through this helper.
-
-    Currently unused. The endpoint shape is provisional — the api side
-    must add `POST /api/tasks/{task_id}/tool-calls` (internal only,
-    same X-Project-Id discipline as the GET) before this can fire. See
-    #981 spawn brief.
+    The api endpoint commits BEFORE returning 201 — a 201 response means
+    the row is durable. Anything else (transport error, non-2xx) is
+    logged at WARNING and the function returns; the loop continues.
     """
-    task_id = payload["task_id"]
     url = f"{_api_base()}/api/tasks/{task_id}/tool-calls"
+    headers = {
+        **_project_id_header(),
+        "Content-Type": "application/json",
+    }
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            await client.post(url, json=payload)
+        async with httpx.AsyncClient(timeout=_AUDIT_TIMEOUT_S) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+        if resp.status_code != 201:
+            logger.warning(
+                "tool_call_audit POST returned %d (expected 201): "
+                "task=%d tool=%s body=%r",
+                resp.status_code,
+                task_id,
+                payload.get("tool_name"),
+                resp.text[:200],
+            )
+        else:
+            logger.info(
+                "tool_call_audit: task=%d tool=%s tier=%s decision=%s success=%s",
+                task_id,
+                payload["tool_name"],
+                payload["tier"],
+                payload["permission_decision"],
+                payload["result"].get("success"),
+            )
     except httpx.HTTPError as exc:
         logger.warning(
             "tool_call_audit POST failed (non-fatal): task=%d url=%s err=%r",

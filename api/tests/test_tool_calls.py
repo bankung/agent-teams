@@ -584,6 +584,228 @@ async def test_get_tool_calls_returns_empty_list_when_none_recorded(
         await client.delete(f"/api/tasks/{task_id}", headers=headers)
 
 
+# =============================================================================
+# 4. POST /api/tasks/{task_id}/tool-calls — internal audit-write endpoint (#981)
+# =============================================================================
+
+
+def _post_body(
+    *,
+    tool_name: str = "file_edit",
+    tier: str = "write",
+    success: bool = True,
+    output: str | None = "patched",
+    error_code: str | None = None,
+    error_msg: str | None = None,
+    duration_ms: int = 42,
+    permission_decision: str = "auto_allow",
+    input_args: dict | None = None,
+) -> dict:
+    """Build a valid ToolCallCreate body for the POST endpoint."""
+    return {
+        "tool_name": tool_name,
+        "tier": tier,
+        "input_args": input_args if input_args is not None else {"path": "/x"},
+        "result": {
+            "success": success,
+            "error_code": error_code,
+            "error_msg": error_msg,
+            "output": output,
+            "retry_safe": True,
+            "duration_ms": duration_ms,
+        },
+        "permission_decision": permission_decision,
+    }
+
+
+@pytest.mark.asyncio
+async def test_post_tool_call_201_persists_row(client) -> None:
+    """Happy path — POST writes a row + returns 201 + ToolCallRead body."""
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    create = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k981-post-201"},
+        headers=headers,
+    )
+    task_id = create.json()["id"]
+
+    try:
+        resp = await client.post(
+            f"/api/tasks/{task_id}/tool-calls",
+            json=_post_body(),
+            headers=headers,
+        )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["tool_name"] == "file_edit"
+        assert body["tier"] == "write"
+        assert body["success"] is True
+        assert body["output_summary"] == "patched"
+        assert body["duration_ms"] == 42
+        assert body["permission_decision"] == "auto_allow"
+        assert body["task_id"] == task_id
+        assert body["id"] > 0
+
+        # GET on the same task surfaces the new row.
+        get_resp = await client.get(
+            f"/api/tasks/{task_id}/tool-calls", headers=headers
+        )
+        assert get_resp.status_code == 200
+        rows = get_resp.json()
+        assert len(rows) == 1
+        assert rows[0]["id"] == body["id"]
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_post_tool_call_400_when_header_missing(client) -> None:
+    """X-Project-Id header is mandatory (same gate as GET)."""
+    resp = await client.post(
+        "/api/tasks/1/tool-calls",
+        json=_post_body(),
+    )
+    assert resp.status_code == 400
+    assert resp.json() == {
+        "detail": "X-Project-Id header is required for task endpoints"
+    }
+
+
+@pytest.mark.asyncio
+async def test_post_tool_call_404_on_unknown_task(client) -> None:
+    resp = await client.post(
+        "/api/tasks/999999999/tool-calls",
+        json=_post_body(),
+        headers={"X-Project-Id": "1"},
+    )
+    assert resp.status_code == 404
+    assert resp.json() == {"detail": "Task id=999999999 not found"}
+
+
+@pytest.mark.asyncio
+async def test_post_tool_call_410_on_soft_deleted_task(client) -> None:
+    """Soft-deleted task → 410 Gone (audit closed with the parent)."""
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    create = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k981-post-410"},
+        headers=headers,
+    )
+    task_id = create.json()["id"]
+    delete = await client.delete(f"/api/tasks/{task_id}", headers=headers)
+    assert delete.status_code == 204
+
+    resp = await client.post(
+        f"/api/tasks/{task_id}/tool-calls",
+        json=_post_body(),
+        headers=headers,
+    )
+    assert resp.status_code == 410, resp.text
+    assert resp.json()["detail"].startswith(f"Task id={task_id} is deleted")
+
+
+@pytest.mark.asyncio
+async def test_post_tool_call_400_on_cross_project_header(
+    client, scaffold_cleanup
+) -> None:
+    """Task belongs to project A; header claims B → 400 (session-project gate)."""
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_a_id = active.json()["id"]
+
+    name_b = scaffold_cleanup(_unique_name("k981-crossproj"))
+    proj_b = await client.post(
+        "/api/projects", json=_project_create_payload(name_b)
+    )
+    project_b_id = proj_b.json()["id"]
+
+    headers_a = {"X-Project-Id": str(project_a_id)}
+    create = await client.post(
+        "/api/tasks",
+        json={"project_id": project_a_id, "title": "k981-crossproj-task"},
+        headers=headers_a,
+    )
+    task_id = create.json()["id"]
+
+    try:
+        resp = await client.post(
+            f"/api/tasks/{task_id}/tool-calls",
+            json=_post_body(),
+            headers={"X-Project-Id": str(project_b_id)},
+        )
+        assert resp.status_code == 400, resp.text
+        assert "does not belong to" in resp.json()["detail"]
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers_a)
+
+
+@pytest.mark.asyncio
+async def test_post_tool_call_422_on_extra_field_in_body(client) -> None:
+    """Pydantic extra='forbid' on ToolCallCreate → extra field 422.
+
+    Defends against payload drift between langgraph audit.py and the
+    api-side schema.
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    create = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k981-post-extra"},
+        headers=headers,
+    )
+    task_id = create.json()["id"]
+
+    body = _post_body()
+    # task_id is in the URL path, NOT the body — this regression test pins
+    # that drift.
+    body["task_id"] = task_id
+
+    try:
+        resp = await client.post(
+            f"/api/tasks/{task_id}/tool-calls",
+            json=body,
+            headers=headers,
+        )
+        assert resp.status_code == 422
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_post_tool_call_truncates_output_via_writer(client) -> None:
+    """Output > 256 chars → persisted output_summary == first 256 chars.
+
+    Same writer-service rule as the direct service tests above; verified
+    via the POST endpoint here.
+    """
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    create = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k981-post-trunc"},
+        headers=headers,
+    )
+    task_id = create.json()["id"]
+    big_output = "B" * 300
+
+    try:
+        resp = await client.post(
+            f"/api/tasks/{task_id}/tool-calls",
+            json=_post_body(output=big_output),
+            headers=headers,
+        )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["output_summary"] == "B" * 256
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
 @pytest.mark.asyncio
 async def test_cascade_delete_on_hard_task_delete(
     client, db_session
