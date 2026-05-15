@@ -16,6 +16,20 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-16 — Fresh-DB invariant + empty-state smoke gate — Kanban #994
+**Scope:** backend / qa
+**Decision:** Every API endpoint the Web shell hits during first page-load MUST handle an empty database gracefully — `[]` for list/stats, `404` for missing detail, zero-filled aggregates for counts. **No 500.** A fresh install (no seed run, zero rows in `projects` / `tasks` / `sessions` / `session_runs`) must render the dashboard, projects list, and `/p/<missing>` cleanly via the standard FE empty-state UX (the existing `stats.length === 0 → "No active projects"` branch + Next.js `notFound()` for missing project routes).
+
+**Regression gate:** `api/tests/test_empty_db_smoke.py` (10 tests, autouse purge fixture → ORM `delete()` of every row → 10 endpoint probes → re-seed at teardown). Surfaces covered: `GET /api/projects` (filtered + unfiltered), `/api/projects/stats`, `/api/projects/by-name/<missing>`, `/api/projects/<id>`, `/api/tasks` + `/api/tasks/next-autorun` (X-Project-Id pointing at non-existent project), `/api/sessions`, `/health`, plus a sanity probe that the purge fixture actually empties the DB.
+
+**Reasoning:** Investigation of the originally-reported 500 found that the API code is ALREADY defended (aggregate queries use `func.coalesce(..., 0)`, list endpoints return `[]`, count endpoints use `.scalar_one()` on `COUNT()` which returns `0` not `None`, detail endpoints use `get_or_404`). The missing piece was a regression net to keep it that way — a future endpoint introduced without an empty-set test would silently regress the invariant. The new test module pins the invariant.
+
+**Implications:**
+- New list / stats / detail endpoints MUST add a corresponding probe to `test_empty_db_smoke.py` in the same PR — review checklist item.
+- Purge fixture uses ORM-only `delete()` (not raw SQL DML) so audit triggers fire correctly and platform-wide rule is respected; child-first FK order documented in the fixture's docstring.
+- Re-seed at teardown via `scripts.seed._seed` keeps sibling test modules isolated — module-level test order doesn't matter.
+- The "purge then probe" pattern is now reusable for any future empty-state regression (e.g., a freshly-created project with zero tasks).
+
 ## 2026-05-14 — Worktree-Docker drift restore recipe (post-#914 incident chain)
 **Scope:** devops / frontend / shared
 **Decision (recipe codification):** Two Docker drift states observed when a worktree session touches `web/` were captured + recovery codified:
