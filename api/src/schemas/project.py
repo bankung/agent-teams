@@ -150,6 +150,15 @@ class ProjectCreate(BaseModel):
     # `ck_projects_sources_length` is defense-in-depth — Pydantic 422 fires first.
     sources: list[SourceEntry] | None = Field(default=None, max_length=20)
 
+    # Kanban #951: per-project budget caps (USD). All three None = unlimited
+    # (mirrors the DB NULL semantics). `ge=0` is the Pydantic 422 boundary;
+    # DB CHECK `ck_projects_budget_caps_nonneg` is defense-in-depth.
+    # decimal_places=2 mirrors the NUMERIC(10,2) column shape; Pydantic
+    # quantizes incoming values to 2 places on validation.
+    budget_daily_usd: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+    budget_monthly_usd: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+    budget_total_usd: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+
     @field_validator("agent_overrides")
     @classmethod
     def _validate_agent_override_keys(cls, v):
@@ -212,6 +221,14 @@ class ProjectUpdate(BaseModel):
     # - explicit array (incl. `[]`) → REPLACES the prior list (no merge).
     sources: list[SourceEntry] | None = Field(default=None, max_length=20)
 
+    # Kanban #951: per-project budget caps. PATCH semantics — key-absent
+    # leaves the column unchanged (exclude_unset); explicit `null` CLEARS to
+    # unlimited; explicit Decimal sets the cap. `ge=0` rejects negative caps
+    # at 422; the DB CHECK is defense-in-depth.
+    budget_daily_usd: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+    budget_monthly_usd: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+    budget_total_usd: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+
     @field_validator("agent_overrides")
     @classmethod
     def _validate_agent_override_keys(cls, v):
@@ -271,6 +288,15 @@ class ProjectRead(BaseModel):
     # violate the element shape don't 500 a read endpoint. Writes still go
     # through the strict `SourceEntry` validator on POST/PATCH.
     sources: list[dict[str, Any]] = Field(default_factory=list)
+
+    # Kanban #951: per-project budget caps surfaced on every project read.
+    # All three nullable — NULL = unlimited (no enforcement). FE renders
+    # progress bar only when the corresponding cap is non-null; the
+    # ProjectStatsCostUsage `total_cost_usd` aggregate (#871) provides the
+    # numerator.
+    budget_daily_usd: Decimal | None = None
+    budget_monthly_usd: Decimal | None = None
+    budget_total_usd: Decimal | None = None
 
     @field_validator("sources", mode="before")
     @classmethod

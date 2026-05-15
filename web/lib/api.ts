@@ -35,6 +35,17 @@ export type ProjectRead = {
   updated_at: string;
   auto_run_consent_at: string | null; // null = not consented; set by POST /api/projects/{id}/grant-consent (#483)
   sources: Source[]; // #778 — curated references; ALWAYS a list (never null), each entry has a required `url`
+  // #951 AC #5 — per-project spend caps (BE spawn 2026-05-15). Numeric(10,4) on
+  // the DB serialized as JSON string (e.g. "5.0000") per the same Decimal-as-
+  // string convention used by session_runs.total_cost_usd. NULL = unlimited
+  // (no budget configured for that period). Daily and monthly are currently
+  // V1-only caps; lifetime spend (`cost_usage.total_cost_usd` on the stats
+  // endpoint) is the only spend signal available — per-period spend ships in
+  // a follow-up. FE renderer (BudgetBar) falls back total → monthly → daily
+  // when picking which cap to display.
+  budget_daily_usd: string | null;
+  budget_monthly_usd: string | null;
+  budget_total_usd: string | null;
 };
 
 // AcceptanceCriterion — one entry in TaskRead.acceptance_criteria (#797).

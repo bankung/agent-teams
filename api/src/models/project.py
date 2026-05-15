@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
@@ -11,6 +12,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Index,
+    Numeric,
     SmallInteger,
     Text,
     func,
@@ -130,6 +132,27 @@ class Project(Base):
         default=list,
     )
 
+    # Kanban #951 (2026-05-16): per-project budget caps for the headless-engine
+    # pickup gate. All three NULL = UNLIMITED (pre-#951 default behavior).
+    # NUMERIC(10,2) — user-typed dollars, 2 places. Pydantic ProjectUpdate
+    # validates `Decimal >= 0` at the boundary; DB CHECK
+    # `ck_projects_budget_caps_nonneg` catches raw-SQL drift. The
+    # budget_enforcer service short-circuits on all-NULL → no warn / no halt.
+    # See migration 0026 for "reset" semantics (free via on-demand
+    # `compute_spend(since=midnight)`; no scheduled job).
+    budget_daily_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+    )
+    budget_monthly_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+    )
+    budget_total_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+    )
+
     tasks: Mapped[list["Task"]] = relationship(
         "Task",
         back_populates="project",
@@ -161,6 +184,14 @@ class Project(Base):
         # have `is_active=true` because each Claude Code session binds to a
         # project by name independently.
         Index("ix_projects_status", "status"),
+        # Kanban #951 — budget caps must be >= 0 (NULL = unlimited). Mirror of
+        # migration 0026's named CHECK so ORM autogen stays in lockstep.
+        CheckConstraint(
+            "(budget_daily_usd IS NULL OR budget_daily_usd >= 0) AND "
+            "(budget_monthly_usd IS NULL OR budget_monthly_usd >= 0) AND "
+            "(budget_total_usd IS NULL OR budget_total_usd >= 0)",
+            name="ck_projects_budget_caps_nonneg",
+        ),
     )
 
     def __repr__(self) -> str:  # pragma: no cover

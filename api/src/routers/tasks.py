@@ -36,6 +36,7 @@ from src.services.ai_task_parser import (
 )
 from src.services.is_pending import assert_is_pending_with_process_status
 from src.services.recurrence import fire_template, next_cron_fire
+from src.services.budget_enforcer import check_budget
 from src.services.run_mode import assert_consent_for_run_mode
 from src.services.task_cost_estimator import estimate_task_cost
 from src.services.task_interaction import (
@@ -226,6 +227,48 @@ async def get_next_autorun(
         .limit(1)
     )
     next_task_row = (await session.execute(next_task_stmt)).scalars().first()
+
+    # --- budget enforcement gate (Kanban #951) -------------------------------
+    # Manual-mode tasks are already excluded by the run_mode filter above —
+    # the bypass requirement ("run_mode=manual tasks bypass enforcement")
+    # is satisfied implicitly here: only AUTO_PICKUP / AUTO_HEADLESS rows
+    # ever reach this gate.
+    #
+    # When the project is over its hard-halt cap, we:
+    #   1. Stamp halt_reason='budget_exceeded:<period>' on the candidate row
+    #      so the operator sees the gate on the board.
+    #   2. Drop the candidate from next_task (return None).
+    #
+    # When over the soft-warn band (80-100%), we log a structured WARNING
+    # line and proceed with the pickup — soft warns are informational. The
+    # FE banner reads `check_budget` results via a future endpoint.
+    if next_task_row is not None:
+        verdict = await check_budget(session, project_id)
+        if verdict.hard_halt:
+            halt_msg = f"budget_exceeded:{verdict.exceeded_cap}"
+            next_task_row.halt_reason = halt_msg
+            await session.commit()
+            logger.warning(
+                "budget_hard_halt: project=%d task=%d cap=%s "
+                "daily_pct=%s monthly_pct=%s total_pct=%s",
+                project_id,
+                next_task_row.id,
+                verdict.exceeded_cap,
+                verdict.daily_pct,
+                verdict.monthly_pct,
+                verdict.total_pct,
+            )
+            next_task_row = None
+        elif verdict.soft_warn:
+            logger.warning(
+                "budget_soft_warn: project=%d task=%d "
+                "daily_pct=%s monthly_pct=%s total_pct=%s",
+                project_id,
+                next_task_row.id,
+                verdict.daily_pct,
+                verdict.monthly_pct,
+                verdict.total_pct,
+            )
 
     # --- resume_tasks --------------------------------------------------------
     # HALTED tasks (halt_reason IS NOT NULL) whose blocker question/decision is DONE.

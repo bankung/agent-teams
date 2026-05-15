@@ -1,6 +1,12 @@
 import Link from "next/link";
 
-import { getProjectsStats, type ProjectStatsEntry } from "@/lib/api";
+import {
+  getProjectsStats,
+  listProjects,
+  type ProjectRead,
+  type ProjectStatsEntry,
+} from "@/lib/api";
+import { BudgetBar, pickBudgetDisplay } from "@/components/BudgetBar";
 import { DashboardRefresher } from "@/components/DashboardRefresher";
 import { NewProjectModal } from "@/components/NewProjectModal";
 import { ThemePicker } from "@/components/ThemePicker";
@@ -306,7 +312,18 @@ function CostSummary({ stats }: { stats: ProjectStatsEntry[] }) {
 // Run-mode chips intentionally dropped (every project is manual-only today;
 // noise without auto_* signal — see #869 brief). Project name remains a link
 // to /p/<name>.
-function CompactProjectCard({ entry }: { entry: ProjectStatsEntry }) {
+//
+// `project` is the matching ProjectRead row from /api/projects merged by id
+// (Kanban #951 AC #5). May be undefined when the stats endpoint and the
+// project list disagree (e.g. race between fetches) — we degrade gracefully
+// by hiding the budget bar.
+function CompactProjectCard({
+  entry,
+  project,
+}: {
+  entry: ProjectStatsEntry;
+  project: ProjectRead | undefined;
+}) {
   const total = LANES.reduce((sum, { key }) => sum + entry.counts[key], 0);
   // Kanban #871 — per-card cost strip. Empty state when no session_runs:
   // muted em-dash + "no usage" (avoid rendering $0.00 · 0 tokens which implies
@@ -315,6 +332,13 @@ function CompactProjectCard({ entry }: { entry: ProjectStatsEntry }) {
   const hasUsage = cu.session_run_count > 0;
   const cost = parseUsd(cu.total_cost_usd);
   const hasBudgetWarning = cu.budget_warning_count > 0;
+
+  // Kanban #951 AC #5 — pick the most-constraining cap from the project's
+  // 3 nullable budget columns. Returns null when all three are null, in which
+  // case the budget bar is omitted entirely (legacy projects with no budget
+  // configured). Until the BE migration lands, `project` will lack the budget
+  // fields entirely → pickBudgetDisplay returns null and nothing renders.
+  const budgetDisplay = project ? pickBudgetDisplay(project) : null;
   return (
     <article
       data-project-card
@@ -415,12 +439,35 @@ function CompactProjectCard({ entry }: { entry: ProjectStatsEntry }) {
           </span>
         )}
       </div>
+
+      {/* Budget bar (Kanban #951 AC #5). Sibling to the cost strip; rendered
+          only when at least one of budget_daily_usd / budget_monthly_usd /
+          budget_total_usd is non-null. Spend = lifetime project cost from
+          cost_usage.total_cost_usd. Cap precedence: total > monthly > daily. */}
+      {budgetDisplay ? (
+        <BudgetBar
+          spendUsd={cost}
+          capUsd={budgetDisplay.capUsd}
+          period={budgetDisplay.period}
+        />
+      ) : null}
     </article>
   );
 }
 
 export default async function DashboardPage() {
-  const stats = await getProjectsStats();
+  // Kanban #951 AC #5 — parallel fetch: stats endpoint (lane counts +
+  // cost_usage; primary data source for the cards) AND projects list (carries
+  // the 3 budget cap columns added by the BE spawn). Merged by id below.
+  // Promise.all keeps the request-time wall the same as the prior single-call
+  // version (both calls hit the same FastAPI service over localhost; the LAN
+  // round-trip dominates each).
+  const [stats, projects] = await Promise.all([
+    getProjectsStats(),
+    listProjects({ status: 1 }),
+  ]);
+  const projectsById = new Map<number, ProjectRead>();
+  for (const p of projects) projectsById.set(p.id, p);
 
   return (
     <main className="flex min-h-screen flex-col overflow-y-auto bg-white px-6 py-5 dark:bg-zinc-950">
@@ -469,7 +516,11 @@ export default async function DashboardPage() {
             </h2>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {stats.map((entry) => (
-                <CompactProjectCard key={entry.id} entry={entry} />
+                <CompactProjectCard
+                  key={entry.id}
+                  entry={entry}
+                  project={projectsById.get(entry.id)}
+                />
               ))}
             </div>
           </section>
