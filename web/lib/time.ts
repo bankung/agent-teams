@@ -9,7 +9,9 @@
 export function formatRelative(iso: string | null): string {
   if (iso === null) return "no activity yet";
   const then = Date.parse(iso);
-  if (!Number.isFinite(then)) return iso || "—";
+  // Malformed ISO → fall back to canonical em-dash rather than echoing the
+  // bad string to the UI. (no-value marker, same as the null branch above.)
+  if (!Number.isFinite(then)) return "—";
   const diffMs = Math.max(0, Date.now() - then);
   const diffSec = Math.floor(diffMs / 1000);
   if (diffSec < 5) return "just now";

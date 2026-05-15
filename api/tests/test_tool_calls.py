@@ -24,9 +24,9 @@ Coverage matrix:
      (cross-project gate via session_project header).
    - 200 + ordered list (invoked_at DESC) on happy path.
    - Cascade delete: hard-deleting the parent task (psql-level — not the
-     soft-delete path) wipes the audit rows. We exercise this with a direct
-     SQL DELETE through the AsyncSession because the app's public DELETE is
-     soft-only.
+     soft-delete path) wipes the audit rows. We exercise this with an ORM
+     `delete(Task)` through the AsyncSession because the app's public DELETE
+     is soft-only.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import delete, select
 
 
 def _unique_name(prefix: str) -> str:
@@ -819,6 +819,7 @@ async def test_cascade_delete_on_hard_task_delete(
     through the test session to exercise the cascade. The live agent_teams DB
     is NOT touched (autouse conftest binds to agent_teams_test).
     """
+    from src.models.task import Task
     from src.models.tool_call import ToolCall
     from src.services.tool_call_writer import record_tool_call
 
@@ -849,8 +850,9 @@ async def test_cascade_delete_on_hard_task_delete(
     ).scalars().all()
     assert len(pre) == 1
 
-    # Hard delete the parent task via raw SQL (test DB only).
-    await db_session.execute(text(f"DELETE FROM tasks WHERE id = {task_id}"))
+    # Hard delete the parent task via ORM (test DB only — avoids raw-DML audit
+    # trip while still exercising the FK cascade path).
+    await db_session.execute(delete(Task).where(Task.id == task_id))
     await db_session.commit()
 
     # Cascade fires — no rows left.

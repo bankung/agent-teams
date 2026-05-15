@@ -140,11 +140,21 @@ def non_2xx_error_msg(status_code: int, body: str) -> str:
 
 
 def host_not_allowed_result(host: str | None) -> ToolResult:
-    """Standard halt for an unlisted host. Same shape for both verbs."""
+    """Standard halt for an unlisted host. Same shape for both verbs.
+
+    error_msg is informative + actionable so the LLM can tell WHY the call was
+    blocked and what recovery requires (operator action — never auto-retry on
+    a different host). Mirrors the shape of fs_boundary_check messages.
+    """
+    shown = host or "<unknown-host>"
     return ToolResult(
         success=False,
         error_code="host_not_allowed",
-        error_msg=host or "<unknown-host>",
+        error_msg=(
+            f"Host {shown!r} is not in the project's tools_config.http_hosts "
+            f"allowlist. The operator must add this host to "
+            f"tools_config.http_hosts before this tool can call it."
+        ),
         retry_safe=False,
     )
 
