@@ -15,6 +15,57 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-16 — T11 #935 closed (with stale-cred caveat); T14 #1036 filed for credential refresh
+**Scope:** shared (backend pipeline + AI integration)
+**Proposed by:** lead (closing report from dev-backend specialist)
+**Status:** T11 DONE 2026-05-16 (commit `5dfe4bc`) with **AC#6 blocked-by-infra**. T14 #1036 filed for real-CLI verification.
+
+**What landed (T11):**
+- `pipeline/app/workers/tasks.py:688-735` — `run_analysis_for_event` un-stubbed; `_run_analysis_for_event_async` calls `AIPipeline.run_full_pipeline()` + saves summary + sentiment via BackendClient. Non-fatal try/except wrap (preserves worker stability).
+- `pipeline/app/workers/tasks.py:600-662` — AI queueing loop inside `_run_scrape_only_async` after dedup pass. Queues `run_analysis_for_event.apply_async(args=[event_id, article_text], countdown=idx*ANALYSIS_THROTTLE_SECONDS)` per ArticleGroup. Throttle constant 2s (was 5s in brief; tightened in commit per spec smoke).
+- `pipeline/app/services/deduplicator.py` — `ArticleGroup` gains `created_event_id` field; dedup pass populates it after `create_event_with_articles` returns.
+- `pipeline/app/services/ai_pipeline.py` — event_id plumbing + fix duplicate Step 1 (was running Step 1 twice in `run_full_pipeline`).
+- `docker-compose.dev.yml` — `AI_MODE` + `ANALYSIS_THROTTLE_SECONDS` env knobs on worker for tunability.
+- `pipeline/app/backend_client.py:235-255` — verified existing `save_event_summary` + `save_event_analysis` already POST `/analysis/summary` + `/analysis/sentiment`. No new methods needed.
+- T8 stopgap retired — `run_full_fetch` docstring rewritten ("Canonical pipeline (T11 #935 — stopgap retired) ... no longer a placeholder, it is the intended structure"); `events_processed` sourced from dedup pass output instead of `total_saved`.
+
+**Mock-mode smoke (proves wire-up end-to-end):**
+- Direct dispatch `run_analysis_for_event(54, 'mock text')` → `POST /analysis/summary 201 Created` → `POST /analysis/sentiment 201 Created` → `AI analysis saved for event 54`.
+- `curl GET /analysis/summary/54` returns full payload (sentiment_score=65, ai_confidence=80, retail_reaction='Likely buy', etc.).
+- DB confirms EventSummary + EventAnalysis rows landed.
+
+**Real-CLI smoke (BLOCKED by stale credentials):**
+- `~/.claude/.credentials.json` last modified May 14 06:22 UTC (28+ hours stale). Container's RO mount sees same stale file.
+- All 24 real `claude -p` calls during smoke returned `Failed to authenticate. API Error: 401 Invalid authentication credentials`.
+- Worker stayed up (non-fatal pattern works); each analysis task returned `{'status':'error','event_id':<id>,'reason':'Claude CLI exit=1: ...'}`.
+- **Code path verified** via traceback: `_run_analysis_for_event_async → AIPipeline.run_full_pipeline → call_ai → _invoke_claude_cli` reaches CLI binary. `_log_agent_run` (T3) is wired AFTER successful CLI return → cannot fire on 401-failed calls → zero new AgentRun rows in 24h.
+
+**T11 AC verdict (honest count):**
+- 7/9 passed: AC#1 (T10 dep), #2 (un-stub), #3 (BackendClient methods), #4 (queueing loop), #5 (throttle), #7 (mock smoke), #8 (stopgap retired), #9 (commit pattern). [AC#8 numbered out of order — count adjusted.]
+- **AC#6 FAILED** (AgentRun rows from real-CLI smoke): blocked by stale credentials → T14 #1036 follow-up.
+- AC#7 partial: mock smoke ✅, real-CLI smoke ❌ (same root cause as #6).
+
+**T14 #1036 scope (handoff to user + dev-devops follow-up):**
+1. **User action:** run `claude /login` interactively on host to refresh credentials. Verify file timestamp current.
+2. **Dev-devops re-verify (auto-spawnable post-step-1):** restart pipeline + worker containers, dispatch a single `run_analysis_for_event` task, verify worker log shows non-401 result + AgentRun row insertion (2 rows: extraction + sentiment, with non-zero tokens + inferred_cost).
+3. **PATCH T11 AC#6 + AC#7-real-cli to 'passed'** with verification source.
+
+T14 is priority=2 (blocks T11 full verification), assigned_role=3 (devops).
+
+**Implications:**
+- **Pipeline fully wired** — once credentials refresh, the Dashboard 'Fetch Now' → articles → events → AI analysis → Dashboard render loop will work end-to-end. Code path is proven.
+- **Stale-credential issue is the engine-migration auth-refresh gap** noted in decisions.md 2026-05-14 lock #1. Long-term mitigation options (NOT in T14 scope): automatic refresh in container, cron-based reminder in dev-devops runbook, or migration to API key (rejected per lock #1).
+- **`AnalysisThrottleSeconds=2`** is the new default — claude -p Max 20x quota can sustain ~30 calls/min sustained; 2s spacing gives ~30/min headroom for a 24-event batch.
+- **T12 #991 Firecrawl resilience can spawn next** (does not depend on Claude credentials — Firecrawl-only scope).
+
+**Cross-references:**
+- T11 commit: `5dfe4bc` on NewsAnalyzer main.
+- T14 follow-up: Kanban #1036 on NewsAnalyzer.
+- AgentRun model + endpoint: T3 #922 commit `f4cd4d2`.
+- Stale-cred root cause: decisions.md 2026-05-14 lock #1 (claude -p engine).
+
+---
+
 ## 2026-05-15 (evening) — T13 #1027 closed — NewsAnalyzer cross-project pollution cleaned
 **Scope:** repo hygiene
 **Proposed by:** user (flagged dirty diff in NewsAnalyzer main 2026-05-15)
