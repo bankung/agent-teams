@@ -15,6 +15,54 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-16 — T12 #991 closed — Firecrawl resilience layer landed
+**Scope:** shared (backend pipeline scraping)
+**Proposed by:** lead (closing report from dev-backend specialist)
+**Status:** T12 DONE 2026-05-16 (commit `2d54620`). All 9 ACs passed; 3/3 smokes green.
+
+**What landed (5-piece layer):**
+
+1. **Retry with tenacity** — `_scrape()` in `pipeline/app/services/scraper.py:104-227` wrapped in 3-attempt exponential backoff (1s → 4s → 16s). Custom `_is_retryable()` classifier distinguishes transient (5xx, connection errors, timeouts) from permanent (4xx, parse errors). 11 unit tests in `pipeline/tests/test_resilience.py`.
+
+2. **Pre-flight health check** — `_firecrawl_preflight()` (5s timeout) checks `firecrawl-api:3002/v1/health/liveness` before scrape batch. **Critical departure from original spec:** on failure, mark 4 scrape sources `status='skipped'` but **RSS sources still run** (not full-task halt). Reason: RSS is engine-independent — punishing it for Firecrawl outage is wrong. Smoke #2 verified: **6.61s task time** with firecrawl-api stopped (vs 680s worst-case from spec) + 6 RSS articles saved.
+
+3. **`scrape_logs.engine_tier` column** — String(50) nullable. Alembic migration `20260516_0001_scrape_log_engine_tier.py` (down_revision `20260514_0001`). Idempotent `ALTER TABLE IF NOT EXISTS` for Phase 0 `create_all()` coexistence. `ScrapeLogCreate` + `ScrapeLogOut` schemas updated.
+
+4. **Duration-heuristic engine_tier inference** — firecrawl-simple v0.0.55 doesn't expose engine info in response body/headers/container logs (probed 2026-05-16). Thresholds: `<1500ms cheerio`, `1500-4999ms fire-engine`, `≥5000ms playwright-service`. Per-batch aggregation via `dominant_engine_tier()` with cost-bias on ties (more expensive wins).
+
+5. **Folded in T9 closure item** — RSS malformed-XML detection. `_run_rss_source` catches `feedparser.bozo=True AND content-type != XML` → marks `status='malformed'` instead of silent `done found=0`. **Settrade + SET.or.th are now visibly broken** (HTML 403 walls served instead of RSS).
+
+**Smoke evidence:**
+
+| Smoke | Run ID | Wall time | Result |
+|---|---|---|---|
+| #1 Happy path | `971e3e29` | 210.45s | 15 articles; engine_tier: ข่าวหุ้น=playwright-service, ทันหุ้น/กรุงเทพธุรกิจ/ฐานเศรษฐกิจ=fire-engine, 7 RSS=NULL; 2 RSS marked malformed |
+| #2 Firecrawl down | `f73bab3c` | **6.61s** | 4 scrape skipped + 7 RSS ran + 6 articles saved + 4 firecrawl_alert WARN logs |
+| #3 Aggregate | (last 3 runs) | — | fire-engine=3/55s, playwright-service=1/210s, NULL=29/12s |
+
+**Implications:**
+- **Firecrawl outage no longer freezes fetch for 11+ minutes** — pre-flight catches in <5s, task continues with RSS sources.
+- **Cost visibility:** `engine_tier=playwright-service` is now the canonical "expensive scrape" signal for future cost-tracking dashboards.
+- **Discovery: all 4 current scrapers escalate beyond cheerio.** ข่าวหุ้น routinely hits playwright (210s wall). Worth re-evaluating which listing pages are JS-rendered if cost becomes a concern (future task).
+- **Settrade + SET.or.th now visibly broken** (`status='malformed'` instead of silent `done found=0`). User can decide: optional User-Agent rotation retry, OR drop from `RSS_FEEDS` registry, OR find replacement feeds.
+
+**Open follow-ups (not blocking T6):**
+- Frontend Scrape page: render `engine_tier` badge per source (field already in API response).
+- Tier thresholds (1.5s/5s) not stress-tested under varied network latencies — re-tune in Phase 2.
+- Settrade + SET.or.th rescue strategy (UA rotation OR drop OR replace).
+
+**Cross-references:**
+- T12 commit: `2d54620` on NewsAnalyzer main.
+- Migration: `backend/app/db/migrations/versions/20260516_0001_scrape_log_engine_tier.py`.
+- T9 closure note (Settrade + SET.or.th malformed-XML): decisions.md 2026-05-15 (mid-afternoon) entry — folded into T12.
+- Next in queue: T6 #924 (Backfill Option A impl) — does NOT depend on T14 credential refresh for fetch portion; AI analysis on backfilled articles will respect T14's resolution.
+
+**Standards proposals (NOT auto-applied — for human MA):**
+- `context/standards/python/external-clients.md` — tenacity `AsyncRetrying` + custom classifier function pattern (vs `retry_if_exception_type` tuple) for HTTP clients that need to distinguish 5xx (retry) from 4xx (skip).
+- `context/standards/docker/` or `general.md` — duration-heuristic pattern for services that don't expose internal telemetry (firecrawl-simple's engine cascade is invisible; wall-clock duration is a usable proxy).
+
+---
+
 ## 2026-05-16 — T11 #935 closed (with stale-cred caveat); T14 #1036 filed for credential refresh
 **Scope:** shared (backend pipeline + AI integration)
 **Proposed by:** lead (closing report from dev-backend specialist)
