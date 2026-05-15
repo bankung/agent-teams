@@ -73,10 +73,8 @@ class HttpGetTool(Tool):
     input_schema = HttpGetInput
 
     async def _run(
-        self, input_obj: ToolInput, context: InvokeContext
+        self, input_obj: HttpGetInput, context: InvokeContext
     ) -> ToolResult:
-        assert isinstance(input_obj, HttpGetInput)
-
         # 1. Host gate.
         allowed, wildcard, offending_host = check_host_allowed(
             input_obj.url, context.host_allowlist

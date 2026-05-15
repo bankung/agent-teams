@@ -72,10 +72,8 @@ class GitCommitTool(Tool):
     input_schema = GitCommitInput
 
     async def _run(
-        self, input_obj: ToolInput, context: InvokeContext
+        self, input_obj: GitCommitInput, context: InvokeContext
     ) -> ToolResult:
-        assert isinstance(input_obj, GitCommitInput)
-
         msg_lower = input_obj.message.lower()
         for tok in _FORBIDDEN_TOKENS:
             if tok in msg_lower:

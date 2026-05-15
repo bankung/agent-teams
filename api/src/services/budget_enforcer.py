@@ -149,6 +149,13 @@ HARD_HALT_THRESHOLD_PCT = Decimal("100")
 _ZERO_PCT = Decimal("0")
 _ZERO_SPEND = Decimal("0")
 
+# Sentinel for the "zero cap + nonzero spend" case in `_pct`. Picked to be
+# orders-of-magnitude above any real-world percentage so the hard_halt
+# branch (`pct > HARD_HALT_THRESHOLD_PCT`) fires deterministically. NOT a
+# user-facing number — the Decimal is also chosen to fit NUMERIC(N,4)
+# rounding without overflow if a downstream column ever persists it.
+_EFFECTIVE_INFINITY_PCT: Decimal = Decimal("99999999.9999")
+
 
 # ---------------------------------------------------------------------------
 # Time anchors
@@ -272,7 +279,7 @@ def _pct(spent: Decimal, cap: Decimal | None) -> Decimal:
         # +infinity logically. We return a sentinel large value so the
         # hard_halt branch fires. (DB CHECK rejects negative caps; cap=0 is
         # allowed and means "all autorun blocked" — an emergency-stop knob.)
-        return Decimal("99999999.9999") if spent > 0 else _ZERO_PCT
+        return _EFFECTIVE_INFINITY_PCT if spent > 0 else _ZERO_PCT
     return ((spent / cap) * Decimal("100")).quantize(Decimal("0.0001"))
 
 
@@ -335,22 +342,26 @@ async def check_budget(db: AsyncSession, project_id: int) -> BudgetVerdict:
     # Soft-warn: ANY non-null cap in the band (80, 100]. Hard-halt: ANY
     # non-null cap strictly > 100. (At exactly 100% spent = full burn but
     # not over → soft_warn only.)
-    def _in_soft_band(pct: Decimal, cap: Decimal | None) -> bool:
-        return cap is not None and SOFT_WARN_THRESHOLD_PCT < pct <= HARD_HALT_THRESHOLD_PCT
-
-    def _over_hard(pct: Decimal, cap: Decimal | None) -> bool:
-        return cap is not None and pct > HARD_HALT_THRESHOLD_PCT
-
-    soft_warn = (
-        _in_soft_band(daily_pct, cap_daily)
-        or _in_soft_band(monthly_pct, cap_monthly)
-        or _in_soft_band(total_pct, cap_total)
+    daily_in_soft = (
+        cap_daily is not None
+        and SOFT_WARN_THRESHOLD_PCT < daily_pct <= HARD_HALT_THRESHOLD_PCT
     )
-    hard_halt = (
-        _over_hard(daily_pct, cap_daily)
-        or _over_hard(monthly_pct, cap_monthly)
-        or _over_hard(total_pct, cap_total)
+    monthly_in_soft = (
+        cap_monthly is not None
+        and SOFT_WARN_THRESHOLD_PCT < monthly_pct <= HARD_HALT_THRESHOLD_PCT
     )
+    total_in_soft = (
+        cap_total is not None
+        and SOFT_WARN_THRESHOLD_PCT < total_pct <= HARD_HALT_THRESHOLD_PCT
+    )
+    daily_over_hard = cap_daily is not None and daily_pct > HARD_HALT_THRESHOLD_PCT
+    monthly_over_hard = (
+        cap_monthly is not None and monthly_pct > HARD_HALT_THRESHOLD_PCT
+    )
+    total_over_hard = cap_total is not None and total_pct > HARD_HALT_THRESHOLD_PCT
+
+    soft_warn = daily_in_soft or monthly_in_soft or total_in_soft
+    hard_halt = daily_over_hard or monthly_over_hard or total_over_hard
 
     # Exceeded-cap selection: total > monthly > daily priority order. The
     # "loudest" signal wins so the operator sees the most damning cap on
@@ -358,11 +369,11 @@ async def check_budget(db: AsyncSession, project_id: int) -> BudgetVerdict:
     # only case).
     exceeded_cap: Literal["daily", "monthly", "total"] | None = None
     if hard_halt:
-        if _over_hard(total_pct, cap_total):
+        if total_over_hard:
             exceeded_cap = "total"
-        elif _over_hard(monthly_pct, cap_monthly):
+        elif monthly_over_hard:
             exceeded_cap = "monthly"
-        elif _over_hard(daily_pct, cap_daily):
+        elif daily_over_hard:
             exceeded_cap = "daily"
 
     # If both warn and halt fire on the same row (one cap at 85%, another at

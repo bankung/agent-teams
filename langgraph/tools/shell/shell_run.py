@@ -25,8 +25,9 @@ Detection passes:
    composite cmd so denylist enforcement only needs to check token #1.)
 
 Note: this layer enforces detection-time policy. Subprocess timeout is
-enforced via asyncio.wait_for. The global output-cap (100KB) is applied here
-loosely — full cap discipline + fs-boundary is #981.
+enforced via asyncio.wait_for. The global output-cap (100KB) lives in
+`tools/sandbox.py::apply_output_cap` — applied post-flight by the
+specialist node, not here, so every tool sees the same cap + sentinel.
 """
 
 from __future__ import annotations
@@ -71,24 +72,18 @@ ALLOWLIST: tuple[tuple[str, ...], ...] = (
     ("git", "diff"),
 )
 
-# Shell-control chars / sequences. Presence of ANY of these → halt.
+# Shell-control chars. Presence of ANY of these → halt.
 # `>` and `<` redirections are caught here because they can be used to write
 # to arbitrary paths bypassing fs-boundary checks. `&` background is also
-# caught because a backgrounded process escapes the timeout.
+# caught because a backgrounded process escapes the timeout. Multi-char
+# sequences (`&&`, `||`, `$(`, `` ` ``) are not listed separately — each is
+# subsumed by one of the single chars above (`&`, `|`, `$`, `` ` ``), so a
+# substring scan of the chars list catches every composite form.
 _SHELL_CONTROL_CHARS = ("|", ";", "&", "$", "`", ">", "<")
-_SHELL_CONTROL_SEQUENCES = ("&&", "||", "$(", "`")
-
-
-# Output size cap — design doc §6 says 100KB. Applied here so stdout doesn't
-# blow up the audit log. #981 will move this into a centralized config.
-_OUTPUT_CAP_BYTES = 100_000
 
 
 def _contains_shell_control(cmd: str) -> bool:
-    """True if the raw cmd string contains any shell-control char/sequence."""
-    for seq in _SHELL_CONTROL_SEQUENCES:
-        if seq in cmd:
-            return True
+    """True if the raw cmd string contains any shell-control char."""
     for ch in _SHELL_CONTROL_CHARS:
         if ch in cmd:
             return True
@@ -103,19 +98,6 @@ def _matches_allowlist(tokens: list[str]) -> bool:
         if tuple(tokens[: len(prefix)]) == prefix:
             return True
     return False
-
-
-def _truncate_output(text: str, cap: int = _OUTPUT_CAP_BYTES) -> tuple[str, bool]:
-    """Truncate `text` to `cap` bytes (UTF-8). Returns (text, was_truncated).
-
-    Truncation is conservative — we encode → slice → decode with errors='replace'
-    so we never emit a partial UTF-8 sequence to the LLM.
-    """
-    encoded = text.encode("utf-8")
-    if len(encoded) <= cap:
-        return text, False
-    sliced = encoded[:cap].decode("utf-8", errors="replace")
-    return sliced + f"\n... [output truncated; total {len(encoded)} bytes]", True
 
 
 class ShellRunInput(ToolInput):
@@ -153,9 +135,8 @@ class ShellRunTool(Tool):
     input_schema = ShellRunInput
 
     async def _run(
-        self, input_obj: ToolInput, context: InvokeContext
+        self, input_obj: ShellRunInput, context: InvokeContext
     ) -> ToolResult:
-        assert isinstance(input_obj, ShellRunInput)
         cmd = input_obj.cmd.strip()
         if not cmd:
             return ToolResult(
@@ -255,7 +236,9 @@ class ShellRunTool(Tool):
 
         stdout = stdout_b.decode("utf-8", errors="replace")
         stderr = stderr_b.decode("utf-8", errors="replace")
-        stdout, _ = _truncate_output(stdout)
+        # NOTE: output truncation is handled by the sandbox post-flight pass
+        # (`apply_output_cap` in `langgraph/tools/sandbox.py`) so every tool
+        # sees the same 100KB cap + sentinel. Don't truncate inline here.
 
         if proc.returncode != 0:
             return ToolResult(

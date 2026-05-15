@@ -16,6 +16,7 @@ import {
   type ToolCallRead,
   type ToolCallTier,
 } from "@/lib/api";
+import { formatRelative } from "@/lib/time";
 import { Icon } from "./Icon";
 
 type Props = {
@@ -47,25 +48,6 @@ function formatDuration(ms: number): string {
   const m = Math.floor(s / 60);
   const rem = Math.round(s - m * 60);
   return `${m}m${rem}s`;
-}
-
-// Relative-time formatter mirrors what the rest of the dashboard does
-// informally (e.g. "3m ago"). Falls back to absolute when more than a day.
-function formatRelative(iso: string): string {
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return iso;
-  const diffMs = Date.now() - t;
-  const diffSec = Math.round(diffMs / 1000);
-  if (diffSec < 5) return "just now";
-  if (diffSec < 60) return `${diffSec}s ago`;
-  const diffMin = Math.round(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHr = Math.round(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
-  const diffDay = Math.round(diffHr / 24);
-  if (diffDay < 7) return `${diffDay}d ago`;
-  // Older than a week — just show the date part.
-  return iso.slice(0, 10);
 }
 
 export function TaskToolCalls({ projectId, taskId }: Props) {
@@ -336,7 +318,7 @@ function ToolCallRow({ row }: { row: ToolCallRead }) {
               data-tool-call-input
               className="mt-0.5 max-h-48 overflow-auto rounded bg-zinc-100 px-2 py-1 font-mono text-[11px] text-zinc-800 dark:bg-zinc-900 dark:text-zinc-200"
             >
-              {safeJsonStringify(row.input_json)}
+              {JSON.stringify(row.input_json, null, 2)}
             </pre>
           </div>
 
@@ -373,12 +355,3 @@ function ToolCallRow({ row }: { row: ToolCallRead }) {
   );
 }
 
-// Defensive JSON.stringify — input_json comes from BE so it should always be
-// a valid object, but circular references in test data would otherwise throw.
-function safeJsonStringify(value: unknown): string {
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}

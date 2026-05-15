@@ -62,9 +62,6 @@ export function BudgetBar({
       ? `$${safeSpend.toFixed(4)} spent of $${capUsd.toFixed(4)} lifetime cap (${displayPct}%)`
       : `$${safeSpend.toFixed(4)} lifetime spend vs $${capUsd.toFixed(4)} ${period} cap (${displayPct}%) — per-period spend not yet tracked`;
 
-  const periodLabel =
-    period === "total" ? "total" : period === "monthly" ? "monthly" : "daily";
-
   return (
     <div
       data-budget-bar
@@ -74,7 +71,7 @@ export function BudgetBar({
       className="flex items-center gap-1.5 text-[11px] tabular-nums"
       title={tooltip}
       role="img"
-      aria-label={`Budget: $${safeSpend.toFixed(2)} of $${capUsd.toFixed(2)} ${periodLabel} (${displayPct}%)`}
+      aria-label={`Budget: $${safeSpend.toFixed(2)} of $${capUsd.toFixed(2)} ${period} (${displayPct}%)`}
     >
       <div
         className="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800"
@@ -88,7 +85,7 @@ export function BudgetBar({
       <span className={`shrink-0 ${textClass}`}>
         ${safeSpend.toFixed(2)} / ${capUsd.toFixed(2)}{" "}
         <span className="text-zinc-400 dark:text-zinc-500">
-          ({displayPct}% {periodLabel})
+          ({displayPct}% {period})
         </span>
       </span>
     </div>

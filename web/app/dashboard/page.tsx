@@ -6,6 +6,7 @@ import {
   type ProjectRead,
   type ProjectStatsEntry,
 } from "@/lib/api";
+import { formatRelative } from "@/lib/time";
 import { BudgetBar, pickBudgetDisplay } from "@/components/BudgetBar";
 import { DashboardRefresher } from "@/components/DashboardRefresher";
 import { NewProjectModal } from "@/components/NewProjectModal";
@@ -32,28 +33,6 @@ const LANES: Array<{ key: "1" | "2" | "3" | "4" | "5"; label: string }> = [
   { key: "4", label: "Blocked" },
   { key: "5", label: "Done" },
 ];
-
-// Relative-time formatter — keeps the dashboard scannable. Falls back to an
-// absolute YYYY-MM-DD slice for anything older than 14 days (matches the
-// ListView "updated" column convention).
-function formatRelative(iso: string | null): string {
-  if (iso === null) return "no activity yet";
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return "—";
-  // Clamp to >=0 — guards against server `MAX(updated_at)` being slightly in
-  // the future relative to the browser clock (NTP / clock-skew). Without this,
-  // a positive skew renders "-Nm ago"; with it, future timestamps fall through
-  // to the `m < 1` branch → "just now". (Kanban #873, follow-up to #869.)
-  const diffMs = Math.max(0, Date.now() - then);
-  const m = Math.floor(diffMs / 60_000);
-  if (m < 1) return "just now";
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 14) return `${d}d ago`;
-  return iso.slice(0, 10);
-}
 
 // Token / cost formatters — Kanban #871. `cost_usage.total_cost_usd` ships as
 // a JSON STRING from the backend (Pydantic Decimal serialization); parse before

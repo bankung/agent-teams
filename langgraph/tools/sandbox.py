@@ -71,10 +71,6 @@ _HARD_KILL_DRIFT_MULT: float = 1.5
 # ---------------------------------------------------------------------------
 
 
-class FsBoundaryViolation(Exception):
-    """Raised internally; the wrapper converts to ToolResult."""
-
-
 def _tool_writes_to_path_arg(tool: Tool) -> bool:
     """True if `tool` mutates the filesystem at an LLM-controlled `path`.
 
@@ -241,8 +237,6 @@ def check_hard_kill_drift(
 
 def apply_sandbox(
     tool: Tool,
-    ctx: InvokeContext,
-    args: dict[str, Any],
     result: ToolResult,
     requested_timeout_s: int | None = None,
 ) -> ToolResult:
@@ -255,7 +249,7 @@ def apply_sandbox(
         if violation is not None:
             return violation  # never invoke the tool
         result = await tool.invoke(args, ctx)
-        result = apply_sandbox(tool, ctx, args, result, requested_timeout_s=t)
+        result = apply_sandbox(tool, result, requested_timeout_s=t)
 
     The two-step pattern keeps the pre/post distinction explicit at the
     call site rather than hiding it in a single mega-wrapper.

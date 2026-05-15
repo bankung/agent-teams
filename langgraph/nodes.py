@@ -163,7 +163,10 @@ async def backend_specialist_node(state: AgentState) -> dict:
     """
     brief = state.get("brief", "")
     task_id = state.get("task_id")
-    project_id = await _resolve_project_id(task_id)
+    # Project id sourced from LANGGRAPH_PROJECT_ID — the engine container is
+    # bound to a single project. A future multi-project engine would fetch
+    # task → project_id via the api.
+    project_id = _project_id_from_env()
     tools_config = await _fetch_tools_config(project_id)
     working_path, repo_root = _resolve_paths(project_id)
 
@@ -402,7 +405,7 @@ async def _handle_one_tool_call(
         )
 
     result = apply_sandbox(
-        tool, ctx, args, raw_result, requested_timeout_s=requested_timeout
+        tool, raw_result, requested_timeout_s=requested_timeout
     )
 
     # 5. Audit. Always.
@@ -538,16 +541,6 @@ def _project_id_from_env() -> int | None:
     if not raw or not raw.isdigit():
         return None
     return int(raw)
-
-
-async def _resolve_project_id(task_id: int | None) -> int | None:
-    """Project id for the current invocation.
-
-    For now we trust the engine's binding (LANGGRAPH_PROJECT_ID) — there's
-    only one project per engine container. A future multi-project engine
-    would need to fetch task → project_id via the api.
-    """
-    return _project_id_from_env()
 
 
 async def _fetch_tools_config(project_id: int | None) -> dict[str, Any] | None:

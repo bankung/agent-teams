@@ -43,6 +43,15 @@ DEFAULT_API_BASE = "http://api:8456"
 # because audit calls are tiny + frequent — we want them snappy or failed.
 _AUDIT_TIMEOUT_S: float = 5.0
 
+# ToolResult fields the api accepts on the wire. The api side's
+# `ToolCallResult` uses `extra='forbid'` so any forward-compat extras on
+# ToolResult (e.g. `retry_safe`, which is a langgraph-side LLM hint and
+# is intentionally not persisted) would 422 without this filter. Frozen
+# so a typo on the producer side raises rather than silently mutating.
+_KNOWN_RESULT_KEYS: frozenset[str] = frozenset(
+    {"success", "error_code", "error_msg", "output", "duration_ms"}
+)
+
 
 def _api_base() -> str:
     """Resolve the kanban API base URL at call time (env-var honoured).
@@ -128,18 +137,10 @@ def _build_payload(
         result_dict = dict(result)
 
     # ToolResult has 6 fields (success/error_code/error_msg/output/
-    # retry_safe/duration_ms). The api-side ToolCallResult uses the
-    # exact same shape — pass through. If the dict has unknown extras
-    # (forward-compat fields, etc.) we filter to the known set so the
-    # api's `extra='forbid'` doesn't 422 us.
-    _KNOWN_RESULT_KEYS = {
-        "success",
-        "error_code",
-        "error_msg",
-        "output",
-        "retry_safe",
-        "duration_ms",
-    }
+    # retry_safe/duration_ms). The api-side ToolCallResult drops
+    # `retry_safe` (langgraph-side LLM hint, not persisted) and uses
+    # the rest. We filter to the api's known set so `extra='forbid'`
+    # doesn't 422 us. See `_KNOWN_RESULT_KEYS` at module scope.
     filtered_result = {
         k: v for k, v in result_dict.items() if k in _KNOWN_RESULT_KEYS
     }

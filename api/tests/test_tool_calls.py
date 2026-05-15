@@ -64,13 +64,17 @@ def _result_dict(
     error_msg: str | None = None,
     duration_ms: int = 12,
 ) -> dict:
-    """Mirror of ToolResult.model_dump() — shape the writer expects."""
+    """Mirror of ToolCallResult — shape the writer expects.
+
+    Note: `retry_safe` is on the langgraph-side ToolResult but NOT on
+    `ToolCallResult` (the wire schema). The audit layer filters it out
+    before POSTing; tests mirror the post-filter shape here.
+    """
     return {
         "success": success,
         "error_code": error_code,
         "error_msg": error_msg,
         "output": output,
-        "retry_safe": True,
         "duration_ms": duration_ms,
     }
 
@@ -611,7 +615,6 @@ def _post_body(
             "error_code": error_code,
             "error_msg": error_msg,
             "output": output,
-            "retry_safe": True,
             "duration_ms": duration_ms,
         },
         "permission_decision": permission_decision,

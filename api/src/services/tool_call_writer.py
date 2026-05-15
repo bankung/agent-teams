@@ -67,9 +67,10 @@ async def record_tool_call(
         input_args: the tool's validated input args (dict). Stored as-is
             in JSONB so a future replay/forensic audit can reconstruct
             the exact call.
-        result: serialized `ToolResult` dict. Expected keys:
-            success (bool), error_code (str|None), error_msg (str|None),
-            output (str|None), retry_safe (bool), duration_ms (int).
+        result: serialized `ToolCallResult` dict (post-filter — the
+            langgraph-side `retry_safe` is dropped before reaching here).
+            Expected keys: success (bool), error_code (str|None),
+            error_msg (str|None), output (str|None), duration_ms (int).
             Missing keys are treated defensively (success defaults False,
             duration_ms defaults 0, the rest default None).
         permission_decision: 'auto_allow' / 'halt' / 'reject'.

@@ -62,10 +62,13 @@ def check_host_allowed(
 
 
 def truncate_response_body(body: str, cap: int = RESPONSE_OUTPUT_CAP_BYTES) -> str:
-    """Truncate `body` to `cap` UTF-8 bytes. Mirrors shell_run's _truncate_output.
+    """Truncate `body` to `cap` UTF-8 bytes.
 
     On truncation, append a sentinel describing the full size so the LLM /
     audit log can tell "this was cut off" from "the response really was this short".
+    The global sandbox post-flight (`apply_output_cap`) applies a second 100KB
+    cap with a different sentinel; this http-side cap is the network-layer
+    short-circuit so we don't buffer a multi-MB response in memory.
     """
     encoded = body.encode("utf-8")
     if len(encoded) <= cap:

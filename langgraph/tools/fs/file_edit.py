@@ -21,6 +21,7 @@ from pydantic import Field
 
 from ..base import InvokeContext, Tier, Tool, ToolInput, ToolResult
 from ..registry import GLOBAL_REGISTRY
+from ._common import read_text, write_text
 
 
 class FileEditInput(ToolInput):
@@ -41,14 +42,6 @@ class FileEditInput(ToolInput):
             "modifying the file."
         ),
     )
-
-
-def _read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
-
-
-def _write_text(path: Path, content: str) -> None:
-    path.write_text(content, encoding="utf-8")
 
 
 def _build_diff(path: Path, before: str, after: str) -> str:
@@ -77,9 +70,8 @@ class FileEditTool(Tool):
     input_schema = FileEditInput
 
     async def _run(
-        self, input_obj: ToolInput, context: InvokeContext
+        self, input_obj: FileEditInput, context: InvokeContext
     ) -> ToolResult:
-        assert isinstance(input_obj, FileEditInput)
         path = Path(input_obj.path)
         if not path.exists():
             return ToolResult(
@@ -97,7 +89,7 @@ class FileEditTool(Tool):
             )
 
         try:
-            before = await asyncio.to_thread(_read_text, path)
+            before = await asyncio.to_thread(read_text, path)
         except Exception as exc:
             return ToolResult(
                 success=False,
@@ -147,7 +139,7 @@ class FileEditTool(Tool):
             )
 
         try:
-            await asyncio.to_thread(_write_text, path, after)
+            await asyncio.to_thread(write_text, path, after)
         except Exception as exc:
             return ToolResult(
                 success=False,

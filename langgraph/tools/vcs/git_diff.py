@@ -39,9 +39,8 @@ class GitDiffTool(Tool):
     input_schema = GitDiffInput
 
     async def _run(
-        self, input_obj: ToolInput, context: InvokeContext
+        self, input_obj: GitDiffInput, context: InvokeContext
     ) -> ToolResult:
-        assert isinstance(input_obj, GitDiffInput)
         args = ["diff"]
         if input_obj.paths is not None:
             args.append("--")

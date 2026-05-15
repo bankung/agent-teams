@@ -76,10 +76,8 @@ class HttpPostTool(Tool):
     input_schema = HttpPostInput
 
     async def _run(
-        self, input_obj: ToolInput, context: InvokeContext
+        self, input_obj: HttpPostInput, context: InvokeContext
     ) -> ToolResult:
-        assert isinstance(input_obj, HttpPostInput)
-
         # 1. Host gate.
         allowed, wildcard, offending_host = check_host_allowed(
             input_obj.url, context.host_allowlist

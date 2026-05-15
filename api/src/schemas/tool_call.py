@@ -43,10 +43,11 @@ class ToolCallRead(BaseModel):
 class ToolCallResult(BaseModel):
     """Subset of `ToolResult` (langgraph-side) carried in the POST body.
 
-    The writer service only reads `success`, `error_code`, `error_msg`,
-    `output`, `duration_ms` — `retry_safe` is a langgraph-side hint and
-    isn't persisted. We accept it on the wire for forward-compat but
-    don't expose it on the read model.
+    The writer service reads `success`, `error_code`, `error_msg`, `output`,
+    `duration_ms`. `retry_safe` is a langgraph-side hint (used by the LLM
+    loop for retry behavior); it is NOT carried over the wire — the
+    audit row doesn't persist it. The producer (langgraph/audit.py) filters
+    it out before POSTing.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -55,7 +56,6 @@ class ToolCallResult(BaseModel):
     error_code: str | None = Field(None, description="Machine-readable failure code.")
     error_msg: str | None = Field(None, description="Human-readable error message (truncated to 1KB).")
     output: str | None = Field(None, description="Tool output (truncated to 256 chars on persist).")
-    retry_safe: bool = Field(True, description="Forward-compat; not persisted.")
     duration_ms: int = Field(0, ge=0, description="Wall-clock duration in milliseconds.")
 
 

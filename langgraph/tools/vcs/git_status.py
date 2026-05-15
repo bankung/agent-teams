@@ -14,10 +14,6 @@ from ..registry import GLOBAL_REGISTRY
 from ._run_git import run_git
 
 
-class GitStatusInput(ToolInput):
-    pass
-
-
 @GLOBAL_REGISTRY.register
 class GitStatusTool(Tool):
     name = "git_status"
@@ -26,7 +22,10 @@ class GitStatusTool(Tool):
         "Returns machine-readable status + branch header. No arguments."
     )
     tier = Tier.READ
-    input_schema = GitStatusInput
+    # No tool-specific fields — use ToolInput directly. An empty subclass
+    # would only add a name; ToolInput itself satisfies the `input_schema`
+    # contract on Tool (Pydantic v2 model with `extra='forbid'`).
+    input_schema = ToolInput
 
     async def _run(
         self, input_obj: ToolInput, context: InvokeContext

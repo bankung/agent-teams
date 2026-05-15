@@ -16,6 +16,7 @@ from pydantic import Field
 
 from ..base import InvokeContext, Tier, Tool, ToolInput, ToolResult
 from ..registry import GLOBAL_REGISTRY
+from ._common import write_text
 
 
 class FileWriteInput(ToolInput):
@@ -27,10 +28,6 @@ class FileWriteInput(ToolInput):
             "When True, return the would-be size + path without writing."
         ),
     )
-
-
-def _write_text(path: Path, content: str) -> None:
-    path.write_text(content, encoding="utf-8")
 
 
 @GLOBAL_REGISTRY.register
@@ -46,9 +43,8 @@ class FileWriteTool(Tool):
     input_schema = FileWriteInput
 
     async def _run(
-        self, input_obj: ToolInput, context: InvokeContext
+        self, input_obj: FileWriteInput, context: InvokeContext
     ) -> ToolResult:
-        assert isinstance(input_obj, FileWriteInput)
         path = Path(input_obj.path)
         if path.exists():
             return ToolResult(
@@ -85,7 +81,7 @@ class FileWriteTool(Tool):
             )
 
         try:
-            await asyncio.to_thread(_write_text, path, input_obj.content)
+            await asyncio.to_thread(write_text, path, input_obj.content)
         except Exception as exc:
             return ToolResult(
                 success=False,
