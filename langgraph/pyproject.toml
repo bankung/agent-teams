@@ -60,3 +60,11 @@ testpaths = ["tests"]
 # test without per-test @pytest.mark.asyncio. Strict-mode would require the
 # marker on every async test; auto-mode keeps the test files clean.
 asyncio_mode = "auto"
+# Kanban #977 — the `tools/` subpackage is NOT listed in `py-modules` above
+# (it's a real package with its own __init__.py + sub-packages, not a flat
+# top-level module like graph/state/etc.). The pip-editable finder only
+# exposes the listed py-modules, so `import tools` from inside the test
+# process fails without explicit pythonpath. Adding `.` (resolves to the
+# pytest rootdir = /app) lets `from tools import ...` work the same way it
+# does in the running container.
+pythonpath = ["."]

@@ -11,10 +11,12 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# No system deps yet — pure-Python wheel install. Keep the apt-get block as a
-# placeholder so #850 can add build-essential / libpq-dev if a sdist needs it.
+# System deps:
+# - git: required by the specialist tool layer (Kanban #977 → git_diff,
+#   git_status, git_commit). The container needs to invoke git as a
+#   subprocess against the bind-mounted /repo worktree.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy package metadata first so the pip layer caches across graph.py edits.
