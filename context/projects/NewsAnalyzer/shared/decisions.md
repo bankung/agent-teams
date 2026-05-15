@@ -15,6 +15,33 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-15 (evening) — T13 #1027 closed — NewsAnalyzer cross-project pollution cleaned
+**Scope:** repo hygiene
+**Proposed by:** user (flagged dirty diff in NewsAnalyzer main 2026-05-15)
+**Status:** T13 DONE 2026-05-15 (commit `93dae8e`).
+
+**What landed (NewsAnalyzer side only):**
+- `.gitignore` extended with 9 entries (`.claude/agents/`, `.claude/teams/`, `.claude/hooks/`, `.claude/docs/`, `.claude/settings.json`, `.claude/settings.local.json`, `context/`, `.codex/`, `hello-tier3.md`) — with comment block explaining the cross-project pollution + pointer to upstream fix.
+- `git rm --cached .claude/settings.local.json` — was tracked; now untracked + ignored. File stays on disk for Claude Code Desktop session-local state.
+- `CLAUDE.md` reverted to HEAD — restored NewsAnalyzer's Phase 1 scraper-logic instructions (was overwritten with agent-teams Lead orchestrator content during an earlier session).
+- Files on disk PRESERVED — Claude Code Desktop can still read `.claude/agents/`, `.claude/teams/`, `context/`, etc., locally when user opens NewsAnalyzer. Git just hides them from tracking.
+
+**Root cause:** auto-scaffold bug in agent-teams that wrote orchestration infrastructure into target-project working trees instead of staying contained in the agent-teams repo. Upstream fix is **Kanban #941 on agent-teams** — out of T13 scope. T13 only does NewsAnalyzer-side cleanup so the diff view stays clean while #941 work continues.
+
+**Verification:** `git status` clean post-commit. `docker compose ps` confirms 10 containers still Up (no operational impact). Sample `CLAUDE.md` line 1 = `# NewsAnalyzer — Claude Instructions` (not `# Lead — Meta orchestrator`).
+
+**Implications:**
+- Future Claude Code Desktop sessions in NewsAnalyzer won't accidentally re-commit polluted files (gitignore covers them).
+- Personal Claude Code allow-lists (`settings.local.json`) stay local to each user; no more tracking-noise from session prefs.
+- **If the user re-opens NewsAnalyzer in Claude Code Desktop expecting Lead-style orchestration**, that content is no longer in `CLAUDE.md` — they'll need to either open the agent-teams worktree directly OR put a session-local note in `_scratch/`.
+
+**Cross-references:**
+- T13 commit: `93dae8e` on NewsAnalyzer main.
+- Upstream platform fix: Kanban #941 on agent-teams (auto-scaffold bug — separate project).
+- Memory: `feedback_cross_project_platform_edits` codifies the rule that triggered this cleanup.
+
+---
+
 ## 2026-05-15 (late afternoon) — T10 #934 closed — fuzzy-match NewsDeduplicator landed; memory cost confirmed
 **Scope:** shared (backend pipeline)
 **Proposed by:** lead (closing report from dev-backend specialist)
