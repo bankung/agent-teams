@@ -23,6 +23,7 @@ from src.routers import projects as projects_router
 from src.routers import scaffold as scaffold_router
 from src.routers import sessions as sessions_router
 from src.routers import tasks as tasks_router
+from src.routers import tool_calls as tool_calls_router
 from src.services.row_changed_listener import start_listener, stop_listener
 from src.settings import get_settings
 
@@ -145,6 +146,8 @@ def create_app() -> FastAPI:
     app.include_router(sessions_router.runs_router, prefix="/api")
     app.include_router(scaffold_router.router, prefix="/api")
     app.include_router(events_router.router, prefix="/api")  # Kanban #782 SSE
+    # Kanban #980 — specialist-tool audit timeline (sub-resource of tasks).
+    app.include_router(tool_calls_router.router, prefix="/api")
 
     return app
 

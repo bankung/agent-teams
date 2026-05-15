@@ -19,6 +19,7 @@ from src.models.base import Base
 from src.models import project as _project  # noqa: F401
 from src.models import session as _session  # noqa: F401
 from src.models import task as _task  # noqa: F401
+from src.models import tool_call as _tool_call  # noqa: F401
 from src.settings import get_settings
 
 config = context.config

@@ -476,3 +476,40 @@ export async function cancelTask(
     status_change_reason: reason,
   });
 }
+
+// #980 / #949d — per-task tool-call audit rows. BE writes one row per tool
+// invocation during agent runs (success / failure / permission decision /
+// timing / input + truncated output). Section is lazy-loaded in TaskDetail
+// and hidden entirely when the array is empty. Tier drives chip color in the
+// UI (read=zinc / write=amber / network=blue / destructive=red).
+export type ToolCallTier = "read" | "write" | "network" | "destructive";
+export type ToolCallPermissionDecision =
+  | "auto_allow"
+  | "halt"
+  | "reject";
+
+export type ToolCallRead = {
+  id: number;
+  task_id: number;
+  invoked_at: string; // ISO 8601
+  tool_name: string;
+  tier: ToolCallTier;
+  input_json: Record<string, unknown>;
+  success: boolean;
+  error_code: string | null;
+  error_msg: string | null;
+  output_summary: string | null; // first 256 chars of tool output
+  duration_ms: number;
+  permission_decision: ToolCallPermissionDecision;
+};
+
+// #980 — GET /api/tasks/{id}/tool-calls. Backend returns [] for tasks with
+// no recorded calls; callers should hide the section in that case.
+export async function getTaskToolCalls(
+  projectId: number,
+  taskId: number,
+): Promise<ToolCallRead[]> {
+  return jsonFetch<ToolCallRead[]>(`/api/tasks/${taskId}/tool-calls`, {
+    headers: { "X-Project-Id": String(projectId) },
+  });
+}

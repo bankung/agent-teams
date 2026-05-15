@@ -17,6 +17,7 @@ import { computeBlockedByExclusionSet } from "@/lib/cycleExclusion";
 import { PendingBadge } from "./PendingBadge";
 import { RunModeBadge } from "./RunModeBadge";
 import { TaskKindBadge } from "./TaskKindBadge";
+import { TaskToolCalls } from "./TaskToolCalls";
 
 type Props = {
   task: TaskRead;
@@ -464,6 +465,9 @@ export function TaskDetail({
               )}
             </dl>
           </Section>
+
+          {/* #980 — per-task tool-call audit; self-hides when 0 rows */}
+          <TaskToolCalls projectId={projectId} taskId={task.id} />
         </div>
       </aside>
     </div>

@@ -4,6 +4,7 @@ from src.models.base import Base
 from src.models.project import Project
 from src.models.session import Session, SessionCompact, SessionRun
 from src.models.task import Task, TaskHistory
+from src.models.tool_call import ToolCall
 
 __all__ = [
     "Base",
@@ -13,4 +14,5 @@ __all__ = [
     "SessionRun",
     "Task",
     "TaskHistory",
+    "ToolCall",
 ]
