@@ -15,6 +15,67 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-16 — T6 #924 closed — Backfill Option A implementation landed; **Phase 0 sequence complete**
+**Scope:** shared (backend pipeline + new Celery task + routers + seed)
+**Proposed by:** lead (closing report from dev-backend specialist)
+**Status:** T6 DONE 2026-05-16 (commit `bc3e70c`). All 7 ACs passed; **closes Phase 0 work** (T9-T13 + T6 + T8 stopgap). Only open Phase 0 follow-up: **T14 #1036 stale Claude credentials**, independent of pipeline.
+
+**What landed (5 design choices made):**
+
+1. **Low-priority lane = Option 2b (rate-limit guard)** — `_should_defer` queries new endpoint `GET /analysis/agent-runs/today-stats` (returns sum of input/output tokens for today). Defers backfill iteration when `today_input_tokens >= BACKFILL_DAILY_INPUT_TOKEN_LIMIT` (env-tunable, default 500K). Manual triggers BYPASS the guard. **Rejected:** separate `backfill_queue` Celery queue (more compose surface, no clear payoff at Phase 0 scale).
+
+2. **Initial seed = Option 3a (one-shot async function)** — `pipeline/app/workers/backfill_seed.py` + `python -m app.workers.backfill_seed` CLI. Idempotent (existing rows counted, no duplicates). **Rejected:** Alembic data migration — each environment should seed at its own `now`, not the migration commit timestamp.
+
+3. **Manual trigger = Option 4i (HTTP endpoint)** — `POST /backfill/trigger/{source_name}` on Pipeline service. Returns Celery `task_id` polled via existing `/ingest/status/{task_id}` pattern. Matches the existing `/ingest/run` UX. CLI subcommand can be added later if needed.
+
+4. **RSS limitation handling** — All 7 RSS sources get a BackfillJob row at seed time (consistency), but first iteration flips them to `status='failed'` with `error_log='RSS does not support historical fetch. feedparser returns only the current feed window; use a future archive integration (e.g. Wayback Machine) and flip status back to idle to retry.'` Row sticks around — a future Wayback Machine integration can flip them back to `idle`.
+
+5. **Cursor seed semantics (AC#4 interpretation)** — T6 spec text said "cursor = today - 1 year" verbatim, but the design semantics (BackfillJob model docstring + decisions.md lock #6 + iteration logic) define cursor as the UPPER bound below which the next batch fetches articles, walking BACKWARDS until completion at `today - BACKFILL_HORIZON_DAYS`. Seeded `cursor = now` (today); the 1y horizon is the COMPLETION point computed per-iteration. Documented in `seed_backfill_jobs()` docstring + commit body.
+
+**Counts (corrected from spec):**
+- Spec said 8 BackfillJob rows (4 scrape + 4 RSS). Actual: **11 rows (4 scrape + 7 RSS)** per T9 closure correction. Seed produced 11 rows.
+
+**Smoke evidence:**
+- Manual trigger against `ข่าวหุ้น`: cursor `2026-05-15 → 2026-05-14`, articles_backfilled `0 → 10`, 10 NewsArticle rows inserted with historical fetched_at.
+- BBC World RSS smoke: status `idle → failed` with descriptive error_log (expected feedparser limitation).
+- Default-disabled posture: beat schedule has 2 entries (morning + midday fetch) when `BACKFILL_ENABLED=false`; +1 entry when flipped to `true`.
+- 15 unit tests in `pipeline/tests/test_backfill.py`; 48 tests pass overall.
+
+**New endpoints (Backend + Pipeline):**
+- Backend: `GET /backfill-jobs?status_in=...`, `GET /backfill-jobs/{id}`, `GET /backfill-jobs/by-source/{name}`, `POST /backfill-jobs`, `PATCH /backfill-jobs/{id}` (CRUD); `GET /analysis/agent-runs/today-stats` (token aggregate for rate-limit guard).
+- Pipeline: `POST /backfill/trigger/{source_name}`, `POST /backfill/run` (full cursor-advance pass; gated by rate-limit), `POST /backfill/seed` (idempotent re-seed).
+
+**Operational notes for deploy:**
+- First-time seed: `docker compose exec pipeline python -m app.workers.backfill_seed` (idempotent — safe to bake into deploy script).
+- To enable nightly backfill: set `BACKFILL_ENABLED=true` in env file AND `docker compose up -d --force-recreate worker` (plain `restart` won't pick up new env vars from compose).
+- Backfill nightly schedule: `crontab(hour=2, minute=30)` UTC = 09:30 ICT (off-peak).
+
+**Implications:**
+- **Phase 0 → Phase 1 sequence complete** — fetch → dedup → AI queueing → resilience → backfill all wired. Pipeline is the canonical full pipeline; T8 stopgap retired (per T11 closure note).
+- **Lock #6 backfill subdecision (decisions.md 2026-05-14) is now FULLY IMPLEMENTED:** Option A (background trickle via Max 20x quota) lands as code + schema + endpoints + seed + manual trigger + default-off safety.
+- **T14 #1036 remains the only open Phase 0 blocker** for end-to-end real-CLI verification. T6 backfill scrape portion works regardless; AI analysis on backfilled articles will respect T14 resolution (same code path as live-ingest AI).
+
+**Standards proposals (NOT auto-applied — for human MA in `context/standards/*`):**
+- `context/standards/celery/` (new) — env-gated beat schedule entries: "Any Celery beat entry that triggers external-cost work (API quota, paid services) MUST be gated on an explicit env flag, default false. Build the `beat_schedule` dict via a helper function consulting env vars rather than a top-level dict literal."
+- `context/standards/docker/compose.md` — `docker compose restart` does NOT pick up new env vars from compose; must `up --force-recreate`. Easy gotcha; worth codifying.
+
+**Open follow-ups (NOT blocking; surface for user):**
+- **T14 #1036** — stale `~/.claude/.credentials.json`. User action: `claude /login` on host, then re-verify T11 AC#6 + AC#7 real-CLI smoke.
+- **Frontend backfill UI** — button per source to call `POST /backfill/trigger/{source_name}` + poll `/ingest/status/{task_id}`. Same pattern as existing FetchButton. Not in T6 scope.
+- **Wayback Machine integration for RSS historical fetch** — would flip the 7 RSS BackfillJob rows from `failed` back to `idle`. Phase 2+.
+- **Frontend engine_tier badge** — T12 surfaced field; no UI consumer yet.
+- **Settrade + SET.or.th rescue** — UA rotation OR drop OR replace (T12 closure note).
+- **Orphan ~105 pre-T10 articles** — re-process through dedup pass (T10 closure flag).
+- **Memory deviation T10 (234 MB)** — accepted; new sizing reference.
+
+**Cross-references:**
+- T6 commit: `bc3e70c` on NewsAnalyzer main.
+- T14 follow-up: Kanban #1036 on NewsAnalyzer.
+- Schema dependency: T3 #922 commit `f4cd4d2` (BackfillJob model + migration).
+- Lock #6 backfill subdecision: decisions.md 2026-05-14 (Engine, scope, scraping, cost rules planning lock).
+
+---
+
 ## 2026-05-16 — T12 #991 closed — Firecrawl resilience layer landed
 **Scope:** shared (backend pipeline scraping)
 **Proposed by:** lead (closing report from dev-backend specialist)
