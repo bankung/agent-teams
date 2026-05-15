@@ -153,6 +153,24 @@ class Project(Base):
         nullable=True,
     )
 
+    # Kanban #979 (2026-05-16): per-project specialist-tool permission gate
+    # config. Drives `langgraph/tools/permission_gate.check_permission()`.
+    # Locked default (Q2 Option B, design lock #949) lives in migration
+    # 0027 as the column's PG-level server_default + a backfill UPDATE so
+    # every existing row also reads the dict, never NULL. NULL semantics
+    # at the gate = "kill switch on / reject everything" (defensive — same
+    # outcome as `tools_enabled=false`). API boundary validates element
+    # shape via `ToolsConfig` Pydantic model; NO DB CHECK on shape
+    # (mirrors `config` / `agent_overrides` / `sources` / acceptance_criteria
+    # precedent — JSONB element-shape validation lives at the API layer).
+    # No Python-side `default=` here: POST /api/projects intentionally OMITS
+    # the column from INSERT so the PG server_default fires (parity with
+    # `agent_overrides` "omit-when-None" pattern in the router).
+    tools_config: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
     tasks: Mapped[list["Task"]] = relationship(
         "Task",
         back_populates="project",

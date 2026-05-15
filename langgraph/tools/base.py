@@ -141,6 +141,16 @@ class InvokeContext(BaseModel):
             "boundary check moves to #981."
         ),
     )
+    host_allowlist: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Per-project HTTP host allowlist for network-tier tools (#978). "
+            "Sourced from projects.tools_config.http_hosts when the permission "
+            "gate (#979) wires it. An entry of '*' enables wildcard mode "
+            "(everything allowed, but retry_safe is forced False + a WARNING "
+            "is logged on every call). Default empty list = everything halts."
+        ),
+    )
 
 
 class Tool(ABC):

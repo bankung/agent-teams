@@ -379,6 +379,14 @@ async def create_project(
             entry.model_dump(exclude_none=True) for entry in payload.sources
         ]
 
+    # Kanban #979 — OMIT when None so the DB server_default (locked default
+    # JSON from migration 0027) fires. An explicit ToolsConfig from the
+    # client REPLACES the default; we model_dump() it to a plain dict for
+    # JSONB persistence. Pydantic already validated disjoint-tiers + Literal
+    # tier strings by this point — server side is just shuttling bytes.
+    if payload.tools_config is not None:
+        data["tools_config"] = payload.tools_config.model_dump()
+
     # Kanban #694, Phase 2: `is_active` is a free boolean — no atomic-clear of
     # other rows. The legacy `_clear_other_active(keep_id=None)` here was
     # load-bearing on the dropped `ux_projects_active_one` invariant.

@@ -27,9 +27,30 @@ EXPECTED_BATCH_1 = {
     "shell_run",
 }
 
+# Batch 2 (Kanban #978) — registered when the active LLM provider supports
+# tool-use. The test runtime defaults to no provider env var → these register.
+EXPECTED_BATCH_2 = {
+    "http_get",
+    "http_post",
+}
+
+EXPECTED_REGISTERED = EXPECTED_BATCH_1 | EXPECTED_BATCH_2
+
 
 def test_global_registry_has_all_batch_1_tools():
-    assert set(GLOBAL_REGISTRY.list()) == EXPECTED_BATCH_1
+    """Pin the batch-1 subset (so a future refactor that drops one is loud)."""
+    assert EXPECTED_BATCH_1.issubset(set(GLOBAL_REGISTRY.list()))
+
+
+def test_global_registry_has_batch_2_when_provider_supports_tool_use():
+    """HTTP tools register when LANGGRAPH_LLM_PROVIDER != ollama. The test
+    runtime doesn't set the env var (or sets it to anthropic), so batch 2
+    should be present."""
+    import os
+    assert os.environ.get("LANGGRAPH_LLM_PROVIDER", "").lower() != "ollama", (
+        "Test runtime should not have provider=ollama for this assertion."
+    )
+    assert EXPECTED_BATCH_2.issubset(set(GLOBAL_REGISTRY.list()))
 
 
 def test_list_is_sorted():
@@ -82,9 +103,10 @@ def test_duplicate_registration_raises():
 
 def test_all_tools_as_langchain_count_and_names():
     lc_tools = GLOBAL_REGISTRY.all_tools_as_langchain()
-    assert len(lc_tools) == len(EXPECTED_BATCH_1)
     lc_names = {t.name for t in lc_tools}
-    assert lc_names == EXPECTED_BATCH_1
+    # Batch 1 is the immutable minimum; batch 2 piggybacks when provider != ollama.
+    assert EXPECTED_BATCH_1.issubset(lc_names)
+    assert len(lc_tools) == len(lc_names), "duplicate names in langchain export"
 
 
 def test_all_tools_as_langchain_preserves_args_schema():

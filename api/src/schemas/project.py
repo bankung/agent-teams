@@ -17,7 +17,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.constants import ProjectTeam
 
@@ -99,6 +99,73 @@ class SourceEntry(BaseModel):
         return s
 
 
+# Kanban #979 — specialist-tool permission tiers. Mirrors
+# `langgraph/tools/base.py::Tier` value strings. The two sources of truth are
+# kept in lockstep by `test_permission_gate.py::test_tier_literal_matches_enum`
+# (langgraph side) — a drift fires immediately on the next test run.
+ToolTier = Literal["read", "write", "network", "destructive"]
+
+
+class ToolsConfig(BaseModel):
+    """Kanban #979 — per-project specialist-tool permission gate config.
+
+    Stored in `projects.tools_config` JSONB. Read by
+    `langgraph/tools/permission_gate.check_permission()` BEFORE invoking any
+    registered tool. The locked default ships "permissive read, halt on
+    everything else" plus `tools_enabled=false` as a master kill switch — see
+    migration `0027_projects_tools_config` for the full rationale.
+
+    Field semantics (locked design #949 — see
+    `_scratch/standards-proposal-permission-tiers.md`):
+
+    - `tools_enabled` — master kill switch. False → gate returns `reject` for
+      EVERY tool regardless of tier (including reads). Only the user (FE
+      config UI, gated by #943) can flip true.
+    - `auto_allow_tiers` — tiers whose tool calls auto-execute without human
+      review. The ship default ships `["read"]` only.
+    - `halt_tiers` — tiers whose tool calls halt the agent for human review
+      via the standard halt_reason mechanism. Default
+      `["write", "network", "destructive"]`.
+    - `http_hosts` — forward-compat host allowlist for the HTTP tool family
+      (shipped by #978; consumed by #981 sandbox). The gate (this slice)
+      does NOT check this — only `tools_enabled` + tier. Empty list = no
+      hosts allowed once the HTTP tool consults it.
+
+    Invariants enforced at the API boundary (422 on violation):
+    - `auto_allow_tiers` and `halt_tiers` MUST be disjoint. The same tier
+      cannot live in both lists — the gate's lookup order would still pick
+      auto_allow first, but the config would be semantically incoherent.
+      Tiers absent from BOTH lists fall through to `reject` at the gate
+      (defensive default — over-block beats under-block on misconfiguration).
+    - Unknown tier strings fail 422 via the `ToolTier` Literal.
+    - `http_hosts` entries are free-form strings here (no scheme/wildcard
+      validation in this slice — the HTTP tool's own validator handles host
+      shape when #981 wires it).
+
+    `extra="forbid"` keeps the wire contract tight: a typo'd `tool_enabled`
+    fails 422 instead of silently persisting under a garbage key.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tools_enabled: bool = False
+    auto_allow_tiers: list[ToolTier] = Field(default_factory=lambda: ["read"])
+    halt_tiers: list[ToolTier] = Field(
+        default_factory=lambda: ["write", "network", "destructive"]
+    )
+    http_hosts: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _tiers_must_be_disjoint(self) -> ToolsConfig:
+        overlap = set(self.auto_allow_tiers) & set(self.halt_tiers)
+        if overlap:
+            raise ValueError(
+                "auto_allow_tiers and halt_tiers must be disjoint; "
+                f"overlap: {sorted(overlap)!r}"
+            )
+        return self
+
+
 class _Paths(BaseModel):
     web: str
     api: str
@@ -158,6 +225,13 @@ class ProjectCreate(BaseModel):
     budget_daily_usd: Decimal | None = Field(default=None, ge=0, decimal_places=2)
     budget_monthly_usd: Decimal | None = Field(default=None, ge=0, decimal_places=2)
     budget_total_usd: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+
+    # Kanban #979: per-project specialist-tool permission gate config. None
+    # (the default) → router OMITS the column from INSERT so the DB
+    # server_default fires (locked Q2 Option B default — see migration 0027).
+    # An explicit dict here REPLACES the default; the disjoint-tiers
+    # validator on `ToolsConfig` fires before the row reaches the DB.
+    tools_config: ToolsConfig | None = Field(default=None)
 
     @field_validator("agent_overrides")
     @classmethod
@@ -229,6 +303,15 @@ class ProjectUpdate(BaseModel):
     budget_monthly_usd: Decimal | None = Field(default=None, ge=0, decimal_places=2)
     budget_total_usd: Decimal | None = Field(default=None, ge=0, decimal_places=2)
 
+    # Kanban #979: per-project specialist-tool permission gate config. PATCH
+    # semantics — key-absent leaves the column unchanged (exclude_unset);
+    # explicit dict REPLACES the prior value (no deep merge — same as
+    # `agent_overrides`); explicit `null` would CLEAR the column to NULL,
+    # which the gate treats as "kill switch on" (reject all). The router
+    # path applies the same null-handling pattern as agent_overrides /
+    # sources for forward-compat — see update_project() in routers/projects.py.
+    tools_config: ToolsConfig | None = Field(default=None)
+
     @field_validator("agent_overrides")
     @classmethod
     def _validate_agent_override_keys(cls, v):
@@ -297,6 +380,17 @@ class ProjectRead(BaseModel):
     budget_daily_usd: Decimal | None = None
     budget_monthly_usd: Decimal | None = None
     budget_total_usd: Decimal | None = None
+
+    # Kanban #979: specialist-tool permission gate config. NULL semantics on
+    # the wire = "no config yet / kill switch on" — but in practice every
+    # row carries the locked default (migration 0027 backfills existing
+    # rows; the DB column-level server_default fills new INSERTs). The
+    # type is `dict[str, Any] | None` rather than the strict `ToolsConfig`
+    # so legacy / hand-edited rows that drift from the element shape don't
+    # 500 a read endpoint (parity with `sources` "value-tolerant on read,
+    # strict on write" precedent). Writes still go through the strict
+    # `ToolsConfig` validator on POST/PATCH.
+    tools_config: dict[str, Any] | None = None
 
     @field_validator("sources", mode="before")
     @classmethod

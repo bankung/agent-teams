@@ -44,6 +44,11 @@ test = [
     # and _poll_once are coroutines; pytest-asyncio's auto-mode lets us mark
     # individual cases with @pytest.mark.asyncio without per-file boilerplate.
     "pytest-asyncio==0.25.0",
+    # httpx mocking for http_get / http_post unit tests (Kanban #978). Avoids
+    # spinning up a real HTTP server in CI; routes are matched against the
+    # AsyncClient calls each tool makes. 0.22.0 is the first version compatible
+    # with httpx>=0.28 (0.21.x silently fails to intercept on httpx 0.28).
+    "respx==0.22.0",
 ]
 
 [tool.setuptools]
