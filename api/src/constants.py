@@ -81,15 +81,49 @@ class TaskPriority:
 
 
 class TaskRole:
-    """tasks.assigned_role — INTEGER NULLABLE, CHECK IN (1..5) when not null."""
+    """tasks.assigned_role — INTEGER NULLABLE. Validated 1..20 at app layer
+    (the DB CHECK was dropped 2026-05-08 by migration 0002; per-team roster
+    enforcement is too dynamic for a single static CHECK).
 
+    Range partition:
+      *  1..10  → dev team (.claude/teams/dev.md)
+      * 11..20  → novel team (.claude/teams/novel.md)
+      * 21+     → reserved for future team domains
+
+    Each team's playbook owns the named codes inside its range. Unnamed codes
+    inside an existing range (e.g. 6..10) are RESERVED for that team to claim
+    later; the Pydantic validator accepts them as raw ints today.
+    """
+
+    # Dev range (1..10)
     FRONTEND = 1
     BACKEND = 2
     DEVOPS = 3
     QA = 4
     REVIEWER = 5
 
-    ALL = (FRONTEND, BACKEND, DEVOPS, QA, REVIEWER)
+    # Novel range (11..20)
+    NOVEL_WRITER = 11
+    NOVEL_EDITOR = 12
+    NOVEL_PROOFREADER = 13
+
+    # Validator bounds — range, not membership. ALL stays as the union of
+    # currently-named codes (used by callers that want to enumerate the
+    # known roster, e.g. tests / docs); the wire-layer range gate lives in
+    # the Pydantic validator on `assigned_role`.
+    RANGE_MIN = 1
+    RANGE_MAX = 20
+
+    ALL = (
+        FRONTEND,
+        BACKEND,
+        DEVOPS,
+        QA,
+        REVIEWER,
+        NOVEL_WRITER,
+        NOVEL_EDITOR,
+        NOVEL_PROOFREADER,
+    )
 
 
 class TaskHistoryOperation:

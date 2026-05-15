@@ -73,12 +73,20 @@ def test_orm_metadata_has_all_tables() -> None:
 
 
 def test_constants_align_with_general_md() -> None:
-    """Sanity-check that integer codes match the standards doc."""
+    """Sanity-check that integer codes match the standards doc.
+
+    Kanban #926 (2026-05-15): TaskRole.ALL expanded to include the novel
+    range (11..20). The standards doc currently documents only the dev
+    range — its "Kanban schema codes (assigned_role)" section is flagged
+    stale for human refresh. RANGE_MIN/RANGE_MAX is the wire contract.
+    """
     from src.constants import TaskPriority, TaskRole, TaskStatus
 
     assert TaskStatus.ALL == (1, 2, 3, 4, 5, 6)
     assert TaskPriority.ALL == (1, 2, 3, 4)
-    assert TaskRole.ALL == (1, 2, 3, 4, 5)
+    assert TaskRole.ALL == (1, 2, 3, 4, 5, 11, 12, 13)
+    assert TaskRole.RANGE_MIN == 1
+    assert TaskRole.RANGE_MAX == 20
 
 
 @pytest.mark.asyncio

@@ -11,8 +11,10 @@ schema; clients call `DELETE /api/tasks/{id}` to soft-delete.
 
 `assigned_role` is no longer guarded by a DB CHECK — app-layer validation against
 the active project's team roster is the only constraint. The Pydantic validator
-still rejects values outside the dev roster (1..5) for now; widening to per-team
-roster logic is a Phase 3 follow-up (frontend will pick from a roster picker).
+accepts NULL or any int in the team-range partition `1..20` (Kanban #926,
+2026-05-15): 1..10 = dev team, 11..20 = novel team, 21+ reserved. Per-team
+roster strictness (e.g. "code 13 invalid on a dev-team project") is a future
+follow-up; today both teams share one numeric range.
 
 V3+ T1 (Kanban #706, 2026-05-10): added `task_kind` + recurrence template
 fields. Cross-table validators (cron syntax, IANA TZ, template completeness)
@@ -79,6 +81,36 @@ def _make_code_validator(
             return None
         if v not in allowed:
             raise ValueError(f"{error_prefix}, got {v!r}")
+        return int(v)
+
+    return _validate
+
+
+def _make_role_range_validator(
+    field_label: str,
+    range_min: int,
+    range_max: int,
+) -> Callable[[Any], int | None]:
+    """Build a range-based validator for `tasks.assigned_role` (Kanban #926).
+
+    NULL is always allowed (column is nullable; PATCH semantics also rely on
+    None = no-touch). Non-null values must be integers in [range_min,
+    range_max] inclusive — the range partition lives in `TaskRole`'s docstring
+    (1..10 = dev, 11..20 = novel, etc.). Membership in `TaskRole.ALL` is
+    NOT checked here: unnamed codes inside an existing range are reserved
+    for the owning team to claim later without requiring a schema bump.
+
+    The error string is part of the wire contract — pinned by test_validators.
+    """
+    error_msg_template = (
+        f"{field_label} must be NULL or in range {range_min}..{range_max}"
+    )
+
+    def _validate(v: Any) -> int | None:
+        if v is None:
+            return None
+        if not isinstance(v, int) or isinstance(v, bool) or not (range_min <= v <= range_max):
+            raise ValueError(f"{error_msg_template}, got {v!r}")
         return int(v)
 
     return _validate
@@ -294,9 +326,12 @@ class TaskCreate(BaseModel):
     _check_priority = field_validator("priority")(
         _make_code_validator("priority", TaskPriority.ALL, required=True)
     )
+    # Kanban #926 (2026-05-15): widened from membership-in-(1..5) to range
+    # 1..20 to admit novel team codes (11..20). DB CHECK was already dropped
+    # 2026-05-08 → app-layer is the only gate; widening here is sufficient.
     _check_role = field_validator("assigned_role")(
-        _make_code_validator(
-            "assigned_role", TaskRole.ALL, required=False, null_phrase="NULL or "
+        _make_role_range_validator(
+            "assigned_role", TaskRole.RANGE_MIN, TaskRole.RANGE_MAX
         )
     )
     _check_recurrence_rule = field_validator("recurrence_rule")(_validate_cron_rule)
@@ -494,9 +529,10 @@ class TaskUpdate(BaseModel):
     _check_priority = field_validator("priority")(
         _make_code_validator("priority", TaskPriority.ALL, required=False)
     )
+    # Kanban #926 (2026-05-15): same range-validator as TaskCreate — see comment there.
     _check_role = field_validator("assigned_role")(
-        _make_code_validator(
-            "assigned_role", TaskRole.ALL, required=False, null_phrase="NULL or "
+        _make_role_range_validator(
+            "assigned_role", TaskRole.RANGE_MIN, TaskRole.RANGE_MAX
         )
     )
     _check_recurrence_rule = field_validator("recurrence_rule")(_validate_cron_rule)

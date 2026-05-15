@@ -172,55 +172,116 @@ These are **fundamental Thai grammar errors** that no amount of vocabulary-level
 
 After Cat 12 + 13 errors, the expected category count for Thai AI-prose proofreading is **at minimum 13**. Expect ongoing discoveries as more chapters are drafted in different domains.
 
-### Category 14 — Inanimate agency / improper personification
-**Triggered when:** writer assigns an intent-bearing action verb to an inanimate object.
-**Why this happens:** English freely personifies ("the mud released its grip", "darkness embraced him") and AI agents translate the pattern directly. Thai is stricter — inanimate objects can only take a small set of natural-property verbs.
+### Category 14 — Inanimate agency / improper personification (3-tier verb framework)
+**Triggered when:** writer assigns a verb to an inanimate subject without checking the verb's Thai agency tier.
+**Why this happens:** English freely personifies ("the mud released its grip", "darkness embraced him") and AI agents translate the pattern directly. Thai is stricter — but it's NOT a simple "inanimate verbs forbidden / natural-property verbs OK" binary. The truth is a 3-tier system, with verb tier determined by **Thai lexical usage history**, NOT by English translation.
 
-**The rule:** Inanimate nouns (โคลน/ดิน/หิน/น้ำ/ลม/ไฟ/etc.) can perform:
-- ✅ Natural-property verbs (their physical nature does this — **context-specific**: ดูด is natural-property for quicksand/whirlpool, NOT natural for water in a glass):
-  - ลมพัด (wind blows) / น้ำไหล (water flows) / ไฟไหม้ (fire burns) / ฝนตก (rain falls) / แสงส่อง (light shines) / หินกลิ้ง (rock rolls) / ดินถล่ม (landslide) / เงาขยับ (shadow shifts — caused by external light)
-- ❌ Intent-bearing verbs (these imply will/agency — wrong for inanimate):
-  - ❌ โคลนปล่อย (mud releases) → ✅ "หลุดออกจากโคลน" (human breaks free from mud)
-  - ❌ โคลนตอบสนอง (mud responds) → ✅ "ดิ้นได้ช้า โคลนข้นเกินไป" (describe property)
-  - ❌ หินขว้าง (rock throws by itself) → ✅ "หินถูกขว้าง" or "เขาขว้างหิน"
+**The 3-tier framework (refined round 7, 2026-05-15):**
 
-**Compound-noun vs subject+verb distinction (IMPORTANT — added round 6):**
+#### Tier 1 — Process verbs (low agency, intrinsic physical action)
+Always OK for inanimate subjects. Verb describes what the noun does as part of its physical nature.
 
-Some "inanimate + verb" combos are actually established **compound nouns** in Thai, not verb constructions:
+| Verb | Gloss | Canonical use |
+|---|---|---|
+| ไหล | flow | น้ำไหล, เลือดไหล |
+| พัด | blow | ลมพัด |
+| ส่อง | shine | แสงส่อง, ไฟส่อง |
+| ตก | fall | ฝนตก, ใบไม้ตก |
+| ไหม้ | burn | ไฟไหม้, ฟืนไหม้ |
+| ละลาย | melt | น้ำแข็งละลาย |
+| หยด | drip | น้ำหยด, เลือดหยด |
+| กลิ้ง | roll | หินกลิ้ง |
+| ถล่ม | collapse | ดินถล่ม |
+
+#### Tier 2 — Metaphor-lexicalized verbs (medium agency, established literary precedent)
+Originally animate-only verbs that Thai literature has lexicalized as poetic metaphor with inanimate subjects. OK in literary / narrative register; may feel heavy in journalistic / neutral register.
+
+| Verb | Gloss | Inanimate-subject literary use |
+|---|---|---|
+| กลืน | swallow | ป่ากลืน, ความเงียบกลืน, ความมืดกลืน, เวลากลืน |
+| ดูด | suck | โคลนดูด, น้ำวนดูด, หล่มดูด |
+| กิน | consume | เวลากิน, ความสงสัยกิน(ใจ) |
+| คืบคลาน | creep | ความมืดคืบคลาน, เงาคืบคลาน, ความกลัวคืบคลาน |
+| ครอบ | cover | ความมืดครอบ, เงาครอบ |
+| ดา | rush down | น้ำดา, ฝนดา |
+| หอบ | carry away | ลมหอบ, น้ำหอบ |
+
+#### Tier 3 — Intent verbs (high agency, deliberate will required)
+NEVER OK for inanimate subjects. These verbs require conscious will / decision / intent / agency.
+
+| Verb | Gloss | Why wrong for inanimate |
+|---|---|---|
+| ปล่อย | release | requires conscious release-decision |
+| ตอบสนอง | respond | requires perception + reply |
+| ตัดสิน(ใจ) | decide | conscious choice |
+| บงการ | command | authority over others |
+| ยอม | consent | conscious agreement |
+| ขว้าง | throw | active hand motion |
+| เลือก | choose | conscious selection |
+| สู้ | fight | adversarial intent |
+| ตั้งใจ | intend | by definition intent |
+| คิด | think | cognition |
+
+Fix Tier 3 violations by:
+- ❌ "โคลนปล่อยเขา" → ✅ "หลุดออกจากโคลน" (passive / human-action recast)
+- ❌ "โคลนตอบสนองช้า" → ✅ "ดิ้นได้ช้า โคลนข้นเกินไป" (describe physical property)
+- ❌ "หินขว้างเข้ามา" → ✅ "หินถูกขว้างเข้ามา" / "เขาขว้างหิน" (passive or animate-subject)
+
+**Key principle — verb tier is set by Thai lexical history, not English translation:**
+
+The same English verb maps to different Thai tiers depending on Thai usage precedent:
+
+| English | Thai | Tier | Why |
+|---|---|---|---|
+| swallow | กลืน | **Tier 2** | Strong literary precedent (ป่ากลืน, ความเงียบกลืน, เวลากลืน) |
+| release | ปล่อย | **Tier 3** | No Thai literary precedent for inanimate subject |
+| embrace | โอบกอด | **Tier 3** | "ความมืดโอบกอด" sounds translated, not natural Thai |
+| creep | คืบคลาน | **Tier 2** | Strong precedent (ความมืดคืบคลาน, เงาคืบคลาน) |
+| respond | ตอบสนอง | **Tier 3** | Implies perception |
+| consume | กิน | **Tier 2** | Lexicalized (เวลากิน, ความเศร้ากิน) |
+
+This is WHY translating English personification literally fails: English-Tier-2 (acceptable English personification) does NOT guarantee Thai-Tier-2 (acceptable Thai personification). Map verb-by-verb via Thai precedent, not English convention.
+
+**Tier-2 default test (for unfamiliar verbs):**
+1. Search Thai literature / idiom / classical prose / contemporary writing for the verb with an inanimate subject
+2. If precedent exists (multiple writers use it; not just one ad-hoc instance, not Twitter slang) → Tier 2 OK in literary register
+3. If no clear precedent → **default to Tier 3** (reject; recast)
+4. When in doubt → flag for Lead with "verify Thai lexical precedent for verb X" and propose recast as backup
+
+**Compound-noun vs subject+verb distinction (kept from round 6):**
+
+Some "inanimate + verb" combos are established **compound nouns** in Thai, not verb constructions:
 - ✅ **โคลนดูด / ทรายดูด / หล่มดูด** = quicksand (the thing, used as noun: "ระวังโคลนดูด!" / "ตกในโคลนดูด")
-- ✅ **น้ำเชี่ยว** = rapids / strong current (noun)
-- ✅ **ลมหวน** = whirlwind (noun)
-- ✅ **ไฟลุก** = burning fire / fire-flame (noun-compound; ไฟลุกไหม้ wider verb form)
+- ✅ **น้ำเชี่ยว** = rapids / strong current
+- ✅ **ลมหวน** = whirlwind
+- ✅ **ไฟลุก** = burning fire / fire-flame
 
-When used as **compound nouns** (referring to the thing itself), these are correct. When extended into **subject+verb construction** to describe action with intent, that becomes Cat 14 territory:
-- ✅ "เขาตกลงไปในโคลนดูด" (he fell into [the] quicksand) — compound noun usage
-- ⚠️ "โคลนดูดเขาลง" (quicksand sucks him down) — borderline; ดูด is natural-property OF quicksand specifically, so this can work in context (similar to น้ำเชี่ยวพัดเขา)
-- ❌ "โคลนปล่อยเขา" (mud releases him) — ปล่อย is intent, never natural-property of mud → wrong
+When used as **compound nouns** (referring to the thing itself), these are correct regardless of tier. When extended into **subject+verb construction** to describe action, the tier framework applies:
+- ✅ "เขาตกลงไปในโคลนดูด" — compound noun usage (no tier check needed)
+- ✅ "โคลนดูดเขาลง" — subject+verb; ดูด is Tier 2 with strong precedent (โคลนดูด, น้ำวนดูด); OK in literary register
+- ❌ "โคลนปล่อยเขา" — subject+verb; ปล่อย is Tier 3 with no precedent → wrong
 
 **Concrete examples from ch01 v3:**
-- ❌ "ผู้ชายคนนั้นพยายามดิ้นออก โคลนตอบสนองช้า"
+- ❌ "ผู้ชายคนนั้นพยายามดิ้นออก โคลนตอบสนองช้า" (ตอบสนอง = Tier 3)
 - ✅ "ผู้ชายคนนั้นพยายามดิ้นออก ดิ้นได้แต่ช้า โคลนข้นเกินไป"
-- ❌ "ชายในแอ่งดันออกครึ่งหนึ่ง แล้วโคลนปล่อย"
+- ❌ "ชายในแอ่งดันออกครึ่งหนึ่ง แล้วโคลนปล่อย" (ปล่อย = Tier 3)
 - ✅ "ชายในแอ่งดันออกครึ่งหนึ่ง แล้วหลุดออกจากโคลน"
 
-**Borderline (flag, don't auto-fix):** Some literary personification is established Thai literary register:
-- ป่ากลืนคำนั้นทันที (forest swallows the word) — accepted poetic device
-- ความเงียบกลืน (silence engulfs) — literary
-- เวลากิน (time consumes) — poetic
-- เงาคืบคลาน (shadow creeps) — literary
-- **Rule for borderline:** flag with "Verify with Lead — literary personification borderline" rather than auto-rewrite
+**Tier 2 register caveat:** even Tier 2 verbs land "literary" — appropriate for prose with poetic / narrative tone, may feel heavy in neutral / journalistic register. Match tier-2 frequency to the scene's tone register.
 
-**Test:** For each inanimate noun + verb pair, ask:
-1. Is the verb describing the natural physical property of the noun? → OK (ลมพัด, น้ำไหล)
-2. Or does the verb imply will/intent/decision/action? → ❌ wrong, flip subject to human/animate
-3. Is it a literary metaphor with established Thai poetic precedent? → flag for Lead
+**Test for ANY inanimate noun + verb pair:**
+1. Identify the verb's tier (Tier 1 / 2 / 3) via Thai lexical precedent — NOT English translation
+2. Tier 1 → always OK
+3. Tier 2 → OK if scene's register is literary / narrative; flag if neutral / journalistic register seems off
+4. Tier 3 → ❌ wrong; recast (passive, human-subject, or describe physical property instead)
+5. Borderline / unclear tier → flag with "Verify Thai lexical precedent" rather than auto-rewrite
 
 ### Categories 12-14 critical note (round 3-5 — fundamental grammar)
 
 Categories 12 + 13 + 14 are all **fundamental Thai grammar that English doesn't share**:
 - Cat 12: word order = agency direction
 - Cat 13: classifiers must match referent class + switch with granularity
-- Cat 14: inanimate cannot intend
+- Cat 14: inanimate-subject verb requires Tier 1 (process) or Tier 2 (lexicalized metaphor) precedent — never Tier 3 (intent)
 
 AI agents trained primarily on English-translated patterns will routinely violate all three. Even after multiple proofread passes, expect new violations to surface in different scenes — because the violations are pattern-deep, not surface-deep.
 
@@ -258,7 +319,51 @@ AI agents trained primarily on English-translated patterns will routinely violat
 
 User confirmed: **"ป่ากลืน" and "ความมืดคืบคลาน" are OK** as established Thai literary personification. These remain in Cat 14 borderline-acceptable list. Don't auto-fix.
 
-**Expected category count for AI-Thai prose proofreading: ≥15 and growing.**
+### Category 16 — Voice-register mismatch with character file (3-way structured check)
+**Triggered when:** any text attributed to a character (spoken, thought, or action-described) doesn't match the register declared in that character's file.
+**Why this happens:** Writer follows narrative momentum and gives the right-feeling line to whoever's on screen without re-checking the character file. AI agents do it constantly because each scene is generated locally without re-grounding on the character bible.
+
+**Structured sub-checks** (per post-retrofit character file with 3-way voice split + Output Budget config):
+
+- **B1 — Speech (dialogue):**
+  - Length matches `output_budget.dialogue_per_turn`? (e.g., Krishna budget = 1-2 short clauses; if a turn exceeds, flag)
+  - Register matches the B1 spec ("พูดน้อย / คำหนัก / ไม่อธิบาย" for Krishna)?
+  - Distinctive speech tics present where the spec calls for them (e.g., "ครับ"-one-word reply default)?
+
+- **B2 — Thought (interior monologue, italics-marked):**
+  - Italics-block frequency matches `output_budget.thought_per_scene`? (e.g., 0-2 thought beats per scene for terse characters; flag if scene gives them 5+)
+  - Interior register matches the B2 spec? (terse-spoken character may have a richer interior — check the spec, don't assume)
+  - Don't flag rich interior on a terse-spoken character if B2 spec allows it; check before flagging
+
+- **B3 — Action (third-person prose describing the character's movement / gesture / posture):**
+  - Prose describing how the character moves matches the B3 register? (e.g., Krishna B3 spec might be "เคลื่อนน้อย / นิ่ง / สังเกต"; flag florid gesture descriptions)
+  - Distinctive physical tics present where the spec calls for them (e.g., "เอียงคอเล็กน้อย" as a recurring beat for thinking)?
+  - Excessive elaboration on simple actions = B3 violation
+
+**Pattern (example, Krishna):**
+- Character file declares: B1 = "พูดน้อย / สั้น 1-2 พยางค์ / ไม่อธิบาย"; B2 = "interior richer; observational"; B3 = "เคลื่อนน้อย / นิ่ง"
+- ❌ B1 violation: Krishna dialogue "ที่นี่ไม่ใช่ที่ที่ปลอดภัย" — exceeds 1-2 พยางค์ budget, has explanatory clause
+- ✅ B1 fix: "ที่นี่ไม่ปลอดภัย" / "ไม่ปลอดภัย" — within budget, weight-bearing
+- ❌ B3 violation: "เขายืดแขนซ้ายขึ้น หมุนข้อมือเป็นวงเล็ก พลางก้มหน้าลงเล็กน้อย" — too elaborate for "เคลื่อนน้อย / นิ่ง" register
+- ✅ B3 fix: "เขาเอียงคอ" — minimal, matches register
+
+**Rule:** Cross-reference character file for POV/speaker BEFORE flagging anything attributed to them — and check the SPECIFIC sub-budget (B1 / B2 / B3) that applies to the text in question. Don't flag a line that matches its budget+register even if it feels "underwritten" by general prose standards — terse IS the voice. Conversely, don't tolerate over-elaboration just because the prose itself is grammatical; B3 over-elaboration is still a flag.
+
+**Pre-retrofit fallback:** if a character file lacks the 3-way split yet, fall back to the original single-register check (dialogue length+register vs file overall). Flag in your report that the character file should be retrofitted to the 3-way structure.
+
+### Category 17 — Descriptive granularity calibration
+**Triggered when:** writer uses precise quantification where general impression suffices, OR vice versa.
+**Why this happens:** AI agents default to specificity to feel "vivid" — but Thai narrative prose calibrates precision to narrative weight. Over-precision in passing moments reads as English-prose habit.
+
+**The pattern:**
+- Match descriptive precision to narrative importance of the moment
+- ❌ "มองรอบทั้งสามร้อยหกสิบองศา" for a passing scan = over-precision for a transition beat
+- ✅ "มองไปรอบๆ" — natural Thai, light when fine
+- Reserve specific precision (เลข / ทิศ / มาตรา) for moments where exact visualization matters: tactical scene, threat assessment, surgical decision moment
+
+**Rule:** Default in narrative prose = aim light. Escalate precision only where the reader needs the exact image to follow the action or feel the stakes. Borderline cases (e.g., "a few seconds" vs "3 seconds"): pick light unless the second is the beat the scene turns on.
+
+**Expected category count for AI-Thai prose proofreading: ≥17 and growing.**
 
 ## What you DO NOT do
 

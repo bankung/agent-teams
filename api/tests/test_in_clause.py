@@ -29,7 +29,17 @@ def test_in_clause_priority_canonical() -> None:
 
 
 def test_in_clause_role_canonical() -> None:
-    assert in_clause("assigned_role", TaskRole.ALL) == "assigned_role IN (1, 2, 3, 4, 5)"
+    # Kanban #926 (2026-05-15): TaskRole.ALL widened to include novel codes
+    # (11/12/13). Note: this IN-clause is no longer referenced by any active
+    # CHECK constraint — the DB CHECK on tasks.assigned_role was dropped
+    # 2026-05-08 by migration 0002. The helper is exercised here only to
+    # guarantee its render stays stable; the migration files carry their
+    # own historical snapshots of _TASK_ROLE_ALL per the "Helper duplication
+    # between app and migration" pattern (standards/general.md).
+    assert (
+        in_clause("assigned_role", TaskRole.ALL)
+        == "assigned_role IN (1, 2, 3, 4, 5, 11, 12, 13)"
+    )
 
 
 def test_in_clause_single_value() -> None:
