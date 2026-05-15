@@ -15,6 +15,34 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-15 (mid-afternoon) — T9 #933 closed — RSS readers (7 feeds, not 8) wired into fetch path
+**Scope:** shared (backend pipeline + frontend)
+**Proposed by:** lead (closing report from dev-backend specialist)
+**Status:** T9 DONE 2026-05-15.
+
+**Decision:** RSS readers now run alongside the 4 Firecrawl scrapers in `_run_scrape_only_async`. 11 concurrent sources (4 SCRAPE + 7 RSS, not 12 as initial brief claimed — `RSS_FEEDS` registry has 7 entries; Lead's brief was off by one; specialist adapted and noted). Commit `9a0b752` on NewsAnalyzer main.
+
+**Implementation summary:**
+- New `_run_rss_source` nested function in `pipeline/app/workers/tasks.py` modeled exactly on `_run_source` (cooperative pause/stop, per-source progress meta, error isolation, scrape-log persistence).
+- New `fetch_single_rss_feed(config)` helper in `pipeline/app/services/rss_reader.py` (13 lines; wraps `parse_feed` in `asyncio.to_thread`). Keeps per-feed-progress UI granular instead of one-shot batch fetch.
+- Frontend `frontend/app/scrape/page.tsx` SOURCES const extended from 4 → 11 entries, single-grid layout, `(RSS)` suffix on the 7 RSS labels. Names match `RSS_FEEDS[].source_name` exactly so per-source icons render.
+- NewsSource rows for RSS sources created organically via existing `POST /articles` get-or-create flow (same pattern as 4 scrapers). No explicit seed file change needed.
+- Total: 3 files modified, 172 insertions, 1 deletion.
+
+**Smoke result (task `ca510bbf`, 2026-05-15 10:10 UTC):** 120.25s end-to-end, 18 articles_found, sources_state shows all 11 keys with `status='done'`. Real RSS articles persisted (ids 98-102): BBC World × 2 (Adani fraud settlement, Supreme Court abortion pill), Bangkok Post World (Jerusalem Day), Thailand Business News (Chinese EV demand), Bangkok Post Business (Thailand cybersecurity spending). Single-feed-failure smoke (BBC URL → invalid.example.com): isolation confirmed, other 10 sources completed normally.
+
+**Implications:**
+- Article volume per fetch now ~2-3× pre-T9 (RSS feeds have more items per source than the dev-capped 3 articles/scraper). DB at ~105 articles after 2-3 fetch runs (vs ~33 after T8 alone).
+- **Settrade + SET.or.th feeds return malformed XML** — HTML 403 walls served instead of RSS (auth or geofencing). feedparser sees `bozo=True` + 0 entries → currently `status='done', found=0` (graceful no-op). **Fold into T12 scope:** detect content-type mismatch (HTML when expecting application/xml) and retry with different User-Agent, OR mark a distinct scrape_status code. Existing behavior is non-blocking but invisible — not surfaced to user.
+- **Standards proposal (NOT auto-applied):** `context/standards/python/external-clients.md` — note the get-or-create pattern (POST /articles auto-creates NewsSource on first article) so future RSS feeds don't require a separate seed step. User decides.
+
+**Cross-references:**
+- T9 commit: `9a0b752` on NewsAnalyzer main.
+- T12 (#991) Firecrawl resilience scope EXPANDED in spirit: should also catch malformed-XML RSS feeds (HTML returned in place of application/xml). Specialist will pick this up when T12 spawns.
+- DB verify (2026-05-15 17:24 UTC, post-Lead-side smoke): 9 NewsSource rows (5 RSS: Al Jazeera, BBC World, Bangkok Post Business, Bangkok Post World, Thailand Business News + 4 SCRAPE). Settrade & SET.or.th absent from sources table because organic creation only fires on successful article save.
+
+---
+
 ## 2026-05-15 — Phase 1 sequencing + T10 dedup choice + T12 Firecrawl resilience filed
 **Scope:** shared (planning lock)
 **Proposed by:** user (answered 4 sequencing questions 2026-05-15)
