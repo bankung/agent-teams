@@ -493,7 +493,7 @@ async def _resume_hitl_task(
             cfg,
             headers,
             task_id,
-            _build_resume_halt_body(exc, answered_at),
+            _build_resume_halt_body(exc, answered_at, task.get("resume_context")),
         )
         return
 
@@ -526,7 +526,7 @@ async def _resume_hitl_task(
             cfg,
             headers,
             task_id,
-            _build_resume_halt_body(exc, answered_at),
+            _build_resume_halt_body(exc, answered_at, task.get("resume_context")),
         )
         return
     except EngineCrashError as exc:
@@ -536,7 +536,7 @@ async def _resume_hitl_task(
             cfg,
             headers,
             task_id,
-            _build_resume_halt_body(exc, answered_at),
+            _build_resume_halt_body(exc, answered_at, task.get("resume_context")),
         )
         return
     except asyncio.CancelledError:
@@ -598,21 +598,25 @@ async def _resume_hitl_task(
 
 
 def _build_resume_halt_body(
-    exc: HITLError, answered_at: str | None
+    exc: HITLError,
+    answered_at: str | None,
+    existing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """PATCH body for a HITL failure (invalid answer / missing checkpoint / crash).
 
     Always BLOCKED + is_pending=true + halt_reason from the exception's
     halt_code. The cursor is stamped so a duplicate poll doesn't retry the
     same broken answer endlessly (the user must invalidate + re-answer to
-    create a new cursor target).
+    create a new cursor target). `existing` is the prior resume_context dict
+    (if any) — callers should pass `task.get("resume_context")` so free-form
+    keys stashed by upstream survive the failure PATCH (M1 fix, #986 review).
     """
     return {
         "process_status": STATUS_BLOCKED,
         "halt_reason": exc.as_halt_reason()[:_HALT_REASON_MAX],
         "is_pending": True,
         "status_change_reason": str(exc)[:_REASON_MAX],
-        "resume_context": _stamped_resume_context(None, answered_at),
+        "resume_context": _stamped_resume_context(existing, answered_at),
     }
 
 

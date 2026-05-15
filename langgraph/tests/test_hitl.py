@@ -1000,3 +1000,63 @@ async def test_poll_once_hitl_resume_failure_does_not_block_tick(
     # Both tasks got a PATCH — the bad one BLOCKED with checkpoint_missing,
     # the good one DONE.
     assert sorted(patched_ids) == [100, 200]
+
+
+async def test_resume_hitl_task_preserves_prior_resume_context_on_invalid_answer() -> None:
+    """Regression net for M1 (#986 review): `_build_resume_halt_body` must
+    preserve free-form keys the upstream caller stashed in resume_context.
+    Today only `last_consumed_answered_at` is written, but the contract on
+    `_stamped_resume_context` claims any prior keys survive — so a failure
+    PATCH (invalid_answer / checkpoint_missing / engine_crash) must echo
+    those keys back, not wipe them."""
+
+    def pausing_node(state):
+        request_user_input({"question": "?", "options": ["a", "b"]})
+        raise AssertionError("resume should not have proceeded")
+
+    paused_graph = _build_mini_graph(pausing_node)
+    await paused_graph.ainvoke({"foo": "start"}, config=resume_config(51))
+
+    task_row = {
+        "id": 51,
+        "halt_reason": "decision",
+        "question_payload": {
+            "question": "?",
+            "options": ["a", "b"],
+            "answer_history": [
+                {
+                    "value": "c",  # NOT in options → InvalidAnswerError
+                    "answered_at": "2026-05-16T10:00:00Z",
+                    "is_valid": True,
+                }
+            ],
+        },
+        # Prior resume_context with a free-form key that MUST survive the halt.
+        "resume_context": {
+            "last_consumed_answered_at": "2026-05-16T09:00:00Z",
+            "custom_key": "value-X",
+        },
+    }
+
+    cfg = _make_cfg()
+    capture = _PatchCapture()
+    async with _make_patch_client(capture) as client:
+        await _maybe_resume_hitl_task(
+            client,
+            _make_graph_module(paused_graph),
+            cfg,
+            task_row,
+            {"X-Project-Id": "1", "Content-Type": "application/json"},
+        )
+
+    assert len(capture.calls) == 1
+    _, body = capture.calls[0]
+    assert body["process_status"] == STATUS_BLOCKED
+    assert body["halt_reason"].startswith("invalid_answer_not_in_options:")
+    # The new cursor stamp won.
+    assert (
+        body["resume_context"]["last_consumed_answered_at"]
+        == "2026-05-16T10:00:00Z"
+    )
+    # The free-form key SURVIVED the failure PATCH (M1 contract).
+    assert body["resume_context"]["custom_key"] == "value-X"
