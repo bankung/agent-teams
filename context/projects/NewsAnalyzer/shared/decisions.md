@@ -15,6 +15,100 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-16 — T15 #1039 closed — pre-T10 orphan articles re-deduped; **Phase 0 → Phase 1 cleanup wave COMPLETE**
+**Scope:** shared (backend pipeline + cleanup)
+**Proposed by:** lead (closing report from dev-backend specialist)
+**Status:** T15 DONE 2026-05-16 (commit `e825510`). 6/6 ACs passed. **Closes the user's 2026-05-15 'หลัง T12 ทีเดียวครับ' batch** (T6 + orphan cleanup landed in one wave).
+
+**What landed:**
+- `pipeline/app/workers/orphan_rededup.py` (189 LOC) — one-shot async function; CLI entry point `python -m app.workers.orphan_rededup`. Idempotent (2nd run returns 0).
+- `backend/app/routers/articles.py` — new `GET /articles/orphans?fetched_before=<iso>` endpoint with narrow projection schema `NewsArticleOrphanOut`.
+- `pipeline/app/backend_client.py` — `list_orphan_articles` + `delete_event_if_empty` (latter unused; reserved for future).
+- 5 unit tests in `pipeline/tests/test_orphan_rededup.py`; combined with T10's dedup tests: 18 tests pass.
+
+**Smoke results:**
+- Pre-run: 75 events, 115 orphans, 75 links.
+- Run: 115 orphans → 109 groups → 107 new events + 2 linked to existing.
+- Post-run: 182 events, 0 orphans, 190 links.
+- **4 multi-article events surfaced** (real cross-source coverage groupings):
+  - Spam-title Thunhoon cluster of 6 articles (low-priority duplicates).
+  - 3 real Thai/English clusters of 2: Trump-Iran news, HANA robotrade, Maldives cave-diving.
+- Math verified: 75 + 107 = 182 events; 75 + 115 = 190 links.
+
+**Schema adaptation note:** Brief assumed `news_articles.event_id` FK; actual schema uses `news_event_articles` join table (M:N). Specialist correctly adapted — "orphan" = "no row in join table." All other logic identical because the algorithm uses `link_article_to_event` semantics which work on either shape.
+
+**Scope-conservative choices:**
+- `DELETE /events/{id}` endpoint deliberately omitted — pre-T10 path didn't create placeholder events (join-table behavior just dropped articles unlinked). Empty-events query returned 0. Adding the endpoint would be dead code; documented.
+
+**Open follow-up surfaced (NOT in T15 scope):**
+- **107 new single-article events from orphan re-dedup have no AI analysis.** Architecture is ready (`created_event_id` captured per group, T11 AIPipeline wire is live) — if Phase 1 wants those orphans analyzed, a small follow-up task adds the same throttled fan-out used by `_run_scrape_only_async`. Deliberately out-of-scope to honor brief's "re-dedup only, not re-analyze" intent. **Will respect T14 credential resolution.**
+
+**Cross-references:**
+- T15 commit: `e825510` on NewsAnalyzer main.
+- T10 dependency: commit `b83ee8b` (NewsDeduplicator).
+- Schema actual: `news_event_articles` join table (per Phase 0 T3 ORM design).
+- User directive: 2026-05-15 'หลัง T12 ทีเดียวครับ' — bundle this with T6 wave.
+
+**Standards proposals (NOT auto-applied):**
+- `context/standards/postgresql/` — when adapting a brief that assumed an FK shape to a real schema using a join table, document the actual structure in the worker's module docstring so reviewers don't have to cross-reference.
+- `context/standards/fastapi/` — narrow projection schemas (`NewsArticleOrphanOut`) beat overloading a general-purpose Out schema when an endpoint is single-consumer with distinct field needs. Less coupling.
+
+---
+
+## 🎉 Phase 0 → Phase 1 SEQUENCE COMPLETE (closing summary, 2026-05-16)
+
+| # | Task | Commit | Status |
+|---|---|---|---|
+| T8 #932 | run_full_fetch stopgap (delegate to scrape-only) | `595ee16` | ✅ DONE 2026-05-14 |
+| T9 #933 | RSS readers (7 feeds) in fetch path | `9a0b752` | ✅ DONE 2026-05-15 |
+| T10 #934 | NewsDeduplicator (rapidfuzz + pythainlp, Option B locked) | `b83ee8b` | ✅ DONE 2026-05-15 |
+| T11 #935 | AI analysis trigger (un-stub run_analysis_for_event + AIPipeline) | `5dfe4bc` | ✅ DONE 2026-05-16 (with T14 follow-up for stale creds) |
+| T12 #991 | Firecrawl resilience (retry + pre-flight + engine_tier reporting) | `2d54620` | ✅ DONE 2026-05-16 |
+| T6 #924 | Backfill Option A (Celery + cursor + rate-limit + manual trigger) | `bc3e70c` | ✅ DONE 2026-05-16 |
+| T13 #1027 | NewsAnalyzer cross-project pollution cleanup | `93dae8e` | ✅ DONE 2026-05-15 |
+| T15 #1039 | Pre-T10 orphan article re-dedup | `e825510` | ✅ DONE 2026-05-16 |
+
+**Pipeline architecture (post-wave):**
+```
+Dashboard 'Fetch Now' (or beat morning/midday-fetch)
+  → POST /ingest/run (Pipeline)
+    → run_full_fetch (canonical full pipeline; T8 stopgap retired)
+      → _run_scrape_only_async
+        → pre-flight: GET firecrawl-api/v1/health/liveness (T12)
+        → 11 concurrent sources: 4 scrape (Firecrawl-simple, T2+T5) + 7 RSS (feedparser, T9)
+          → each source: retry on transient (T12) + engine_tier capture
+          → per-article persist via create_article + log_scrape_run
+        → dedup pass: NewsDeduplicator.group_articles (rapidfuzz + pythainlp, T10)
+          → POST /events/with-articles for new groups
+          → link_article_to_event for adds-to-existing
+        → AI fan-out: run_analysis_for_event.apply_async per event with countdown throttle (T11)
+          → AIPipeline.run_full_pipeline → claude -p (T1) → POST /analysis/summary + /analysis/sentiment
+            → _log_agent_run records token usage + inferred_cost (T3)
+        → complete_ingest (release FetchLock cooldown)
+Backfill (T6) lives parallel: nightly cron (default-off via BACKFILL_ENABLED flag) walks BackfillJob cursors backwards through historical Firecrawl pages.
+```
+
+**Open Phase 0 follow-ups (not blocking; surfaced for Phase 1 prioritization):**
+- **T14 #1036** — stale `~/.claude/.credentials.json`; user runs `claude /login` on host, then re-verify T11 AC#6 + AC#7 real-CLI smoke.
+- 107 single-article events from T15 lack AI analysis (architecture-ready follow-up).
+- 7 RSS BackfillJob rows marked `failed` ('RSS does not support historical fetch'); future Wayback Machine integration can flip them to `idle`.
+- Frontend `engine_tier` badge per source (field exists in API).
+- Settrade + SET.or.th RSS rescue (UA rotation OR drop OR replace).
+- Backfill threshold (`BACKFILL_DAILY_INPUT_TOKEN_LIMIT=500K`) untuned for real workloads.
+- `Base.metadata.create_all()` → `alembic upgrade head` swap (T3 specialist flagged tech-debt).
+- 6 standards proposals across T9/T10/T11/T12/T6/T15 (tenacity classifier pattern, env-gated beat schedules, narrow projection schemas, duration-heuristic for opaque services, get-or-create source pattern, schema-shape adaptation note, dependency import-time RSS measurement).
+
+**Verification end-to-end (Lead's perspective):**
+- All 8 tasks committed + pushed to NewsAnalyzer main (clean history, no force-push, no Co-Authored-By).
+- Each task's closure addendum lives in `context/projects/NewsAnalyzer/shared/decisions.md` (this file).
+- 10 containers healthy throughout (4 Firecrawl-simple + backend + worker + pipeline + frontend + db + redis).
+- 48 unit tests pass (T10 dedup × 13 + T12 resilience × 20 + T15 orphan × 5 + others).
+- DB state at end: 190 articles, 182 events, 190 links, 11 BackfillJob rows (1 running ข่าวหุ้น + 7 RSS failed + 3 idle scrape), 4 multi-article events.
+
+**Phase 1 (next phase) starts when user signals.** Recommended kickoff: refresh credentials (T14), then live end-to-end fetch + AI analysis verify, then decide on Phase 1 scope priorities.
+
+---
+
 ## 2026-05-16 — T6 #924 closed — Backfill Option A implementation landed; **Phase 0 sequence complete**
 **Scope:** shared (backend pipeline + new Celery task + routers + seed)
 **Proposed by:** lead (closing report from dev-backend specialist)
