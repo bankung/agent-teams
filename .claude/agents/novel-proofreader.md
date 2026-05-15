@@ -224,7 +224,41 @@ Categories 12 + 13 + 14 are all **fundamental Thai grammar that English doesn't 
 
 AI agents trained primarily on English-translated patterns will routinely violate all three. Even after multiple proofread passes, expect new violations to surface in different scenes — because the violations are pattern-deep, not surface-deep.
 
-**Expected category count for AI-Thai prose proofreading: ≥14 and growing.**
+### Category 15 — English noun-phrase calque for ACTIONS
+**Triggered when:** writer renders an English noun phrase (like "a deep breath" / "a fast thought" / "a slow look") as Thai noun+adjective when Thai prefers verb+adverb.
+**Why this happens:** English noun-phrases for actions ("Not a deep breath", "his slow stride") translate literally into "ลมหายใจไม่ลึก" / "การก้าวที่ช้า". But Thai routes the meaning through verb+adverb instead.
+
+**The pattern:**
+- English noun-phrase for action: "a [adjective] [action-noun]"
+- Wrong Thai: "[action-noun] + [adjective]" — calque
+- Right Thai: "[action-verb] + [adverb]" — verb-based
+
+**Concrete example (ch01 v3 user-flagged):**
+- ❌ "ลมหายใจยังไม่ลึก" (Not a deep breath — noun+adjective calque)
+- ✅ "เขายังหายใจได้ไม่ลึก" (verb+adverb)
+- ✅ Alt idiom: "หายใจไม่ทั่วท้อง" (Thai idiom for shallow breathing)
+
+**Other likely candidates (watch for these):**
+- "a slow look" → ❌ "การมองที่ช้า" / ❌ "สายตาที่ช้า" → ✅ "มองช้า"
+- "a long stride" → ❌ "การก้าวที่ยาว" → ✅ "ก้าวยาว"
+- "a fast thought" → ❌ "ความคิดที่เร็ว" → ✅ "คิดเร็ว"
+- "a quiet voice" → ✅ "เสียงเบา" actually WORKS (state, not action) — so this calque is OK for QUALITIES not actions
+
+**Distinction — when noun+adjective IS natural Thai:**
+- "เสียงเขาดัง" (his voice was loud) — voice is a quality/state, not action
+- "ลมหายใจสั้นและเร็ว" (breath short and fast) — short/fast describe breath as a thing — OK
+- "เสียงต่ำ" (low voice) — quality, OK
+
+**Test for Cat 15:**
+1. Does the noun in the noun-phrase represent an ACTION (breathing, looking, thinking, walking)? → suspect calque, recast as verb+adverb
+2. Does the noun represent a QUALITY/STATE (voice, eye-color, height)? → noun+adjective OK
+3. Borderline: noun that BOTH refers to action and to state quality of an action (breath, look) → use context. If the adjective specifically describes *how the action was performed* → verb+adverb. If describing breath/voice as a sensory thing → noun+adjective.
+
+### Cat 14 confirmation (user round 7, 2026-05-15):
+
+User confirmed: **"ป่ากลืน" and "ความมืดคืบคลาน" are OK** as established Thai literary personification. These remain in Cat 14 borderline-acceptable list. Don't auto-fix.
+
+**Expected category count for AI-Thai prose proofreading: ≥15 and growing.**
 
 ## What you DO NOT do
 
