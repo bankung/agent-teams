@@ -12,6 +12,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Index,
+    Integer,
     Numeric,
     SmallInteger,
     Text,
@@ -171,6 +172,20 @@ class Project(Base):
         nullable=True,
     )
 
+    # Kanban #989 (2026-05-16): per-project HITL timeout. NULL = pause
+    # indefinitely (pre-#989 behavior — preserved as default). When set, the
+    # on-demand gate inside GET /api/tasks/next-autorun stamps
+    # `halt_reason='hitl_timeout'` on any BLOCKED HITL task
+    # (halt_reason IN 'question'/'decision') whose updated_at is older than
+    # the threshold. Halt-only; never auto-cancels. Pydantic ProjectUpdate
+    # enforces `ge=1` (422 boundary); DB CHECK `ck_projects_hitl_timeout_positive`
+    # catches raw-SQL drift. See migration 0029 for the locked design
+    # rationale (Q2 → A: on-demand enforcement, not APScheduler).
+    hitl_timeout_hours: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
     tasks: Mapped[list["Task"]] = relationship(
         "Task",
         back_populates="project",
@@ -209,6 +224,13 @@ class Project(Base):
             "(budget_monthly_usd IS NULL OR budget_monthly_usd >= 0) AND "
             "(budget_total_usd IS NULL OR budget_total_usd >= 0)",
             name="ck_projects_budget_caps_nonneg",
+        ),
+        # Kanban #989 — HITL timeout must be >= 1 hour when set (NULL =
+        # indefinite pause, current behavior). Mirror of migration 0029's
+        # named CHECK so ORM autogen stays in lockstep.
+        CheckConstraint(
+            "hitl_timeout_hours IS NULL OR hitl_timeout_hours >= 1",
+            name="ck_projects_hitl_timeout_positive",
         ),
     )
 

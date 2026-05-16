@@ -11,6 +11,7 @@ returns the row regardless of soft-delete status (per standards/postgresql/soft-
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi import status as http_status
@@ -23,6 +24,7 @@ from sqlalchemy.sql.elements import ClauseElement
 
 from src.constants import RecordStatus, TaskInteractionKind, TaskRunMode, TaskStatus
 from src.db import get_or_404, get_session
+from src.models.project import Project
 from src.models.session import SessionRun
 from src.models.task import Task
 from src.schemas.ai_task import ParseRequest, ParseResponse
@@ -201,6 +203,45 @@ async def get_next_autorun(
     No side effects; purely SELECT.
     """
     project_id = session_project_id
+
+    # --- HITL timeout gate (Kanban #989) -------------------------------------
+    # On-demand enforcement (Q2 → A, design lock #950 — mirrors the #951
+    # budget-cap pattern): no APScheduler / cron — we stamp on every
+    # /next-autorun poll. `projects.hitl_timeout_hours` NULL = indefinite
+    # pause (preserves pre-#989 behavior); non-null = stamp
+    # `halt_reason='hitl_timeout'` on any BLOCKED HITL task
+    # (halt_reason literally 'question' or 'decision') whose updated_at is
+    # older than the threshold. Halt-only — task stays BLOCKED so the user
+    # decides cancel/retry/re-prompt. This must precede the pending_questions
+    # / resume_tasks enumeration below so timed-out rows reflect their new
+    # halt_reason in the same response.
+    session_project = await session.get(Project, project_id)
+    if session_project is not None and session_project.hitl_timeout_hours is not None:
+        timeout_hours = session_project.hitl_timeout_hours
+        now = datetime.now(timezone.utc)
+        threshold = timedelta(hours=timeout_hours)
+        paused_q = select(Task).where(
+            Task.project_id == project_id,
+            Task.status == RecordStatus.ACTIVE,
+            Task.halt_reason.in_(("question", "decision")),
+            Task.process_status == TaskStatus.BLOCKED,
+        )
+        paused = (await session.execute(paused_q)).scalars().all()
+        stamped_any = False
+        for t in paused:
+            if t.updated_at is not None and (now - t.updated_at) > threshold:
+                t.halt_reason = "hitl_timeout"
+                stamped_any = True
+                logger.warning(
+                    "task %d HITL timeout exceeded (project %d, elapsed_h=%.1f, "
+                    "limit_h=%d) — halt_reason stamped 'hitl_timeout'",
+                    t.id,
+                    project_id,
+                    (now - t.updated_at).total_seconds() / 3600,
+                    timeout_hours,
+                )
+        if stamped_any:
+            await session.commit()
 
     # Alias for the blocker row so we can outerjoin Task → blocker Task.
     blocker = aliased(Task)

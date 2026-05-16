@@ -312,6 +312,13 @@ class ProjectUpdate(BaseModel):
     # sources for forward-compat — see update_project() in routers/projects.py.
     tools_config: ToolsConfig | None = Field(default=None)
 
+    # Kanban #989: per-project HITL timeout (hours). PATCH semantics —
+    # key-absent leaves unchanged (exclude_unset); explicit `null` CLEARS to
+    # NULL (= unlimited / indefinite pause, pre-#989 default); explicit int
+    # sets the threshold. `ge=1` rejects zero / negative at 422; the DB
+    # CHECK `ck_projects_hitl_timeout_positive` is defense-in-depth.
+    hitl_timeout_hours: int | None = Field(default=None, ge=1)
+
     @field_validator("agent_overrides")
     @classmethod
     def _validate_agent_override_keys(cls, v):
@@ -391,6 +398,13 @@ class ProjectRead(BaseModel):
     # strict on write" precedent). Writes still go through the strict
     # `ToolsConfig` validator on POST/PATCH.
     tools_config: dict[str, Any] | None = None
+
+    # Kanban #989: per-project HITL timeout (hours). NULL = no timeout
+    # (indefinite pause — pre-#989 default behavior, preserved for every
+    # existing project). When non-null, the on-demand gate inside
+    # GET /api/tasks/next-autorun stamps `halt_reason='hitl_timeout'` on
+    # any BLOCKED HITL task waiting longer than this threshold.
+    hitl_timeout_hours: int | None = None
 
     @field_validator("sources", mode="before")
     @classmethod
