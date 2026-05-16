@@ -378,6 +378,19 @@ async def _poll_once(
             "status_change_reason": (final_result or f"halted: {halt}")[:_REASON_MAX],
         }
 
+    # Kanban #952 — auditor outputs. The auditor node populates
+    # `audit_report` + `audit_retry_count` in state on every pass. Surface
+    # both on the finalize PATCH when present so tasks.audit_report carries
+    # the latest classification and tasks.audit_retry_count reflects the
+    # current loop count. Absent keys = the graph didn't reach the auditor
+    # (e.g., a specialist halted earlier); leave the DB column untouched.
+    audit_report = final_state.get("audit_report")
+    if audit_report is not None:
+        body["audit_report"] = audit_report
+    audit_retry_count = final_state.get("audit_retry_count")
+    if audit_retry_count is not None:
+        body["audit_retry_count"] = int(audit_retry_count)
+
     if await _patch_task(client, cfg, headers, task_id, body) is None:
         return
     logger.info("task %d completed: halt=%s", task_id, halt)

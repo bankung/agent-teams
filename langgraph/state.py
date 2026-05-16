@@ -19,7 +19,7 @@ every key.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
@@ -35,3 +35,13 @@ class AgentState(TypedDict, total=False):
     intermediate_results: dict[str, str]
     final_result: str
     halt_reason: HaltReason
+    # Kanban #952 — in-graph auditor outputs. `audit_verdict` is the
+    # conditional-edge selector after the auditor node runs: 'pass' → END,
+    # 'auto_resolve' → supervisor (capped by retry counter), 'escalate' →
+    # auditor's own HITL interrupt path. `audit_report` carries the structured
+    # report dict the worker writes to tasks.audit_report on finalize.
+    # `audit_retry_count` increments each time the auditor sends the task back
+    # to supervisor via AUTO-RESOLVE; cap = AUDITOR_RETRY_CAP_DEFAULT.
+    audit_verdict: Literal["pass", "auto_resolve", "escalate"] | None
+    audit_report: dict[str, Any] | None
+    audit_retry_count: int

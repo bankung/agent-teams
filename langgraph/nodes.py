@@ -34,8 +34,11 @@ to the DB unchanged. See `hitl.py` for the engine-side glue + validation rules.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -680,3 +683,498 @@ def general_node(state: AgentState) -> dict:
         "final_result": msg,
         "halt_reason": "error",
     }
+
+
+# ---------------------------------------------------------------------------
+# Auditor — Kanban #952
+# ---------------------------------------------------------------------------
+#
+# Sits between specialists and END (or back-edge to supervisor on AUTO-RESOLVE).
+# Locked design (Q1-Q6 all = A); see _scratch/auditor-design.md.
+#
+# Three verdicts:
+#   - PASS         → END. `audit_report.action_taken = "auto_pass"` (heuristic
+#                    skip) or `"llm_pass"` (LLM-evaluated clean run).
+#   - AUTO_RESOLVE → supervisor (loop). Brief is appended with a NOTE so the
+#                    specialist sees the adjustment. Retry counter increments
+#                    BEFORE the loop edge; cap halts with 'auditor_giveup'.
+#   - ESCALATE     → auditor calls request_user_input directly. Graph pauses
+#                    via the same __interrupt__ mechanism HITL ships. On
+#                    resume the answer drives one of:
+#                      accept       → END (PASS-equivalent)
+#                      retry_with_X → loop back to supervisor
+#                      reject       → END with halt_reason='operator_rejected'
+#
+# Heuristic pre-filter (Q4=A): all-structural, no string-grep. Skip LLM when:
+#   - state.halt_reason is None, AND
+#   - state.final_result is a non-empty string longer than 20 chars, AND
+#   - no ToolMessage in state.messages has a payload indicating tool error
+#     (ToolResult JSON with success=false OR an 'error' key surfacing).
+# If any condition fails → run the LLM.
+
+AUDITOR_RETRY_CAP_DEFAULT = 3
+"""Hardcoded cap on AUTO-RESOLVE retry loops for v1. Per-project tuning column
+deferred (out of scope for #952 — future sibling task)."""
+
+_AUDITOR_GIVEUP_REASON = "auditor_giveup"
+"""halt_reason stamped when the retry cap is hit on an AUTO-RESOLVE verdict."""
+
+_AUDITOR_MIN_FINAL_RESULT_CHARS = 20
+"""Heuristic pre-filter threshold for `final_result` length."""
+
+_AUDITOR_LLM_SYSTEM_PROMPT = (
+    "You are an auditor agent. Given a task brief and a specialist's output, "
+    "classify the outcome:\n\n"
+    "- PASS: the specialist solved the task cleanly.\n"
+    "- AUTO_RESOLVE: the specialist failed in a way that suggests a retry "
+    "with a small adjustment would succeed (e.g., transient error, missing "
+    "context the brief didn't supply, off-by-one in a tool call).\n"
+    "- ESCALATE: the failure needs a human decision (ambiguity in the brief, "
+    "missing approval, conflict between two valid approaches, "
+    "irreversible-action confirmation).\n\n"
+    "Respond with exactly ONE JSON object:\n"
+    '{"verdict":"pass|auto_resolve|escalate",'
+    '"severity":"info|warn|critical",'
+    '"evidence":["..."],'
+    '"action_taken":"...",'
+    '"escalation_payload":null OR '
+    '{"question":"...","options":["accept","retry_with_<label>","reject"]}}'
+)
+
+
+def _iso_now_utc() -> str:
+    """UTC ISO-8601 with `Z` suffix — matches Kanban API timestamp shape."""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _heuristic_clean(state: AgentState) -> bool:
+    """Structural pre-filter — True iff the specialist's run looks clean.
+
+    Q4=A locked. All three conditions must hold:
+      1. halt_reason is None / absent.
+      2. final_result is a string >20 chars.
+      3. No ToolMessage in messages has a payload with success=False / error.
+    """
+    if state.get("halt_reason") is not None:
+        return False
+    final_result = state.get("final_result") or ""
+    if not isinstance(final_result, str) or len(final_result.strip()) < _AUDITOR_MIN_FINAL_RESULT_CHARS:
+        return False
+    messages = state.get("messages") or []
+    for msg in messages:
+        if not isinstance(msg, ToolMessage):
+            continue
+        # ToolMessage.content is the ToolResult JSON dump (see
+        # _run_tool_use_loop in this module). Parse it; on parse failure
+        # treat as a tool-call result we can't reason about — safer to
+        # invoke the LLM than to false-positive PASS.
+        raw = msg.content
+        if not isinstance(raw, str):
+            return False
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return False
+        if not isinstance(payload, dict):
+            return False
+        if payload.get("success") is False:
+            return False
+        if payload.get("error") or payload.get("error_code") or payload.get("error_msg"):
+            return False
+    return True
+
+
+def _build_pass_report(*, llm_skipped: bool, retry_count: int, evidence: list[str]) -> dict[str, Any]:
+    return {
+        "verdict": "pass",
+        "severity": "info",
+        "evidence": evidence,
+        "action_taken": "auto_pass" if llm_skipped else "llm_pass",
+        "escalation_payload": None,
+        "llm_skipped": llm_skipped,
+        "audited_at": _iso_now_utc(),
+        "retry_count_at_audit": retry_count,
+    }
+
+
+def _parse_llm_verdict(raw_text: str) -> dict[str, Any] | None:
+    """Extract the first valid JSON object from the LLM's raw response.
+
+    Ollama / Anthropic / OpenAI may wrap the JSON in prose. We attempt a strict
+    `json.loads` first; on failure we fall back to a balanced-brace scan that
+    locates the first `{...}` substring and tries again. None on total failure
+    — caller defaults to ESCALATE (fail safe; operator decides).
+    """
+    text = (raw_text or "").strip()
+    if not text:
+        return None
+    try:
+        candidate = json.loads(text)
+        if isinstance(candidate, dict):
+            return candidate
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    # Balanced-brace scan: take the first top-level {...} substring.
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if match is None:
+        return None
+    try:
+        candidate = json.loads(match.group(0))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(candidate, dict):
+        return None
+    return candidate
+
+
+def _normalise_llm_verdict(parsed: dict[str, Any], retry_count: int) -> dict[str, Any]:
+    """Clamp the LLM's parsed JSON to the locked audit_report shape.
+
+    Unknown verdict / severity / missing fields → default to safe values
+    (verdict=escalate so the operator decides; severity=warn; evidence=[]).
+    """
+    verdict_raw = str(parsed.get("verdict", "")).lower().strip()
+    if verdict_raw not in ("pass", "auto_resolve", "escalate"):
+        verdict_raw = "escalate"
+    severity_raw = str(parsed.get("severity", "")).lower().strip()
+    if severity_raw not in ("info", "warn", "critical"):
+        severity_raw = "warn"
+    evidence_raw = parsed.get("evidence")
+    if not isinstance(evidence_raw, list):
+        evidence_raw = []
+    evidence = [str(e)[:200] for e in evidence_raw][:5]
+    action = str(parsed.get("action_taken") or _default_action_for(verdict_raw))
+    escalation_payload = parsed.get("escalation_payload")
+    if verdict_raw == "escalate" and not isinstance(escalation_payload, dict):
+        escalation_payload = {
+            "question": (
+                "Auditor flagged this task for human review; please choose:"
+            ),
+            "options": ["accept", "retry_with_adjustment", "reject"],
+        }
+    elif verdict_raw != "escalate":
+        escalation_payload = None
+    return {
+        "verdict": verdict_raw,
+        "severity": severity_raw,
+        "evidence": evidence,
+        "action_taken": action,
+        "escalation_payload": escalation_payload,
+        "llm_skipped": False,
+        "audited_at": _iso_now_utc(),
+        "retry_count_at_audit": retry_count,
+    }
+
+
+def _default_action_for(verdict: str) -> str:
+    if verdict == "pass":
+        return "llm_pass"
+    if verdict == "auto_resolve":
+        return "retry_with_adjustment"
+    return "hitl_escalate"
+
+
+def _build_specialist_excerpt(state: AgentState) -> str:
+    """Compact view of the specialist's output for the LLM prompt — caps at
+    ~800 chars (Q4 ollama context budget). Includes final_result + the last
+    three messages' text content."""
+    chunks: list[str] = []
+    final_result = (state.get("final_result") or "").strip()
+    if final_result:
+        chunks.append(f"final_result: {final_result[:500]}")
+    messages = state.get("messages") or []
+    tail = messages[-3:]
+    for m in tail:
+        kind = m.__class__.__name__
+        content = getattr(m, "content", "")
+        if isinstance(content, list):
+            content = " ".join(str(c) for c in content)
+        chunks.append(f"[{kind}] {str(content)[:200]}")
+    return "\n".join(chunks)[:800]
+
+
+async def auditor_node(state: AgentState) -> dict[str, Any]:
+    """Classify the specialist's output → PASS / AUTO_RESOLVE / ESCALATE.
+
+    Flow:
+      1. Heuristic pre-filter (Q4=A). Clean → emit PASS verdict, skip LLM.
+      2. Otherwise build a small prompt + invoke `make_chat_model()`.
+      3. Parse the LLM's JSON; on malformed → default to ESCALATE (fail safe).
+      4. If verdict == AUTO_RESOLVE and retry_count >= cap → emit halt_reason
+         'auditor_giveup' instead of looping forever. Conditional edge
+         (route_from_auditor) sees the giveup state and routes to END.
+      5. If verdict == ESCALATE → call `request_user_input` with the
+         escalation_payload. On resume the answer string drives the
+         post-resume routing (`auditor_resolve` → END or back to supervisor).
+      6. Always populate `state.audit_report` (the worker writes it to
+         tasks.audit_report on finalize).
+    """
+    retry_count = int(state.get("audit_retry_count") or 0)
+    task_id = state.get("task_id")
+
+    # 1) Heuristic pre-filter (Q4=A).
+    if _heuristic_clean(state):
+        final_result = state.get("final_result") or ""
+        excerpt = final_result.strip()[:200]
+        report = _build_pass_report(
+            llm_skipped=True,
+            retry_count=retry_count,
+            evidence=[f"clean run; final_result={excerpt!r}"],
+        )
+        logger.info(
+            "auditor: task=%s verdict=pass (heuristic skip)", task_id
+        )
+        return {
+            "audit_verdict": "pass",
+            "audit_report": report,
+            "messages": [
+                SystemMessage(content=f"auditor: verdict=pass (heuristic skip) task_id={task_id}")
+            ],
+        }
+
+    # 2) LLM path.
+    brief = state.get("brief", "")
+    excerpt = _build_specialist_excerpt(state)
+    user_prompt = (
+        f"Task brief:\n{brief[:500]}\n\n"
+        f"Specialist output (final_result + last 3 messages):\n{excerpt}"
+    )
+
+    raw_text = ""
+    try:
+        model = make_chat_model()
+        messages: list[Any] = [
+            SystemMessage(content=_AUDITOR_LLM_SYSTEM_PROMPT),
+            HumanMessage(content=user_prompt),
+        ]
+        ainvoke = getattr(model, "ainvoke", None)
+        if ainvoke is not None:
+            response = await ainvoke(messages)
+        else:
+            response = model.invoke(messages)
+        raw_text = _stringify_content(getattr(response, "content", ""))
+    except Exception as exc:
+        # LLM-side failure → fail safe to ESCALATE.
+        logger.warning(
+            "auditor: LLM invoke failed for task=%s (%r); defaulting to escalate",
+            task_id,
+            exc,
+        )
+        raw_text = ""
+
+    parsed = _parse_llm_verdict(raw_text)
+    if parsed is None:
+        # Malformed JSON / empty response → fail safe to ESCALATE.
+        logger.warning(
+            "auditor: LLM returned malformed response for task=%s; defaulting to escalate",
+            task_id,
+        )
+        report = {
+            "verdict": "escalate",
+            "severity": "warn",
+            "evidence": ["auditor LLM returned malformed response"],
+            "action_taken": "hitl_escalate",
+            "escalation_payload": {
+                "question": "Auditor LLM returned malformed output; please decide:",
+                "options": ["accept", "retry_with_adjustment", "reject"],
+            },
+            "llm_skipped": False,
+            "audited_at": _iso_now_utc(),
+            "retry_count_at_audit": retry_count,
+        }
+    else:
+        report = _normalise_llm_verdict(parsed, retry_count)
+
+    verdict = report["verdict"]
+
+    # 3) AUTO_RESOLVE retry cap. Q6=A: hardcoded constant. Check BEFORE
+    # emitting the verdict so cap-hit halts immediately.
+    if verdict == "auto_resolve":
+        if retry_count >= AUDITOR_RETRY_CAP_DEFAULT:
+            logger.info(
+                "auditor: task=%s auto_resolve at cap (%d); halting with %s",
+                task_id,
+                retry_count,
+                _AUDITOR_GIVEUP_REASON,
+            )
+            # Re-tag the report so the action_taken reflects the giveup.
+            report["action_taken"] = _AUDITOR_GIVEUP_REASON
+            return {
+                "audit_verdict": "auto_resolve",
+                "audit_report": report,
+                "halt_reason": _AUDITOR_GIVEUP_REASON,
+                "messages": [
+                    SystemMessage(
+                        content=(
+                            f"auditor: verdict=auto_resolve at cap "
+                            f"({retry_count}/{AUDITOR_RETRY_CAP_DEFAULT}); "
+                            f"halting with halt_reason={_AUDITOR_GIVEUP_REASON}"
+                        )
+                    )
+                ],
+            }
+        # Under the cap → increment and loop. The conditional edge
+        # `route_from_auditor` reads the incremented count; the supervisor
+        # sees the appended NOTE on next iteration.
+        new_count = retry_count + 1
+        adjustment_note = (
+            f"\n\nNOTE (auditor retry {new_count}/{AUDITOR_RETRY_CAP_DEFAULT}): "
+            f"previous attempt was flagged for retry — "
+            f"{report.get('evidence', ['no evidence given'])[0] if report.get('evidence') else 'no evidence given'}"
+        )
+        new_brief = (state.get("brief") or "") + adjustment_note
+        logger.info(
+            "auditor: task=%s verdict=auto_resolve retry %d/%d",
+            task_id,
+            new_count,
+            AUDITOR_RETRY_CAP_DEFAULT,
+        )
+        return {
+            "audit_verdict": "auto_resolve",
+            "audit_report": report,
+            "audit_retry_count": new_count,
+            "brief": new_brief,
+            "messages": [
+                SystemMessage(
+                    content=(
+                        f"auditor: verdict=auto_resolve retry={new_count}/"
+                        f"{AUDITOR_RETRY_CAP_DEFAULT}; looping to supervisor"
+                    )
+                )
+            ],
+        }
+
+    # 4) ESCALATE — call request_user_input directly. On first pass this
+    # raises GraphInterrupt; on resume it returns the operator's answer
+    # string which we use to drive the post-resume routing.
+    if verdict == "escalate":
+        payload = report.get("escalation_payload") or {
+            "question": "Auditor flagged this task; please decide:",
+            "options": ["accept", "retry_with_adjustment", "reject"],
+        }
+        logger.info(
+            "auditor: task=%s verdict=escalate; emitting HITL interrupt", task_id
+        )
+        # request_user_input raises GraphInterrupt on first call, then on
+        # resume it returns the answer string. We DO NOT catch the
+        # interrupt — let LangGraph propagate it; the worker handles the
+        # __interrupt__ marker in finalize. On resume the function returns
+        # the answer; we then map it to the next action.
+        answer = request_user_input(payload)
+        return _apply_escalation_resume(state, report, answer, retry_count)
+
+    # 5) PASS path (LLM agreed it's clean).
+    logger.info("auditor: task=%s verdict=pass (LLM)", task_id)
+    return {
+        "audit_verdict": "pass",
+        "audit_report": report,
+        "messages": [
+            SystemMessage(
+                content=f"auditor: verdict=pass (LLM-evaluated) task_id={task_id}"
+            )
+        ],
+    }
+
+
+def _apply_escalation_resume(
+    state: AgentState,
+    report: dict[str, Any],
+    answer: str,
+    retry_count: int,
+) -> dict[str, Any]:
+    """Translate the operator's answer to the auditor's HITL escalate into a
+    state update.
+
+      - 'accept'         → PASS (END).
+      - 'reject'         → END with halt_reason='operator_rejected'.
+      - 'retry_with_<X>' → AUTO_RESOLVE; supervisor sees the X label as the
+                           adjustment, retry counter increments. Cap applies.
+    """
+    normalised = (answer or "").strip().lower()
+    audit_verdict_field = "escalate"  # carry the original verdict in the report
+    report = dict(report)  # copy so we can mutate action_taken
+    audited_at = _iso_now_utc()
+    report["audited_at"] = audited_at
+
+    if normalised == "accept":
+        report["action_taken"] = "operator_accept"
+        return {
+            "audit_verdict": "pass",  # routes to END
+            "audit_report": report,
+            "messages": [
+                SystemMessage(content="auditor escalate resolved: accept → END")
+            ],
+        }
+
+    if normalised == "reject":
+        report["action_taken"] = "operator_reject"
+        return {
+            "audit_verdict": "escalate",  # but with halt_reason → END
+            "audit_report": report,
+            "halt_reason": "operator_rejected",
+            "messages": [
+                SystemMessage(
+                    content="auditor escalate resolved: reject → halt_reason=operator_rejected"
+                )
+            ],
+        }
+
+    # Default / retry_with_X case → loop back to supervisor (capped).
+    if retry_count >= AUDITOR_RETRY_CAP_DEFAULT:
+        report["action_taken"] = _AUDITOR_GIVEUP_REASON
+        return {
+            "audit_verdict": "auto_resolve",
+            "audit_report": report,
+            "halt_reason": _AUDITOR_GIVEUP_REASON,
+            "messages": [
+                SystemMessage(
+                    content=(
+                        f"auditor escalate resolved: {normalised!r} but cap hit "
+                        f"({retry_count}/{AUDITOR_RETRY_CAP_DEFAULT}); halting"
+                    )
+                )
+            ],
+        }
+    new_count = retry_count + 1
+    label = normalised
+    if label.startswith("retry_with_"):
+        label = label[len("retry_with_"):] or "operator_adjustment"
+    note = (
+        f"\n\nNOTE (auditor retry {new_count}/{AUDITOR_RETRY_CAP_DEFAULT}, "
+        f"operator-driven): retry with {label!r}"
+    )
+    report["action_taken"] = f"retry_with_{label}"
+    return {
+        "audit_verdict": "auto_resolve",
+        "audit_report": report,
+        "audit_retry_count": new_count,
+        "brief": (state.get("brief") or "") + note,
+        "messages": [
+            SystemMessage(
+                content=(
+                    f"auditor escalate resolved: retry_with_{label} "
+                    f"(retry {new_count}/{AUDITOR_RETRY_CAP_DEFAULT})"
+                )
+            )
+        ],
+    }
+
+
+def route_from_auditor(state: AgentState) -> str:
+    """Conditional-edge function — returns the next node's name.
+
+    Possible outcomes:
+      - 'supervisor' → AUTO_RESOLVE under the cap (loop).
+      - END           → PASS, or AUTO_RESOLVE/ESCALATE that emitted a halt_reason
+                        (giveup / operator_rejected).
+                        Returned as the LangGraph constant `END` — the graph
+                        builder maps this to the END sentinel.
+    """
+    # Halt of any kind short-circuits to END (worker reads halt_reason).
+    if state.get("halt_reason") is not None:
+        return "END"
+    verdict = state.get("audit_verdict")
+    if verdict == "auto_resolve":
+        return "supervisor"
+    # 'pass' or anything else → END.
+    return "END"

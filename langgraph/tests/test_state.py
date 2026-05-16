@@ -44,6 +44,10 @@ def test_agent_state_keys_are_stable() -> None:
         "intermediate_results",
         "final_result",
         "halt_reason",
+        # Kanban #952 (2026-05-16) — in-graph auditor fields.
+        "audit_verdict",
+        "audit_report",
+        "audit_retry_count",
     }
     annotations = set(AgentState.__annotations__.keys())
     assert annotations == expected

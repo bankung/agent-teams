@@ -284,6 +284,21 @@ class Task(Base):
         nullable=True,
     )
 
+    # Kanban #952 (2026-05-16): in-graph auditor node outputs.
+    # `audit_report` is the LATEST audit's structured outcome (verdict,
+    # severity, evidence, action_taken, …). Audit history across retries lives
+    # in `tasks_history` via the existing audit trigger — single-column JSONB
+    # keeps the surface minimal. `audit_retry_count` tracks AUTO-RESOLVE
+    # retries; cap (=3) enforced in the engine (AUDITOR_RETRY_CAP_DEFAULT),
+    # CHECK `>= 0` is defense-in-depth against raw-SQL drift.
+    audit_report: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    audit_retry_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default="0",
+        default=0,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -386,6 +401,12 @@ class Task(Base):
         CheckConstraint(
             "NOT (scheduled_at IS NOT NULL AND is_template = TRUE)",
             name="ck_tasks_scheduled_xor_template",
+        ),
+        # Kanban #952 (2026-05-16): retry counter is non-negative.
+        # Mirror of migration 0030's CHECK — defense-in-depth.
+        CheckConstraint(
+            "audit_retry_count >= 0",
+            name="ck_tasks_audit_retry_count_nonneg",
         ),
         Index("ix_tasks_project_id", "project_id"),
         Index("ix_tasks_process_status", "process_status"),

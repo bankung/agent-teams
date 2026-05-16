@@ -523,6 +523,17 @@ class TaskUpdate(BaseModel):
     invalidate_last_answer: bool | None = None
     # Reason for invalidation — used when invalidate_last_answer=True.
     invalidated_reason: str | None = Field(default=None, min_length=1)
+    # Kanban #952 (2026-05-16): in-graph auditor outputs. PATCH-able by the
+    # langgraph worker on finalize. Semantics:
+    #   - key absent      → leave unchanged (exclude_unset=True in router)
+    #   - explicit dict   → replace whole report (single-column-latest model)
+    #   - explicit null   → clear the report (null IS meaningful — column is
+    #                       nullable JSONB)
+    # No element-shape validation this slice — the engine is the only writer.
+    audit_report: dict[str, Any] | None = None
+    # Kanban #952: retry counter. Non-negative; CHECK ck_tasks_audit_retry_count_nonneg
+    # at the DB layer catches drift.
+    audit_retry_count: int | None = Field(default=None, ge=0)
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=False)
@@ -753,6 +764,15 @@ class TaskRead(BaseModel):
     estimated_input_tokens: int | None
     estimated_output_tokens: int | None
     estimated_cost_usd: Decimal | None
+    # Kanban #952 (2026-05-16) — in-graph auditor node outputs (Auditor agent).
+    # `audit_report` is a JSONB blob holding the LATEST audit's structured
+    # outcome (verdict / severity / evidence / action_taken / etc.). Element
+    # shape is locked by the engine (langgraph/nodes.py::auditor_node);
+    # exposed raw here. `audit_retry_count` is the count of AUTO-RESOLVE
+    # retries the auditor has applied — cap (=3) lives in the engine.
+    # Backfilled to NULL / 0 on existing rows by migration 0030.
+    audit_report: dict[str, Any] | None = None
+    audit_retry_count: int = 0
 
 
 class NextAutorunResponse(BaseModel):

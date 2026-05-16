@@ -46,11 +46,13 @@ from pydantic import BaseModel, Field
 import worker as worker_module
 from llm import make_chat_model
 from nodes import (
+    auditor_node,
     backend_specialist_node,
     devops_specialist_node,
     frontend_specialist_node,
     general_node,
     reviewer_specialist_node,
+    route_from_auditor,
     route_from_supervisor,
     supervisor_node,
     tester_specialist_node,
@@ -102,7 +104,19 @@ def _normalize_pg_uri(uri: str) -> str:
 
 
 def _build_graph(saver: AsyncPostgresSaver) -> Any:
-    """Assemble the StateGraph and compile with the given checkpointer."""
+    """Assemble the StateGraph and compile with the given checkpointer.
+
+    Topology (Kanban #952 — auditor wired in):
+      START → supervisor → {specialist} → auditor → END / supervisor (loop)
+
+    The auditor sits between every specialist and END. It either:
+      - lets the task complete (verdict=pass → END),
+      - sends the task back to supervisor with an adjusted brief
+        (verdict=auto_resolve under the retry cap), or
+      - pauses the graph via HITL interrupt (verdict=escalate; on resume the
+        operator's answer drives one of {accept→END, retry_with_X→supervisor,
+        reject→END with halt_reason='operator_rejected'}).
+    """
     builder = StateGraph(AgentState)
     builder.add_node("supervisor", supervisor_node)
     builder.add_node("backend", backend_specialist_node)
@@ -111,6 +125,8 @@ def _build_graph(saver: AsyncPostgresSaver) -> Any:
     builder.add_node("tester", tester_specialist_node)
     builder.add_node("reviewer", reviewer_specialist_node)
     builder.add_node("general", general_node)
+    # Kanban #952: auditor sits between every specialist and END.
+    builder.add_node("auditor", auditor_node)
 
     builder.add_edge(START, "supervisor")
     builder.add_conditional_edges(
@@ -125,10 +141,20 @@ def _build_graph(saver: AsyncPostgresSaver) -> Any:
             "general": "general",
         },
     )
-    # Each specialist terminates the run. #853 may add a loop back to
-    # supervisor for self-critique; #850 keeps it one-shot.
+    # Every specialist hands off to the auditor.
     for node in ("frontend", "backend", "devops", "tester", "reviewer", "general"):
-        builder.add_edge(node, END)
+        builder.add_edge(node, "auditor")
+
+    # Auditor's conditional edge: PASS / halt → END; AUTO_RESOLVE → loop back
+    # to supervisor (capped by audit_retry_count).
+    builder.add_conditional_edges(
+        "auditor",
+        route_from_auditor,
+        {
+            "supervisor": "supervisor",
+            "END": END,
+        },
+    )
 
     return builder.compile(checkpointer=saver)
 
