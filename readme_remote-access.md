@@ -136,6 +136,10 @@ In the [Tailscale admin console](https://login.tailscale.com/admin/dns), enable 
 
 ## Alternatives
 
+agent-teams has no hard dependency on Tailscale. The stack just binds to `0.0.0.0` on its host ports (`5431` for web, `8456` for API) — **any network path that lets your phone or laptop reach the host on those ports works the same way.** If you already use a VPN you trust (Mullvad, ProtonVPN, ZeroTier, Nebula, Twingate, an AWS Client VPN, a corporate VPN, plain OpenVPN, etc.), put the host and phone on it and skip the Tailscale-specific sections above — the access URL becomes `http://<host-ip-or-name>:5431/p/<project>` regardless of which overlay delivered the route. Same for a phone that's just on the same home Wi-Fi as the host: no tunnel needed.
+
+The Tailscale-specific extras in this repo (`bin/tailscale-status.*`, `bin/remote-url.*`, and sections 1–5 above) are convenience helpers — skippable if you're using a different VPN. The four named alternatives below cover the most common substitutes when no existing VPN is in play; pick the one that matches your appetite for setup cost vs. third-party trust.
+
 If Tailscale doesn't fit (corporate device that bans third-party VPN clients, account-creation friction, philosophical preference for self-hosted), here are the next-best options ordered by setup cost.
 
 ### Cloudflare Tunnel
