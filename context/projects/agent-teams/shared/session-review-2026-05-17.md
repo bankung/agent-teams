@@ -93,10 +93,16 @@ agent-teams ครับมาต่อ.
 Bootstrap → confirm session-review-2026-05-17.md addendum ยังยืนอยู่.
 ถ้ายืน → ลำดับงาน:
 
-Tier-1a parallel pack (target: 1-2 sessions):
+Tier-1a FIRST (visible-breakage priority):
+  0. #954 Mobile UX pass — full responsive (board/modals/list/task detail)
+     ← BUMPED P3→P1 ที่ end-of-session 18:58 after screenshot evidence
+     showed dashboard USAGE numbers overflow on iPhone width
+     ~half-day to 1 day dev-frontend
+
+Tier-1a parallel pack (target: 1-2 sessions after #954):
   1. #1085 test SERIAL flake fix (~1hr)
-  2. #1086 DeepSeek integration (~2hr)
-  3. #1084 dev-security-reviewer smoke on 73811e2 (~1hr; needs this fresh session)
+  2. #1086 DeepSeek integration (~2hr; deferred per operator at end of 2026-05-17)
+  3. #1084 dev-security-reviewer smoke on 73811e2 (~1hr; needs the post-clear session)
   4. #959 off-site backup (~1hr; bumped to P1)
 
 Tier-1b parallel pack (target: 2-3 sessions after Tier-1a):
@@ -107,6 +113,17 @@ Tier-1b parallel pack (target: 2-3 sessions after Tier-1a):
 ห้ามข้าม Tier-1a → Tier-2 POC ก่อน #959 backup เสร็จ
 (single Postgres = one disk failure away from total loss).
 ```
+
+### Mobile UX bump rationale (#954)
+
+Screenshot 2026-05-17 18:58 from operator's iPhone showed:
+- **Dashboard USAGE row catastrophically broken** — three cost cards (`$105.28` / `2,102,510` input tokens / `1,050,800` output tokens) overflow into each other; numbers visually merge as one unreadable string
+- Header overlap: `Dashboard · 5 projects · reconnecting · + NEW PROJECT` jam into mobile width
+- Per-project cost row tight but readable
+
+Visible evidence promoted #954 from "polish" (Tier-1c) to "blocking infrastructure" (Tier-1a). Reasoning: phone-as-control-plane premise fails when dashboard cost numbers are unreadable on mobile. Operator can't track budget = can't trust autonomy.
+
+Bump captured in Kanban #954 status_change_reason. PATCH applied 2026-05-17 18:59.
 
 ### Files created/changed in this addendum
 
