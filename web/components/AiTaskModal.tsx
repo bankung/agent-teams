@@ -266,21 +266,23 @@ export function AiTaskModal({ projectId }: Props) {
 
   return (
     <>
+      {/* #954 — 44px min tap target on mobile */}
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="inline-flex items-center gap-1.5 rounded border border-violet-300 bg-white px-2 py-1 text-xs font-medium uppercase tracking-wide text-violet-700 hover:border-violet-400 hover:text-violet-900 dark:border-violet-700 dark:bg-zinc-900 dark:text-violet-300 dark:hover:border-violet-500 dark:hover:text-violet-100"
+        className="inline-flex items-center gap-1.5 rounded border border-violet-300 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-violet-700 hover:border-violet-400 hover:text-violet-900 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-violet-700 dark:bg-zinc-900 dark:text-violet-300 dark:hover:border-violet-500 dark:hover:text-violet-100"
         data-ai-task-trigger
       >
         <Icon name="ai-agent" size={14} />
         <span>AI task</span>
       </button>
       {open && (
+        // #954 — mobile: full-screen sheet (both phases); desktop restores centered max-w-md card
         <div
           role="dialog"
           aria-modal="true"
           aria-labelledby="ai-task-title"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/40 px-4 dark:bg-zinc-950/70"
+          className="fixed inset-0 z-50 flex items-stretch justify-center bg-zinc-900/40 dark:bg-zinc-950/70 sm:items-center sm:px-4"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) closeModal();
           }}
@@ -289,7 +291,7 @@ export function AiTaskModal({ projectId }: Props) {
           {phase === "input" ? (
             <form
               onSubmit={onParse}
-              className="w-full max-w-md rounded border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900"
+              className="flex w-full max-w-none flex-col overflow-y-auto rounded-none border-0 bg-white p-4 dark:bg-zinc-900 sm:h-auto sm:max-w-md sm:overflow-visible sm:rounded sm:border sm:border-zinc-200 sm:dark:border-zinc-800"
               data-ai-task-phase="input"
             >
               <h2
@@ -351,12 +353,13 @@ export function AiTaskModal({ projectId }: Props) {
                 </div>
               )}
 
+              {/* #954 — 44px min tap target on mobile for the input-phase action pair */}
               <div className="mt-4 flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={closeModal}
                   disabled={parsing}
-                  className="rounded border border-zinc-200 bg-white px-2 py-1 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+                  className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
                   data-ai-task-cancel
                 >
                   Cancel
@@ -364,7 +367,7 @@ export function AiTaskModal({ projectId }: Props) {
                 <button
                   type="submit"
                   disabled={!canParse}
-                  className="inline-flex items-center gap-1.5 rounded border border-violet-600 bg-violet-600 px-2 py-1 text-xs font-medium uppercase tracking-wide text-white hover:bg-violet-700 disabled:opacity-50 dark:border-violet-500 dark:bg-violet-500 dark:hover:bg-violet-600"
+                  className="inline-flex items-center gap-1.5 rounded border border-violet-600 bg-violet-600 px-3 py-2 text-xs font-medium uppercase tracking-wide text-white hover:bg-violet-700 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-violet-500 dark:bg-violet-500 dark:hover:bg-violet-600"
                   data-ai-task-parse
                 >
                   {parsing && (
@@ -397,7 +400,7 @@ export function AiTaskModal({ projectId }: Props) {
           ) : (
             <form
               onSubmit={onConfirm}
-              className="w-full max-w-md rounded border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900"
+              className="flex w-full max-w-none flex-col overflow-y-auto rounded-none border-0 bg-white p-4 dark:bg-zinc-900 sm:h-auto sm:max-w-md sm:overflow-visible sm:rounded sm:border sm:border-zinc-200 sm:dark:border-zinc-800"
               data-ai-task-phase="preview"
             >
               <h2
@@ -548,12 +551,13 @@ export function AiTaskModal({ projectId }: Props) {
                 </p>
               )}
 
-              <div className="mt-4 flex items-center justify-between gap-2">
+              {/* #954 — 44px min tap target on mobile for the preview-phase action row */}
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
                 <button
                   type="button"
                   onClick={onEditPrompt}
                   disabled={creating}
-                  className="rounded border border-zinc-200 bg-white px-2 py-1 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+                  className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
                   data-ai-task-edit-prompt
                 >
                   Edit prompt
@@ -563,7 +567,7 @@ export function AiTaskModal({ projectId }: Props) {
                     type="button"
                     onClick={closeModal}
                     disabled={creating}
-                    className="rounded border border-zinc-200 bg-white px-2 py-1 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+                    className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
                     data-ai-task-cancel
                   >
                     Cancel
@@ -571,7 +575,7 @@ export function AiTaskModal({ projectId }: Props) {
                   <button
                     type="submit"
                     disabled={!canConfirm}
-                    className="rounded border border-emerald-600 bg-emerald-600 px-2 py-1 text-xs font-medium uppercase tracking-wide text-white hover:bg-emerald-700 disabled:opacity-50 dark:border-emerald-500 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                    className="rounded border border-emerald-600 bg-emerald-600 px-3 py-2 text-xs font-medium uppercase tracking-wide text-white hover:bg-emerald-700 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-emerald-500 dark:bg-emerald-500 dark:hover:bg-emerald-600"
                     data-ai-task-confirm
                   >
                     {creating ? "Creating…" : "Confirm"}

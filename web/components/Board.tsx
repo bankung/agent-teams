@@ -236,9 +236,11 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
   );
 
   return (
-    <main className="flex h-screen flex-col overflow-hidden bg-white dark:bg-zinc-950 px-6 py-5">
+    // #954 — mobile: page scrolls (h-auto, overflow-y-auto); desktop preserves the fixed-viewport board (h-screen, overflow-hidden)
+    <main className="flex min-h-screen flex-col overflow-y-auto bg-white dark:bg-zinc-950 px-4 py-4 sm:px-6 sm:py-5 lg:h-screen lg:min-h-0 lg:overflow-hidden">
       <header className="mb-4 flex flex-col gap-2">
-        <div className="flex items-center gap-2 text-sm">
+        {/* #954 — header wraps on mobile so badges/toggle drop to a second row instead of overflowing horizontally */}
+        <div className="flex flex-wrap items-center gap-2 text-sm">
           <ProjectSwitcher current={project.name} />
           <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
             ·
@@ -277,6 +279,7 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
             lastEventAt={lastEventAt}
           />
           <span aria-hidden className="text-zinc-300 dark:text-zinc-600">·</span>
+          {/* #954 — 44px min tap target on mobile for view-mode toggle */}
           <span className="inline-flex items-center rounded-md border border-zinc-200 dark:border-zinc-700 overflow-hidden text-xs">
             {(["board", "list"] as const).map((v) => (
               <button
@@ -284,7 +287,7 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
                 type="button"
                 onClick={() => handleViewChange(v)}
                 aria-pressed={view === v}
-                className={`inline-flex items-center px-2.5 py-1 capitalize transition-colors ${
+                className={`inline-flex items-center px-3 py-2 min-h-[44px] sm:min-h-0 sm:px-2.5 sm:py-1 capitalize transition-colors ${
                   view === v
                     ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 font-semibold"
                     : "bg-transparent text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
@@ -295,7 +298,7 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
               </button>
             ))}
           </span>
-          <span className="ml-auto flex items-center gap-2">
+          <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
             <AiTaskModal projectId={project.id} />
             <NewTaskModal projectId={project.id} />
             <ThemePicker />
@@ -310,9 +313,10 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
         <ListView tasks={tasks} onOpenDetail={onOpenDetail} />
       ) : (
         <DndContext sensors={sensors} onDragEnd={onDragEnd}>
+          {/* #954 — mobile: page scrolls (no overflow-hidden, no min-h-0); desktop restores the fixed-height bounded lanes at lg */}
           <div
             data-board="dnd"
-            className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-hidden md:grid-cols-3 lg:grid-cols-5"
+            className="grid flex-1 grid-cols-1 gap-3 md:grid-cols-3 lg:min-h-0 lg:grid-cols-5 lg:overflow-hidden"
           >
             {COLUMNS.map((col) => (
               <BoardColumn

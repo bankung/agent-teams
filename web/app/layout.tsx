@@ -24,7 +24,11 @@ export default function RootLayout({
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeBootstrap }} />
       </head>
-      <body className="antialiased h-full overflow-hidden">
+      {/* #1089 — body must allow document-level scroll on mobile (where main is
+          min-h-screen overflow-y-auto and content stacks vertically past 100vh).
+          Desktop is unaffected: Board.tsx pins main at lg:h-screen lg:overflow-hidden
+          so no document scroll is needed; dashboard typically fits one viewport. */}
+      <body className="antialiased h-full">
         <ThemeProvider>{children}</ThemeProvider>
       </body>
     </html>

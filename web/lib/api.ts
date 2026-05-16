@@ -35,6 +35,10 @@ export type ProjectRead = {
   updated_at: string;
   auto_run_consent_at: string | null; // null = not consented; set by POST /api/projects/{id}/grant-consent (#483)
   sources: Source[]; // #778 — curated references; ALWAYS a list (never null), each entry has a required `url`
+  // #777 — project-root + repo override (nullable TEXT on BE); surfaced on
+  // every ProjectRead. EditProjectModal (#943) consumes both for pre-fill.
+  working_path: string | null;
+  working_repo: string | null;
   // #951 AC #5 — per-project spend caps (BE spawn 2026-05-15). Numeric(10,4) on
   // the DB serialized as JSON string (e.g. "5.0000") per the same Decimal-as-
   // string convention used by session_runs.total_cost_usd. NULL = unlimited
@@ -262,6 +266,41 @@ export async function createProject(
 ): Promise<ProjectRead> {
   return jsonFetch<ProjectRead>(`/api/projects`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// updateProject — PATCH /api/projects/{id} body (Kanban #943 FE).
+// Mirrors api/src/schemas/project.py:ProjectUpdate. All fields optional —
+// caller sends only the diff. Explicit `null` on a nullable text column
+// CLEARS it (BE writes NULL); explicit array on `sources` (incl. `[]`)
+// REPLACES the prior list. `config` is REPLACE (not deep-merge); callers
+// must spread the existing `project.config` before mutating to avoid
+// dropping unrelated keys.
+//
+// Out of scope for this body: `name`, `team`, `is_active`, `agent_overrides`,
+// `tools_config`, `budget_*_usd`, `paths_*`, `auto_run_consent_at` — those
+// have separate UX flows (rename, consent, budget, tool gate). The form
+// in EditProjectModal omits them; the type narrows them out here too so
+// callers can't accidentally PATCH them through this helper.
+export type ProjectUpdateBody = {
+  description?: string | null;
+  stack_web?: string | null;
+  stack_api?: string | null;
+  stack_db?: string | null;
+  config?: Record<string, unknown>;
+  working_path?: string | null;
+  working_repo?: string | null;
+  sources?: Source[];
+};
+
+export async function updateProject(
+  projectId: number,
+  body: ProjectUpdateBody,
+): Promise<ProjectRead> {
+  return jsonFetch<ProjectRead>(`/api/projects/${projectId}`, {
+    method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });

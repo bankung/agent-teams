@@ -206,13 +206,14 @@ export function TaskDetail({
             </h2>
             <CostStrip task={task} />
           </div>
+          {/* #954 — 44px min tap target on mobile; desktop restores px-2 py-1 chip size */}
           <button
             type="button"
             onClick={onClose}
             disabled={submitting}
             aria-label="Close"
             data-task-detail-close
-            className="shrink-0 rounded border border-zinc-200 bg-white px-2 py-1 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+            className="shrink-0 rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 sm:px-2 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
           >
             Close
           </button>
@@ -257,12 +258,13 @@ export function TaskDetail({
             {/* #860 — Run: flips run_mode manual→auto_pickup; see canRun guard above */}
             {canRun && (
               <div className="mt-2" data-run-task-control>
+                {/* #954 — 44px min tap target on mobile */}
                 <button
                   type="button"
                   onClick={handleRun}
                   disabled={submitting}
                   data-run-task-trigger
-                  className="rounded border border-violet-300 bg-violet-600 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-white hover:bg-violet-700 disabled:opacity-50 dark:border-violet-700 dark:bg-violet-700 dark:hover:bg-violet-600"
+                  className="rounded border border-violet-300 bg-violet-600 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-white hover:bg-violet-700 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-3 sm:py-1 dark:border-violet-700 dark:bg-violet-700 dark:hover:bg-violet-600"
                 >
                   {submitting ? "Queuing…" : "Run"}
                 </button>
@@ -272,6 +274,7 @@ export function TaskDetail({
             {!isTerminal && (
               <div className="mt-2" data-cancel-task-control>
                 {!cancelOpen ? (
+                  // #954 — 44px min tap target on mobile
                   <button
                     type="button"
                     onClick={() => {
@@ -280,7 +283,7 @@ export function TaskDetail({
                     }}
                     disabled={submitting}
                     data-cancel-task-trigger
-                    className="rounded border border-zinc-200 bg-white px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-zinc-600 hover:border-red-300 hover:text-red-700 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:border-red-800 dark:hover:text-red-300"
+                    className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-600 hover:border-red-300 hover:text-red-700 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-0.5 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:border-red-800 dark:hover:text-red-300"
                   >
                     Cancel task
                   </button>
@@ -303,13 +306,14 @@ export function TaskDetail({
                       data-cancel-task-reason-input
                       className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
                     />
+                    {/* #954 — 44px min tap target on mobile for the cancel confirm pair */}
                     <div className="flex gap-2">
                       <button
                         type="button"
                         disabled={submitting || cancelReason.trim() === ""}
                         onClick={handleCancelTask}
                         data-cancel-task-confirm
-                        className="rounded border border-red-300 bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50 dark:border-red-700"
+                        className="rounded border border-red-300 bg-red-600 px-3 py-2 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-red-700"
                       >
                         Confirm cancel
                       </button>
@@ -321,7 +325,7 @@ export function TaskDetail({
                         }}
                         disabled={submitting}
                         data-cancel-task-dismiss
-                        className="rounded border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-700 hover:border-zinc-300 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300"
+                        className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:border-zinc-300 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300"
                       >
                         Back
                       </button>
@@ -385,13 +389,14 @@ export function TaskDetail({
                     none
                   </span>
                 )}
+                {/* #954 — 44px min tap target on mobile for the blocker mutator buttons */}
                 <span className="ml-auto flex gap-2">
                   <button
                     type="button"
                     onClick={() => setPickerOpen(true)}
                     disabled={submitting}
                     data-blocked-by-change
-                    className="rounded border border-zinc-200 bg-white px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+                    className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-0.5 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
                   >
                     {task.blocked_by !== null ? "Change" : "Set blocker"}
                   </button>
@@ -401,7 +406,7 @@ export function TaskDetail({
                       onClick={() => setBlocker(null)}
                       disabled={submitting}
                       data-blocked-by-clear
-                      className="rounded border border-zinc-200 bg-white px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+                      className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-0.5 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
                     >
                       Clear
                     </button>
@@ -604,6 +609,7 @@ function QuestionInteractionSection({
           </p>
         ) : payload?.options != null ? (
           // Options mode — buttons; clicking one immediately submits.
+          // #954 — 44px min tap target on mobile for option chips
           <div className="flex flex-wrap gap-2" data-question-options>
             {payload.options.map((opt) => (
               <button
@@ -630,6 +636,7 @@ function QuestionInteractionSection({
               data-question-textarea
               className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
             />
+            {/* #988 — 44px tap target on all viewports for the answer submit (HITL workflow critical path) */}
             <button
               type="button"
               disabled={submittingAnswer || answerValue.trim() === ""}

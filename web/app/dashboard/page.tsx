@@ -9,6 +9,7 @@ import {
 import { formatRelative } from "@/lib/time";
 import { BudgetBar, pickBudgetDisplay } from "@/components/BudgetBar";
 import { DashboardRefresher } from "@/components/DashboardRefresher";
+import { EditProjectModal } from "@/components/EditProjectModal";
 import { NewProjectModal } from "@/components/NewProjectModal";
 import { ThemePicker } from "@/components/ThemePicker";
 
@@ -133,15 +134,16 @@ function AggregateSummary({ stats }: { stats: ProjectStatsEntry[] }) {
             <div
               key={key}
               role="listitem"
-              className="flex flex-col items-start gap-1 rounded-md border border-zinc-100 bg-zinc-50/60 px-3 py-3 dark:border-zinc-800 dark:bg-zinc-950/40"
+              className="flex flex-col items-start gap-1 rounded-md border border-zinc-100 bg-zinc-50/60 px-2 py-2 sm:px-3 sm:py-3 dark:border-zinc-800 dark:bg-zinc-950/40"
               title={`${label}: ${count}`}
             >
+              {/* #954 — shrink big numbers on mobile so 5-up grid fits a 375px viewport */}
               <span
-                className={`text-3xl font-semibold tabular-nums leading-none ${laneColor(key, count)}`}
+                className={`text-2xl font-semibold tabular-nums leading-none sm:text-3xl ${laneColor(key, count)}`}
               >
                 {count}
               </span>
-              <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400 sm:text-[11px]">
                 {label}
               </span>
             </div>
@@ -230,8 +232,9 @@ function CostSummary({ stats }: { stats: ProjectStatsEntry[] }) {
         </p>
       ) : (
         <>
+          {/* #954 — single column on mobile (375px iPhone); 3-col tile row restored at sm */}
           <div
-            className="grid grid-cols-3 gap-3"
+            className="grid grid-cols-1 gap-3 sm:grid-cols-3"
             role="list"
             aria-label="Portfolio-wide cost and token totals"
           >
@@ -341,12 +344,17 @@ function CompactProjectCard({
             </span>
           </div>
         </div>
-        <span
-          className="shrink-0 text-[11px] text-zinc-500 dark:text-zinc-400"
-          title={entry.last_activity_at ?? undefined}
-        >
-          {formatRelative(entry.last_activity_at)}
-        </span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span
+            className="shrink-0 text-[11px] text-zinc-500 dark:text-zinc-400"
+            title={entry.last_activity_at ?? undefined}
+          >
+            {formatRelative(entry.last_activity_at)}
+          </span>
+          {/* #943 — gear-icon edit trigger; renders only when the stats row
+              has a matching ProjectRead (race-safe per #951 AC #5 merge). */}
+          {project ? <EditProjectModal project={project} /> : null}
+        </div>
       </header>
 
       <div
@@ -449,8 +457,9 @@ export default async function DashboardPage() {
   for (const p of projects) projectsById.set(p.id, p);
 
   return (
-    <main className="flex min-h-screen flex-col overflow-y-auto bg-white px-6 py-5 dark:bg-zinc-950">
-      <header className="mb-4 flex items-center gap-2 text-sm">
+    <main className="flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950">
+      {/* #954 — header wraps on mobile so the right-aligned controls drop to a second row */}
+      <header className="mb-4 flex flex-wrap items-center gap-2 text-sm">
         <span className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
           Dashboard
         </span>
@@ -460,7 +469,7 @@ export default async function DashboardPage() {
         <span className="text-zinc-500 dark:text-zinc-400 tabular-nums">
           {stats.length} project{stats.length === 1 ? "" : "s"}
         </span>
-        <span className="ml-auto flex items-center gap-2">
+        <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
           <DashboardRefresher />
           <NewProjectModal />
           <ThemePicker />

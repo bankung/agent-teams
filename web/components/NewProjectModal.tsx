@@ -101,20 +101,22 @@ export function NewProjectModal() {
 
   return (
     <>
+      {/* #954 — 44px min tap target on mobile */}
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="inline-flex items-center rounded border border-zinc-300 bg-white px-2 py-1 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-400 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
+        className="inline-flex items-center rounded border border-zinc-300 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-400 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
         data-new-project-trigger
       >
         + New project
       </button>
       {open && (
+        // #954 — mobile: full-screen sheet; desktop restores centered max-w-md card
         <div
           role="dialog"
           aria-modal="true"
           aria-labelledby="new-project-title"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/40 px-4 dark:bg-zinc-950/70"
+          className="fixed inset-0 z-50 flex items-stretch justify-center bg-zinc-900/40 dark:bg-zinc-950/70 sm:items-center sm:px-4"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) closeModal();
           }}
@@ -122,7 +124,7 @@ export function NewProjectModal() {
         >
           <form
             onSubmit={onSubmit}
-            className="w-full max-w-md rounded border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900"
+            className="flex w-full max-w-none flex-col overflow-y-auto rounded-none border-0 bg-white p-4 dark:bg-zinc-900 sm:h-auto sm:max-w-md sm:overflow-visible sm:rounded sm:border sm:border-zinc-200 sm:dark:border-zinc-800"
           >
             <h2
               id="new-project-title"
@@ -224,12 +226,13 @@ export function NewProjectModal() {
               </p>
             )}
 
+            {/* #954 — 44px min tap target on mobile for the modal action pair */}
             <div className="mt-4 flex items-center justify-end gap-2">
               <button
                 type="button"
                 onClick={closeModal}
                 disabled={submitting}
-                className="rounded border border-zinc-200 bg-white px-2 py-1 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+                className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
                 data-new-project-cancel
               >
                 Cancel
@@ -237,7 +240,7 @@ export function NewProjectModal() {
               <button
                 type="submit"
                 disabled={!canSubmit}
-                className="rounded border border-emerald-600 bg-emerald-600 px-2 py-1 text-xs font-medium uppercase tracking-wide text-white hover:bg-emerald-700 disabled:opacity-50 dark:border-emerald-500 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                className="rounded border border-emerald-600 bg-emerald-600 px-3 py-2 text-xs font-medium uppercase tracking-wide text-white hover:bg-emerald-700 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-emerald-500 dark:bg-emerald-500 dark:hover:bg-emerald-600"
                 data-new-project-submit
               >
                 {submitting ? "Creating…" : "Create"}

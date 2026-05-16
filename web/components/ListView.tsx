@@ -58,14 +58,17 @@ const COLUMN_DEFAULT_DIR: Record<SortKey, SortDir> = {
   updated_at: "desc",
 };
 
-const COLUMNS: { key: SortKey; label: string }[] = [
+// #954 — `hideOnMobile` columns collapse to `hidden md:table-cell` so the iPhone
+// width shows id / title / status / priority / updated only; Run Mode + Role +
+// Kind appear at md+ where horizontal room exists.
+const COLUMNS: { key: SortKey; label: string; hideOnMobile?: boolean }[] = [
   { key: "id", label: "#" },
   { key: "title", label: "Title" },
   { key: "process_status", label: "Status" },
-  { key: "priority", label: "Priority" },
-  { key: "task_kind", label: "Kind" },
-  { key: "run_mode", label: "Run Mode" },
-  { key: "assigned_role", label: "Role" },
+  { key: "priority", label: "Priority", hideOnMobile: true },
+  { key: "task_kind", label: "Kind", hideOnMobile: true },
+  { key: "run_mode", label: "Run Mode", hideOnMobile: true },
+  { key: "assigned_role", label: "Role", hideOnMobile: true },
   { key: "updated_at", label: "Updated" },
 ];
 
@@ -188,8 +191,10 @@ export function ListView({ tasks, onOpenDetail }: Props) {
     return [...filtered].sort((a, b) => compareTasks(a, b, sortKey, sortDir));
   }, [filtered, sortKey, sortDir]);
 
-  const selectClass = "rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-sm px-2 py-1 text-zinc-700 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-zinc-400";
-  const chipBase = "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium cursor-pointer select-none border transition-colors";
+  // #954 — selects + chips bump tap target to 44px on mobile; desktop restores
+  // the dense xs sizing for layout parity with the rest of the board chrome.
+  const selectClass = "rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-sm px-3 py-2 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 text-zinc-700 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-zinc-400";
+  const chipBase = "inline-flex items-center rounded-full px-3 py-2 text-xs font-medium cursor-pointer select-none border transition-colors min-h-[44px] sm:min-h-0 sm:px-2.5 sm:py-0.5";
 
   return (
     <div className="flex flex-col gap-3 min-h-0 flex-1 overflow-hidden">
@@ -273,12 +278,14 @@ export function ListView({ tasks, onOpenDetail }: Props) {
             <tr>
               {COLUMNS.map((col) => {
                 const isActive = sortKey === col.key;
+                // #954 — low-value columns collapse on mobile via `hidden md:table-cell`
+                const hideClass = col.hideOnMobile ? "hidden md:table-cell" : "";
                 return (
                   <th
                     key={col.key}
                     onClick={() => handleHeaderClick(col.key)}
                     aria-sort={isActive ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
-                    className={`text-xs font-semibold uppercase tracking-wide py-2 px-3 text-left whitespace-nowrap cursor-pointer select-none border-b border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors ${
+                    className={`text-xs font-semibold uppercase tracking-wide py-2 px-3 text-left whitespace-nowrap cursor-pointer select-none border-b border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors ${hideClass} ${
                       isActive
                         ? "text-zinc-900 dark:text-zinc-100"
                         : "text-zinc-500 dark:text-zinc-400"
@@ -324,20 +331,20 @@ export function ListView({ tasks, onOpenDetail }: Props) {
                     {STATUS_LABEL[task.process_status] ?? String(task.process_status)}
                   </span>
                 </td>
-                {/* Priority */}
-                <td className="py-2 px-3 align-middle whitespace-nowrap text-xs text-zinc-600 dark:text-zinc-400">
+                {/* Priority — #954 hidden on mobile */}
+                <td className="hidden md:table-cell py-2 px-3 align-middle whitespace-nowrap text-xs text-zinc-600 dark:text-zinc-400">
                   {PRIORITY_LABEL[task.priority] ?? `P${task.priority}`}
                 </td>
-                {/* Kind */}
-                <td className="py-2 px-3 align-middle">
+                {/* Kind — #954 hidden on mobile */}
+                <td className="hidden md:table-cell py-2 px-3 align-middle">
                   <TaskKindBadge kind={task.task_kind} />
                 </td>
-                {/* Run Mode */}
-                <td className="py-2 px-3 align-middle">
+                {/* Run Mode — #954 hidden on mobile */}
+                <td className="hidden md:table-cell py-2 px-3 align-middle">
                   <RunModeBadge mode={task.run_mode} />
                 </td>
-                {/* Role */}
-                <td className="py-2 px-3 align-middle whitespace-nowrap text-xs text-zinc-500 dark:text-zinc-400">
+                {/* Role — #954 hidden on mobile */}
+                <td className="hidden md:table-cell py-2 px-3 align-middle whitespace-nowrap text-xs text-zinc-500 dark:text-zinc-400">
                   {task.assigned_role !== null
                     ? (ROLE_SHORT[task.assigned_role] ?? `role${task.assigned_role}`)
                     : <span className="text-zinc-300 dark:text-zinc-600">—</span>}
