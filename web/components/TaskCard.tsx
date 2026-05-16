@@ -106,15 +106,35 @@ export function TaskCard({ task, onOpenDetail }: Props) {
               #{task.blocked_by}
             </span>
           )}
-          {(task.interaction_kind === "question" || task.interaction_kind === "decision") && (
-            <span
-              title={task.interaction_kind === "decision" ? "Decision needed" : "Question for user"}
-              data-interaction-kind={task.interaction_kind}
-              className="inline-flex items-center gap-1 rounded bg-violet-50 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300"
-            >
-              {task.interaction_kind === "decision" ? <Icon name="alert" size={11} /> : <Icon name="tooltip" size={11} />}
-            </span>
-          )}
+          {(task.interaction_kind === "question" || task.interaction_kind === "decision") && (() => {
+            // #988 — HITL badge. Amber + "awaiting answer" while the task is paused
+            // with no accepted answer; muted violet once resolved (done/cancelled or
+            // answer_history has any is_valid=true entry).
+            const hasAcceptedAnswer = (task.question_payload?.answer_history ?? [])
+              .some((entry) => entry.is_valid === true);
+            const isTerminal =
+              task.process_status === TaskStatus.DONE ||
+              task.process_status === TaskStatus.CANCELLED;
+            const awaiting = !hasAcceptedAnswer && !isTerminal;
+            const tooltip = awaiting
+              ? "Awaiting answer"
+              : task.interaction_kind === "decision"
+                ? "Decision needed"
+                : "Question for user";
+            const chipClass = awaiting
+              ? "inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+              : "inline-flex items-center gap-1 rounded bg-violet-50 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300";
+            return (
+              <span
+                title={tooltip}
+                data-interaction-kind={task.interaction_kind}
+                data-hitl-badge={awaiting ? "awaiting" : "resolved"}
+                className={chipClass}
+              >
+                {task.interaction_kind === "decision" ? <Icon name="alert" size={11} /> : <Icon name="tooltip" size={11} />}
+              </span>
+            );
+          })()}
           <RunModeBadge mode={task.run_mode} />
           <TaskKindBadge kind={task.task_kind} />
           <PendingBadge task={task} />

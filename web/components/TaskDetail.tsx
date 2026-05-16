@@ -612,7 +612,7 @@ function QuestionInteractionSection({
                 disabled={submittingAnswer}
                 onClick={() => handleSubmitAnswer(opt)}
                 data-question-option={opt}
-                className="rounded border border-violet-200 bg-violet-50 px-3 py-1.5 text-sm font-medium text-violet-800 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-800 dark:bg-violet-900/30 dark:text-violet-200 dark:hover:bg-violet-900/50"
+                className="min-h-[44px] rounded border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-medium text-violet-800 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-800 dark:bg-violet-900/30 dark:text-violet-200 dark:hover:bg-violet-900/50"
               >
                 {opt}
               </button>
@@ -635,7 +635,7 @@ function QuestionInteractionSection({
               disabled={submittingAnswer || answerValue.trim() === ""}
               onClick={() => handleSubmitAnswer(answerValue)}
               data-question-submit
-              className="self-start rounded border border-violet-300 bg-violet-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50 dark:border-violet-700 dark:bg-violet-700 dark:hover:bg-violet-600"
+              className="min-h-[44px] self-start rounded border border-violet-300 bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50 dark:border-violet-700 dark:bg-violet-700 dark:hover:bg-violet-600"
             >
               Submit answer
             </button>
