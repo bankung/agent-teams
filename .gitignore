@@ -1,6 +1,8 @@
 .superpowers/
 .claude/projects/
 .claude/settings.local.json
+# git worktrees (transparent to git via gitfile; ignored here to keep `git status` clean)
+.claude/worktrees/
 /docs/
 
 # Env / secrets
