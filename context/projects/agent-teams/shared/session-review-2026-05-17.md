@@ -7,7 +7,125 @@ End-of-session synthesis: what landed, what was discussed, what's actually weak 
 - **Landed this session**: Karpathy Tier-2 discipline layer, #952 auditor engine (ACs 1-4), #7 Section B dev-security-reviewer role, #1079 Kanban closure, design docs promoted.
 - **Discussed but not built**: DeepSeek integration plan (#1086 filed), browser-tool insight via Chrome MCP, 3-tier architecture (Operator / Project Lead / Secretary / Specialists), "เลขา" project as template-builder for arena pattern, persistent autonomous Project Lead as new architectural piece.
 - **Biggest honest weakness**: persistent autonomous Project Lead is harder than the 2-3 week estimate (industry-wide unsolved; possibly 2-3 months R&D). Most other claims are unmeasured.
-- **Next session opener**: see "Concrete next-action plan" section. Start with #1086 DeepSeek + #1085 flake fix + #1084 security-reviewer smoke.
+- **Post-6pm reframes**: tools-vs-niche question was false dichotomy (Lead's error); platform-not-bet portfolio approach locked; #959 backup priority bumped to P1; #957 approval policy design drafted. **See § 0 Addendum** for details.
+- **Next session opener**: see "Concrete next-action plan" section, updated by Addendum.
+
+---
+
+## 0. Addendum (2026-05-17 18:30+ — post-review reframes)
+
+After writing § 1-8, operator pushed back on W4/W5/W8 framing and on Lead's "build tools vs pick niche first?" question. Outcome: three reframes that supersede portions of the original sections below.
+
+### Reframe 1 — "Tools vs niche first?" was the wrong question (Lead's framing error)
+
+**Why wrong:** tools are niche-agnostic platform capability; building them doesn't require picking a niche. AND "เลขา" personal project IS already the first niche (operator's own life). Business niche is a separate later concern.
+
+**Right framing:**
+
+```
+Step 1: Build niche-agnostic platform tools 
+        (browser MCP wiring, secretary agent, digest format, persistent Lead)
+Step 2: Validate at personal niche (เลขา)
+        — operator = user + builder = fast feedback loop
+Step 3: Pick business niche (research-and-decide, NOT dev work)
+        — parallelizable with Step 1
+Step 4: Copy template, instantiate Tier-2 POC
+```
+
+Niche selection (Step 3) is **research-and-decide work**, runnable in parallel with platform dev. Doesn't block.
+
+### Reframe 2 — W5: agent-teams is a PLATFORM, not a single-niche bet
+
+**Original framing (wrong):** "Tier-2 POC niches have weak moats → tank decision."
+
+**Reframe:** agent-teams is the substrate for hosting **portfolio of experiments**. Moat lives at the platform layer (low-cost portfolio orchestration), not at any single niche. Individual niches can have weak moats — what matters is cumulative portfolio outcome.
+
+**Implications captured in new doc** `context/projects/agent-teams/shared/portfolio-experiment-process.md`:
+- Cheap spinup (~30-60 min) — already partially built (project_scaffold)
+- Short run window (2-4 weeks default)
+- Hard abandon rules (budget breach 2×, time breach 4w past, operator-dread signal, niche-death signal)
+- Active portfolio caps (3-5 experiments; weekly review ≤ 30min)
+- Wind-down checklist (capture learnings → soft-delete project → free budget)
+
+**Bias correction:** "Abandonment is success, not failure" — the platform's value IS making cheap abandonment possible. Pre-commit to abandon rules to avoid sunk-cost bias.
+
+### Reframe 3 — W4: #957 approval policy design drafted (was placeholder)
+
+Wrote draft schema at `context/projects/agent-teams/shared/approval-policy-design.md`. Key shape:
+
+- **Two gates (don't conflate):** Gate 1 = tool tier (existing, allow/halt/reject); Gate 2 = approval policy (NEW, auto-execute vs HITL-queue)
+- **5 action categories** (static map in code, not config): read_only / safe_write / reversible_write / destructive / external_effect / financial / new_capability
+- **Per-project override** via new `projects.approval_policy` JSONB column (migration 0031 sketched)
+- **6 open design Qs** locked with recommendations: category mapping (code not config), new_capability tracking (per-(project,tool)), cost calc (estimate-before for v1), rate limit semantics (rolling 1hr), approve-and-remember granularity (per-(tool, args-fp, project)), default policy (conservative — HITL except read_only)
+- **Implementation in 6 slices** when ready to ship (#957a-#957f, total ~7-10 days dev)
+
+### W8 action taken — #959 backup PATCHed P2 → P1
+
+PATCHed via Kanban API with status_change_reason explaining bump. Reordered Tier-1 work plan:
+
+```
+Tier-1a (foundation — DO FIRST):
+  #959 backup           ← bumped from P2; catastrophic loss risk; ~30min-1hr impl
+  #1086 DeepSeek        ← cost optimization, parallel
+  #1085 test flake fix  ← cleanup, parallel
+  #1084 security smoke  ← validation, parallel (needs fresh session)
+
+Tier-1b (workflow backbone):
+  #955 web push
+  #958 daily digest
+  #957 approval policies (per design doc above; substantive design first)
+
+Tier-1c (capacity / polish):
+  #953 financial separation
+  #954 mobile UX
+
+Tier-1d (insight-from-this-session, R&D-heavy):
+  secretary agent template
+  Chrome MCP → langgraph tools (Mode B bridge)
+  persistent Project Lead (defer until Mode A measured; possibly 2-3 month R&D)
+```
+
+### Updated next-session opener (supersedes § 5 + § 6 below)
+
+```
+agent-teams ครับมาต่อ.
+
+Bootstrap → confirm session-review-2026-05-17.md addendum ยังยืนอยู่.
+ถ้ายืน → ลำดับงาน:
+
+Tier-1a parallel pack (target: 1-2 sessions):
+  1. #1085 test SERIAL flake fix (~1hr)
+  2. #1086 DeepSeek integration (~2hr)
+  3. #1084 dev-security-reviewer smoke on 73811e2 (~1hr; needs this fresh session)
+  4. #959 off-site backup (~1hr; bumped to P1)
+
+Tier-1b parallel pack (target: 2-3 sessions after Tier-1a):
+  5. #955 Web Push (~half-day)
+  6. #958 Daily digest (~half-day)
+  7. #957 approval policies — ship slices per approval-policy-design.md
+
+ห้ามข้าม Tier-1a → Tier-2 POC ก่อน #959 backup เสร็จ
+(single Postgres = one disk failure away from total loss).
+```
+
+### Files created/changed in this addendum
+
+- `context/projects/agent-teams/shared/portfolio-experiment-process.md` — new (W5)
+- `context/projects/agent-teams/shared/approval-policy-design.md` — new (W4)
+- `context/projects/agent-teams/shared/session-review-2026-05-17.md` — this addendum + TL;DR
+- Kanban #959 — priority P2 → P1 with status_change_reason
+
+### What's STILL not solved by the reframes
+
+- **W1 still stands** — persistent autonomous Project Lead = 2-3 months R&D, not weeks. Mitigation is "use Mode A first, defer until measured". Reframe doesn't change this.
+- **W2 still stands** — all cost/capability claims still unmeasured. #1086 DeepSeek integration + A/B test is the first measurement step.
+- **W9 still stands** — auditor LLM verdict reliability still untested in production. #1083 (#952c) live smokes are the test gate.
+- **W11 still stands** — Karpathy Tier-2 still not battle-tested across multiple sessions. Watch for drift recurrence; escalate to Tier-1 hooks if any mode (A/B/C/D) repeats.
+- **Niche selection process** — portfolio doc says HOW to run experiments, not WHICH niches to pick. Niche research is separate future work.
+
+End of Addendum. Sections 1-8 below preserve the original session synthesis.
+
+---
 
 ---
 
