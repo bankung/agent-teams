@@ -20,9 +20,11 @@ WORKDIR /repo/api
 
 # curl is used by the compose healthcheck (GET /health) and is handy for
 # ad-hoc `docker exec` debugging. ~5 MB on slim — acceptable for dev image.
+# postgresql-client provides pg_dump for the nightly backup runner (Kanban #959)
+# — ~25 MB; the wire-protocol version is compatible with the PG 16 server.
 # Image hardening (drop curl, multi-stage) deferred per standards/docker/compose.md.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl \
+ && apt-get install -y --no-install-recommends curl postgresql-client \
  && rm -rf /var/lib/apt/lists/*
 
 # Copy the package layout first. setuptools.packages.find needs src/ and

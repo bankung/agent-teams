@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
@@ -93,6 +94,36 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         max_instances=1,
         coalesce=True,
     )
+
+    # Kanban #959 — off-site encrypted backup nightly job. Refuses to schedule
+    # when BACKUP_* env vars are unset (default state). Cron in BACKUP_TIMEZONE
+    # (defaults to UTC). One job, one run_once() call per fire.
+    from src.services.backup import BackupConfig, BackupRunner
+
+    backup_cfg = BackupConfig.from_env()
+    if backup_cfg.is_enabled:
+        runner = BackupRunner(backup_cfg)
+        scheduler.add_job(
+            runner.run_once,
+            trigger=CronTrigger.from_crontab(
+                backup_cfg.cron_rule, timezone=backup_cfg.timezone,
+            ),
+            id="backup_nightly",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        logger.info(
+            "backup scheduled: cron=%s tz=%s bucket=%s prefix=%s dry_run=%s",
+            backup_cfg.cron_rule, backup_cfg.timezone, backup_cfg.s3_bucket,
+            backup_cfg.s3_prefix, backup_cfg.dry_run,
+        )
+    else:
+        logger.warning(
+            "Backup disabled — set BACKUP_S3_BUCKET, BACKUP_S3_ACCESS_KEY_ID, "
+            "BACKUP_S3_SECRET_ACCESS_KEY, BACKUP_AGE_PUBKEY to enable nightly snapshots"
+        )
+
     scheduler.start()
     _scheduler = scheduler
     logger.info(

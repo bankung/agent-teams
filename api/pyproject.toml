@@ -24,6 +24,11 @@ dependencies = [
     "anthropic>=0.40,<1.0",
     "openai>=1.0,<2.0",
     "sse-starlette>=2.0,<4.0",
+    # Kanban #959 — off-site encrypted backup. boto3 covers AWS S3 + Backblaze B2
+    # + Cloudflare R2 + Wasabi via endpoint_url. pyrage = Rust `age` Python binding
+    # for encryption (single-recipient public-key, private key stays offline).
+    "boto3>=1.43,<2.0",
+    "pyrage>=1.2,<2.0",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +38,7 @@ dev = [
     "httpx>=0.27,<1.0",
     "pip-audit>=2.7,<3.0",
     "respx>=0.20,<1.0",
+    "moto[s3]>=5.0,<6.0",  # Kanban #959 — S3 mocking for backup unit tests.
 ]
 
 [tool.setuptools.packages.find]
