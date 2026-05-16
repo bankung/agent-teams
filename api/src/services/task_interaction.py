@@ -20,6 +20,9 @@ def append_answer(
     existing_payload: dict[str, Any] | None,
     value: str,
     answered_by: str,
+    *,
+    is_valid: bool = True,
+    invalidated_reason: str | None = None,
 ) -> dict[str, Any]:
     """Return a new question_payload dict with the answer appended.
 
@@ -28,7 +31,10 @@ def append_answer(
     requires it on POST/PATCH for question tasks, so None only happens
     if the row was created before this validation landed).
 
-    The new entry is always appended with is_valid=True. The caller
+    Default behaviour appends with is_valid=True (the #832 happy path).
+    Kanban #987 added keyword-only `is_valid` + `invalidated_reason` so
+    the PATCH validation gate can record FAILED attempts to the audit
+    trail (Q6=A) without reaching for a separate service. The caller
     serialises to JSON-safe dict (mode='json') before writing to JSONB.
     """
     payload = existing_payload or {"question": "", "options": None, "answer_history": []}
@@ -38,11 +44,50 @@ def append_answer(
             "value": value,
             "answered_by": answered_by,
             "answered_at": datetime.now(timezone.utc).isoformat(),
-            "is_valid": True,
-            "invalidated_reason": None,
+            "is_valid": is_valid,
+            "invalidated_reason": invalidated_reason,
         }
     )
     return {**payload, "answer_history": history}
+
+
+def _validate_answer(
+    interaction_kind: str,
+    question_payload: dict[str, Any] | None,
+    answer: str,
+) -> tuple[bool, str | None]:
+    """API-side answer gate (Kanban #987, Q3=A strict).
+
+    Mirrors `langgraph/hitl.py::validate_answer` but returns (is_valid,
+    reason) instead of raising — the PATCH handler needs to BOTH record
+    the failed attempt to answer_history AND return 422, so a tuple
+    keeps the control flow flat.
+
+    Rules:
+      - missing question_payload → (False, "task has no question_payload")
+      - empty / whitespace-only answer → (False, "answer is empty or
+        whitespace-only")
+      - interaction_kind='decision' with a non-empty options list →
+        answer (stripped) MUST match an option string exactly; mismatch
+        → (False, "answer '<x>' not in options: [...]")
+      - interaction_kind='question', OR decision task with empty/missing
+        options → any non-empty string is acceptable → (True, None)
+    """
+    if question_payload is None:
+        return False, "task has no question_payload"
+
+    if not isinstance(answer, str):
+        answer = str(answer) if answer is not None else ""
+    normalised = answer.strip()
+    if not normalised:
+        return False, "answer is empty or whitespace-only"
+
+    if interaction_kind == "decision":
+        options = question_payload.get("options") or []
+        if options and normalised not in options:
+            return False, f"answer '{normalised}' not in options: {list(options)}"
+
+    return True, None
 
 
 def invalidate_last_answer(

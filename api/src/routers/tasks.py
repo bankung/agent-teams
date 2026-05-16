@@ -42,6 +42,7 @@ from src.services.budget_enforcer import check_budget
 from src.services.run_mode import assert_consent_for_run_mode
 from src.services.task_cost_estimator import estimate_task_cost
 from src.services.task_interaction import (
+    _validate_answer,
     append_answer,
     auto_unblock_dependents,
     invalidate_last_answer as _invalidate_last_answer,
@@ -927,6 +928,10 @@ async def update_task(
     invalidated_reason = updates.pop("invalidated_reason", None)
 
     # Kanban #832: answer append for question/decision tasks.
+    # Kanban #987: strict answer validation gate (Q3=A) + invalid-attempt
+    # audit trail (Q6=A). Invalid answers append to history with
+    # is_valid=False + invalidated_reason, persist in one transaction,
+    # then raise 422 — task stays BLOCKED (no resume).
     if new_answer is not None:
         resolved_interaction_kind = (
             updates.get("interaction_kind") if "interaction_kind" in updates
@@ -939,8 +944,33 @@ async def update_task(
                 status_code=422,
                 detail="new_answer is only valid for interaction_kind 'question' or 'decision'",
             )
+        # Resolve question_payload the same way (PATCH-supplied wins).
+        resolved_question_payload = (
+            updates.get("question_payload") if "question_payload" in updates
+            else task.question_payload
+        )
+        is_valid, reason = _validate_answer(
+            resolved_interaction_kind, resolved_question_payload, new_answer
+        )
+        if not is_valid:
+            # Append the invalid attempt then 422. Commit the audit-trail
+            # write before raising so the answer_history grew even though
+            # the rest of the PATCH is rejected.
+            updates["question_payload"] = append_answer(
+                resolved_question_payload, new_answer, new_answer_by,
+                is_valid=False, invalidated_reason=reason,
+            )
+            # Persist ONLY the question_payload audit trail; discard
+            # other patch fields so the 422 carries clean rejection
+            # semantics (status / process_status etc. don't sneak in).
+            task.question_payload = updates["question_payload"]
+            await session.commit()
+            raise HTTPException(
+                status_code=422,
+                detail=f"invalid_answer: {reason}",
+            )
         updates["question_payload"] = append_answer(
-            task.question_payload, new_answer, new_answer_by
+            resolved_question_payload, new_answer, new_answer_by,
         )
 
     # Kanban #832: invalidate last valid answer. Use updates["question_payload"]

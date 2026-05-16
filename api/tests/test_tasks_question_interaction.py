@@ -1,6 +1,8 @@
 """Kanban #832 — question/decision task interaction API.
+Kanban #987 — PATCH answer validation gate (Q3=A) + invalid-attempt audit (Q6=A).
 
-Tests for answer append, invalidate, and auto-unblock-on-DONE semantics.
+Tests for answer append, invalidate, auto-unblock-on-DONE, and strict
+validation against question_payload.options for decision tasks.
 
 Coverage:
   (a) POSITIVE: POST question task + PATCH new_answer appends to history
@@ -12,6 +14,11 @@ Coverage:
   (f) NEGATIVE: new_answer on a 'work' task → 422
   (g) NEGATIVE: invalidate_last_answer=True without invalidated_reason → 422
   (h) NEGATIVE: invalidate when no valid answer exists → 422
+  (i) #987 POSITIVE: decision task valid answer in options → 200 + is_valid=True
+  (j) #987 NEGATIVE: decision task invalid answer → 422 + appended is_valid=False,
+                     task stays BLOCKED
+  (k) #987 POSITIVE: question task free-text accepted (no options enforcement)
+  (l) #987 NEGATIVE: whitespace-only answer → 422
 """
 
 from __future__ import annotations
@@ -308,3 +315,131 @@ async def test_invalidate_when_no_valid_answer_returns_422(
     )
     assert resp.status_code == 422, resp.text
     assert "no valid answer" in resp.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# #987 fixtures
+# ---------------------------------------------------------------------------
+
+_DECISION_PAYLOAD = {
+    "question": "Deploy target?",
+    "options": ["staging", "prod"],
+    "answer_history": [],
+}
+
+_FREETEXT_PAYLOAD = {
+    "question": "What changed in the last release?",
+    "options": None,
+    "answer_history": [],
+}
+
+
+# ---------------------------------------------------------------------------
+# (i) #987 POSITIVE: decision task valid option accepted
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_decision_task_valid_answer_in_options_returns_200_and_is_valid_true(
+    client, scaffold_cleanup
+) -> None:
+    """Decision task with options=['staging','prod']; PATCH new_answer='prod'
+    → 200; answer_history has the entry with is_valid=True."""
+    pid = await _make_fresh_project(client, scaffold_cleanup, "k987-i")
+    tid = await _make_task(
+        client, pid, "k987-i decision",
+        interaction_kind="decision",
+        question_payload=_DECISION_PAYLOAD,
+    )
+
+    resp = await _patch_task(client, pid, tid, {"new_answer": "prod"})
+    assert resp.status_code == 200, resp.text
+    history = resp.json()["question_payload"]["answer_history"]
+    assert len(history) == 1, history
+    assert history[0]["value"] == "prod"
+    assert history[0]["is_valid"] is True
+    assert history[0]["invalidated_reason"] is None
+
+
+# ---------------------------------------------------------------------------
+# (j) #987 NEGATIVE: decision task invalid option rejected + audit trail
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_decision_task_invalid_answer_returns_422_and_appends_is_valid_false(
+    client, scaffold_cleanup
+) -> None:
+    """Decision task with options=['staging','prod']; PATCH new_answer='banana'
+    → 422 with detail starting 'invalid_answer:'; subsequent GET shows
+    answer_history grew with is_valid=False + invalidated_reason set; task
+    still BLOCKED (process_status unchanged at TODO=1)."""
+    pid = await _make_fresh_project(client, scaffold_cleanup, "k987-j")
+    tid = await _make_task(
+        client, pid, "k987-j decision",
+        interaction_kind="decision",
+        question_payload=_DECISION_PAYLOAD,
+    )
+
+    before = await _get_task(client, pid, tid)
+    ps_before = before["process_status"]
+
+    resp = await _patch_task(client, pid, tid, {"new_answer": "banana"})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"].startswith("invalid_answer:"), resp.text
+
+    # GET shows the invalid attempt was recorded
+    after = await _get_task(client, pid, tid)
+    history = after["question_payload"]["answer_history"]
+    assert len(history) == 1, history
+    assert history[0]["value"] == "banana"
+    assert history[0]["is_valid"] is False
+    assert history[0]["invalidated_reason"] is not None
+    assert "banana" in history[0]["invalidated_reason"]
+    # Task stays BLOCKED — process_status unchanged
+    assert after["process_status"] == ps_before, after
+
+
+# ---------------------------------------------------------------------------
+# (k) #987 POSITIVE: question task free-text accepted
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_question_task_free_text_accepted(client, scaffold_cleanup) -> None:
+    """Question task (options=None) accepts any non-empty string."""
+    pid = await _make_fresh_project(client, scaffold_cleanup, "k987-k")
+    tid = await _make_task(
+        client, pid, "k987-k free text",
+        interaction_kind="question",
+        question_payload=_FREETEXT_PAYLOAD,
+    )
+
+    resp = await _patch_task(
+        client, pid, tid, {"new_answer": "any string the user wants"}
+    )
+    assert resp.status_code == 200, resp.text
+    history = resp.json()["question_payload"]["answer_history"]
+    assert len(history) == 1
+    assert history[0]["value"] == "any string the user wants"
+    assert history[0]["is_valid"] is True
+
+
+# ---------------------------------------------------------------------------
+# (l) #987 NEGATIVE: whitespace-only answer rejected
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_empty_answer_returns_422(client, scaffold_cleanup) -> None:
+    """Whitespace-only new_answer → 422 detail starts 'invalid_answer:'."""
+    pid = await _make_fresh_project(client, scaffold_cleanup, "k987-l")
+    tid = await _make_task(
+        client, pid, "k987-l decision",
+        interaction_kind="decision",
+        question_payload=_DECISION_PAYLOAD,
+    )
+
+    resp = await _patch_task(client, pid, tid, {"new_answer": "   "})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"].startswith("invalid_answer:"), resp.text
