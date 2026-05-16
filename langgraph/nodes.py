@@ -657,6 +657,19 @@ def general_node(state: AgentState) -> dict:
     against the live stack. Marker-based opt-in so production no-role tasks
     keep falling through to the halt path below. Revert this branch or
     move it behind a feature flag once the operator-driven smoke completes.
+
+    AUDITOR retry demo branch (Kanban #1083, AC6) — tasks whose brief starts
+    with "AUDITOR retry demo —" simulate a recoverable transient error on
+    first pass (audit_retry_count=0 → halt_reason='transient_error',
+    final_result=''), then succeed on retry (audit_retry_count>=1 →
+    final_result='resolved on retry', halt_reason=None). The auditor's LLM
+    classifies the first run as AUTO_RESOLVE → supervisor loops; second run
+    triggers heuristic-bypass (final_result < 20 chars) → LLM classifies PASS.
+
+    AUDITOR escalate demo branch (Kanban #1083, AC7) — tasks whose brief
+    starts with "AUDITOR escalate demo —" emit halt_reason='ambiguous' so the
+    auditor's LLM classifies as ESCALATE → request_user_input fires → graph
+    pauses for operator decision.
     """
     brief = state.get("brief", "")
 
@@ -671,6 +684,40 @@ def general_node(state: AgentState) -> dict:
         return {
             "messages": [AIMessage(content=f"HITL demo answered: {answer}")],
             "final_result": f"User chose: {answer}",
+        }
+
+    if brief.startswith("AUDITOR retry demo —"):
+        # AC6 — recoverable retry demo. audit_retry_count is carried on state
+        # by the auditor's AUTO_RESOLVE loop (state.py declares the field).
+        retry_count = int(state.get("audit_retry_count") or 0)
+        if retry_count == 0:
+            return {
+                "messages": [
+                    AIMessage(content="AUDITOR retry demo: simulated transient error")
+                ],
+                "final_result": "",
+                "halt_reason": "transient_error",
+            }
+        return {
+            "messages": [
+                AIMessage(content="AUDITOR retry demo: resolved on retry")
+            ],
+            "final_result": "resolved on retry",
+            "halt_reason": None,
+        }
+
+    if brief.startswith("AUDITOR escalate demo —"):
+        # AC7 — escalate-to-HITL demo. halt_reason='ambiguous' forces the
+        # auditor onto the LLM path; the LLM verdict drives the ESCALATE
+        # → request_user_input flow with operator-decision options.
+        return {
+            "messages": [
+                AIMessage(
+                    content="AUDITOR escalate demo: cannot decide between A and B"
+                )
+            ],
+            "final_result": "cannot decide between options A and B",
+            "halt_reason": "ambiguous",
         }
 
     role = state.get("assigned_role")

@@ -1,8 +1,10 @@
 import Link from "next/link";
 
 import {
+  getAuditDailyRollup,
   getProjectsStats,
   listProjects,
+  type AuditDailyRollupEntry,
   type ProjectRead,
   type ProjectStatsEntry,
 } from "@/lib/api";
@@ -289,6 +291,147 @@ function CostSummary({ stats }: { stats: ProjectStatsEntry[] }) {
   );
 }
 
+// AuditorActivity — Kanban #1082. Cross-project auditor verdict rollup over a
+// trailing window (default 7 days; BE clamps + pre-sorts project_id ASC,
+// day DESC). Hidden entirely when the API returns [] — the auditor isn't
+// running against real data yet (#952), so the typical state today is empty.
+//
+// Each verdict has a semantic color matching the rest of the dashboard
+// vocabulary (pass=emerald like DONE, auto_resolved=blue, escalated=amber
+// like REVIEW, failed_giveup=red like BLOCKED, pending_escalation=violet
+// like waiting). Zero counts dim to text-zinc-400 — same dim-on-zero
+// pattern as laneColor() above.
+//
+// Layout: one tile per (project × day). Mobile = single-column wrap; sm = 2-up;
+// md = 3-up. Inside each tile the 5 verdict cells flex-wrap so a long day's
+// row never overflows the tile.
+const VERDICTS: Array<{
+  key: keyof AuditDailyRollupEntry["counts"];
+  label: string;
+}> = [
+  { key: "pass", label: "Pass" },
+  { key: "auto_resolved", label: "Auto" },
+  { key: "escalated", label: "Escalated" },
+  { key: "failed_giveup", label: "Failed" },
+  { key: "pending_escalation", label: "Pending" },
+];
+
+function verdictColor(
+  key: keyof AuditDailyRollupEntry["counts"],
+  count: number,
+): string {
+  if (count === 0) {
+    return "text-zinc-400 dark:text-zinc-600";
+  }
+  switch (key) {
+    case "pass":
+      return "text-emerald-700 dark:text-emerald-300";
+    case "auto_resolved":
+      return "text-blue-700 dark:text-blue-300";
+    case "escalated":
+      return "text-amber-700 dark:text-amber-300";
+    case "failed_giveup":
+      return "text-red-700 dark:text-red-300";
+    case "pending_escalation":
+      return "text-violet-700 dark:text-violet-300";
+  }
+}
+
+function AuditorActivity({ rollup }: { rollup: AuditDailyRollupEntry[] }) {
+  // Hide-when-empty per brief: no heading, no empty-state copy. Return null
+  // early so the section is invisible in the rendered HTML.
+  if (rollup.length === 0) return null;
+
+  // Group rows by project_id (BE already sorted; preserve order). Map keeps
+  // insertion order in JS, so iterating gives the same project_id ASC sequence.
+  const byProject = new Map<
+    number,
+    { name: string; rows: AuditDailyRollupEntry[] }
+  >();
+  for (const entry of rollup) {
+    const existing = byProject.get(entry.project_id);
+    if (existing) {
+      existing.rows.push(entry);
+    } else {
+      byProject.set(entry.project_id, {
+        name: entry.project_name,
+        rows: [entry],
+      });
+    }
+  }
+
+  return (
+    <section
+      data-auditor-activity
+      aria-label="Auditor verdict rollup across projects (last 7 days)"
+      className="mb-5 rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900"
+    >
+      <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+        Auditor activity
+      </h2>
+
+      <div className="flex flex-col gap-4">
+        {Array.from(byProject.entries()).map(([projectId, { name, rows }]) => (
+          <div
+            key={projectId}
+            data-auditor-project
+            data-project-name={name}
+            className="flex flex-col gap-2"
+          >
+            <Link
+              href={`/p/${name}`}
+              className="text-sm font-semibold text-zinc-900 hover:underline dark:text-zinc-100"
+            >
+              {name}
+            </Link>
+
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 md:grid-cols-3">
+              {rows.map((row) => (
+                <div
+                  key={`${projectId}-${row.day}`}
+                  data-auditor-day={row.day}
+                  className="flex flex-col gap-1.5 rounded-md border border-zinc-100 bg-zinc-50/60 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950/40"
+                  title={`${name} · ${row.day}`}
+                >
+                  <span className="text-[11px] font-medium tabular-nums uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                    {row.day}
+                  </span>
+                  <div
+                    className="flex flex-wrap items-baseline gap-x-3 gap-y-1"
+                    role="list"
+                    aria-label={`Verdict counts for ${name} on ${row.day}`}
+                  >
+                    {VERDICTS.map(({ key, label }) => {
+                      const count = row.counts[key];
+                      return (
+                        <span
+                          key={key}
+                          role="listitem"
+                          className="flex items-baseline gap-1"
+                          title={`${label}: ${count}`}
+                        >
+                          <span
+                            className={`text-sm font-semibold tabular-nums leading-none ${verdictColor(key, count)}`}
+                          >
+                            {count}
+                          </span>
+                          <span className="text-[10px] uppercase tracking-wide text-zinc-500 dark:text-zinc-500">
+                            {label}
+                          </span>
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 // CompactProjectCard — SECONDARY view. Same data as the old card but visually
 // subordinate: tighter padding, smaller fonts, denser grid (3-col at lg).
 // Run-mode chips intentionally dropped (every project is manual-only today;
@@ -449,9 +592,14 @@ export default async function DashboardPage() {
   // Promise.all keeps the request-time wall the same as the prior single-call
   // version (both calls hit the same FastAPI service over localhost; the LAN
   // round-trip dominates each).
-  const [stats, projects] = await Promise.all([
+  // #1082 — fetch the auditor daily rollup in parallel with the stats + projects
+  // calls. BE defaults the window to today-7..today inclusive (UTC); we omit
+  // the query params and let the server decide. Empty array is the typical
+  // state today; AuditorActivity hides the entire section when so.
+  const [stats, projects, auditRollup] = await Promise.all([
     getProjectsStats(),
     listProjects({ status: 1 }),
+    getAuditDailyRollup(),
   ]);
   const projectsById = new Map<number, ProjectRead>();
   for (const p of projects) projectsById.set(p.id, p);
@@ -489,6 +637,12 @@ export default async function DashboardPage() {
               (usage) from the lifecycle counts above and the navigation
               index below. */}
           <CostSummary stats={stats} />
+
+          {/* Auditor activity (Kanban #1082). Cross-project 7-day verdict
+              rollup; hidden entirely when the API returns []. Slots between
+              CostSummary and the per-project grid — separate concern (audit
+              outcomes) from cost (above) and per-project navigation (below). */}
+          <AuditorActivity rollup={auditRollup} />
 
           {/* Per-project compact grid (SECONDARY). The aggregate section above
               is the primary view; cards here are a navigation index into the

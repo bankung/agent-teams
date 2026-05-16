@@ -248,6 +248,38 @@ export async function getProjectsStats(): Promise<ProjectStatsEntry[]> {
   return jsonFetch<ProjectStatsEntry[]>(`/api/projects/stats`);
 }
 
+// #1082 — auditor cross-project daily rollup. BE pre-sorts (project_id ASC,
+// day DESC), zero-fills all 5 verdict keys, and filters out tasks with
+// audit_report=null + soft-deleted rows. Empty array is the typical state
+// today (#952 auditor not yet running against real data) — FE hides the
+// dashboard section entirely when the response is [].
+export type AuditDailyCounts = {
+  pass: number;
+  auto_resolved: number;
+  escalated: number;
+  failed_giveup: number;
+  pending_escalation: number;
+};
+
+export type AuditDailyRollupEntry = {
+  project_id: number;
+  project_name: string;
+  day: string; // ISO date "YYYY-MM-DD" (not a timestamp)
+  counts: AuditDailyCounts;
+};
+
+export async function getAuditDailyRollup(
+  opts: { from?: string; to?: string } = {},
+): Promise<AuditDailyRollupEntry[]> {
+  const qs = new URLSearchParams();
+  if (opts.from) qs.set("from", opts.from);
+  if (opts.to) qs.set("to", opts.to);
+  const path = qs.toString()
+    ? `/api/audit/daily-rollup?${qs}`
+    : `/api/audit/daily-rollup`;
+  return jsonFetch<AuditDailyRollupEntry[]>(path);
+}
+
 // createProject — POST /api/projects body (Kanban #843 FE).
 // Mirrors api/src/schemas/project.py:ProjectCreate. `paths` is required with
 // all 3 lane keys; the modal derives them from working_path (or name when

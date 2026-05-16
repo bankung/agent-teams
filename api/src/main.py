@@ -18,6 +18,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
+from src.routers import audit as audit_router
 from src.routers import events as events_router
 from src.routers import projects as projects_router
 from src.routers import scaffold as scaffold_router
@@ -148,6 +149,8 @@ def create_app() -> FastAPI:
     app.include_router(events_router.router, prefix="/api")  # Kanban #782 SSE
     # Kanban #980 — specialist-tool audit timeline (sub-resource of tasks).
     app.include_router(tool_calls_router.router, prefix="/api")
+    # Kanban #1082 — auditor cross-project daily-rollup aggregation.
+    app.include_router(audit_router.router, prefix="/api")
 
     return app
 
