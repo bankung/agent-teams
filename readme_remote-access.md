@@ -99,6 +99,8 @@ Browsers complain about mixed-content and some PWA / push features require HTTPS
 
 Enable HTTPS for the web port:
 
+> **Note:** Requires Tailscale client >= 1.54 (which added the `--bg` flag, 2024).
+
 ```bash
 # On the host running agent-teams. Reverse-proxies the local web port via HTTPS.
 sudo tailscale serve --bg --https=443 http://localhost:5431

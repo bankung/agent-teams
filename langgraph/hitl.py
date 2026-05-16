@@ -187,6 +187,11 @@ def validate_answer(
 
     Returns the normalised answer string (stripped of leading/trailing
     whitespace) — the value to pass into `Command(resume=...)`.
+
+    Options contract:
+        `options` MUST be `list[str]`. Non-string options will never match
+        because validate_answer coerces user-submitted answers to `str(answer)`
+        before comparison. Enforced by typing convention; not runtime-guarded.
     """
     if question_payload is None:
         raise MissingQuestionPayloadError(
@@ -260,5 +265,7 @@ async def resume_graph(
     config = resume_config(task_id)
     try:
         return await graph.ainvoke(Command(resume=answer), config=config)
+    # DELIBERATE: `except Exception` (not BaseException) lets asyncio.CancelledError
+    # pass through unchanged — required for graceful task cancellation in py3.11+.
     except Exception as exc:
         raise EngineCrashError(exc) from exc

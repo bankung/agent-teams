@@ -73,6 +73,27 @@ async def _purge_db_for_empty_smoke():
         # Trigger appends rows during the `tasks` delete — sweep after.
         await session.execute(delete(TaskHistory))
         await session.execute(delete(Project))
+        # Reset SERIAL sequences for every purged table — Kanban #1085.
+        # Without this, the teardown re-seed re-inserts `agent-teams` with
+        # `projects.id >= 2` (the sequence already advanced past 1 during the
+        # live-DB session before this test module ran). Sibling test modules
+        # then fail when they hardcode `id=1` for the seeded `agent-teams`
+        # project (5 failures: test_routes_smoke, test_run_mode_consent,
+        # test_task_kind_recurrence, test_task_type, test_tasks_scheduled_at).
+        # `tool_calls_id_seq` is included even though `tool_calls` rows aren't
+        # directly purged here — its rows FK-cascade-delete with `tasks`, so
+        # they're gone too. ALTER SEQUENCE RESTART is DDL (a sequence reset,
+        # not a row mutation) so it doesn't trigger the no-raw-DML constraint.
+        for seq in (
+            "projects_id_seq",
+            "tasks_id_seq",
+            "tasks_history_id_seq",
+            "sessions_id_seq",
+            "session_runs_id_seq",
+            "session_compacts_id_seq",
+            "tool_calls_id_seq",
+        ):
+            await session.execute(text(f"ALTER SEQUENCE {seq} RESTART WITH 1"))
         await session.commit()
 
     yield
@@ -223,6 +244,7 @@ async def test_list_tasks_returns_empty_array_for_unknown_project(client) -> Non
     assert body == []
 
 
+# (surface 5 absorbed into surface 4 — both cover GET /api/tasks behaviour)
 # ---- Surface 6: GET /api/tasks/next-autorun (X-Project-Id header) ----
 
 

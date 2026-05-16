@@ -46,7 +46,9 @@ elif command -v python3 >/dev/null 2>&1; then
 else
   # Grep fallback. `tailscale status --json` formats Self.DNSName as
   # `"DNSName": "<host>.<tailnet>.ts.net."` somewhere near the top of the doc.
-  host="$(printf '%s' "$status_json" | grep -o '"DNSName"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*"DNSName"[[:space:]]*:[[:space:]]*"([^"]*)"/\1/')"
+  # Narrow to ~20 lines after "Self" so Peer entries serialised before Self
+  # (rare but possible) don't hijack the first DNSName match.
+  host="$(printf '%s' "$status_json" | grep -A20 '"Self"' | grep -o '"DNSName"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*"DNSName"[[:space:]]*:[[:space:]]*"([^"]*)"/\1/')"
 fi
 
 # Strip trailing dot from the FQDN.

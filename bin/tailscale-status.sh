@@ -37,5 +37,3 @@ if ! tailscale status; then
   err "See readme_remote-access.md for the full setup."
   exit 2
 fi
-
-exit 0

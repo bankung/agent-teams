@@ -49,3 +49,17 @@ def _install_upstream_langgraph() -> None:
 
 
 _install_upstream_langgraph()
+
+# Post-install diagnostic — only fires if the shim above thought install
+# succeeded but `from langgraph.types import ...` would still fail. The most
+# likely cause is a venv layout mismatch: this conftest hardcodes the Unix
+# CPython layout (`lib/pythonX.Y/site-packages`), while Windows venvs use
+# `Lib/site-packages` (capital L, no python-version segment).
+import importlib.util  # noqa: E402
+
+if importlib.util.find_spec("langgraph.types") is None:
+    raise ImportError(
+        "langgraph upstream import failed after install — likely a venv-layout mismatch "
+        "(Windows uses Lib/site-packages, Unix uses lib/pythonX.Y/site-packages). "
+        "Inspect _install_upstream_langgraph() in this file."
+    )
