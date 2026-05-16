@@ -43,7 +43,7 @@ const HARD_FLUSH_MS = 250;
 
 // EventSource URL; mirrors browser split in api.ts but browser-only
 function apiBaseUrl(): string {
-  return process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8456";
+  return process.env.NEXT_PUBLIC_API_URL ?? "";
 }
 
 export function useRowChangedEvents(

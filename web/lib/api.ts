@@ -136,8 +136,7 @@ export class HttpError extends Error {
 }
 
 // INTERNAL_API_URL for SSR; NEXT_PUBLIC_API_URL for browser
-const BROWSER_API_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8456";
+const BROWSER_API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 const SERVER_API_URL = process.env.INTERNAL_API_URL ?? BROWSER_API_URL;
 
 function apiBaseUrl(): string {

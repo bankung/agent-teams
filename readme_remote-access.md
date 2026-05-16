@@ -4,6 +4,8 @@ How to reach a self-hosted agent-teams instance from outside the home network �
 
 The recommended path is **Tailscale**: a zero-config WireGuard mesh with a free tier that covers personal use. Alternatives are listed at the end for users who can't or don't want to use Tailscale.
 
+Cross-host access works out of the box — no env-var tweaks needed. The Next.js web service proxies `/api/*` and `/health` to the FastAPI container via same-origin rewrites, so browser fetches resolve relative to whatever hostname or IP you used to load the page (Tailscale MagicDNS name, LAN IP, localhost, all behave identically).
+
 ## Why VPN over port-forwarding
 
 The "simple" approach — DDNS + a forwarded port on the home router — exposes the agent-teams stack to the public internet. That means:
