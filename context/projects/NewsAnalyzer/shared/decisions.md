@@ -15,6 +15,75 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-16 — Phase 1 wave 1 closed — #1087 frontend UX, #1040 RAM right-sizing, #1092 NO-OP
+
+**Scope:** shared (frontend + devops; one karpathy lesson)
+**Proposed by:** lead (closing reports from dev-frontend / dev-devops × 2 / dev-backend specialists)
+**Status:** All three DONE 2026-05-16. Two real commits on NewsAnalyzer main; one NO-OP close. Two follow-ups filed (#1088 hygiene, #1092 itself was the closed follow-up of #1040).
+
+**What landed:**
+
+### #1087 — Phase 1 frontend UX overhaul (commit `2a892f5`)
+Apply ux-ui-pro-max methodology baseline to 9 NewsAnalyzer pages. Single commit, 11 files, +423 / -139. 10/10 ACs passed (AC9 passed-with-caveat — pre-existing scrape page type errors block `npm run build`, NOT introduced by this work).
+- New `components/NavBar.tsx` (155 LOC): mobile hamburger (< md) + horizontal links (≥ md), active-link highlight via `usePathname()`, `aria-current="page"`, Escape + backdrop close.
+- `globals.css`: global `*:focus-visible` ring, `.skip-link` utility, `prefers-reduced-motion` media query.
+- `min-h-11` (44px) touch targets across pagination, filters, tag chips, modal close, FetchButton, form inputs.
+- ARIA: `aria-label` on icon-only buttons, `role="status" aria-live="polite"` on loading spinners with sr-only text, sr-only labels on Articles filter selects.
+- Tables→cards: Articles dual-renders stacked cards (< md) + table (≥ md).
+- Modal: `ArticleModal` full-screen on < sm, max-w-2xl centered on ≥ sm.
+- Loading skeletons (5-row `animate-pulse`) replace plain "Loading…" on Dashboard + Articles.
+
+### #1040 — Phase 1 T16 RAM right-sizing (commit `4042ecc`)
+Two-spawn pattern: Phase 1 read-only investigation → Lead surfaces findings to user → Phase 2 apply + smoke. **Measured −1.34 GiB total** (4.45 GiB → 3.10 GiB), exceeds AC-6 ≥1 GiB target.
+
+Changes (2 files, +4 / -4):
+- `docker-compose.dev.yml:68` — append `--concurrency=4` to celery worker command. Was default 16 (host CPU count). **−1.42 GiB on worker-1 alone** — the dominant lever.
+- `docker-compose.yml:145` — `firecrawl-api` `NUM_WORKERS_PER_QUEUE=2→1`.
+- `docker-compose.yml:177` — `firecrawl-worker` `NUM_WORKERS_PER_QUEUE=2→1`.
+- `docker-compose.yml:201` — `firecrawl-puppeteer` `MAX_CONCURRENCY=10→2`.
+
+**KEY NEGATIVE FINDING (AC-3 falsified):** Original hypothesis was "disable unused firecrawl-api features via env vars" (`/v1/extract`, PDF parser, OpenAI SDK, `/v1/batch`). Phase 1 investigation verified against upstream `apps/api/src/routes/v1.ts` + `apps/api/package.json`: **firecrawl-simple v0.0.55 (the fork in use) already shipped without those features.** No env-var lever exists. The 922 MiB firecrawl-api baseline is the irreducible Node + bullmq + cheerio + puppeteer-client runtime — no fat to trim at the env-var layer. AC-3 marked `na`; compensating action was pool right-sizing (the 3 NUM_WORKERS / MAX_CONCURRENCY edits above).
+
+**Smoke results:**
+- #1 (run_full_fetch happy path, task `a28bb76b`): status=ok, 21 articles / 21 events / 11 sources. Duration **419s** — slower than spec ~90s estimate because ข่าวหุ้น scrape took 413s on its own (direct trade-off from puppeteer pool=2). Acceptable at twice-daily fetch cadence; revisit MAX_CONCURRENCY if cadence increases.
+- #2 (firecrawl-* stopped, resilience, task `dd48187f`): **7.14s** (< 30s target). 4 firecrawl sources status_id=4, 7 RSS continued. T12 layer intact.
+
+### #1092 — RSS scrape_logs sticky NO-OP (no commit)
+Filed by Lead as a low-pri bug from #1040 Phase 2 notes: "3 RSS rows stuck at status_id=1 (in_progress) after task completes." dev-backend spawn verified `ref_scrape_statuses` enum + halted: `1=success, 2=empty, 3=partial, 4=failed` — **all terminal; NO in_progress state exists in the enum.** Closed NO-OP. Memory entry filed (`project_newsanalyzer_enums.md`) so future sessions catch this immediately.
+
+**Karpathy Mode-B (trust-agent-without-re-run) strike #2:**
+- Strike #1 (earlier, agent-teams): trusted "36/36 HITL tests pass" without re-running.
+- Strike #2 (this session, NewsAnalyzer): dev-devops Phase-2 of #1040 annotated `status_id=1` as "(in_progress)" — a common cross-system workflow convention (Kanban tasks = `1=TODO`). Lead trusted the annotation and filed #1092 without verifying the actual enum. The verify command was a single Read on `orm.py:219` — 30 seconds away. Cost: one round-trip task cycle + a NO-OP close.
+- **Escalation:** Mode B has now recurred. Per `feedback_karpathy_lane.md`, a PostToolUse hook on Agent injecting "verify-before-PATCH" reminder is warranted. Filed as TODO for next agent-teams session (NewsAnalyzer session can't edit agent-teams hooks per `feedback_cross_project_platform_edits.md`).
+
+**Open follow-ups (FILED):**
+- **#1088** (TODO) — fix pre-existing scrape page TS type errors (`SourceState['status']` union missing `'paused'`, blocks `npm run build`) + initialize `next lint`. Pre-existed since commit `6be13bc6` (2026-03-17). Surfaced by #1087 AC9 verification.
+
+**Open follow-ups (NOT YET FILED — only if recurrence justifies):**
+- Beat scheduler fires missed cron immediately on worker `--force-recreate` startup → first `run_full_fetch` post-restart can transiently fail. Witnessed once during #1040 Phase 2 (task `c63ea4fd` status=error, 0 articles, 0.33s). My dispatched task 50s later succeeded. Watchlist; file only if recurs.
+- Apply same `--concurrency=4` to `docker-compose.prod.yml` if/when prod runs. Phase 1 deliberately scoped to dev only (Phase 1 dev-devops Phase-1 report flagged but didn't read prod compose).
+
+**Phase 2 candidates (UX, surfaced during #1087):**
+- Semantic color token refactor (Phase 1 deliberately stayed on raw Tailwind values).
+- `SentimentBadge` emoji → SVG icons (📈 📉 are screen-reader-unfriendly).
+- Articles `🔗` AI link indicator → SVG.
+- PriceChart accessibility (chart text labels + screen-reader summary).
+- Heading hierarchy audit across 9 pages.
+
+**Implications:**
+- **AC-3 of #1040 was unsatisfiable as written.** When firecrawl-related tasks reference "disable unused firecrawl features", reframe as "trim pool sizes" (NUM_WORKERS_PER_QUEUE, MAX_CONCURRENCY) — those are the actual levers on firecrawl-simple v0.0.55.
+- **`ref_scrape_statuses` enum convention is project-specific.** Memory `project_newsanalyzer_enums.md` exists now; future RSS / scrape_logs triage starts from that file, not from cross-project workflow assumptions.
+- **NewsAnalyzer stack is currently UP** (from #1040 Phase 2 apply); ready for the user's #1087 manual smoke at `http://localhost:7010`.
+
+**Cross-references:**
+- #1087 commit: `2a892f5` on NewsAnalyzer main.
+- #1040 commit: `4042ecc` on NewsAnalyzer main.
+- #1088 follow-up (TODO).
+- Karpathy memory update: `feedback_karpathy_lane.md` Mode B Strike #2.
+- Enum memory: `project_newsanalyzer_enums.md` (new).
+
+---
+
 ## 2026-05-16 — T15 #1039 closed — pre-T10 orphan articles re-deduped; **Phase 0 → Phase 1 cleanup wave COMPLETE**
 **Scope:** shared (backend pipeline + cleanup)
 **Proposed by:** lead (closing report from dev-backend specialist)
