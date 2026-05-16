@@ -335,11 +335,14 @@ async def test_poll_once_graph_raises_marks_blocked(
 # ---------------------------------------------------------------------------
 
 
-async def test_poll_once_halt_reason_marks_blocked_and_pending(
+async def test_poll_once_halt_reason_marks_blocked_without_is_pending(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """halt_reason set in final_state -> process_status=4, is_pending=true,
-    halt_reason carried through."""
+    """halt_reason set in final_state (without __interrupt__) -> process_status=4,
+    halt_reason carried through, is_pending OMITTED. Kanban #1096: the API
+    validator rejects is_pending=True on any process_status != IN_PROGRESS,
+    so the worker must not send the combo. The HITL-pause path (with
+    __interrupt__) is covered by its own test below."""
     cfg = _cfg(monkeypatch)
     log = _RequestLog()
 
@@ -369,7 +372,8 @@ async def test_poll_once_halt_reason_marks_blocked_and_pending(
     blocked = _body(log.requests[2])
     assert blocked["process_status"] == STATUS_BLOCKED
     assert blocked["halt_reason"] == "question"
-    assert blocked["is_pending"] is True
+    # Kanban #1096 contract: is_pending must NOT be True on a non-IN_PROGRESS PATCH.
+    assert blocked.get("is_pending", False) is not True
     assert blocked["status_change_reason"] == "need clarification on X"
 
 

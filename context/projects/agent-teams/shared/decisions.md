@@ -16,6 +16,32 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-17 — Auditor state-merge contract + worker finalize body shapes — Kanban #1096
+**Scope:** backend / langgraph / shared
+**Decision A:** The auditor node OWNS clearing `halt_reason` on every loop/accept return. `route_from_auditor` checks `state.get("halt_reason") is not None` and short-circuits to END; the merged state still carries the specialist's stale halt_reason unless the auditor explicitly emits `halt_reason: None` in the returned partial-state dict. Four sites enforce this:
+- `auditor_node` AUTO_RESOLVE under-cap branch.
+- `auditor_node` LLM-PASS branch (overrides specialist's halt when LLM judges output clean).
+- `_apply_escalation_resume('accept', ...)` — routes to END via PASS, not via halt-short-circuit.
+- `_apply_escalation_resume('retry_with_X', ...)` under-cap — supervisor-loop branch.
+
+Three sites INTENTIONALLY keep `halt_reason` set (stamping giveup / operator_rejected): AUTO_RESOLVE at cap, `_apply_escalation_resume('reject', ...)`, retry-with-X AT cap.
+
+**Decision B:** Worker finalize + resume PATCH bodies omit `is_pending` outside `process_status=2 (IN_PROGRESS)`. The API validator (`services/is_pending.py`) rejects `is_pending=True` paired with any other status. Body construction is a pure helper `_build_finalize_body(final_state, *, completed_at)` in `langgraph/worker.py`, unit-tested by `tests/test_worker_finalize_body.py`. Three categories:
+- DONE (`halt_reason=None`, no interrupt): `process_status=5 + completed_at`.
+- HITL pause (`__interrupt__` set): `process_status=4 + halt_reason in {question, decision} + interaction_kind + question_payload`.
+- Non-HITL halt (any other halt_reason — `transient_error`, `ambiguous`, `auditor_giveup`, `operator_rejected`, `error`, …): `process_status=4 + halt_reason + status_change_reason`.
+
+**Decision C:** Non-HITL halts settle BLOCKED (Model B), not IN_PROGRESS-with-cleared-halt (Model A). The task halts visibly on the Kanban board; a future operator (or auto-policy) can clear `halt_reason` via PATCH to re-queue. Model A would have hidden the halt from anyone scanning IN_PROGRESS and conflated "in-graph loop" with "stalled" — both bad for visibility. For in-graph AUTO_RESOLVE loops, the worker's finalize NEVER fires mid-loop: `route_from_auditor` returns "supervisor", LangGraph re-invokes the specialist; only AT-cap or PASS paths reach END and trigger finalize.
+
+**Reasoning:** Live smoke 2026-05-16 of Kanban #1083 ACs 6/7 caught two coupled bugs that stranded auto_resolve / escalate-resume tasks IN_PROGRESS until a human flipped run_mode=manual. The conditional-edge `route_from_auditor` reading `halt_reason` first (before `audit_verdict`) is a deliberate design — halt is the loud signal that something went wrong — so the auditor must own clearing it when it intends to continue or accept.
+
+**Implications:**
+- Any future node that drives `route_from_auditor` via the `audit_verdict` field must consider whether to also emit `halt_reason: None`. New auditor branches are unit-tested for the clearing contract (`test_auditor_demo_branches.py`).
+- Body-construction logic for the worker's PATCH is extractable as a pure helper any time inline construction would otherwise need full integration tests to validate — see "Extract pure helpers for test" addition for `standards/python/`.
+- Operator-driven retry (`retry_with_X`) and LLM-driven retry (`AUTO_RESOLVE`) share the same auditor → supervisor → specialist loop machinery; smoking one variant covers the other indirectly (verified live #1093 AUTO_RESOLVE retry + #1101 ESCALATE accept).
+
+---
+
 ## 2026-05-16 — Fresh-DB invariant + empty-state smoke gate — Kanban #994
 **Scope:** backend / qa
 **Decision:** Every API endpoint the Web shell hits during first page-load MUST handle an empty database gracefully — `[]` for list/stats, `404` for missing detail, zero-filled aggregates for counts. **No 500.** A fresh install (no seed run, zero rows in `projects` / `tasks` / `sessions` / `session_runs`) must render the dashboard, projects list, and `/p/<missing>` cleanly via the standard FE empty-state UX (the existing `stats.length === 0 → "No active projects"` branch + Next.js `notFound()` for missing project routes).

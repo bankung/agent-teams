@@ -306,20 +306,53 @@ async def _poll_once(
         return
 
     # 4) Finalize.
-    completed_at = _now_iso()
+    body = _build_finalize_body(final_state, completed_at=_now_iso())
+    if await _patch_task(client, cfg, headers, task_id, body) is None:
+        return
+    logger.info(
+        "task %d finalized: halt=%s ps=%s",
+        task_id,
+        final_state.get("halt_reason"),
+        body.get("process_status"),
+    )
 
-    # HITL interrupt emission path — LangGraph 1.2.0 `ainvoke` does NOT raise
-    # GraphInterrupt when a node calls `interrupt()`; it returns final_state
-    # with a `"__interrupt__"` key whose value is a list of
-    # `langgraph.types.Interrupt` objects. Detect this BEFORE the normal
-    # halt/done branches and PATCH the task to BLOCKED with the question
-    # payload so the operator can answer + the worker can resume on the next
-    # poll via `_resume_hitl_task`. Without this branch, every paused task
-    # would PATCH DONE with an empty final_result. Discovered live during
-    # Kanban #1073 operator smoke; fixes a gap in #986.
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_finalize_body(
+    final_state: dict[str, Any], *, completed_at: str
+) -> dict[str, Any]:
+    """Build the PATCH body for finalizing a graph invocation.
+
+    Three categories driven by `final_state.get("__interrupt__")` and
+    `final_state.get("halt_reason")`:
+
+      - **HITL pause** (`__interrupt__` set) → BLOCKED + `halt_reason` in
+        {question, decision} + `question_payload` populated. NO `is_pending`
+        key (API rule: `is_pending=True` requires `process_status=2`).
+      - **DONE** (halt_reason is None, no interrupt) → DONE + `completed_at`.
+      - **Non-HITL halt** (any other halt_reason — transient_error,
+        auditor_giveup, ambiguous, operator_rejected, error, …) → BLOCKED
+        + free-form halt_reason. NO `is_pending` key — the API validator
+        (services/is_pending.py) rejects `is_pending=True` paired with any
+        process_status other than IN_PROGRESS (2).
+
+    Audit fields (`audit_report`, `audit_retry_count`) are appended on any
+    branch when present in state — the worker is the sole writer of these
+    columns and they survive across DONE / halt categories alike.
+
+    Pure helper: no I/O, no client. Trivially unit-testable.
+    """
     interrupts = final_state.get("__interrupt__")
     if interrupts:
-        # Take the first active interrupt (only one supported per pause point).
+        # HITL pause path — LangGraph 1.2.0 `ainvoke` does NOT raise
+        # GraphInterrupt when a node calls `interrupt()`; it returns
+        # final_state with a `"__interrupt__"` key holding a list of
+        # `langgraph.types.Interrupt` objects. Take the first (only one
+        # supported per pause point).
         pause = interrupts[0]
         raw_payload = getattr(pause, "value", None) or {}
         if not isinstance(raw_payload, dict):
@@ -339,10 +372,7 @@ async def _poll_once(
             payload["answer_history"] = list(history)
         kind = "decision" if payload.get("options") else "question"
         prompt_text = payload["question"][:200]
-        # API rule: is_pending=true requires process_status=2; for a HITL
-        # pause we choose BLOCKED (4) + halt_reason in {question,decision} —
-        # that's the signal _needs_resume checks on the next poll.
-        body = {
+        body: dict[str, Any] = {
             "process_status": STATUS_BLOCKED,
             "halt_reason": kind,
             "interaction_kind": kind,
@@ -351,54 +381,43 @@ async def _poll_once(
                 :_REASON_MAX
             ],
         }
-        if await _patch_task(client, cfg, headers, task_id, body) is None:
-            return
-        logger.info("task %d paused for HITL: kind=%s", task_id, kind)
-        return
-
-    halt = final_state.get("halt_reason")
-    final_result = (final_state.get("final_result") or "").strip()
-
-    if halt is None:
-        body: dict[str, Any] = {
-            "process_status": STATUS_DONE,
-            "completed_at": completed_at,
-            "status_change_reason": (final_result or "(no final_result emitted)")[
-                :_REASON_MAX
-            ],
-        }
     else:
-        # Halt reasons in AgentState are constrained Literals ("question",
-        # "decision", "error") — but we coerce to str defensively so a future
-        # node returning a free-form string still gets PATCHed cleanly.
-        body = {
-            "process_status": STATUS_BLOCKED,
-            "halt_reason": str(halt)[:_HALT_REASON_MAX],
-            "is_pending": True,
-            "status_change_reason": (final_result or f"halted: {halt}")[:_REASON_MAX],
-        }
+        halt = final_state.get("halt_reason")
+        final_result = (final_state.get("final_result") or "").strip()
+        if halt is None:
+            body = {
+                "process_status": STATUS_DONE,
+                "completed_at": completed_at,
+                "status_change_reason": (
+                    final_result or "(no final_result emitted)"
+                )[:_REASON_MAX],
+            }
+        else:
+            # Non-HITL halts (auditor_giveup, operator_rejected, transient_error,
+            # ambiguous, error, etc.) land the task BLOCKED awaiting human
+            # attention. `is_pending` is omitted (defaults False) — the API
+            # validator (services/is_pending.py) rejects `is_pending=True`
+            # paired with any process_status other than IN_PROGRESS (2).
+            body = {
+                "process_status": STATUS_BLOCKED,
+                "halt_reason": str(halt)[:_HALT_REASON_MAX],
+                "status_change_reason": (final_result or f"halted: {halt}")[
+                    :_REASON_MAX
+                ],
+            }
 
-    # Kanban #952 — auditor outputs. The auditor node populates
-    # `audit_report` + `audit_retry_count` in state on every pass. Surface
-    # both on the finalize PATCH when present so tasks.audit_report carries
-    # the latest classification and tasks.audit_retry_count reflects the
-    # current loop count. Absent keys = the graph didn't reach the auditor
-    # (e.g., a specialist halted earlier); leave the DB column untouched.
+    # Kanban #952 — auditor outputs. Surface audit_report / audit_retry_count
+    # on the finalize PATCH when present so tasks.audit_report carries the
+    # latest classification and tasks.audit_retry_count reflects the current
+    # loop count. Absent keys = the graph didn't reach the auditor (e.g., a
+    # specialist halted earlier); leave the DB column untouched.
     audit_report = final_state.get("audit_report")
     if audit_report is not None:
         body["audit_report"] = audit_report
     audit_retry_count = final_state.get("audit_retry_count")
     if audit_retry_count is not None:
         body["audit_retry_count"] = int(audit_retry_count)
-
-    if await _patch_task(client, cfg, headers, task_id, body) is None:
-        return
-    logger.info("task %d completed: halt=%s", task_id, halt)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+    return body
 
 
 async def _patch_task(
@@ -642,7 +661,6 @@ async def _resume_hitl_task(
         body = {
             "process_status": STATUS_BLOCKED,
             "halt_reason": halt_value[:_HALT_REASON_MAX],
-            "is_pending": True,
             "status_change_reason": (final_result or f"halted: {halt_value}")[
                 :_REASON_MAX
             ],
@@ -666,17 +684,17 @@ def _build_resume_halt_body(
 ) -> dict[str, Any]:
     """PATCH body for a HITL failure (invalid answer / missing checkpoint / crash).
 
-    Always BLOCKED + is_pending=true + halt_reason from the exception's
-    halt_code. The cursor is stamped so a duplicate poll doesn't retry the
-    same broken answer endlessly (the user must invalidate + re-answer to
-    create a new cursor target). `existing` is the prior resume_context dict
-    (if any) — callers should pass `task.get("resume_context")` so free-form
-    keys stashed by upstream survive the failure PATCH (M1 fix, #986 review).
+    BLOCKED + halt_reason from the exception's halt_code. `is_pending` is
+    omitted (defaults False) — the API validator rejects `is_pending=True`
+    paired with any process_status other than IN_PROGRESS (2). The cursor is
+    stamped so a duplicate poll doesn't retry the same broken answer
+    endlessly. `existing` is the prior resume_context dict — callers should
+    pass `task.get("resume_context")` so free-form keys stashed by upstream
+    survive the failure PATCH.
     """
     return {
         "process_status": STATUS_BLOCKED,
         "halt_reason": exc.as_halt_reason()[:_HALT_REASON_MAX],
-        "is_pending": True,
         "status_change_reason": str(exc)[:_REASON_MAX],
         "resume_context": _stamped_resume_context(existing, answered_at),
     }

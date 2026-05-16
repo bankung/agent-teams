@@ -667,9 +667,11 @@ def general_node(state: AgentState) -> dict:
     triggers heuristic-bypass (final_result < 20 chars) → LLM classifies PASS.
 
     AUDITOR escalate demo branch (Kanban #1083, AC7) — tasks whose brief
-    starts with "AUDITOR escalate demo —" emit halt_reason='ambiguous' so the
-    auditor's LLM classifies as ESCALATE → request_user_input fires → graph
-    pauses for operator decision.
+    starts with "AUDITOR escalate demo —" emit halt_reason='ambiguous' on the
+    first pass; the auditor's LLM classifies as ESCALATE → request_user_input
+    fires → graph pauses for operator decision. On RESUME (audit_retry_count
+    >= 1 after the auditor's operator-driven retry_with_X branch incremented
+    it), the demo returns a clean final_result so the second pass auditor PASSes.
     """
     brief = state.get("brief", "")
 
@@ -707,17 +709,32 @@ def general_node(state: AgentState) -> dict:
         }
 
     if brief.startswith("AUDITOR escalate demo —"):
-        # AC7 — escalate-to-HITL demo. halt_reason='ambiguous' forces the
-        # auditor onto the LLM path; the LLM verdict drives the ESCALATE
-        # → request_user_input flow with operator-decision options.
+        # AC7 — escalate-to-HITL demo. On first pass (audit_retry_count=0)
+        # emit halt_reason='ambiguous' so the auditor LLM classifies as
+        # ESCALATE → request_user_input fires. On RESUME after the operator
+        # picks 'retry_with_X', the auditor increments audit_retry_count and
+        # clears halt_reason so the supervisor loops here with retry_count>=1;
+        # emit a clean final_result so the second-pass auditor PASSes and the
+        # task completes.
+        retry_count = int(state.get("audit_retry_count") or 0)
+        if retry_count == 0:
+            return {
+                "messages": [
+                    AIMessage(
+                        content="AUDITOR escalate demo: cannot decide between A and B"
+                    )
+                ],
+                "final_result": "cannot decide between options A and B",
+                "halt_reason": "ambiguous",
+            }
         return {
             "messages": [
                 AIMessage(
-                    content="AUDITOR escalate demo: cannot decide between A and B"
+                    content="AUDITOR escalate demo: resolved by operator pick"
                 )
             ],
-            "final_result": "cannot decide between options A and B",
-            "halt_reason": "ambiguous",
+            "final_result": "resolved by operator decision",
+            "halt_reason": None,
         }
 
     role = state.get("assigned_role")
@@ -1081,6 +1098,11 @@ async def auditor_node(state: AgentState) -> dict[str, Any]:
             "audit_report": report,
             "audit_retry_count": new_count,
             "brief": new_brief,
+            # Clear the specialist's halt_reason on loop so the supervisor
+            # re-entry sees a fresh state. route_from_auditor reads
+            # state.halt_reason to short-circuit to END; without this clear,
+            # the auditor's auto_resolve loop is dead-on-arrival.
+            "halt_reason": None,
             "messages": [
                 SystemMessage(
                     content=(
@@ -1115,6 +1137,12 @@ async def auditor_node(state: AgentState) -> dict[str, Any]:
     return {
         "audit_verdict": "pass",
         "audit_report": report,
+        # Clear specialist's stale halt_reason. LLM-PASS only fires when
+        # heuristic_clean returned False (halt_reason was set OR final_result
+        # was too short). The auditor's PASS verdict overrides specialist's
+        # halt — task is DONE clean. Without this, route_from_auditor sees
+        # state.halt_reason still set and routes to END with halt body shape.
+        "halt_reason": None,
         "messages": [
             SystemMessage(
                 content=f"auditor: verdict=pass (LLM-evaluated) task_id={task_id}"
@@ -1148,6 +1176,10 @@ def _apply_escalation_resume(
         return {
             "audit_verdict": "pass",  # routes to END
             "audit_report": report,
+            # Clear the specialist's halt_reason on PASS-equivalent accept so
+            # the worker's finalize body lands on the DONE path
+            # (halt_reason is None → process_status=5), not the BLOCKED branch.
+            "halt_reason": None,
             "messages": [
                 SystemMessage(content="auditor escalate resolved: accept → END")
             ],
@@ -1196,6 +1228,10 @@ def _apply_escalation_resume(
         "audit_report": report,
         "audit_retry_count": new_count,
         "brief": (state.get("brief") or "") + note,
+        # Clear the specialist's halt_reason on loop so the supervisor
+        # re-entry sees a fresh state. Mirrors the auto_resolve under-cap
+        # branch in auditor_node.
+        "halt_reason": None,
         "messages": [
             SystemMessage(
                 content=(

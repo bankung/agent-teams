@@ -654,7 +654,8 @@ async def test_resume_hitl_task_invalid_answer_patches_blocked() -> None:
     _, body = capture.calls[0]
     assert body["process_status"] == STATUS_BLOCKED
     assert body["halt_reason"].startswith("invalid_answer_not_in_options:")
-    assert body["is_pending"] is True
+    # Kanban #1096: is_pending must NOT be True on a non-IN_PROGRESS PATCH.
+    assert body.get("is_pending", False) is not True
     # Cursor stamped so the worker doesn't retry the same bad answer next tick.
     assert (
         body["resume_context"]["last_consumed_answered_at"]
@@ -703,7 +704,8 @@ async def test_resume_hitl_task_checkpoint_missing_patches_blocked() -> None:
     _, body = capture.calls[0]
     assert body["process_status"] == STATUS_BLOCKED
     assert body["halt_reason"].startswith("checkpoint_missing:")
-    assert body["is_pending"] is True
+    # Kanban #1096: is_pending must NOT be True on a non-IN_PROGRESS PATCH.
+    assert body.get("is_pending", False) is not True
 
 
 async def test_resume_hitl_task_engine_crash_patches_blocked() -> None:
@@ -799,7 +801,8 @@ async def test_resume_hitl_task_re_interrupt_keeps_blocked() -> None:
     _, body = capture.calls[0]
     assert body["process_status"] == STATUS_BLOCKED
     assert body["halt_reason"] == "question"
-    assert body["is_pending"] is True
+    # Kanban #1096: is_pending must NOT be True on a non-IN_PROGRESS PATCH.
+    assert body.get("is_pending", False) is not True
 
 
 # ---------------------------------------------------------------------------
