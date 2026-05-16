@@ -55,6 +55,8 @@ def test_scaffold_fresh_target_copies_all_files() -> None:
         # Dev-only — agents + team playbook
         assert _has_file(target, ".claude/agents/dev-backend.md")
         assert _has_file(target, ".claude/teams/dev.md")
+        # Kanban #7 Section B (2026-05-16): security reviewer agent
+        assert _has_file(target, ".claude/agents/dev-security-reviewer.md")
 
         # Glob expansion — pick a known file from each glob
         assert _has_file(target, "context/standards/general.md")
@@ -119,6 +121,7 @@ def test_scaffold_novel_team_skips_dev_agents() -> None:
         assert not _has_file(target, ".claude/agents/dev-devops.md")
         assert not _has_file(target, ".claude/agents/dev-reviewer.md")
         assert not _has_file(target, ".claude/agents/dev-tester.md")
+        assert not _has_file(target, ".claude/agents/dev-security-reviewer.md")
         assert not _has_file(target, ".claude/teams/dev.md")
 
         # Novel agents + team playbook DO land (source files exist in agent-teams).

@@ -89,6 +89,24 @@ def test_task_create_role_accepts_novel_codes() -> None:
         assert task.assigned_role == code
 
 
+def test_task_role_security_reviewer_code_is_six() -> None:
+    """Kanban #7 Section B (2026-05-16): SECURITY_REVIEWER pins to integer
+    code 6 in the dev range (1..10). Numbers are stable forever; this test
+    is the cross-stack tripwire if anyone renumbers.
+    """
+    assert TaskRole.SECURITY_REVIEWER == 6
+
+
+def test_task_create_accepts_security_reviewer_role() -> None:
+    """Kanban #7 Section B: the wire-layer accepts assigned_role=6 for a
+    dev-team task. Mirrors the per-role accept tests for FRONTEND..REVIEWER.
+    """
+    task = TaskCreate(
+        project_id=1, title="x", assigned_role=TaskRole.SECURITY_REVIEWER
+    )
+    assert task.assigned_role == 6
+
+
 def test_task_create_role_accepts_unnamed_reserved_codes() -> None:
     """Kanban #926: range gate admits unnamed codes inside the partition
     (6..10 dev-reserved, 14..20 novel-reserved) so teams can claim new

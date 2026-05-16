@@ -139,6 +139,7 @@ _DEV_FILES: tuple[str, ...] = (
     ".claude/agents/dev-devops.md",
     ".claude/agents/dev-reviewer.md",
     ".claude/agents/dev-tester.md",
+    ".claude/agents/dev-security-reviewer.md",
     ".claude/teams/dev.md",
 )
 

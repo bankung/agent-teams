@@ -74,6 +74,7 @@ const ROLE_OPTIONS: RoleOption[] = [
   { value: TaskRole.DEVOPS, label: "DevOps" },
   { value: TaskRole.QA, label: "QA" },
   { value: TaskRole.REVIEWER, label: "Reviewer" },
+  { value: TaskRole.SECURITY_REVIEWER, label: "Security Reviewer" },
 ];
 
 type Props = {

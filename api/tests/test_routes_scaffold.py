@@ -45,6 +45,7 @@ async def test_scaffold_endpoint_dev_team_returns_dev_files(client) -> None:
     assert ".claude/agents/dev-analyst.md" in rels
     # Dev manifest
     assert ".claude/agents/dev-backend.md" in rels
+    assert ".claude/agents/dev-security-reviewer.md" in rels  # Kanban #7 Section B
     assert ".claude/teams/dev.md" in rels
     # Glob expansion landed
     assert any(r.startswith("context/standards/") for r in rels)
@@ -74,6 +75,7 @@ async def test_scaffold_endpoint_novel_team_returns_novel_files(client) -> None:
     # Dev-only must NOT appear
     assert ".claude/agents/dev-backend.md" not in rels
     assert ".claude/agents/dev-frontend.md" not in rels
+    assert ".claude/agents/dev-security-reviewer.md" not in rels
     assert ".claude/teams/dev.md" not in rels
     # Universal still present
     assert "CLAUDE.md" in rels

@@ -32,6 +32,7 @@ export const TaskRole = {
   DEVOPS: 3,
   QA: 4,
   REVIEWER: 5,
+  SECURITY_REVIEWER: 6, // Kanban #7 Section B (2026-05-16)
 } as const;
 export type TaskRoleValue = typeof TaskRole[keyof typeof TaskRole];
 

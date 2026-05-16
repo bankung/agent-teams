@@ -41,6 +41,7 @@ const ROLE_SHORT: Record<number, string> = {
   [TaskRole.DEVOPS]: "DevOps",
   [TaskRole.QA]: "QA",
   [TaskRole.REVIEWER]: "Reviewer",
+  [TaskRole.SECURITY_REVIEWER]: "Security",
 };
 
 type SortKey = "id" | "title" | "process_status" | "priority" | "task_kind" | "run_mode" | "assigned_role" | "updated_at";
@@ -98,6 +99,7 @@ const ROLE_OPTIONS = [
   { value: TaskRole.DEVOPS, label: "DevOps" },
   { value: TaskRole.QA, label: "QA" },
   { value: TaskRole.REVIEWER, label: "Reviewer" },
+  { value: TaskRole.SECURITY_REVIEWER, label: "Security" },
 ];
 
 function compareTasks(a: TaskRead, b: TaskRead, key: SortKey, dir: SortDir): number {

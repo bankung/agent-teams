@@ -38,7 +38,7 @@ def test_in_clause_role_canonical() -> None:
     # between app and migration" pattern (standards/general.md).
     assert (
         in_clause("assigned_role", TaskRole.ALL)
-        == "assigned_role IN (1, 2, 3, 4, 5, 11, 12, 13)"
+        == "assigned_role IN (1, 2, 3, 4, 5, 6, 11, 12, 13)"
     )
 
 

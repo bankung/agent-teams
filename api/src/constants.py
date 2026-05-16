@@ -101,6 +101,7 @@ class TaskRole:
     DEVOPS = 3
     QA = 4
     REVIEWER = 5
+    SECURITY_REVIEWER = 6  # Kanban #7 Section B (2026-05-16)
 
     # Novel range (11..20)
     NOVEL_WRITER = 11
@@ -120,6 +121,7 @@ class TaskRole:
         DEVOPS,
         QA,
         REVIEWER,
+        SECURITY_REVIEWER,
         NOVEL_WRITER,
         NOVEL_EDITOR,
         NOVEL_PROOFREADER,

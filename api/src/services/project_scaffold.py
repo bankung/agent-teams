@@ -42,6 +42,7 @@ TEAM_ROSTERS: dict[str, tuple[str, ...]] = {
         "dev-devops",
         "dev-tester",
         "dev-reviewer",
+        "dev-security-reviewer",
     ),
     ProjectTeam.NOVEL: (
         "novel-writer",

@@ -15,6 +15,7 @@ The universal Lead rules (no editing target-project artifacts, write only `share
 | **dev-devops** | Docker, CI/CD, env, deploy, apply migrations | `context/projects/<active>/dev-devops/` |
 | **dev-tester** | Vitest/Jest/Playwright, pytest, edge cases | `context/projects/<active>/dev-tester/` |
 | **dev-reviewer** | Read-only review (quality, security, performance) | `context/projects/<active>/dev-reviewer/` |
+| **dev-security-reviewer** | Deeper read-only security review on sensitive surfaces (auth, new endpoints, tool layer, deps, file/shell ops) — Sonnet, complements dev-reviewer's baseline | `context/projects/<active>/dev-security-reviewer/` |
 | **dev-documentor** | Navigational docs (architecture map, feature summary, README) — Haiku-class, read-heavy | `_scratch/doc-draft-*.md` (Lead promotes); README.md exception when explicitly briefed |
 | **dev-researcher** | External info gathering (web docs, library reference, comparison facts) — Haiku-class | `_scratch/research-*.md` (Lead reads, embeds into specialist brief or promotes) |
 
@@ -58,8 +59,22 @@ When spawning role X, resolve standards from `projects.config.standards`:
 | dev-devops | `web` + `api` + `db` | container/CI spans every lane |
 | dev-tester | `web` + `api` + `db` | tests span every lane |
 | dev-reviewer | `web` + `api` + `db` | review spans every lane |
+| dev-security-reviewer | `web` + `api` + `db` (+ `security` reserved for future) | security cuts every lane; `context/standards/security/` deferred per #7 design lock (insufficient codified patterns yet — agent's `.md` file IS the checklist for v1) |
 
 `context/standards/general.md` injects into every role regardless of lane. If a referenced framework folder is missing or empty, note "standards for X not yet written" in the spawn prompt and proceed.
+
+### When to spawn dev-security-reviewer (Kanban #7 Section B, 2026-05-17)
+
+Lead-driven (no auto-hook). Triggers:
+
+1. **Explicit operator request** — "security-review this PR / commit / branch".
+2. **New public HTTP endpoint** — any new `@router.<method>(...)` in `api/src/routers/`.
+3. **New shell / file / http tool usage path** — touches `langgraph/tools/` (file_edit, file_write, shell_run, http_get, http_post, git_commit).
+4. **Auth / session / middleware changes** — touches auth-relevant code in `api/src/`.
+5. **New external dependency** — added in `pyproject.toml` (api OR langgraph) OR `package.json` (web).
+6. **Sensitive migration** — alembic touches columns flagged in `shared/db-schema.md` (PII, secrets, tokens, audit-trigger gaps).
+
+Spawned IN ADDITION to dev-reviewer, not instead of. dev-reviewer keeps OWASP Top 10 as one of its four review dimensions (general baseline); dev-security-reviewer goes DEEPER on the sensitive surface (threat modeling, dependency audit via pip-audit/npm audit, SSRF / path-traversal / command-injection in the tool layer, audit-trigger bypass analysis).
 
 ## Kanban schema codes (`tasks.assigned_role`)
 
@@ -72,8 +87,9 @@ Within `team='dev'` projects, integer codes map to:
 | 3 | dev-devops |
 | 4 | dev-tester |
 | 5 | dev-reviewer |
+| 6 | dev-security-reviewer |
 
-These are dev-specific. Other teams define their own mapping in their own playbook. The DB-level CHECK constraint on `assigned_role` is dropped in the soft-delete migration (#8) — app-layer validation per active team replaces it.
+These are dev-specific. Other teams define their own mapping in their own playbook. The DB-level CHECK constraint on `assigned_role` is dropped in the soft-delete migration (#8) — app-layer validation per active team replaces it. Range partition still applies: 1..10 = dev, 11..20 = novel, 21+ = future teams (see `api/src/constants.py::TaskRole`).
 
 ## Lifecycle (per task)
 

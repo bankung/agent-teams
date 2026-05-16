@@ -84,7 +84,9 @@ def test_constants_align_with_general_md() -> None:
 
     assert TaskStatus.ALL == (1, 2, 3, 4, 5, 6)
     assert TaskPriority.ALL == (1, 2, 3, 4)
-    assert TaskRole.ALL == (1, 2, 3, 4, 5, 11, 12, 13)
+    # Kanban #7 Section B (2026-05-16): SECURITY_REVIEWER=6 claimed from
+    # the dev-reserved 6..10 partition.
+    assert TaskRole.ALL == (1, 2, 3, 4, 5, 6, 11, 12, 13)
     assert TaskRole.RANGE_MIN == 1
     assert TaskRole.RANGE_MAX == 20
 

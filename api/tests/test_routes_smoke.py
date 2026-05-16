@@ -690,6 +690,42 @@ async def test_post_project_with_novel_team_scaffolds_novel_roster(
     await client.delete(f"/api/projects/{project_id}")
 
 
+@pytest.mark.asyncio
+async def test_post_project_with_dev_team_scaffolds_security_reviewer_folder(
+    client, scaffold_cleanup
+) -> None:
+    """Kanban #7 Section B (2026-05-16): `team='dev'` creates a
+    `dev-security-reviewer/` role folder alongside the rest of the dev
+    roster. Pinned here so any future drop of the role from TEAM_ROSTERS
+    is caught at the HTTP-scaffold layer (not just the unit-level roster
+    constant).
+    """
+    from src.settings import get_settings
+
+    settings = get_settings()
+    repo_root = Path(settings.repo_root)
+
+    name = scaffold_cleanup(_unique_name("proj-secrev"))
+    resp = await client.post(
+        "/api/projects", json=_project_create_payload(name, team="dev")
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["team"] == "dev"
+    project_id = body["id"]
+
+    base = repo_root / "context" / "projects" / name
+    # The new role folder lands.
+    assert (base / "dev-security-reviewer").is_dir(), (
+        "dev-security-reviewer folder missing from dev-team scaffold"
+    )
+    # Existing dev roster still lands — regression guard.
+    assert (base / "dev-reviewer").is_dir(), "dev-reviewer folder missing"
+    assert (base / "dev-backend").is_dir(), "dev-backend folder missing"
+
+    await client.delete(f"/api/projects/{project_id}")
+
+
 # -----------------------------------------------------------------------------
 # M10 — PATCH cannot reactivate a soft-deleted project (contract locked here)
 # -----------------------------------------------------------------------------

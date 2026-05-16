@@ -38,6 +38,7 @@ const ROLE_LABEL: Record<number, string> = {
   [TaskRole.DEVOPS]: "devops",
   [TaskRole.QA]: "qa",
   [TaskRole.REVIEWER]: "reviewer",
+  [TaskRole.SECURITY_REVIEWER]: "security",
 };
 
 const ROLE_CLASS: Record<number, string> = {
@@ -46,6 +47,7 @@ const ROLE_CLASS: Record<number, string> = {
   [TaskRole.DEVOPS]: "text-indigo-700 bg-indigo-50 dark:text-indigo-300 dark:bg-indigo-900/30",
   [TaskRole.QA]: "text-indigo-700 bg-indigo-50 dark:text-indigo-300 dark:bg-indigo-900/30",
   [TaskRole.REVIEWER]: "text-indigo-700 bg-indigo-50 dark:text-indigo-300 dark:bg-indigo-900/30",
+  [TaskRole.SECURITY_REVIEWER]: "text-rose-700 bg-rose-50 dark:text-rose-300 dark:bg-rose-900/30",
 };
 
 export function TaskCard({ task, onOpenDetail }: Props) {
