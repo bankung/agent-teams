@@ -647,7 +647,29 @@ def reviewer_specialist_node(state: AgentState) -> dict:
 
 def general_node(state: AgentState) -> dict:
     """Fallback node for unknown / None roles. Sets halt_reason='error' so the
-    poll loop (#852) surfaces this to the user instead of silently looping."""
+    poll loop (#852) surfaces this to the user instead of silently looping.
+
+    HITL demo branch (Kanban #1073) — tasks whose brief starts with
+    "HITL demo —" exercise the engine's interrupt / Command(resume=) loop
+    against the live stack. Marker-based opt-in so production no-role tasks
+    keep falling through to the halt path below. Revert this branch or
+    move it behind a feature flag once the operator-driven smoke completes.
+    """
+    brief = state.get("brief", "")
+
+    if brief.startswith("HITL demo —"):
+        # Payload shape mirrors the Kanban QuestionPayload schema
+        # (api/src/schemas/...): `question` is the required prompt string,
+        # `options` is the list of valid answers (decision task).
+        answer = request_user_input({
+            "question": "Deploy to staging or prod?",
+            "options": ["staging", "prod"],
+        })
+        return {
+            "messages": [AIMessage(content=f"HITL demo answered: {answer}")],
+            "final_result": f"User chose: {answer}",
+        }
+
     role = state.get("assigned_role")
     msg = (
         f"general fallback: no specialist matched assigned_role={role!r}; "

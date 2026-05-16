@@ -307,6 +307,55 @@ async def _poll_once(
 
     # 4) Finalize.
     completed_at = _now_iso()
+
+    # HITL interrupt emission path — LangGraph 1.2.0 `ainvoke` does NOT raise
+    # GraphInterrupt when a node calls `interrupt()`; it returns final_state
+    # with a `"__interrupt__"` key whose value is a list of
+    # `langgraph.types.Interrupt` objects. Detect this BEFORE the normal
+    # halt/done branches and PATCH the task to BLOCKED with the question
+    # payload so the operator can answer + the worker can resume on the next
+    # poll via `_resume_hitl_task`. Without this branch, every paused task
+    # would PATCH DONE with an empty final_result. Discovered live during
+    # Kanban #1073 operator smoke; fixes a gap in #986.
+    interrupts = final_state.get("__interrupt__")
+    if interrupts:
+        # Take the first active interrupt (only one supported per pause point).
+        pause = interrupts[0]
+        raw_payload = getattr(pause, "value", None) or {}
+        if not isinstance(raw_payload, dict):
+            raw_payload = {"question": str(raw_payload)}
+        # Normalise to the API's QuestionPayload contract:
+        #   required: `question` (str, min_length=1)
+        #   optional: `options` (list[str] | None)
+        #   optional: `answer_history` (list[AnswerHistoryEntry])
+        # Engine-side helpers historically used `text` + `answers`; translate
+        # both keys so a specialist that emits either shape lands cleanly.
+        question = raw_payload.get("question") or raw_payload.get("text") or ""
+        payload: dict[str, Any] = {"question": str(question)}
+        if raw_payload.get("options"):
+            payload["options"] = list(raw_payload["options"])
+        history = raw_payload.get("answer_history") or raw_payload.get("answers")
+        if history:
+            payload["answer_history"] = list(history)
+        kind = "decision" if payload.get("options") else "question"
+        prompt_text = payload["question"][:200]
+        # API rule: is_pending=true requires process_status=2; for a HITL
+        # pause we choose BLOCKED (4) + halt_reason in {question,decision} —
+        # that's the signal _needs_resume checks on the next poll.
+        body = {
+            "process_status": STATUS_BLOCKED,
+            "halt_reason": kind,
+            "interaction_kind": kind,
+            "question_payload": payload,
+            "status_change_reason": f"awaiting user input ({kind}): {prompt_text}"[
+                :_REASON_MAX
+            ],
+        }
+        if await _patch_task(client, cfg, headers, task_id, body) is None:
+            return
+        logger.info("task %d paused for HITL: kind=%s", task_id, kind)
+        return
+
     halt = final_state.get("halt_reason")
     final_result = (final_state.get("final_result") or "").strip()
 
