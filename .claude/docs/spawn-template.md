@@ -103,3 +103,19 @@ Before returning:
 - If a file is large, paste only the relevant section and tell the subagent to read the full file at the path given.
 - Standards must include every framework in the lane — the subagent can't decide which framework applies; Lead has already decided.
 - Parallel spawns: only when independent. Same artifact with an unstable contract → sequential, with the producing role first (e.g., `dev-backend` before `dev-frontend`; `novel-writer` before `novel-editor`).
+
+## Cross-project task filing
+
+When Lead (or a subagent at Lead's direction) files a Kanban task on a DIFFERENT project than the one this session is bound to, the task title **MUST** begin with a `[<purpose>]` prefix indicating WHY it's filed from outside.
+
+Examples (good):
+- `[platform-rule] Cross-project tasks must use [purpose] prefix in title`
+- `[content-team] Rename dev-researcher → general-researcher`
+- `[methodology] Promote Thai translatese taxonomy`
+- `[novel-drift] Audit Chapter 12 voice drift`
+
+Examples (bad — missing prefix, blends with project-internal work):
+- `Rename dev-researcher to general-researcher`
+- `Audit Chapter 12 voice drift`
+
+Reasoning: the receiving project's future Lead needs instant context about WHY this task was filed from outside. Without the prefix, cross-project asks lose audit signal at batch-triage. Full rule + storage architecture rationale lives in root `CLAUDE.md` golden rules — "Cross-project edits to agent-teams platform files" bullet.

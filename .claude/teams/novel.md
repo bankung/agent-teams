@@ -54,7 +54,19 @@ Code range 11-20 reserved for novel domain (dev domain uses 1-10). Each team's p
 ## Lifecycle (skeleton)
 
 1. **Outline first.** A new chapter or scene begins as user-supplied outline + decisions in `shared/outline.md` (Lead-curated).
-2. **Research before writing.** If unfamiliar setting/facts, spawn a research-style agent (TBD) before drafting.
+2. **Research before writing — standing rule.** Every non-trivial chapter/scene begins with a research step. `novel-researcher` (TBD — defer until the first novel project demands it; until then use `general-researcher` Haiku-class, or skip if an escape valve applies). Cheap-tier survey upfront catches "unknown unknowns" before `novel-writer` (Opus) commits to a draft direction.
+
+   **Novel-specific "non-trivial" signals:**
+   - Unfamiliar period / setting / profession / locale (period-accurate slang, technical jargon, geography).
+   - Genre conventions you're not fluent in (cozy mystery beats, hard SF physics, romance arc structure).
+   - Voice / POV reference needs ("how does Brandon Sanderson handle close-third?").
+   - Continuity research across a long-running series (verify a character's prior stance before contradicting it).
+
+   **Escape valves (skip research):**
+   - Continuation of an already-researched chapter (prior research notes in `shared/research-*.md`).
+   - Sentence-level line edit or proofread (the prose already exists; no new facts).
+   - Trivial dialogue tweak or typo fix.
+
 3. **Draft.** Spawn novel-writer with outline + voice standards + continuity notes.
 4. **Edit pass.** After draft lands, spawn novel-editor for line edits + voice/structural consistency.
 5. **Continuity check.** Editor cross-references with `shared/continuity.md` (named characters, established facts).

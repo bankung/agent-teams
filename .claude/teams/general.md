@@ -81,6 +81,20 @@ The design: `assigned_role=NULL` signals that this task started with the `genera
 3. **Assess task scope — decide on role(s)**:
    - **If clearly domain-specific** (the task description / Kanban title names a specialist's domain): spawn that specialist directly. Lead's role: remove ambiguity by choosing the specialist before spawning.
    - **If ambiguous or cross-stack**: spawn `general`. The agent may escalate mid-task if they discover the work is squarely in a specialist's domain (e.g., "optimize this endpoint" → turns out to need schema redesign → escalates to dev-backend).
+3b. **Research-first discipline — standing rule.** Before spawning the chosen role(s), check whether the task crosses a "non-trivial" threshold. When yes → spawn `dev-researcher` (Haiku tier — cheap; the general team borrows it from the dev roster) FIRST or in the first parallel batch; its summary feeds the specialist brief. Cheap-tier survey upfront catches "unknown unknowns" before Opus-tier specialists (or `general` itself, which often runs Opus) commit to a direction.
+
+   **General-team "non-trivial" signals:**
+   - Cross-stack scope (one fix touches schema + API + FE + tests + standards).
+   - Unfamiliar libraries / APIs / external services in the task description.
+   - Methodology choice (architecture / design trade-off the operator hasn't pre-decided).
+   - Comparison / decision question ("which library", "which deploy target").
+   - Exploratory diagnosis ("why is the deploy slow") — research the symptoms before specialist commits.
+
+   **Escape valves (skip research):**
+   - Pure execution (typo, one-off script with crystal-clear scope, mechanical refactor with no judgment calls).
+   - Continuation of an already-researched task (prior `_scratch/research-*.md` referenced in parent task).
+   - Trivial single-edit follow-up to a still-open task.
+
 4. **Spawn via the Agent tool** — see [.claude/docs/spawn-template.md](.claude/docs/spawn-template.md). Include the escalation protocol in the brief: `general` should STOP and escalate if they discover domain boundaries.
 5. **Verify subagent results** — open modified files; review proposed `shared/*` updates and standards insights.
 6. **Smoke testing (if applicable)** — when the task touched API / schema / Docker / CI: spawn dev-tester to run scoped probes. Same methodology as dev team (Tier-1: per-task, Tier-2: full release). Refer to [`context/teams/dev/smoke-methodology.md`](../../context/teams/dev/smoke-methodology.md) and the project's `shared/smoke-matrix.md` (if a dev-team template was copied).

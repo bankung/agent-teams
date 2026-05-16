@@ -41,7 +41,27 @@ Lead uses the following defaults. **Override is always allowed** — this is a d
 2. **New-project bootstrap with `working_repo`** — first session on a project that has a non-null `working_repo`. Documentor produces `_scratch/doc-draft-architecture.md` for Lead to seed the project's shared/docs.
 3. **Explicit user request** — "documentor write the architecture / update the README / summarise feature X".
 
-### When to spawn dev-researcher
+### Research-first discipline (when to spawn dev-researcher)
+
+**Standing rule:** every non-trivial dev task starts with a research step. `dev-researcher` (Haiku tier — cheap) spawns FIRST or in the first parallel batch alongside other specialists. Cheap-tier survey upfront catches "unknown unknowns" before Opus-tier specialists (`dev-sr-*`) commit to a direction.
+
+**Dev-specific "non-trivial" signals:**
+
+- Unfamiliar library / framework / external API in the spec (names a dependency the codebase doesn't already use).
+- Framework upgrade research (Next.js / FastAPI / SQLAlchemy / Alembic major-version bump).
+- Methodology / architecture decision (auth flow, state management, migration strategy).
+- Comparison decision (Vitest vs Jest, Pydantic v1 vs v2 migration paths, etc.).
+- Cross-team or cross-stack scope (one fix touches schema + API + FE + tests + standards).
+- Spec ambiguity (the operator gave a one-line ask; specialist would otherwise guess).
+
+**Escape valves (skip research):**
+
+- Pure execution — typo fix, well-understood mechanical update (variable rename, dep version bump that's already in the lockfile).
+- Continuation of an already-researched task (the prior dev-researcher report is fresh in `_scratch/research-*.md` or referenced in the parent task description).
+- Trivial single-edit follow-up to a still-open task (the parent already did the research).
+- UI tweak on an existing surface using existing components and patterns.
+
+**When to spawn (canonical triggers):**
 
 1. **Unfamiliar library / API at feature kickoff** — user names a library (dnd-kit, croniter, etc.) or external API that the spec lacks reference for. Spawn Researcher BEFORE the specialist; specialist receives Researcher's summary in their spawn brief.
 2. **Framework upgrade research** — before a Next.js / FastAPI / SQLAlchemy major-version bump.
