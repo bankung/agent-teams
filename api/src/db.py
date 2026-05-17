@@ -7,11 +7,14 @@ select+execute+scalar_one_or_none+404 pattern into one line.
 
 from __future__ import annotations
 
+import sys
+import warnings
 from collections.abc import AsyncIterator
 from typing import Any, TypeVar
 
 from fastapi import HTTPException
 from sqlalchemy import select
+from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -26,8 +29,28 @@ ModelT = TypeVar("ModelT")
 
 def _build_engine() -> AsyncEngine:
     settings = get_settings()
+    url = settings.database_url
+
+    # L11 canary (Kanban #1118) — if pytest is running, the bound DB MUST be a
+    # _test database. A non-_test bind during pytest = test-isolation contract
+    # violated (the conftest DATABASE_URL rewrite ran AFTER src.db imported, or
+    # a plugin/pytest_plugins chain broke the ordering). Warn loudly so the
+    # next test session surfaces the binding instead of silently writing to
+    # the live DB. See 2026-05-17 dev-DB-wipe incident postmortem.
+    if "pytest" in sys.modules:
+        db_name = make_url(url).database or ""
+        if not db_name.endswith("_test"):
+            warnings.warn(
+                f"src.db._build_engine: pytest is running but engine is binding "
+                f"to {db_name!r} (expected a _test DB). The conftest "
+                "DATABASE_URL rewrite ran AFTER src.db import — check pytest "
+                "plugin ordering. See 2026-05-17 incident postmortem.",
+                UserWarning,
+                stacklevel=2,
+            )
+
     return create_async_engine(
-        settings.database_url,
+        url,
         echo=settings.app_debug and settings.app_env == "development",
         pool_pre_ping=True,
         future=True,
