@@ -529,10 +529,18 @@ def test_run_once_full_smoke_with_moto(tmp_path: Path) -> None:
     cfg = BackupConfig.from_env(_required_env(pub=pub, extras={"REPO_ROOT": str(repo)}))
     runner = BackupRunner(cfg)
 
-    # Mock pg_dump.
+    # Mock pg_dump. Padded above the L12 min-size threshold (#1120, 100KB
+    # default) with a long comment block so the run_once smoke exercises the
+    # full upload+prune path. The signal content the round-trip asserts on
+    # ("CREATE TABLE projects") stays at the top.
     def fake_run(cmd, **kwargs):  # noqa: ANN001
         out_path = Path(cmd[cmd.index("-f") + 1])
-        out_path.write_text("-- pg_dump fake content\nCREATE TABLE projects (id int);\n")
+        padding = "-- pad " + ("x" * 200 + "\n") * 600  # ~120KB of comments
+        out_path.write_text(
+            "-- pg_dump fake content\n"
+            "CREATE TABLE projects (id int);\n"
+            + padding
+        )
         return MagicMock(returncode=0, stdout="", stderr="")
 
     with mock_aws():

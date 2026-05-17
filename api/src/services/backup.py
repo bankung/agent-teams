@@ -193,6 +193,16 @@ class BackupRunner:
     failure logs + returns a failure result without crashing the scheduler.
     """
 
+    # Kanban #1120 (L12 prevention, 2026-05-17) — minimum dump size below which
+    # the run aborts before uploading. A populated agent_teams DB is multi-MB;
+    # a sub-100KB dump means we're either pointed at an empty DB or pg_dump
+    # silently failed to capture data. Uploading either would corrupt the
+    # backup history (retention eventually deletes the older good backups).
+    # Override via BACKUP_MIN_BYTES env var. See incident
+    # context/projects/agent-teams/shared/incidents/2026-05-17-dev-db-wipe.md
+    # (sibling L8 = lifespan DB allowlist; L12 = belt-and-suspenders here).
+    _DEFAULT_MIN_BYTES = 100 * 1024  # 100 KB
+
     def __init__(self, cfg: BackupConfig):
         self.cfg = cfg
 
@@ -228,7 +238,33 @@ class BackupRunner:
                 work_dir = Path(work_dir_s)
                 logger.info("backup.stage=dump start")
                 db_dump = self._dump_db_to_tarball(work_dir)
-                logger.info("backup.stage=dump done size=%d bytes", db_dump.stat().st_size)
+                dump_size = db_dump.stat().st_size
+                logger.info("backup.stage=dump done size=%d bytes", dump_size)
+
+                # Kanban #1120 (L12) — refuse to upload obviously-empty dumps.
+                # Check happens AFTER pg_dump completes, BEFORE archive/encrypt/
+                # upload so we never persist a corrupt snapshot. Also short-
+                # circuits the prune step (no _prune() call on this error path),
+                # so an empty-DB scenario can't cascade into deleting older
+                # good backups.
+                min_bytes = int(
+                    os.environ.get(
+                        "BACKUP_MIN_BYTES", str(self._DEFAULT_MIN_BYTES),
+                    )
+                )
+                if dump_size < min_bytes:
+                    err = (
+                        f"pg_dump output suspiciously small ({dump_size}B < "
+                        f"{min_bytes}B) — refusing to upload empty-DB backup "
+                        "(would silently corrupt the backup history). Check "
+                        "DATABASE_URL points at a populated DB. See 2026-05-17 "
+                        "incident."
+                    )
+                    logger.error("backup.run_once: %s", err)
+                    return BackupResult(
+                        ok=False, key=None, bytes_uploaded=0, pruned=0,
+                        error=err,
+                    )
 
                 logger.info("backup.stage=archive start")
                 tarball = self._archive_filesystem(work_dir, db_dump)
@@ -396,6 +432,19 @@ class BackupRunner:
                     # Unrecognized key shape — leave it alone.
                     continue
                 keys.append((k, dt))
+
+        # Kanban #1120 (L12) — defense against retention killing the only
+        # valid backup. If the prefix has < 2 backup-shaped objects we abort
+        # pruning. Covers the edge case where an L12 size-check failure leaves
+        # us with a single surviving good backup that a normal retention pass
+        # might still slate for deletion (e.g. if keep_daily=0 was mis-set).
+        if len(keys) < 2:
+            logger.warning(
+                "backup._prune: only %d backup(s) exist — refusing to prune. "
+                "Defense against retention killing the only valid backup.",
+                len(keys),
+            )
+            return 0
 
         keep = _compute_retention_set(
             keys, self.cfg.keep_daily, self.cfg.keep_monthly,
