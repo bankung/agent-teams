@@ -89,8 +89,6 @@
       "Bash(docker compose exec -T api alembic heads)",
       "Bash(docker compose exec -T api alembic check)",
       "Bash(docker compose exec -T api alembic history:*)",
-      "Bash(docker compose exec api pytest:*)",
-      "Bash(docker compose exec -T api pytest:*)",
       "Bash(docker compose exec -T api which:*)",
       "Bash(docker compose exec -T api pip-audit:*)",
       "Bash(docker compose exec db psql -U postgres -d agent_teams -c SELECT:*)",
