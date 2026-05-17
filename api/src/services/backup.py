@@ -95,8 +95,34 @@ class BackupConfig(BaseModel):
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "BackupConfig":
-        """Read all BACKUP_* vars + DATABASE_URL from the environment."""
+        """Read all BACKUP_* vars + DATABASE_URL from the environment.
+
+        Kanban #1113 (2026-05-17, L8 defense-in-depth) — when DATABASE_URL is
+        populated AND its db name is not in DB_NAME_ALLOWLIST, refuse to
+        construct the config. A backup of a rogue DB would corrupt the backup
+        history (encrypted snapshots of the wrong data overwriting the daily
+        retention slot). See incident
+        context/projects/agent-teams/shared/incidents/2026-05-17-dev-db-wipe.md.
+        """
         e = env if env is not None else os.environ
+        db_url = e.get("DATABASE_URL", "")
+        if db_url:
+            from sqlalchemy.engine.url import make_url
+            db_name = make_url(db_url).database or ""
+            raw_allow = e.get(
+                "DB_NAME_ALLOWLIST", "agent_teams,agent_teams_test",
+            )
+            allowed = {
+                part for part in raw_allow.replace(" ", "").split(",") if part
+            }
+            if db_name not in allowed:
+                raise RuntimeError(
+                    f"BackupRunner: DATABASE_URL db {db_name!r} not in allowlist "
+                    f"{sorted(allowed)}. Refusing to construct config — backup of "
+                    "a rogue DB would corrupt the backup history. To add a new "
+                    "allowed DB set DB_NAME_ALLOWLIST env (csv). See "
+                    "context/projects/agent-teams/shared/incidents/2026-05-17-dev-db-wipe.md."
+                )
         return cls(
             s3_bucket=e.get("BACKUP_S3_BUCKET", ""),
             s3_access_key_id=e.get("BACKUP_S3_ACCESS_KEY_ID", ""),
@@ -111,7 +137,7 @@ class BackupConfig(BaseModel):
             keep_monthly=int(e.get("BACKUP_KEEP_MONTHLY", "12")),
             dry_run=e.get("BACKUP_DRY_RUN", "false").lower() in ("1", "true", "yes"),
             repo_root=Path(e.get("REPO_ROOT", "/repo")),
-            database_url=e.get("DATABASE_URL", ""),
+            database_url=db_url,
         )
 
     @property

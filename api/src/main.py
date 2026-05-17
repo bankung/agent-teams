@@ -17,6 +17,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import FastAPI
+from sqlalchemy.engine.url import make_url
 from starlette.middleware.cors import CORSMiddleware
 
 from src.middleware.request_size import request_size_middleware
@@ -48,6 +49,50 @@ logger = logging.getLogger(__name__)
 _scheduler: AsyncIOScheduler | None = None
 
 
+# Kanban #1113 (2026-05-17, L8 prevention) — refuse-to-start gate for the api
+# container if DATABASE_URL points at a non-allowed DB. Companion to L6 (purge
+# fixture gate) and L7 (langgraph). The DOCKER_COMPOSE_YML is the sole source
+# of runtime DATABASE_URL — a typo / accidental commit / staging copy-paste in
+# that file would silently rebind every container on next `docker compose up`.
+# This gate refuses to construct a service that connects to a rogue DB at
+# lifespan-enter (BEFORE scheduler / SSE broker / backup runner). See
+# context/projects/agent-teams/shared/incidents/2026-05-17-dev-db-wipe.md.
+_DEFAULT_ALLOWED_DB_NAMES = "agent_teams,agent_teams_test"
+
+
+def _allowed_db_names(env: dict[str, str] | None = None) -> set[str]:
+    """Parse DB_NAME_ALLOWLIST env (csv) at CALL time so tests can monkeypatch.
+
+    Defaults to `{'agent_teams','agent_teams_test'}` (the live + test DBs the
+    dev workflow knows about). Spaces are stripped; empty entries dropped.
+    """
+    e = env if env is not None else os.environ
+    raw = e.get("DB_NAME_ALLOWLIST", _DEFAULT_ALLOWED_DB_NAMES)
+    return {part for part in raw.replace(" ", "").split(",") if part}
+
+
+def _validate_db_url(url: str, allowed: set[str] | None = None) -> None:
+    """Refuse to start if engine.url.database is not in the allowlist.
+
+    Raises RuntimeError naming the rejected db_name + the allowlist + how to
+    extend it (DB_NAME_ALLOWLIST env, csv). Called from lifespan BEFORE any
+    service starts, and from BackupRunner.from_env() for defense in depth.
+
+    `allowed` override is for testing — production path reads env via
+    `_allowed_db_names()`.
+    """
+    db_name = make_url(url).database or ""
+    allow_set = allowed if allowed is not None else _allowed_db_names()
+    if db_name not in allow_set:
+        raise RuntimeError(
+            f"REFUSE TO START: DATABASE_URL points at {db_name!r} which is NOT "
+            f"in the allowlist {sorted(allow_set)}. To add a new allowed DB, "
+            "set DB_NAME_ALLOWLIST env (csv, e.g. "
+            "'agent_teams,agent_teams_test,staging_db'). See incident "
+            "context/projects/agent-teams/shared/incidents/2026-05-17-dev-db-wipe.md."
+        )
+
+
 async def _recurrence_tick() -> None:
     """Wrapper called by APScheduler — opens its own session via SessionLocal.
 
@@ -74,6 +119,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     (used by tests + ad-hoc runs that don't want background ticks).
     """
     global _scheduler
+
+    # Kanban #1113 (2026-05-17, L8 prevention) — DB allowlist gate. FIRST thing
+    # in lifespan, BEFORE SSE broker / scheduler / backup runner. Refuses to
+    # construct services that would bind to a rogue DB. See _validate_db_url.
+    from src.db import engine
+    _validate_db_url(str(engine.url))
 
     # #782 — boot SSE broker before scheduler
     await start_listener()
