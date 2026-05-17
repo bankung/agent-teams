@@ -4,7 +4,7 @@ PreToolUse / PostToolUse hooks registered in `.claude/settings.json`. Both Lead'
 
 Hook input/output contract: stdin is JSON with `tool_input.command`; stdout is a JSON envelope with `hookSpecificOutput.permissionDecision` set to `"allow"` / `"deny"` / `"ask"`, plus `permissionDecisionReason`. Exit code 0 = no decision (transparent); exit code 2 = decision in stdout.
 
-## Active hooks (Bash matcher)
+## Active hooks (PreToolUse)
 
 | Hook | Purpose | Bypass valve |
 | --- | --- | --- |
@@ -12,6 +12,12 @@ Hook input/output contract: stdin is JSON with `tool_input.command`; stdout is a
 | `block-curl-delete.ps1` | DENY curl `-X DELETE` calls so subagents can't delete API resources outside the Lead-approved flow. | (see hook source) |
 | `block-bitdefender-triggers.ps1` | DENY command shapes Bitdefender heuristics treat as malware (false-positive triggers that nuke the executable). Also wired on the PowerShell matcher. | (see hook source) |
 | `block-pytest-on-live-db.ps1` | DENY `pytest` invocations when `DATABASE_URL` env points at the live `agent_teams` DB (anything not ending in `_test`). Unset `DATABASE_URL` is ALLOWED (conftest's in-process rewrite handles it). Codified after the 2026-05-17 dev DB wipe — see `context/projects/agent-teams/shared/incidents/2026-05-17-dev-db-wipe.md`. | Set `BYPASS_LIVE_DB_PYTEST_HOOK=1` in the SAME shell. The hook honours the bypass and writes a `[BYPASS] ...` marker to stderr for the audit trail. |
+
+## Active hooks (PostToolUse)
+
+| Hook | Event | Purpose | Bypass valve |
+| --- | --- | --- | --- |
+| `agent-verify-before-patch.ps1` | PostToolUse `Agent` | Injects a "[KARPATHY MODE B GUARD]" reminder into Lead's next conversation turn after every SUCCESSFUL specialist spawn. Forces an independent verify (Read file / narrow pytest / Glob / GET /api/...) before Lead can PATCH Kanban state based on a subagent "done" claim. Skips on Agent errors. Codified after strike #5 (2026-05-17 dev DB wipe of ~1100 audit rows) — soft layer (`feedback_karpathy_lane.md` + CLAUDE.md golden rule) proven insufficient at 5 recurrences. See `context/projects/agent-teams/shared/incidents/2026-05-17-dev-db-wipe.md` and CLAUDE.md golden-rule "Karpathy lane" bullet. Kanban #1110. | Remove the hook entry from `.claude/settings.json` `hooks.PostToolUse[]`. (No env-flag bypass — the reminder is informational, not blocking, so an in-band override is unnecessary.) |
 
 ## Per-agent permission hooks (loaded via subagent frontmatter, not settings.json)
 
