@@ -58,6 +58,28 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+      # Off-site encrypted backup (Kanban #959). Disabled-by-default — runner
+      # logs warning + skips scheduling when any of the 4 required keys
+      # (BUCKET / ACCESS_KEY / SECRET / AGE_PUBKEY) is empty. Operator's
+      # private age key MUST stay offline (USB / password manager); only the
+      # public key lands here.
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+      BACKUP_S3_ACCESS_KEY_ID: ${BACKUP_S3_ACCESS_KEY_ID:-}
+      BACKUP_S3_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET_ACCESS_KEY:-}
+      BACKUP_AGE_PUBKEY: ${BACKUP_AGE_PUBKEY:-}
+      BACKUP_S3_REGION: ${BACKUP_S3_REGION:-us-east-1}
+      BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-}
+      BACKUP_S3_PREFIX: ${BACKUP_S3_PREFIX:-agent-teams/}
+      BACKUP_CRON_RULE: ${BACKUP_CRON_RULE:-0 3 * * *}
+      BACKUP_TIMEZONE: ${BACKUP_TIMEZONE:-UTC}
+      BACKUP_KEEP_DAILY: ${BACKUP_KEEP_DAILY:-30}
+      BACKUP_KEEP_MONTHLY: ${BACKUP_KEEP_MONTHLY:-12}
+      BACKUP_DRY_RUN: ${BACKUP_DRY_RUN:-false}
+      # Health monitor (Kanban #960). Enabled-by-default; set
+      # HEALTH_MONITOR_DISABLED=1 to opt out.
+      HEALTH_MONITOR_DISABLED: ${HEALTH_MONITOR_DISABLED:-}
+      HEALTH_MONITOR_INTERVAL_MINUTES: ${HEALTH_MONITOR_INTERVAL_MINUTES:-15}
+      HEALTH_MONITOR_API_BASE: ${HEALTH_MONITOR_API_BASE:-http://localhost:8456}
     ports:
       - "${API_PORT:-8456}:8456"
     volumes:
