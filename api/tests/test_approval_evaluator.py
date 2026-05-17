@@ -452,3 +452,68 @@ def test_empty_match_dict_does_not_auto_match() -> None:
     ]}
     action, _, _ = evaluate_policy({"question": "anything"}, policies)
     assert action == "require_attention"
+
+
+# ---------------------------------------------------------------------------
+# Explicit-match require_attention rule (regression guard — 2026-05-17 bug:
+# action='require_attention' was excluded from _VALID_ACTIONS so matching rules
+# silently fell through to default; rule_name attribution was lost from audit).
+# ---------------------------------------------------------------------------
+
+
+def test_explicit_require_attention_rule_returns_rule_name() -> None:
+    """A rule with action='require_attention' MUST surface (action, None, rule_name)
+    on match — operator wants the audit trail to show WHICH rule matched, even
+    though the action is the same as default-no-match."""
+    policies = {"rules": [
+        {
+            "name": "require-attention on submit",
+            "match": {"text_contains_any": ["submit application"]},
+            "action": "require_attention",
+        }
+    ]}
+    qp = {"question": "Submit application to FakeCo?", "options": ["approve", "reject"]}
+    action, default_answer, rule_name = evaluate_policy(qp, policies)
+    assert action == "require_attention"
+    assert default_answer is None
+    assert rule_name == "require-attention on submit"
+
+
+def test_explicit_require_attention_rule_priority_over_later_auto_approve() -> None:
+    """First-match-wins applies to require_attention rules too. Rule order
+    matters; an earlier require_attention rule should pre-empt a later
+    auto_approve rule that would also match."""
+    policies = {"rules": [
+        {
+            "name": "always-pause-on-payment",
+            "match": {"text_contains_any": ["payment"]},
+            "action": "require_attention",
+        },
+        {
+            "name": "auto-approve-small-amounts",
+            "match": {"amount_usd_lt": 5.0},
+            "action": "auto_approve",
+        }
+    ]}
+    qp = {"question": "Confirm $2 payment to vendor?"}
+    action, _, rule_name = evaluate_policy(qp, policies)
+    assert action == "require_attention"
+    assert rule_name == "always-pause-on-payment"
+
+
+def test_no_match_still_returns_require_attention_with_none_rule_name() -> None:
+    """The default (no rule matches) path returns rule_name=None — distinct from
+    the explicit-rule-match-with-require_attention case above. Both have action
+    'require_attention' but only the latter has a rule_name."""
+    policies = {"rules": [
+        {
+            "name": "auto-approve-low-cost",
+            "match": {"text_contains": "spend less than 1 usd"},
+            "action": "auto_approve",
+        }
+    ]}
+    qp = {"question": "Some unrelated question"}
+    action, default_answer, rule_name = evaluate_policy(qp, policies)
+    assert action == "require_attention"
+    assert default_answer is None
+    assert rule_name is None  # distinct from explicit-match case

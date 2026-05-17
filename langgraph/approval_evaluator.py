@@ -22,7 +22,7 @@ from typing import Any
 
 logger = logging.getLogger("langgraph.approval_evaluator")
 
-_VALID_ACTIONS = ("auto_approve", "auto_deny")
+_VALID_ACTIONS = ("auto_approve", "auto_deny", "require_attention")
 
 _AMOUNT_RE = re.compile(
     r"""
@@ -170,6 +170,10 @@ def evaluate_policy(
         if action == "auto_approve":
             answer = _resolve_default_answer(rule, question_payload)
             return ("auto_approve", answer, rule_name)
+        if action == "require_attention":
+            # Explicit-match require_attention rule: same outcome as default
+            # (HITL pause) but preserves rule_name attribution.
+            return ("require_attention", None, rule_name)
         return ("auto_deny", None, rule_name)
 
     return default

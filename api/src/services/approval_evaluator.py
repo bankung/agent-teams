@@ -71,7 +71,7 @@ logger = logging.getLogger("src.services.approval_evaluator")
 
 # Valid action vocabulary — kept narrow on purpose. A future "deferred review"
 # action would land here.
-_VALID_ACTIONS = ("auto_approve", "auto_deny")
+_VALID_ACTIONS = ("auto_approve", "auto_deny", "require_attention")
 
 # Amount parser — handles `$5`, `$5.00`, `$5.50`, `5 USD`, `5.00 USD`.
 # Tolerates surrounding text + thousands separators are NOT supported in
@@ -262,6 +262,13 @@ def evaluate_policy(
         if action == "auto_approve":
             answer = _resolve_default_answer(rule, question_payload)
             return ("auto_approve", answer, rule_name)
+        if action == "require_attention":
+            # Explicit-match require_attention rule: same outcome as default
+            # (HITL pause) but preserves rule_name attribution in the audit
+            # trail. Operators use this for "match this pattern + STILL pause"
+            # (e.g., "any email mentioning my boss" — even though the default
+            # is already HITL, the matched-rule signal is useful audit info).
+            return ("require_attention", None, rule_name)
         # auto_deny — no resume needed
         return ("auto_deny", None, rule_name)
 
