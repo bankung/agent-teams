@@ -469,3 +469,59 @@ KEY RULE:            DO NOT restart langgraph until you've reviewed the preventi
 ```
 
 End of handoff. Take a break, come back, find the key, then Section B onwards.
+
+---
+
+## ADDENDUM 2026-05-17 (post-recovery wrap) — Security posture assessment
+
+Recovery flow executed end-to-end successfully (Sections A→D all DONE). Operator + Lead aligned on **honest security score** before closing session — captured here so next-session Lead doesn't re-litigate it.
+
+### Today's score: ~55/100
+
+Breakdown:
+
+| Dimension | Score | Why |
+|---|---|---|
+| Recovery | 85/100 | R2 backup proven via drill (1.8s restore, zero data loss); age key backed up to 2 locations |
+| Detection | 55/100 | tasks_history audit works; no anomaly alerts, no scheduled backup-verify |
+| **Prevention** | **35/100** | ⚠️ L4–L23 mostly **STAGED in Kanban**, not shipped |
+| Containment | 50/100 | block-raw-sql-dml hook catches shell path; pytest path still open until L6 ships |
+| LLM safety | 30/100 | Ollama proven default-obeys destructive prompts; no safety prelude in production yet |
+
+### Realistic ceiling: ~85/100 (NOT 100)
+
+Reason for the gap from 100: **structural factors we can't control without architecture change.**
+
+Uncontrollable ~15 pt loss:
+
+| Factor | Loss |
+|---|---|
+| Bus factor = 1 (single operator) | -4 |
+| Supply chain CVEs (pip / docker / postgres) | -3 |
+| Windows host attack surface | -2 |
+| R2 + age key single-vendor risk | -2 |
+| Context compaction knowledge rot | -2 |
+| Local LLMs lacking RLHF | -2 |
+
+### Path 55 → 85 (this is the realistic max-ROI sprint)
+
+| Phase | Score after | Effort | Tasks |
+|---|---|---|---|
+| **P1 sprint (~1 week)** | 70-72 | ~8h | #1109 #1110 #1111 #1112 #1113 #1114 #1115 #1116 + L1 hook |
+| **P2 batch (~1 month)** | 78-80 | ~12h | #1106 #1107 #1117–#1126 |
+| **Tier-2 structural (~3 months)** | 83-85 | ongoing | backup verify cron, standards promotion, Mode B-read hook ship, cloud-LLM-default |
+
+**Strategic note from operator (2026-05-17):**
+> 80 ที่ ship จริง + maintain ได้ ดีกว่า 90 บนกระดาษที่ rot ใน 6 เดือน
+> (Shipped-and-maintained 80 beats paper-90 that rots in 6 months.)
+
+Don't chase 85+. Diminishing returns are steep:
+- 85 → 88 costs as much as 55 → 80
+- 88 → 90 requires **architecture change** (multi-operator review, air-gapped backup tier 2, drop or sandbox Ollama)
+- Above 90 = not worth the cost-of-living tradeoff
+
+### Decision recorded
+
+Operator + Lead agreed: ship to ~80, hold the line, revisit after P1 + P2 land. No premature investment in Tier-3 / architecture-change items. This is **acceptance of measured residual risk**, not negligence — the residual is documented + sized so future Lead doesn't drift toward false confidence.
+
+If a NEW strike happens after P1+P2 ship, escalate to architecture review. Until then, stay on the 27-layer plan.
