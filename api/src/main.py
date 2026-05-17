@@ -19,6 +19,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
+from src.middleware.request_size import request_size_middleware
 from src.routers import audit as audit_router
 from src.routers import events as events_router
 from src.routers import pl as pl_router
@@ -192,6 +193,12 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Kanban #1115 (2026-05-17, L18 prevention) — payload-size cap. Belt-and-
+    # braces on top of Pydantic field constraints. Returns 413 when
+    # Content-Length exceeds REQUEST_MAX_BYTES (default 2 MB). See
+    # src/middleware/request_size.py for hammer-test FINDING #10 context.
+    app.middleware("http")(request_size_middleware)
 
     @app.get("/health", tags=["meta"])
     async def health() -> dict[str, str]:

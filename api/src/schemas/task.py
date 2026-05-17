@@ -154,7 +154,11 @@ class AcceptanceCriterion(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    text: str = Field(min_length=1)
+    # Kanban #1115 (2026-05-17, L18 prevention) — payload-size cap. Hammer-test
+    # FINDING #10 showed the API accepted a 10MB description + 10000 AC items
+    # with no size guard at any layer. 1000-char cap on text matches the
+    # narrative-fit ceiling and gives plenty of room for verification notes.
+    text: str = Field(min_length=1, max_length=1_000)
     status: Literal["pending", "passed", "failed", "na"] = "pending"
     verified_by: str | None = None
     verified_at: datetime | None = None
@@ -227,8 +231,12 @@ class TaskCreate(BaseModel):
     """Request body for POST /api/tasks."""
 
     project_id: int
-    title: str = Field(min_length=1)
-    description: str | None = None
+    # Kanban #1115 (2026-05-17, L18 prevention) — payload-size caps. See class
+    # AcceptanceCriterion comment for the hammer-test FINDING #10 context.
+    # Live-DB spot-check 2026-05-17 (288 rows): max title len = 121, max desc
+    # len = 9704 — both under the new caps, safe to apply retroactively.
+    title: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=20_000)
     process_status: ProcessStatusCode = TaskStatus.TODO
     priority: PriorityCode = TaskPriority.NORMAL
     assigned_role: RoleCode | None = None
@@ -288,26 +296,30 @@ class TaskCreate(BaseModel):
     # files a task that's pending external input). min_length=1 rejects "" at
     # 422; explicit null = unhalt (PATCH semantics, no _reject_explicit_null
     # validator). Parity with `description`, `working_path`, etc.
-    halt_reason: str | None = Field(default=None, min_length=1)
+    halt_reason: str | None = Field(default=None, min_length=1, max_length=2_000)
     # Kanban #854 (2026-05-13): free-form rationale captured on a
     # process_status flip — most commonly when the user cancels a task
     # (process_status -> 6). Independent of the value: any PATCH may set
     # it. None / absent on POST → NULL in DB. min_length=1 rejects ""
     # at 422 (parity with halt_reason / description). Audit-trigger
     # snapshot captures the field automatically — no separate plumbing.
-    status_change_reason: str | None = Field(default=None, min_length=1)
+    # Kanban #1115 (2026-05-17, L18) — max_length=2000 cap.
+    status_change_reason: str | None = Field(default=None, min_length=1, max_length=2_000)
     # Kanban #797 (2026-05-12): optional structured exit-criteria array. Each
     # element validated by AcceptanceCriterion (text required, status Literal,
     # etc.). PATCH semantics for the field on TaskUpdate mirror description /
     # halt_reason: key-absent = unchanged, explicit null = clear, array =
     # replace whole array. On POST: None / absent = NULL in DB; [] = empty
     # array (legal but unusual); [...] = stored as-is.
-    acceptance_criteria: list[AcceptanceCriterion] | None = None
+    # Kanban #1115 (2026-05-17, L18) — max 50 AC items per task.
+    acceptance_criteria: list[AcceptanceCriterion] | None = Field(default=None, max_length=50)
     # Kanban #887 (2026-05-13): append-only subagent spawn log. NOT NULL DEFAULT
     # '[]' at the DB layer — POST default matches: empty list. Each element
     # validated by SubagentModelEntry (agent required, model Literal, at datetime).
     # Full-replace PATCH semantics (Lead accumulates, then sends the whole list).
-    subagent_models: list[SubagentModelEntry] = Field(default_factory=list)
+    # Kanban #1115 (2026-05-17, L18) — max 200 spawn entries per task; covers
+    # heavy multi-day auto-pickup tasks while still bounding agent runaway.
+    subagent_models: list[SubagentModelEntry] = Field(default_factory=list, max_length=200)
     # Kanban #830 (2026-05-12): interaction_kind discriminates agent-executed work
     # from user-interaction gate tasks created by the auto-run loop when ambiguity
     # is detected mid-task. 'work' is the default; 'question'/'decision' require
@@ -398,8 +410,10 @@ class TaskUpdate(BaseModel):
     # can't flip it. `status` and any other unknown key drop on the floor.
     model_config = ConfigDict(extra="ignore")
 
-    title: str | None = Field(default=None, min_length=1)
-    description: str | None = None
+    # Kanban #1115 (2026-05-17, L18 prevention) — payload-size caps. Parity
+    # with TaskCreate. See AcceptanceCriterion comment for hammer-test #10 context.
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=20_000)
     process_status: int | None = None
     priority: int | None = None
     assigned_role: int | None = None
@@ -474,7 +488,8 @@ class TaskUpdate(BaseModel):
     #   - non-empty       → set halt reason
     # No _reject_explicit_null validator — parity with `description`,
     # `working_path`, etc.
-    halt_reason: str | None = Field(default=None, min_length=1)
+    # Kanban #1115 (2026-05-17, L18) — max_length=2000 cap.
+    halt_reason: str | None = Field(default=None, min_length=1, max_length=2_000)
     # Kanban #854 (2026-05-13): PATCH-able. Semantics:
     #   - key absent      → leave unchanged (exclude_unset=True in router)
     #   - explicit null   → clear the reason (null IS meaningful)
@@ -482,7 +497,8 @@ class TaskUpdate(BaseModel):
     #   - non-empty       → set / overwrite the reason
     # No _reject_explicit_null validator — parity with halt_reason / description.
     # Most common use: paired with `{"process_status": 6}` on a cancel PATCH.
-    status_change_reason: str | None = Field(default=None, min_length=1)
+    # Kanban #1115 (2026-05-17, L18) — max_length=2000 cap.
+    status_change_reason: str | None = Field(default=None, min_length=1, max_length=2_000)
     # Kanban #797 (2026-05-12): PATCH-able. Semantics:
     #   - key absent      → leave unchanged (exclude_unset=True in router)
     #   - explicit null   → clear the array (null IS meaningful — column is
@@ -494,7 +510,8 @@ class TaskUpdate(BaseModel):
     # Each element validated by AcceptanceCriterion (text required, status
     # Literal). No _reject_explicit_null validator — parity with description
     # and halt_reason.
-    acceptance_criteria: list[AcceptanceCriterion] | None = None
+    # Kanban #1115 (2026-05-17, L18) — max 50 AC items per task (parity with TaskCreate).
+    acceptance_criteria: list[AcceptanceCriterion] | None = Field(default=None, max_length=50)
     # Kanban #887 (2026-05-13): PATCH-able. Semantics:
     #   - key absent      → leave unchanged (exclude_unset=True in router)
     #   - explicit list   → REPLACE the whole array (full-replace; Lead
@@ -503,7 +520,8 @@ class TaskUpdate(BaseModel):
     # PATCH is NOT meaningful (cannot clear to NULL — the column has no null
     # state). Omit the key to leave unchanged. Each element validated by
     # SubagentModelEntry (agent required, model Literal, at datetime).
-    subagent_models: list[SubagentModelEntry] | None = None
+    # Kanban #1115 (2026-05-17, L18) — max 200 spawn entries per task (parity with TaskCreate).
+    subagent_models: list[SubagentModelEntry] | None = Field(default=None, max_length=200)
     interaction_kind: InteractionKindLiteral | None = None
     question_payload: QuestionPayload | None = None
     resume_context: dict[str, Any] | None = None
