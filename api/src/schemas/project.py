@@ -329,6 +329,30 @@ class ProjectUpdate(BaseModel):
     # merges with defaults.
     health_thresholds: dict[str, Any] | None = Field(default=None)
 
+    # Kanban #953 (2026-05-17): per-project financial-separation columns.
+    # All four PATCH-able. Semantics mirror description / halt_reason:
+    # key-absent → leave unchanged; explicit null → CLEAR to NULL (legacy
+    # / unset); explicit value → write. `fiscal_year_start` validated 1..12
+    # at the boundary (DB CHECK is defense-in-depth); `currency_default` is
+    # 3-letter ISO 4217 (uppercased server-side).
+    tax_jurisdiction: str | None = Field(default=None, min_length=1, max_length=64)
+    legal_entity: str | None = Field(default=None, min_length=1, max_length=200)
+    fiscal_year_start: int | None = Field(default=None, ge=1, le=12)
+    currency_default: str | None = Field(default=None, min_length=3, max_length=3)
+
+    @field_validator("currency_default")
+    @classmethod
+    def _normalize_currency_default(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        import re as _re
+        s = v.strip().upper()
+        if not _re.fullmatch(r"^[A-Z]{3}$", s):
+            raise ValueError(
+                f"currency_default must be a 3-letter ISO 4217 code (got {v!r})"
+            )
+        return s
+
     @field_validator("agent_overrides")
     @classmethod
     def _validate_agent_override_keys(cls, v):
@@ -420,6 +444,15 @@ class ProjectRead(BaseModel):
     # env defaults. `enabled=false` short-circuits the sweep for this project.
     # Value-tolerant on read (dict[str, Any]) for legacy / hand-edited resilience.
     health_thresholds: dict[str, Any] | None = None
+
+    # Kanban #953 (2026-05-17): per-project financial-separation columns.
+    # All four NULLABLE on the wire — legacy rows pre-migration carry NULL;
+    # new INSERTs land DB DEFAULT for fiscal_year_start (1) + currency_default
+    # ('USD'). Free-form for tax_jurisdiction + legal_entity (operator-facing).
+    tax_jurisdiction: str | None = None
+    legal_entity: str | None = None
+    fiscal_year_start: int | None = None
+    currency_default: str | None = None
 
     @field_validator("sources", mode="before")
     @classmethod

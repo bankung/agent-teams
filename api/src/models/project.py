@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
+    CHAR,
     BigInteger,
     Boolean,
     CheckConstraint,
@@ -27,6 +28,7 @@ from src.models.base import Base
 
 if TYPE_CHECKING:
     from src.models.task import Task
+    from src.models.transaction import Transaction
 
 
 class Project(Base):
@@ -198,8 +200,41 @@ class Project(Base):
         nullable=True,
     )
 
+    # Kanban #953 (2026-05-17): per-project financial-separation columns.
+    # Each project becomes an isolated accounting unit. All four NULLABLE for
+    # legacy-row resilience; fiscal_year_start + currency_default carry
+    # server-side defaults so new INSERTs land non-null.
+    # - tax_jurisdiction : free-form region code (e.g. 'TH', 'US-CA').
+    # - legal_entity     : owning entity for accountant hand-off.
+    # - fiscal_year_start: month-of-year 1..12 (DB CHECK + Pydantic ge=1,le=12).
+    # - currency_default : ISO 4217 alpha-3 (e.g. 'USD', 'THB', 'JPY').
+    tax_jurisdiction: Mapped[str | None] = mapped_column(Text, nullable=True)
+    legal_entity: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fiscal_year_start: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        server_default="1",
+    )
+    currency_default: Mapped[str | None] = mapped_column(
+        CHAR(3),
+        nullable=True,
+        server_default=text("'USD'"),
+    )
+
     tasks: Mapped[list["Task"]] = relationship(
         "Task",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    # Kanban #953 — per-project ledger entries. cascade=delete-orphan +
+    # passive_deletes mirror the `tasks` relationship; the DB-side ON DELETE
+    # CASCADE on transactions.project_id is the load-bearing invariant
+    # (passive_deletes=True tells SQLAlchemy not to try to load + delete
+    # rows itself before issuing the parent DELETE).
+    transactions: Mapped[list["Transaction"]] = relationship(
+        "Transaction",
         back_populates="project",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -243,6 +278,13 @@ class Project(Base):
         CheckConstraint(
             "hitl_timeout_hours IS NULL OR hitl_timeout_hours >= 1",
             name="ck_projects_hitl_timeout_positive",
+        ),
+        # Kanban #953 — fiscal_year_start must be a month 1..12 when set.
+        # NULL allowed for legacy resilience; new INSERTs land DEFAULT 1.
+        # Mirror of migration 0032's named CHECK.
+        CheckConstraint(
+            "fiscal_year_start IS NULL OR (fiscal_year_start >= 1 AND fiscal_year_start <= 12)",
+            name="ck_projects_fiscal_year_start_valid",
         ),
     )
 

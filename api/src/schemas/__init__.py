@@ -1,6 +1,7 @@
 """Pydantic v2 schemas for request validation and response serialization."""
 
 from src.schemas.ai_task import ParseRequest, ParseResponse, ProposedTask
+from src.schemas.pl import PLBucket, PLSummary
 from src.schemas.project import (
     ProjectCreate,
     ProjectRead,
@@ -11,10 +12,17 @@ from src.schemas.task import (
     TaskRead,
     TaskUpdate,
 )
+from src.schemas.transaction import (
+    TransactionCreate,
+    TransactionRead,
+    TransactionUpdate,
+)
 
 __all__ = [
     "ParseRequest",
     "ParseResponse",
+    "PLBucket",
+    "PLSummary",
     "ProjectCreate",
     "ProjectRead",
     "ProjectUpdate",
@@ -22,4 +30,7 @@ __all__ = [
     "TaskCreate",
     "TaskRead",
     "TaskUpdate",
+    "TransactionCreate",
+    "TransactionRead",
+    "TransactionUpdate",
 ]

@@ -27,6 +27,7 @@ from src.db import get_or_404, get_session
 from src.models.project import Project
 from src.models.session import SessionRun
 from src.models.task import Task
+from src.models.transaction import Transaction
 from src.schemas.ai_task import ParseRequest, ParseResponse
 from src.schemas.task import NextAutorunResponse, TaskCreate, TaskRead, TaskReorder, TaskUpdate
 from src.services.ai_task_parser import (
@@ -40,7 +41,7 @@ from src.services.is_pending import assert_is_pending_with_process_status
 from src.services.recurrence import fire_template, next_cron_fire
 from src.services.budget_enforcer import check_budget
 from src.services.run_mode import assert_consent_for_run_mode
-from src.services.task_cost_estimator import estimate_task_cost
+from src.services.task_cost_estimator import estimate_task_cost, resolve_provider_model
 from src.services.task_interaction import (
     _validate_answer,
     append_answer,
@@ -1230,6 +1231,39 @@ async def update_task(
             updates.setdefault("estimated_input_tokens", est["tokens_in"])
             updates.setdefault("estimated_output_tokens", est["tokens_out"])
             updates.setdefault("estimated_cost_usd", est["cost_usd"])
+
+            # Kanban #953: mirror the cost estimate into the transactions
+            # ledger so per-project P&L stays complete without manual
+            # reconciliation. Idempotent via the same precondition that
+            # gates the cost write itself (task.estimated_cost_usd is None
+            # before this block) — re-flipping a previously-done task does
+            # NOT double-insert. Skip when cost is zero (no ledger noise
+            # for unmetered work) and when project_id is missing (defensive).
+            cost_usd = est["cost_usd"]
+            if cost_usd and cost_usd > 0 and task.project_id is not None:
+                provider, _model = resolve_provider_model()
+                # USD minor units (cents). The estimator returns USD
+                # Decimals — we hard-code USD here in lockstep. Localizing
+                # to project.currency_default is a future slice (the cost
+                # is denominated in USD upstream regardless).
+                amount_minor = int(cost_usd * 100)
+                session.add(
+                    Transaction(
+                        project_id=task.project_id,
+                        amount_minor=amount_minor,
+                        currency="USD",
+                        kind="cost",
+                        category=f"llm_{provider}",
+                        # task.completed_at hasn't resolved yet (it's a func.now()
+                        # ClauseElement in `updates`). Stamp explicit UTC now()
+                        # so the ledger row carries a concrete TZ-aware datetime.
+                        occurred_at=datetime.now(timezone.utc),
+                        source="estimated",
+                        source_ref=f"task-{task_id}-close",
+                        task_id=task_id,
+                        notes=f"Auto-inserted on task close (est. {cost_usd} USD)",
+                    )
+                )
         except Exception as exc:  # noqa: BLE001 - swallow + log; never crash the PATCH
             logger.warning(
                 "task %s: cost estimation failed (%s); leaving estimate fields NULL",

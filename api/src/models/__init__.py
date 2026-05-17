@@ -5,6 +5,7 @@ from src.models.project import Project
 from src.models.session import Session, SessionCompact, SessionRun
 from src.models.task import Task, TaskHistory
 from src.models.tool_call import ToolCall
+from src.models.transaction import Transaction
 
 __all__ = [
     "Base",
@@ -15,4 +16,5 @@ __all__ = [
     "Task",
     "TaskHistory",
     "ToolCall",
+    "Transaction",
 ]
