@@ -28,6 +28,7 @@ from src.routers import sessions as sessions_router
 from src.routers import tasks as tasks_router
 from src.routers import tool_calls as tool_calls_router
 from src.routers import transactions as transactions_router
+from src.routers import user_actions as user_actions_router
 from src.services.row_changed_listener import start_listener, stop_listener
 from src.settings import get_settings
 
@@ -210,6 +211,10 @@ def create_app() -> FastAPI:
     # Kanban #953 — per-project financial separation (transactions ledger + P&L).
     app.include_router(transactions_router.router, prefix="/api")
     app.include_router(pl_router.router, prefix="/api")
+    # Kanban #1010 — cross-project next-action recommender (USER-scoped, no
+    # X-Project-Id header). Powers digest section 5 / mobile home tile / inbox
+    # empty-state hint.
+    app.include_router(user_actions_router.router, prefix="/api")
 
     return app
 

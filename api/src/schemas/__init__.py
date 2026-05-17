@@ -17,8 +17,11 @@ from src.schemas.transaction import (
     TransactionRead,
     TransactionUpdate,
 )
+from src.schemas.user_actions import NextActionItem, NextActionResponse
 
 __all__ = [
+    "NextActionItem",
+    "NextActionResponse",
     "ParseRequest",
     "ParseResponse",
     "PLBucket",
