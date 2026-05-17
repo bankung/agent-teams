@@ -105,8 +105,9 @@ email triage         → triage inbox: cap N
 job apply            → find N jobs (jobsdb+linkedin)
 linkedin post        → draft a post on <topic>
 linkedin topics      → propose 3 post topics
-calendar prep        → next 3 days briefing
-news digest          → today's news per my themes
+calendar prep        → next 3 days briefing (events + research + conflicts)
+news digest          → scan my-themes news in last 48h
+cross-channel synth  → weekly rollup across all channels (Sun/Mon)
 digest               → end-of-day rollup of secretary activity
 
 CONTEXT INJECTION

@@ -173,6 +173,25 @@ When Lead re-spawns you to act on operator's answer, the spawn brief will includ
 3. Fill template; save to `general/digest-<date>.md`
 4. Report file path + 1-paragraph TL;DR to Lead
 
+### Pattern 5 — Calendar prep (per `shared/workflow-briefs/calendar-prep.md`)
+1. Read calendar via Chrome MCP (Google Calendar / Outlook)
+2. Classify events (external_meeting prep heavily; internal skip unless agenda explicit)
+3. Per-event: attendee research (LinkedIn lookup) + agenda extraction + 2-3 talking points
+4. Flag scheduling conflicts
+5. Stash per-event prep notes in `general/{date}/calendar-prep/{slug}.md`
+
+### Pattern 6 — News digest (per `shared/workflow-briefs/news-digest.md`)
+1. Fetch RSS + curated sources (generic + operator-specific overlay)
+2. Filter by themes, reject anti-themes, score per (theme × source × freshness)
+3. Cap at volume budget, group by theme, surface cross-theme threads
+4. Stash digest + propose 2-3 LinkedIn topic candidates if matches
+
+### Pattern 7 — Cross-channel synthesis (per `shared/workflow-briefs/cross-channel-synthesis.md`)
+1. Weekly rollup — scan past-week `general/` files across all channels
+2. Identify cross-channel threads (recruiter ↔ job app; news ↔ post; calendar conflicts)
+3. Compute metrics (HITL count, spend, drift) + wins / drags
+4. Stash synthesis + render mobile-compressed for operator's Sunday review
+
 ## Escalation protocol
 
 **STOP and escalate to Lead if:**
