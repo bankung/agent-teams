@@ -193,6 +193,13 @@ services:
       LANGGRAPH_PROJECT_ID: ${LANGGRAPH_PROJECT_ID:-1}
       LANGGRAPH_POLL_INTERVAL_SEC: ${LANGGRAPH_POLL_INTERVAL_SEC:-30}
       LANGGRAPH_KANBAN_API_BASE: ${LANGGRAPH_KANBAN_API_BASE:-http://api:8456}
+      # Kanban #1107 — WARN-2 fix. HITL_DEMO_ENABLED=1 unlocks the
+      # `HITL demo —` title-prefix branch in langgraph/nodes.py:general_node.
+      # Dev default 1 so #1073 smoke + onboarding demos keep working. PRODUCTION
+      # deployments MUST leave this unset (CWE-489 / OWASP A05 — any
+      # authenticated user with task-create permission could otherwise trigger
+      # the hardcoded interrupt branch).
+      HITL_DEMO_ENABLED: ${HITL_DEMO_ENABLED:-1}
       REPO_ROOT: /repo
     ports:
       - "${LANGGRAPH_PORT:-8465}:8000"

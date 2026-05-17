@@ -217,6 +217,14 @@ CLAUDE.md is loaded automatically — Claude is ready to act as Lead.
 
 `docker-compose.yml` sets the api's `DATABASE_URL` to the `db` service hostname automatically — host `.env` only matters when running `uvicorn` outside compose. The api container also runs an `AsyncIOScheduler` background job (60s default tick) — see "Built-in subsystems" below.
 
+### Security-sensitive env vars
+
+| Var | Default | Effect |
+|---|---|---|
+| `HITL_DEMO_ENABLED` | `1` in dev compose, **unset in prod** | Set to `"1"` to enable the `HITL demo —` title-prefix branch in `langgraph/nodes.py` (Kanban #1073 demo path). Leave unset/empty in production — without the gate, any authenticated user with task-create permission can trigger the hardcoded `request_user_input` interrupt branch just by prefixing their task title with `HITL demo —` (CWE-489 / OWASP A05, fixed in Kanban #1107). |
+| `PYTEST_DB_PASSWORD` | dev fallback in compose, **MUST be set in prod** | DB-engine-layer gate for the 2026-05-17 dev-DB-wipe incident — see the env var's comment block in `.env.example` for the full rationale. |
+| `BACKUP_MIN_BYTES` | `102400` (100 KB) | Defense against silent backup corruption when an empty/rogue DB gets dumped — runner aborts before upload if the pg_dump output is below this threshold. |
+
 ---
 
 ## Built-in subsystems

@@ -151,6 +151,117 @@ def test_normal_brief_unaffected_by_demo_branches() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Kanban #1107 — WARN-2 security fix: HITL demo env gate
+#
+# The `HITL demo —` title-prefix branch is now gated behind HITL_DEMO_ENABLED=1.
+# Without the env var (or any value other than the literal string "1") a
+# matching brief MUST fall through to the general-fallback halt path —
+# otherwise any user with task-create permission could trigger the hardcoded
+# request_user_input interrupt path in production (CWE-489 / OWASP A05).
+# ---------------------------------------------------------------------------
+
+
+def test_hitl_demo_branch_skipped_when_env_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HITL_DEMO_ENABLED unset → "HITL demo —" prefix falls through to the
+    general-fallback halt path. Crucially: NO __interrupt__ emitted (no
+    request_user_input call), halt_reason='error' (not 'question' or
+    'decision'), so the worker treats it as a generic halt rather than a
+    pending-HITL pause."""
+    monkeypatch.delenv("HITL_DEMO_ENABLED", raising=False)
+
+    state: AgentState = {
+        "task_id": 1004,
+        "brief": "HITL demo — operator-injected security probe",
+        "messages": [],
+        "audit_retry_count": 0,
+        "assigned_role": None,
+    }
+    result = general_node(state)
+
+    # Fall-through to general-fallback path — NOT the demo branch.
+    assert result["halt_reason"] == "error"
+    assert "general fallback" in result["final_result"]
+    # No __interrupt__ marker — request_user_input was NEVER called. (If the
+    # demo branch had fired, LangGraph would have surfaced GraphInterrupt; the
+    # raw dict result from a node call carries no such key on the
+    # halt path.)
+    assert "__interrupt__" not in result
+
+
+def test_hitl_demo_branch_skipped_when_env_is_empty_string(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HITL_DEMO_ENABLED='' (empty) is treated as disabled — the gate is a
+    strict equality check against the literal "1"."""
+    monkeypatch.setenv("HITL_DEMO_ENABLED", "")
+
+    state: AgentState = {
+        "task_id": 1005,
+        "brief": "HITL demo — empty-string env probe",
+        "messages": [],
+        "audit_retry_count": 0,
+        "assigned_role": None,
+    }
+    result = general_node(state)
+    assert result["halt_reason"] == "error"
+    assert "__interrupt__" not in result
+
+
+def test_hitl_demo_branch_skipped_when_env_is_truthy_non_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Any value other than the literal "1" disables the demo branch — guards
+    against the common "0 / false / true / yes" confusion (we want a single,
+    explicit opt-in token)."""
+    for value in ("0", "true", "yes", "TRUE", "enabled", "2"):
+        monkeypatch.setenv("HITL_DEMO_ENABLED", value)
+        state: AgentState = {
+            "task_id": 1006,
+            "brief": "HITL demo — non-canonical-truthy probe",
+            "messages": [],
+            "audit_retry_count": 0,
+            "assigned_role": None,
+        }
+        result = general_node(state)
+        assert result["halt_reason"] == "error", (
+            f"HITL_DEMO_ENABLED={value!r} must NOT enable the demo branch "
+            f"(only the literal '1' opts in)"
+        )
+        assert "__interrupt__" not in result
+
+
+def test_hitl_demo_branch_fires_when_env_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sanity: with HITL_DEMO_ENABLED=1 (dev compose default), the matching
+    brief DOES enter the demo branch — so #1073's existing smoke task keeps
+    passing in dev.
+
+    The branch calls hitl.request_user_input → langgraph.types.interrupt.
+    When invoked outside a graph runnable context (as in this bare unit
+    call), `interrupt()` does `get_config()` first, which raises
+    `RuntimeError("Called get_config outside of a runnable context")`. That
+    raise IS proof the demo branch was entered — the fall-through halt path
+    never touches interrupt() and so cannot raise. Inside a real StateGraph
+    (#1073 smoke) the same call path emits GraphInterrupt → LangGraph
+    catches + checkpoints → worker PATCHes BLOCKED, which is the
+    production behaviour we want preserved when the env is on."""
+    monkeypatch.setenv("HITL_DEMO_ENABLED", "1")
+
+    state: AgentState = {
+        "task_id": 1007,
+        "brief": "HITL demo — gate-on probe",
+        "messages": [],
+        "audit_retry_count": 0,
+        "assigned_role": None,
+    }
+    with pytest.raises(RuntimeError, match="outside of a runnable context"):
+        general_node(state)
+
+
+# ---------------------------------------------------------------------------
 # Kanban #1096 — auditor state-merge contract
 #
 # When the auditor loops (AUTO_RESOLVE) or accepts the operator's verdict,

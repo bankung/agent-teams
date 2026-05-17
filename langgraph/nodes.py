@@ -658,9 +658,11 @@ def general_node(state: AgentState) -> dict:
 
     HITL demo branch (Kanban #1073) — tasks whose brief starts with
     "HITL demo —" exercise the engine's interrupt / Command(resume=) loop
-    against the live stack. Marker-based opt-in so production no-role tasks
-    keep falling through to the halt path below. Revert this branch or
-    move it behind a feature flag once the operator-driven smoke completes.
+    against the live stack. Env-gated behind HITL_DEMO_ENABLED=1 so that in
+    production (env unset / != "1") any user-supplied title with that prefix
+    falls through to the halt path. The dev `docker-compose.yml` defaults
+    HITL_DEMO_ENABLED=1; production deployments leave it unset. See WARN-2
+    fix in Kanban #1107 (CWE-489 / OWASP A05) for the security rationale.
 
     AUDITOR retry demo branch (Kanban #1083, AC6) — tasks whose brief starts
     with "AUDITOR retry demo —" simulate a recoverable transient error on
@@ -679,10 +681,15 @@ def general_node(state: AgentState) -> dict:
     """
     brief = state.get("brief", "")
 
-    if brief.startswith("HITL demo —"):
-        # Payload shape mirrors the Kanban QuestionPayload schema
-        # (api/src/schemas/...): `question` is the required prompt string,
-        # `options` is the list of valid answers (decision task).
+    if (
+        os.environ.get("HITL_DEMO_ENABLED") == "1"
+        and brief.startswith("HITL demo —")
+    ):
+        # Env-gated demo branch (Kanban #1107 — WARN-2 fix). Without the env
+        # var, this whole block is skipped and the task falls through to the
+        # halt path below. Payload shape mirrors the Kanban QuestionPayload
+        # schema (api/src/schemas/...): `question` is the required prompt
+        # string, `options` is the list of valid answers (decision task).
         answer = request_user_input({
             "question": "Deploy to staging or prod?",
             "options": ["staging", "prod"],
