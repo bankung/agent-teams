@@ -87,6 +87,7 @@ You MUST read these GENERIC framework files at the start of every session:
 - `context/projects/secretary/shared/email-rules.md` — generic auto-archive / escalate patterns + classification algorithm
 - `context/projects/secretary/shared/job-criteria.md` — scoring framework + cover letter structure
 - `context/projects/secretary/shared/linkedin-strategy.md` — content framework + generic source list
+- `context/projects/secretary/shared/failure-modes.md` — expected breaks + Lead handling protocol (read this; halt + escalate per category mapping, never silently retry)
 
 **Operator PII is NOT in these files** (intentional — repo is git-tracked). PII reaches you via TWO channels:
 

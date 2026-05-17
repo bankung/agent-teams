@@ -31,14 +31,17 @@ Should return a screenshot. If not → extension not connected. Fix before spawn
 
 ## Part 2 — (Optional) Personal context file for persistence
 
-If typing identity every session feels annoying, save a personal note at:
-```
-context/projects/secretary/general/operator-context.md
+If typing identity every session feels annoying, copy the committed template to a gitignored location:
+
+```bash
+cp context/projects/secretary/shared/operator-context-template.md \
+   context/projects/secretary/general/operator-context.md
+# then edit general/operator-context.md (gitignored — safe to put PII)
 ```
 
 This folder is **gitignored** — file stays on your machine, never committed.
 
-Template:
+Template excerpt (full version in `shared/operator-context-template.md` — open + edit):
 ```yaml
 # Personal context (LOCAL ONLY — gitignored)
 identity:
