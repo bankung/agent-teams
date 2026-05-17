@@ -16,6 +16,73 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-17 — Per-project HITL approval policies — Kanban #957
+**Scope:** backend / langgraph / shared
+
+**Decision A:** Storage = `projects.approval_policies` JSONB column (nullable). Mirrors existing per-project knob pattern (`agent_overrides` / `tools_config` / `health_thresholds`). PATCHable via `/api/projects/{id}` with element validated service-layer-side (not DB CHECK). NULL = every HITL pause requires operator attention (pre-#957 behavior preserved as default).
+
+**Decision B:** Evaluator located in `api/src/services/approval_evaluator.py` (canonical) + `langgraph/approval_evaluator.py` (verbatim engine-side mirror). Duplicated rather than cross-imported — same precedent as worker.py's STATUS_* constant re-declaration; keeps api + langgraph containers cleanly decoupled. Drift caught by cross-suite tests.
+
+**Decision C:** Three valid actions: `auto_approve` / `auto_deny` / `require_attention`. Initial implementation excluded `require_attention` from `_VALID_ACTIONS` membership check (operator-authored rules with that action silent-skipped, lost `rule_name` attribution); fixed same day via 831a228 + 3 regression tests + secretary policies smoke (`api/tests/test_secretary_policies_smoke.py`). Lesson: AC wording with "representative set" was ambiguous → caught only by Lead's verify-sweep, not unit tests. For ANY AC mentioning enum/literal coverage, pin literal example per documented value.
+
+**Decision D:** Engine hook lives in `langgraph/worker.py` `_poll_once`. When HITL pause body is built, fetch project policies (10s in-process TTL cache), branch: `auto_approve` → `_resume_hitl_task` with default answer; `auto_deny` → BLOCKED + `halt_reason='operator_rejected'`; `require_attention` (default OR explicit-rule) → existing HITL pause shape (untouched). Fail-closed: malformed policy / fetch failure → REQUIRE_ATTENTION.
+
+**Decision E:** Audit trail Phase 1 = `status_change_reason` stamping (`auto-approved by policy '<name>'`) + existing `tasks_history` trigger. No new `policy_audit_log` JSONB column. Add if operators want per-policy rollups later.
+
+**Implications:**
+- Operator edits via `PATCH /api/projects/{id}` body=`{"approval_policies": {...}}` (no UI editor in Phase 1)
+- Default actions resolution: rule's `default_answer` > `options[0]` > `"accept"`
+- `auto_deny` reuses existing `halt_reason='operator_rejected'` (no FE changes)
+- Empty `match: {}` defensively returns no-match (config typo guard)
+
+---
+
+## 2026-05-17 — Per-project financial separation — Kanban #953
+**Scope:** backend / shared
+
+**Decision:** New `transactions` table (BIGINT id, project_id FK, amount_minor BIGINT cents, currency CHAR(3), kind CHECK in {revenue,cost,expense,refund,transfer}, category, occurred_at, source, source_ref, task_id FK, notes) + 4 project columns (tax_jurisdiction, legal_entity, fiscal_year_start, currency_default). Multi-currency stored native; NO FX conversion in MVP (different currencies → separate PL buckets).
+
+**API surface:**
+- `GET/POST/PATCH /api/transactions` — CRUD with X-Project-Id header gate (same as /api/tasks)
+- `GET /api/projects/{id}/pl?period=daily|weekly|monthly|quarterly|yearly` — period-bucketed P&L
+- `GET /api/projects/{id}/export?format=csv|json` — accountant hand-off with Content-Disposition
+
+**Integration with #944:** Task close (process_status → 5) auto-inserts cost transaction (`kind=cost`, `category=llm_<provider>`, `source=estimated`, `source_ref=task-{id}-close`). Idempotent via same `estimated_cost_usd is None` precondition. Skipped when cost=0 (ollama / unmetered).
+
+**Reasoning:** Per-project cost tracking (#944) gave one side; revenue + expense + ledger view needs the other side. Arena vision (autonomous earning) needs P&L per project to evaluate which experiments make money. Migration 0032.
+
+**Implications:**
+- Cross-project leakage guarded: X-Project-Id mismatch → 404 on /pl + /export; 400 on transactions POST body project_id mismatch
+- Operator's PII (transaction notes, source_ref to real task) goes to ledger — backup (#959) encrypts this
+- Future webhook receivers (Stripe / bank CSV) plug into POST /api/transactions
+- Reconciliation flow (estimated → actual) deferred
+
+---
+
+## 2026-05-17 — Health monitor + wake-on-stuck — Kanban #960
+**Scope:** backend / langgraph / shared
+
+**Decision:** Periodic sweep (APScheduler `IntervalTrigger(minutes=15)` default, configurable) detects stale / drifting autorun tasks via 4 detectors: stale-state (no update for N hours), repeated-retries (audit_retry_count >= N), token-burn-without-progress (cross-sweep snapshot of estimated_input_tokens vs status_change_reason hash), burn-rate-spike (7-day project baseline vs today projected).
+
+**Severity actions:**
+- `low` → flag via `tasks.health_alert` JSONB
+- `medium` → flag + (push delivery deferred to #955)
+- `high` → flag + PATCH `run_mode='manual'` via API (preserves langgraph checkpoint)
+
+**Schema:** `tasks.health_alert JSONB` (latest single alert) + `projects.health_thresholds JSONB` (per-project overrides; NULL = use env defaults). Per-project disabled-flag honored. Migration 0031.
+
+**Decision: single-alert per task (priority-ordered)** vs array — keeps wire surface narrow; FE rendering trivial; reversal non-breaking (string → list).
+
+**Decision: PATCH dispatch via in-container HTTP**, not direct SessionLocal — honors "DB writes through FastAPI only" rule; preserves audit trigger + run_mode consent validator. Cost = 1 extra TCP roundtrip per alert per sweep (negligible).
+
+**Implications:**
+- Operator configures via `PATCH /api/projects/{id}` body=`{"health_thresholds": {enabled, stale_hours, max_retry_cycles, token_burn_threshold_per_hour, burn_spike_multiplier}}`
+- HEALTH_MONITOR_DISABLED=1 to skip globally
+- token-burn detector silent until langgraph worker updates `estimated_input_tokens` mid-task (currently only at done-flip per #944); follow-up if pattern recurs
+- FE threshold editor in EditProjectModal = future frontend slice
+
+---
+
 ## 2026-05-17 — Auditor state-merge contract + worker finalize body shapes — Kanban #1096
 **Scope:** backend / langgraph / shared
 **Decision A:** The auditor node OWNS clearing `halt_reason` on every loop/accept return. `route_from_auditor` checks `state.get("halt_reason") is not None` and short-circuits to END; the merged state still carries the specialist's stale halt_reason unless the auditor explicitly emits `halt_reason: None` in the returned partial-state dict. Four sites enforce this:
