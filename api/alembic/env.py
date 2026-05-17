@@ -7,11 +7,13 @@ Uses async_engine_from_config + run_sync(do_run_migrations) per SQLAlchemy 2.0 a
 from __future__ import annotations
 
 import asyncio
+import os
 from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
+from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from src.models.base import Base
@@ -30,6 +32,21 @@ if config.config_file_name is not None:
 # Inject DATABASE_URL from settings into Alembic config so async_engine_from_config picks it up.
 settings = get_settings()
 config.set_main_option("sqlalchemy.url", settings.database_url)
+
+# L10 prevention (Kanban #1117) — refuse to migrate against a non-_test DB
+# without explicit MIGRATION_TARGET=live ack. Catches the future failure mode
+# where a destructive DDL slips into a migration and a developer points alembic
+# at the live DB by accident. Conftest passes `agent_teams_test` which ends
+# with `_test` so the gate is transparent for the test suite. Live procedure
+# documented under readme_dev.md "Live migration procedure". See
+# context/projects/agent-teams/shared/incidents/2026-05-17-dev-db-wipe.md.
+_db_name = make_url(settings.database_url).database or ""
+if not _db_name.endswith("_test") and os.environ.get("MIGRATION_TARGET") != "live":
+    raise RuntimeError(
+        f"alembic: refusing to migrate against {_db_name!r} (non-_test DB). "
+        "If this IS intended (live migration), set MIGRATION_TARGET=live env "
+        "and re-run. See context/projects/agent-teams/shared/incidents/2026-05-17-dev-db-wipe.md"
+    )
 
 target_metadata = Base.metadata
 

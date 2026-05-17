@@ -518,13 +518,37 @@ Lead:
 
 ### Migration fails
 **Fix:**
-1. `docker compose exec api alembic current` — what revision are we on?
-2. (DEV ONLY — wipes data) reset:
+1. `docker compose exec api alembic current` — what revision are we on? (read-only; safe to run on any DB)
+2. (DEV ONLY — wipes data) reset against the test DB:
    ```bash
    docker compose exec api alembic downgrade base
    docker compose exec api alembic upgrade head
    ```
+   These commands target whatever `DATABASE_URL` resolves to. The MIGRATION_TARGET gate (see [Live migration procedure](#live-migration-procedure-production--dev-db) below) will refuse if you accidentally point at a non-`_test` DB.
 3. PL/pgSQL trigger errors → `docker compose logs db` for migration syntax issues.
+
+### Live migration procedure (production / dev DB)
+
+`api/alembic/env.py` refuses to apply migrations to any DB whose name does NOT end with `_test` unless the env var `MIGRATION_TARGET=live` is set. This is the L10 prevention layer from the 2026-05-17 incident response — defense against silent migration on the wrong DB (see `context/projects/agent-teams/shared/incidents/2026-05-17-dev-db-wipe.md`).
+
+To apply a migration to the live `agent_teams` DB:
+
+1. **Backup first.** Force an off-site backup before any DDL hits live:
+   ```bash
+   curl -X POST http://localhost:8456/api/admin/backup/run-now -H "X-Project-Id: 1"
+   ```
+2. **Run alembic with `MIGRATION_TARGET=live`** explicitly set:
+   ```bash
+   docker compose exec -e MIGRATION_TARGET=live api alembic upgrade head
+   ```
+   Without `MIGRATION_TARGET=live`, env.py raises `RuntimeError: alembic: refusing to migrate against 'agent_teams' (non-_test DB). ...` and no DDL runs.
+3. **Verify the migration applied:**
+   ```bash
+   docker compose exec -e MIGRATION_TARGET=live api alembic current
+   ```
+   (read-only — the gate still requires the env var, but no DDL runs).
+
+The conftest is unaffected: every pytest invocation builds `agent_teams_test` which satisfies the `_test` suffix and skips the gate transparently.
 
 ### Reset everything (DEV ONLY)
 Drop containers + volume + DB content:
