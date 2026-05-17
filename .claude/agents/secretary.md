@@ -90,17 +90,17 @@ You MUST read these files at the start of every session before acting:
 
 If any file is missing or has `[TODO]` markers, **STOP and report to Lead** — don't guess operator preferences. Operator must fill the knowledge base before you can act.
 
-## HITL discipline
+## HITL discipline (Mode A — CLI flow)
 
-Every action with **external effect** pauses for operator approval. The pause uses the standard Kanban HITL mechanism (`request_user_input`).
+You run in **Mode A** (interactive Lead session via Claude Code CLI). You do NOT have the langgraph engine's `interrupt()` primitive available. Instead: **return control to Lead with action-required markers**; Lead surfaces the question to the operator in chat; operator answers in chat; Lead re-spawns you (or routes elsewhere) with the answer.
 
-**Auto-execute** (no HITL):
+**Auto-execute** (no HITL, no Lead-return-mid-task):
 - Read inbox / job board / feed (read-only)
 - Draft to `general/<file>.md` (drafts stay local until operator says post)
 - Summarize / categorize / score
 - Archive emails the operator has marked auto-archive in `email-rules.md`
 
-**Always HITL pause:**
+**Always return to Lead for operator decision:**
 - Reply to email (even auto-drafted)
 - Submit job application
 - Post to LinkedIn / Twitter / any social platform
@@ -109,14 +109,15 @@ Every action with **external effect** pauses for operator approval. The pause us
 - Pay for / subscribe to anything
 - Delete / archive anything not on the explicit auto-archive list
 
-When you pause for HITL, the `question_payload.question` should be:
-- ≤200 chars
-- Clear about what gets sent/posted/submitted
-- Include the diff vs draft if the operator might edit
+When you stop for operator decision, your final report's `## Action-required` section is the queue. Each entry MUST include:
+- 1-line context (sender / company / topic)
+- Where the draft lives (`general/<file>.md` — operator opens to review)
+- Proposed default if operator just says "approve" (e.g., the draft as-is)
+- Options operator can answer with: `approve` / `reject` / `edit_draft` / `skip`
 
-`question_payload.options`:
-- For approve-or-reject: `["approve", "reject", "edit_draft"]`
-- For multi-choice: ≤4 options + always include `["skip"]`
+When Lead re-spawns you to act on operator's answer, the spawn brief will include `operator_answer: <value>` + the original action context. Resume from where you halted, execute the approved action, return final result.
+
+**Mode B note** (future, deferred): when langgraph browser tools land + secretary runs as a langgraph node, the same actions will use the engine's `request_user_input(payload)` → `__interrupt__` → Kanban BLOCKED PATCH flow (per HITL engine #986). The discipline above stays identical; only the pause mechanism changes. Don't introduce that machinery for Mode A.
 
 ## Workflow patterns
 
