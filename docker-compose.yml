@@ -80,6 +80,16 @@ services:
       HEALTH_MONITOR_DISABLED: ${HEALTH_MONITOR_DISABLED:-}
       HEALTH_MONITOR_INTERVAL_MINUTES: ${HEALTH_MONITOR_INTERVAL_MINUTES:-15}
       HEALTH_MONITOR_API_BASE: ${HEALTH_MONITOR_API_BASE:-http://localhost:8456}
+      # pytest_runner role password (Kanban #1109 — L4 prevention layer for
+      # the 2026-05-17 dev-DB-wipe incident). Used by the alembic migration
+      # 0034_pytest_runner_role to create the role with the matching password,
+      # AND by api/tests/conftest.py to bind pytest connections to the
+      # constrained role. The dev default keeps `docker compose up` working
+      # on a fresh checkout; production deployments MUST set
+      # PYTEST_DB_PASSWORD in .env (the value lives only in the role's
+      # password — no other side effect, safe to rotate via re-running the
+      # migration).
+      PYTEST_DB_PASSWORD: ${PYTEST_DB_PASSWORD:-pytest_runner_dev_only_NOT_FOR_PROD}
     ports:
       - "${API_PORT:-8456}:8456"
     volumes:

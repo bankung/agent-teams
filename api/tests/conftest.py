@@ -35,13 +35,62 @@ from __future__ import annotations
 # the harness is providing (or the docker-compose default `db:5432/agent_teams`).
 # This must execute before `from src import ...` because src.db builds a
 # module-level engine at import time from get_settings().database_url.
+#
+# Kanban #1109 (L4 prevention) — incident 2026-05-17 dev DB wipe:
+# the rewritten DATABASE_URL now uses the constrained `pytest_runner` role
+# (created by alembic migration 0034_pytest_runner_role) which has only
+# SELECT on the live `agent_teams` DB. If every software-layer defense (L1
+# hook, L2 invariant, L3 lazy-load) is bypassed, the DB engine itself will
+# refuse destructive ops on live data via `permission denied for table ...`.
+#
+# Admin operations (DROP/CREATE DATABASE, pg_terminate_backend) still need
+# postgres superuser — captured separately into env `_PG_ADMIN_URL` for the
+# `_setup_test_database` fixture and for tests that create throwaway DBs
+# (e.g. test_tool_calls.py).
 import os as _os
+import warnings as _warnings
 
 _DEFAULT_DEV_URL = "postgresql+asyncpg://postgres:postgres@db:5432/agent_teams"
-_TEST_URL = (
-    _os.environ.get("DATABASE_URL", _DEFAULT_DEV_URL).rsplit("/", 1)[0]
-    + "/agent_teams_test"
+# Dev fallback — kept in lockstep with the same constant in the migration
+# (api/alembic/versions/2026_05_17_1200_pytest_runner_role.py) and the
+# docker-compose default. Production deployments MUST set PYTEST_DB_PASSWORD
+# in their .env (it is documented in .env.example).
+_DEV_DEFAULT_PYTEST_PASSWORD = "pytest_runner_dev_only_NOT_FOR_PROD"
+_PYTEST_PASSWORD = _os.environ.get("PYTEST_DB_PASSWORD") or _DEV_DEFAULT_PYTEST_PASSWORD
+if _PYTEST_PASSWORD == _DEV_DEFAULT_PYTEST_PASSWORD and not _os.environ.get(
+    "PYTEST_DB_PASSWORD"
+):
+    _warnings.warn(
+        "PYTEST_DB_PASSWORD env not set — falling back to the documented dev "
+        "default for the `pytest_runner` role. This is the L4 prevention layer "
+        "for the 2026-05-17 dev-DB-wipe incident. Set PYTEST_DB_PASSWORD in "
+        "your .env to rotate (see .env.example).",
+        UserWarning,
+        stacklevel=2,
+    )
+
+# Original / superuser DSN — kept for admin work that pytest_runner cannot do
+# (DROP/CREATE DATABASE on the `postgres` maintenance DB, pg_terminate_backend
+# of other-user sessions). Exported via env so test_tool_calls.py and any
+# other test that needs admin access can reuse it without re-deriving.
+_ORIGINAL_DATABASE_URL = _os.environ.get("DATABASE_URL", _DEFAULT_DEV_URL)
+_os.environ["_PG_ADMIN_URL"] = _ORIGINAL_DATABASE_URL
+
+# Build the constrained pytest DSN: swap `postgres:<pw>` -> `pytest_runner:<pw>`.
+# Use the standard URL split (user:pw@host:port/db) — the rsplit on "/" gives
+# us "<scheme>://<user>:<pw>@<host>:<port>" which we then surgically rewrite
+# user+pw on. Regex is intentionally narrow (anchor on `://` + literal
+# `postgres:`) so we don't accidentally rewrite a host called `postgres`.
+import re as _re
+
+_base = _ORIGINAL_DATABASE_URL.rsplit("/", 1)[0]
+_base = _re.sub(
+    r"://postgres:[^@]+@",
+    f"://pytest_runner:{_PYTEST_PASSWORD}@",
+    _base,
+    count=1,
 )
+_TEST_URL = _base + "/agent_teams_test"
 _os.environ["DATABASE_URL"] = _TEST_URL
 # Kanban #707 (T2): disable the apscheduler tick during pytest. The lifespan
 # context still enters/exits cleanly (smoke-tested explicitly), but no
@@ -196,8 +245,12 @@ async def _setup_test_database():
     from sqlalchemy.ext.asyncio import create_async_engine
 
     test_url = os.environ["DATABASE_URL"]
-    # Connect to the maintenance `postgres` database to issue CREATE/DROP.
-    admin_url = test_url.rsplit("/", 1)[0] + "/postgres"
+    # Admin operations (DROP/CREATE DATABASE, pg_terminate_backend of other-
+    # user sessions) require postgres superuser — pytest_runner cannot do
+    # them. Re-derive the admin URL from the captured original DATABASE_URL
+    # (stashed by the top-of-file rewrite into _PG_ADMIN_URL). #1109.
+    _admin_base = os.environ["_PG_ADMIN_URL"]
+    admin_url = _admin_base.rsplit("/", 1)[0] + "/postgres"
 
     admin_engine = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
     try:
@@ -209,7 +262,14 @@ async def _setup_test_database():
                 )
             )
             await conn.execute(text("DROP DATABASE IF EXISTS agent_teams_test"))
-            await conn.execute(text("CREATE DATABASE agent_teams_test"))
+            # OWNER pytest_runner gives the constrained role full DDL/DML on
+            # the new test DB (CREATE/DROP/ALTER on tables, triggers,
+            # functions, sequences) WITHOUT promoting it to superuser. The
+            # postgres role still owns the agent_teams (live) DB so the
+            # REVOKE matrix from migration 0034 stays effective there.
+            await conn.execute(
+                text("CREATE DATABASE agent_teams_test OWNER pytest_runner")
+            )
     finally:
         await admin_engine.dispose()
 
@@ -254,6 +314,8 @@ async def _setup_test_database():
     except Exception:
         pass
 
+    # Teardown also uses the postgres-superuser admin URL — pytest_runner
+    # cannot pg_terminate_backend other sessions.
     admin_engine = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
     try:
         async with admin_engine.connect() as conn:

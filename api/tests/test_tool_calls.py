@@ -139,15 +139,29 @@ def test_migration_downgrade_then_upgrade_leaves_clean_state() -> None:
     from sqlalchemy.ext.asyncio import create_async_engine
 
     test_url = os.environ["DATABASE_URL"]
-    admin_url = test_url.rsplit("/", 1)[0] + "/postgres"
-    throwaway_name = f"agent_teams_migration_smoke_{uuid.uuid4().hex[:8]}"
+    # Admin URL (postgres superuser) for CREATE/DROP DATABASE — pytest_runner
+    # cannot do those. Captured by conftest.py at module load. #1109.
+    _admin_base = os.environ["_PG_ADMIN_URL"]
+    admin_url = _admin_base.rsplit("/", 1)[0] + "/postgres"
+    throwaway_name = f"agent_teams_test_migration_smoke_{uuid.uuid4().hex[:8]}"
+    # Throwaway uses the constrained pytest_runner credentials (same as
+    # test_url) — alembic upgrade then runs as pytest_runner, mirroring the
+    # real pytest path. The DB ownership is set below via ALTER DATABASE.
     throwaway_url = test_url.rsplit("/", 1)[0] + f"/{throwaway_name}"
 
     async def _make_db() -> None:
         admin_engine = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
         try:
             async with admin_engine.connect() as conn:
-                await conn.execute(_text(f"CREATE DATABASE {throwaway_name}"))
+                # OWNER pytest_runner so the subsequent alembic upgrade —
+                # which runs as pytest_runner via throwaway_url — has full
+                # DDL/DML on the throwaway. Mirrors the agent_teams_test
+                # setup in conftest. #1109.
+                await conn.execute(
+                    _text(
+                        f"CREATE DATABASE {throwaway_name} OWNER pytest_runner"
+                    )
+                )
         finally:
             await admin_engine.dispose()
 
