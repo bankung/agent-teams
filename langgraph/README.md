@@ -39,6 +39,42 @@ connection lands in the schema by default once it exists.
 > have to wipe `agent-teams-pgdata` to pick the schema up. Option B is a tiny
 > one-liner in app startup and works on any DB state.
 
+### DATABASE_URI lifespan validation (L7, Kanban #1112)
+
+The lifespan refuses to start if `DATABASE_URI` is misconfigured. Two checks
+run BEFORE any DB op (schema bootstrap, `AsyncPostgresSaver.setup()`):
+
+1. The URI string must contain `search_path=langgraph` literally — without
+   it, AsyncPostgresSaver lands checkpoint tables in `public`, where they
+   collide with api's `tasks` / `projects` rows.
+2. The extracted db name (path segment after `host:port`) must be in the
+   allowlist. The default allowlist is `{agent_teams, agent_teams_test}`.
+
+Both failures raise `RuntimeError` from the lifespan — the container exits
+loudly rather than silently writing to the wrong place. This closes a gap
+in the L1/L2/L3 defenses (which target api's `DATABASE_URL`, not langgraph's
+separate `DATABASE_URI`). See the 2026-05-17 dev-DB-wipe incident for the
+runtime-pointer-drift class of bug this prevents.
+
+**Escape valve — `LANGGRAPH_DB_NAME_ALLOWLIST`:** to point langgraph at a db
+NOT in the default allowlist (e.g., a per-developer dev db, a staging slot),
+set this env-var to a comma-separated list. The list REPLACES the default —
+if you want the canonical names PLUS yours, list them all:
+
+```env
+# Default (implicit):
+# LANGGRAPH_DB_NAME_ALLOWLIST=agent_teams,agent_teams_test
+
+# Add a dev db alongside the canonical names:
+LANGGRAPH_DB_NAME_ALLOWLIST=agent_teams,agent_teams_test,agent_teams_alice
+
+# Lock to a single db (e.g., production):
+LANGGRAPH_DB_NAME_ALLOWLIST=agent_teams
+```
+
+Read once at module import — change requires a container restart, same as
+the LLM provider env-vars.
+
 ## Usage
 
 ```sh

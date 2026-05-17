@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
@@ -75,6 +76,56 @@ worker_task: asyncio.Task[None] | None = None
 # Short on purpose: a stuck httpx request will still be force-cancelled when
 # this elapses, and the OS process exit will tear down the connection.
 _WORKER_SHUTDOWN_GRACE_SEC = 5.0
+
+
+# L7 prevention (Kanban #1112) — refuse to start if DATABASE_URI lacks the
+# langgraph search_path hint or points at a db NOT in the allowlist. langgraph
+# uses DATABASE_URI (its own env-var, separate from api's DATABASE_URL), so
+# the L1/L2/L3 DATABASE_URL defenses don't cover this path. See the
+# 2026-05-17 dev-DB-wipe incident for the runtime-pointer-drift class of bug.
+ALLOWED_LANGGRAPH_DB_NAMES = set(
+    os.environ.get(
+        "LANGGRAPH_DB_NAME_ALLOWLIST", "agent_teams,agent_teams_test"
+    ).split(",")
+)
+
+
+def _validate_database_uri(raw_uri: str) -> None:
+    """Refuse to start if DATABASE_URI is misconfigured.
+
+    Two checks, both must pass before any DB op (saver.setup, _ensure_schema):
+
+    1. `search_path=langgraph` must appear literally in the URI (compose ships
+       `?options=-c%20search_path=langgraph`). Without it, AsyncPostgresSaver's
+       `setup()` lands checkpoint tables in `public`, where they collide with
+       api's tasks/projects.
+    2. The extracted db name (the path segment after host:port) must be in
+       `ALLOWED_LANGGRAPH_DB_NAMES` — defaults to {agent_teams, agent_teams_test};
+       override via `LANGGRAPH_DB_NAME_ALLOWLIST` env (comma-separated).
+
+    Both failures raise RuntimeError so the lifespan aborts loudly before any
+    write hits the DB. See 2026-05-17 incident and Kanban #1112.
+    """
+    if "search_path=langgraph" not in raw_uri:
+        raise RuntimeError(
+            "DATABASE_URI must include 'options=-c search_path=langgraph' to "
+            "isolate langgraph writes from the public schema. See "
+            "context/projects/agent-teams/shared/incidents/2026-05-17-dev-db-wipe.md"
+        )
+    # Extract db name from 'postgresql://...@host:port/<db>?...' — the path
+    # segment between the netloc's trailing `/` and the `?` (if any).
+    m = re.search(r"://[^/]+/([^?]+)", raw_uri)
+    if not m:
+        raise RuntimeError(
+            f"DATABASE_URI does not look like a valid postgres URL: {raw_uri!r}"
+        )
+    db_name = m.group(1)
+    if db_name not in ALLOWED_LANGGRAPH_DB_NAMES:
+        raise RuntimeError(
+            f"DATABASE_URI points at db {db_name!r} which is not in the "
+            f"allowlist {ALLOWED_LANGGRAPH_DB_NAMES}. To add, set "
+            "LANGGRAPH_DB_NAME_ALLOWLIST env (csv). See 2026-05-17 incident."
+        )
 
 
 def _normalize_pg_uri(uri: str) -> str:
@@ -179,6 +230,9 @@ async def lifespan(app: FastAPI):
     raw_uri = os.getenv("DATABASE_URI")
     if not raw_uri:
         raise RuntimeError("DATABASE_URI env-var is required (no fallback)")
+    # L7 prevention (Kanban #1112) — MUST run BEFORE _normalize_pg_uri /
+    # _ensure_schema / saver.setup() so a misconfigured URI never touches the DB.
+    _validate_database_uri(raw_uri)
     uri = _normalize_pg_uri(raw_uri)
 
     # 1) Schema bootstrap (Option B). Must happen BEFORE AsyncPostgresSaver.setup().
