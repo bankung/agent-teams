@@ -48,6 +48,10 @@ def test_agent_state_keys_are_stable() -> None:
         "audit_verdict",
         "audit_report",
         "audit_retry_count",
+        # Kanban #1123 (L16, 2026-05-17) — sanitized prior halt context for
+        # the LLM. Set by worker.py via agent_context_sanitizer.
+        "prior_halt_reason",
+        "prior_status_change_reason",
     }
     annotations = set(AgentState.__annotations__.keys())
     assert annotations == expected

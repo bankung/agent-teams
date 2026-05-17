@@ -21,10 +21,12 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 # Default 2 MB — generous headroom over the worst-case legal payload
-# (title 200 + description 20_000 + halt_reason 2_000 + status_change_reason
-# 2_000 + 50 AC items @ 1_000 chars each = ~74 KB; 200 subagent_models entries
+# (title 200 + description 20_000 + halt_reason 1_000 + status_change_reason
+# 1_000 + 50 AC items @ 1_000 chars each = ~72 KB; 200 subagent_models entries
 # of similar shape add ~30 KB). 2 MB leaves room for future field growth
 # while still cutting the 10 MB hammer-test payload at the door.
+# Kanban #1123 (L16, 2026-05-17) — halt_reason / status_change_reason caps
+# tightened from 2_000 to 1_000 (no impact on the middleware threshold).
 _DEFAULT_MAX_BYTES = 2 * 1024 * 1024
 
 

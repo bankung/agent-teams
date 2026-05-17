@@ -35,6 +35,15 @@ class AgentState(TypedDict, total=False):
     intermediate_results: dict[str, str]
     final_result: str
     halt_reason: HaltReason
+    # Kanban #1123 (L16, 2026-05-17) — sanitized snapshots of the prior
+    # task.halt_reason / task.status_change_reason at pickup time. Already
+    # passed through `agent_context_sanitizer.sanitize_for_agent_context`
+    # by worker.py — SQL DDL/DML keywords redacted, capped at 500 chars.
+    # Nodes that want to surface prior halt context in the LLM prompt MUST
+    # read these fields (NOT raw task.* fields) — they are the only
+    # injection-safe representation.
+    prior_halt_reason: str
+    prior_status_change_reason: str
     # Kanban #952 — in-graph auditor outputs. `audit_verdict` is the
     # conditional-edge selector after the auditor node runs: 'pass' → END,
     # 'auto_resolve' → supervisor (capped by retry counter), 'escalate' →

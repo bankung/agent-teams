@@ -95,36 +95,44 @@ async def test_post_task_rejects_oversize_title(client, scaffold_cleanup):
 
 @pytest.mark.asyncio
 async def test_post_task_rejects_oversize_halt_reason(client, scaffold_cleanup):
-    """AC 1: halt_reason > 2_000 chars → 422 with 'at most 2000 characters'."""
+    """L16 (Kanban #1123): halt_reason > 1_000 chars → 422.
+
+    Initially L18 (#1115) set the cap to 2000; L16 tightened it to 1000 as
+    part of the prompt-injection prevention layer (smaller field = less room
+    for attacker-controlled fluff even after sanitizer redaction).
+    """
     project_id = await _make_project(client, scaffold_cleanup, "size-halt")
     headers = {"X-Project-Id": str(project_id)}
 
     payload = {
         "project_id": project_id,
         "title": "oversize-halt",
-        "halt_reason": "B" * 2_001,
+        "halt_reason": "B" * 1_001,
     }
     resp = await client.post("/api/tasks", json=payload, headers=headers)
     assert resp.status_code == 422, resp.text
-    assert "at most 2000 characters" in resp.text, resp.text
+    assert "at most 1000 characters" in resp.text, resp.text
 
 
 @pytest.mark.asyncio
 async def test_post_task_rejects_oversize_status_change_reason(
     client, scaffold_cleanup
 ):
-    """AC 1: status_change_reason > 2_000 chars → 422."""
+    """L16 (Kanban #1123): status_change_reason > 1_000 chars → 422.
+
+    Tightened from L18's initial 2000 cap. See test above for the rationale.
+    """
     project_id = await _make_project(client, scaffold_cleanup, "size-scr")
     headers = {"X-Project-Id": str(project_id)}
 
     payload = {
         "project_id": project_id,
         "title": "oversize-scr",
-        "status_change_reason": "C" * 2_001,
+        "status_change_reason": "C" * 1_001,
     }
     resp = await client.post("/api/tasks", json=payload, headers=headers)
     assert resp.status_code == 422, resp.text
-    assert "at most 2000 characters" in resp.text, resp.text
+    assert "at most 1000 characters" in resp.text, resp.text
 
 
 # ---------------------------------------------------------------------------
