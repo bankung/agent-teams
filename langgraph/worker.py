@@ -42,12 +42,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from types import ModuleType
 from typing import Any
 
 import httpx
 
+from approval_evaluator import evaluate_policy
 from hitl import (
     CheckpointMissingError,
     EngineCrashError,
@@ -307,6 +309,61 @@ async def _poll_once(
 
     # 4) Finalize.
     body = _build_finalize_body(final_state, completed_at=_now_iso())
+
+    # Kanban #957 Phase 1 — approval-policy hook. Only fires on HITL pause
+    # bodies (halt_reason in {question, decision}). Pre-empts the BLOCKED
+    # PATCH with either a synthetic resume (auto_approve) or a recoloured
+    # halt (auto_deny). Non-HITL halts + DONE bodies skip the hook entirely,
+    # so this code path adds zero overhead for normal task lifecycle.
+    if body.get("halt_reason") in ("question", "decision") and body.get(
+        "question_payload"
+    ):
+        policies = await _fetch_project_policies(
+            client, cfg, headers, cfg.project_id
+        )
+        action, default_answer, rule_name = evaluate_policy(
+            body["question_payload"], policies
+        )
+        if action == "auto_approve":
+            logger.info(
+                "task %d auto-approved by policy %r; resuming with %r",
+                task_id,
+                rule_name,
+                default_answer,
+            )
+            # Synthesise the minimum task dict shape `_resume_hitl_task`
+            # expects (id + question_payload). The worker just built the
+            # payload above; pass it back in. No answer_history present —
+            # validate_answer only checks the answer against the payload,
+            # not against history.
+            synthetic_task = {
+                "id": task_id,
+                "question_payload": body["question_payload"],
+                "resume_context": None,
+            }
+            await _resume_hitl_task(
+                client,
+                graph_module,
+                cfg,
+                synthetic_task,
+                default_answer,
+                headers,
+                policy_rule_name=rule_name,
+            )
+            return
+        if action == "auto_deny":
+            logger.info(
+                "task %d auto-denied by policy %r", task_id, rule_name
+            )
+            policy_label = f"policy {rule_name!r}" if rule_name else "policy"
+            body = {
+                "process_status": STATUS_BLOCKED,
+                "halt_reason": "operator_rejected",
+                "status_change_reason": (
+                    f"auto-denied by {policy_label}"
+                )[:_REASON_MAX],
+            }
+
     if await _patch_task(client, cfg, headers, task_id, body) is None:
         return
     logger.info(
@@ -457,6 +514,83 @@ def _now_iso() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Approval-policy fetch (Kanban #957 Phase 1)
+# ---------------------------------------------------------------------------
+
+# Tiny in-process TTL cache for approval_policies. Saves a GET /api/projects/{id}
+# on every HITL pause while still picking up operator-side edits within ~10s.
+# The cache is keyed by project_id and intentionally bounded (one entry per
+# project the worker has seen this process — typically 1 since the worker
+# is single-project per env). Process-local; restart clears.
+_POLICY_CACHE_TTL_SEC = 10.0
+_policy_cache: dict[int, tuple[float, dict[str, Any] | None]] = {}
+
+
+def _policy_cache_clear() -> None:
+    """Test hook — clear the in-process policy cache."""
+    _policy_cache.clear()
+
+
+async def _fetch_project_policies(
+    client: httpx.AsyncClient,
+    cfg: WorkerConfig,
+    headers: dict[str, str],
+    project_id: int,
+) -> dict[str, Any] | None:
+    """GET /api/projects/{project_id} and return its `approval_policies` field.
+
+    Returns None on:
+      - any non-200 response (the worker logs + falls back to REQUIRE_ATTENTION)
+      - missing / null `approval_policies` field in the body
+      - JSON parse failure
+
+    Results are cached for ~10 seconds per project_id to avoid hammering the
+    API on every HITL pause. Operator edits propagate within the TTL window;
+    immediate uptake requires a worker restart (acceptable for Phase 1 —
+    policy edits are a low-frequency operation).
+
+    Note: GET /api/projects/{id} does NOT consult the X-Project-Id header
+    (project endpoints are by-id), but passing the existing headers is
+    harmless and keeps the call signature uniform with _patch_task.
+    """
+    now = time.monotonic()
+    cached = _policy_cache.get(project_id)
+    if cached is not None and (now - cached[0]) < _POLICY_CACHE_TTL_SEC:
+        return cached[1]
+
+    try:
+        resp = await client.get(
+            f"{cfg.api_base}/api/projects/{project_id}", headers=headers
+        )
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "approval_policies fetch: project %d HTTP error %s; falling back to REQUIRE_ATTENTION",
+            project_id,
+            exc,
+        )
+        # Do NOT cache the failure — the next pause should retry.
+        return None
+    if resp.status_code != 200:
+        logger.warning(
+            "approval_policies fetch: project %d returned %d; falling back to REQUIRE_ATTENTION",
+            project_id,
+            resp.status_code,
+        )
+        return None
+    try:
+        body = resp.json()
+    except ValueError:
+        logger.warning(
+            "approval_policies fetch: project %d returned non-JSON body",
+            project_id,
+        )
+        return None
+    policies = body.get("approval_policies") if isinstance(body, dict) else None
+    _policy_cache[project_id] = (now, policies)
+    return policies
+
+
+# ---------------------------------------------------------------------------
 # HITL resume (Kanban #986)
 # ---------------------------------------------------------------------------
 
@@ -537,6 +671,8 @@ async def _resume_hitl_task(
     task: dict[str, Any],
     raw_answer: Any,
     headers: dict[str, str],
+    *,
+    policy_rule_name: str | None = None,
 ) -> None:
     """Resume a single HITL-paused task with `raw_answer` from answer_history.
 
@@ -550,6 +686,12 @@ async def _resume_hitl_task(
            - HITLError raised → BLOCKED with halt_reason = error's halt_code
       5. Stamp resume_context.last_consumed_answered_at on the PATCH so a
          duplicate poll doesn't re-resume.
+
+    `policy_rule_name` (Kanban #957): when the resume was triggered by an
+    auto-approve policy hit, this is the matched rule's name — surfaced into
+    `status_change_reason` so `tasks_history` carries the audit trail
+    (per-policy audit log deferred to a later slice). None on operator-driven
+    resumes (the original #986 flow).
     """
     task_id = task["id"]
     question_payload = task.get("question_payload")
@@ -637,13 +779,21 @@ async def _resume_hitl_task(
         isinstance(final_state, dict) and final_state.get("__interrupt__")
     )
 
+    # Kanban #957 — when the resume was triggered by an auto-approve policy,
+    # prefix the status_change_reason so tasks_history captures which rule
+    # fired. Per-policy audit log column deferred (Phase 1 minimal).
+    policy_prefix = (
+        f"auto-approved by policy {policy_rule_name!r}: "
+        if policy_rule_name
+        else ""
+    )
+
     if halt is None and not fresh_interrupt:
+        reason_body = final_result or "(resumed; no final_result)"
         body: dict[str, Any] = {
             "process_status": STATUS_DONE,
             "completed_at": _now_iso(),
-            "status_change_reason": (final_result or "(resumed; no final_result)")[
-                :_REASON_MAX
-            ],
+            "status_change_reason": f"{policy_prefix}{reason_body}"[:_REASON_MAX],
             # Clear halt_reason now that the engine finished — leaving it set
             # would keep the FE banner up.
             "halt_reason": None,
@@ -658,12 +808,11 @@ async def _resume_hitl_task(
             halt_value = "question"
         else:
             halt_value = str(halt) if halt is not None else "question"
+        reason_body = final_result or f"halted: {halt_value}"
         body = {
             "process_status": STATUS_BLOCKED,
             "halt_reason": halt_value[:_HALT_REASON_MAX],
-            "status_change_reason": (final_result or f"halted: {halt_value}")[
-                :_REASON_MAX
-            ],
+            "status_change_reason": f"{policy_prefix}{reason_body}"[:_REASON_MAX],
             "resume_context": _stamped_resume_context(
                 task.get("resume_context"), answered_at
             ),

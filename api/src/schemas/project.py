@@ -329,6 +329,43 @@ class ProjectUpdate(BaseModel):
     # merges with defaults.
     health_thresholds: dict[str, Any] | None = Field(default=None)
 
+    # Kanban #957 (2026-05-17): per-project HITL approval policies. PATCH
+    # semantics — key-absent leaves unchanged (exclude_unset); explicit dict
+    # REPLACES the prior value (no deep merge — same as `agent_overrides` /
+    # `tools_config`); explicit `null` CLEARS to NULL (= no policies = every
+    # HITL prompt requires operator attention). Element shape is value-tolerant
+    # here (free-form dict) so the API doesn't 422 on a forward-compat shape
+    # the operator wants to stage before the evaluator learns it; the
+    # `approval_evaluator` service treats malformed shapes as
+    # REQUIRE_ATTENTION + logs a warning. Sample shape (validated by the
+    # service layer, not by Pydantic):
+    #
+    #     {
+    #       "rules": [
+    #         {
+    #           "name": "auto-approve small llm spend",
+    #           "match": {"text_contains": "spend", "amount_usd_lt": 5.0},
+    #           "action": "auto_approve",
+    #           "default_answer": "accept"
+    #         },
+    #         {
+    #           "name": "auto-deny git push to main",
+    #           "match": {"text_contains_all": ["git push", "main"]},
+    #           "action": "auto_deny"
+    #         }
+    #       ]
+    #     }
+    approval_policies: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Per-project HITL approval rules. JSONB object with key 'rules' "
+            "holding an ordered list; each rule has 'name', 'match' "
+            "(predicates), 'action' in {auto_approve, auto_deny}, and "
+            "optional 'default_answer'. First match wins; no match falls "
+            "back to REQUIRE_ATTENTION. See `services/approval_evaluator.py`."
+        ),
+    )
+
     # Kanban #953 (2026-05-17): per-project financial-separation columns.
     # All four PATCH-able. Semantics mirror description / halt_reason:
     # key-absent → leave unchanged; explicit null → CLEAR to NULL (legacy
@@ -444,6 +481,14 @@ class ProjectRead(BaseModel):
     # env defaults. `enabled=false` short-circuits the sweep for this project.
     # Value-tolerant on read (dict[str, Any]) for legacy / hand-edited resilience.
     health_thresholds: dict[str, Any] | None = None
+
+    # Kanban #957 (2026-05-17): per-project HITL approval policies. NULL =
+    # no policies (every HITL prompt requires operator attention). Value-
+    # tolerant on read (dict[str, Any]) for legacy / hand-edited resilience
+    # — mirrors `tools_config` / `health_thresholds` precedent. Writes still
+    # land via the PATCH path; the worker's evaluator validates shape on
+    # consumption and falls back to REQUIRE_ATTENTION on malformed values.
+    approval_policies: dict[str, Any] | None = None
 
     # Kanban #953 (2026-05-17): per-project financial-separation columns.
     # All four NULLABLE on the wire — legacy rows pre-migration carry NULL;

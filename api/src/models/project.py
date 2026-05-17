@@ -200,6 +200,19 @@ class Project(Base):
         nullable=True,
     )
 
+    # Kanban #957 (2026-05-17): per-project HITL approval policies. JSONB list
+    # of rules matched against pending `request_user_input` payloads — see
+    # migration 0033 for the element-shape contract + service layer at
+    # `services/approval_evaluator.py` for the evaluation order (first match
+    # wins; ANDed predicates within a rule). NULL = no policies; every HITL
+    # prompt requires operator attention (preserves pre-#957 behavior). No
+    # DB CHECK on shape; the worker tolerates malformed values gracefully
+    # (falls back to REQUIRE_ATTENTION + logs a warning).
+    approval_policies: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
     # Kanban #953 (2026-05-17): per-project financial-separation columns.
     # Each project becomes an isolated accounting unit. All four NULLABLE for
     # legacy-row resilience; fiscal_year_start + currency_default carry
