@@ -47,6 +47,7 @@ docker compose down
 ```powershell
 .\bin\reset.ps1
 ```
+The script will prompt you to type `WIPE` to confirm before dropping the database volume. Pass `-Yes` to skip the prompt in scripted contexts. The script refuses to run from a git worktree or a directory without `docker-compose.yml` (defense against accidentally wiping the wrong compose project).
 
 ## FAQ
 
@@ -124,6 +125,8 @@ The command registers the project in the Kanban and scaffolds the orchestration 
 
 Recently shipped:
 
+- ✅ **Defense-in-depth hardening (2026-05-17)** — 21 prevention layers landed across the database, API, LangGraph engine, and Claude Code hooks: postgres-role-level last-resort gate on destructive SQL, lifespan DB-allowlist validation, payload size caps, content moderation on task creation, agent-context sanitisation, LLM safety prelude prepended to every prompt, scaffold rate limit, recurrence template caps, and more. Full per-layer detail + verification evidence: `context/projects/agent-teams/shared/incidents/2026-05-17-resume-handoff.md`.
+- ✅ **Off-site encrypted backup** — Nightly `pg_dump` + `tar` + `age` encryption + S3/R2 upload with retention. Drilled end-to-end during the 2026-05-17 incident response (download → decrypt → restore in <2 seconds, zero data loss). Min-size check refuses to upload an empty-DB dump; retention pruner refuses to delete when fewer than 2 backups exist.
 - ✅ **AI task creation** — Click "AI Task" in the board header, describe what you want in plain English, and an LLM proposes the fields (title, description, type, priority, role) for you to review and tweak before confirming.
 - ✅ **Manual task creation form** — "+ New task" button in the board header opens a modal with all task fields; no API call needed.
 - ✅ **Dashboard live updates** — Cross-project dashboard auto-refreshes on every task / project change via the same SSE stream the per-project board uses.

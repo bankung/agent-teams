@@ -219,11 +219,21 @@ CLAUDE.md is loaded automatically — Claude is ready to act as Lead.
 
 ### Security-sensitive env vars
 
+All entries below are part of the 2026-05-17 hardening sprint (21/27 prevention layers shipped). Full incident postmortem + per-layer details: `context/projects/agent-teams/shared/incidents/2026-05-17-resume-handoff.md`.
+
 | Var | Default | Effect |
 |---|---|---|
+| `DB_NAME_ALLOWLIST` | `agent_teams,agent_teams_test` | api lifespan refuses to start if `engine.url.database` is not in this csv list (L8 / Kanban #1113). Also enforced by `BackupConfig.from_env()` so a rogue-DB backup cannot corrupt backup history. Defense against silent runtime DB-pointer drift. |
+| `LANGGRAPH_DB_NAME_ALLOWLIST` | `agent_teams,agent_teams_test` | langgraph lifespan refuses to start if `DATABASE_URI`'s extracted db name is not in this csv list AND URI must contain `search_path=langgraph` (L7 / Kanban #1112). Closes the gap L8 didn't cover — langgraph uses a separate env var. |
+| `MIGRATION_TARGET` | unset (= refuse non-_test DBs) | Set to `live` to apply `alembic upgrade head` against the live `agent_teams` DB (L10 / Kanban #1117). Without it, env.py raises `RuntimeError` and no DDL runs. See [Live migration procedure](#live-migration-procedure-production--dev-db) below. |
+| `PYTEST_DB_PASSWORD` | dev fallback `pytest_runner_dev_only_NOT_FOR_PROD`, **MUST be rotated in prod** | DB-engine-layer gate (L4 / Kanban #1109). conftest binds pytest sessions to the `pytest_runner` postgres role which has SELECT-only on live `agent_teams` and full DDL/DML on `agent_teams_test`. Even if every software layer fails, postgres itself refuses destructive ops on live. Verified live with bypass-all-defenses test → `permission denied for table tasks`. |
+| `BYPASS_LIVE_DB_PYTEST_HOOK` | unset | PowerShell hook `block-pytest-on-live-db.ps1` (L1 + L1.5 / Kanban #1119) honours `=1` as escape valve, emits `[BYPASS] ...` marker to stderr for audit. Applies to all 4 DENY paths (parent-shell env, inline bash env, docker exec pytest, python -c bypass). |
+| `DOCKER_PYTEST_VERIFIED` | unset (= refuse docker exec pytest) | Narrower attestation than the blanket bypass — set to `=1` in the same shell ONLY after running `docker compose exec api printenv DATABASE_URL` and confirming the container env points at `_test` DB. Targets the `docker compose exec ... pytest` path the hook can't otherwise verify from outside the container (L1.5 / Kanban #1119). |
 | `HITL_DEMO_ENABLED` | `1` in dev compose, **unset in prod** | Set to `"1"` to enable the `HITL demo —` title-prefix branch in `langgraph/nodes.py` (Kanban #1073 demo path). Leave unset/empty in production — without the gate, any authenticated user with task-create permission can trigger the hardcoded `request_user_input` interrupt branch just by prefixing their task title with `HITL demo —` (CWE-489 / OWASP A05, fixed in Kanban #1107). |
-| `PYTEST_DB_PASSWORD` | dev fallback in compose, **MUST be set in prod** | DB-engine-layer gate for the 2026-05-17 dev-DB-wipe incident — see the env var's comment block in `.env.example` for the full rationale. |
-| `BACKUP_MIN_BYTES` | `102400` (100 KB) | Defense against silent backup corruption when an empty/rogue DB gets dumped — runner aborts before upload if the pg_dump output is below this threshold. |
+| `BACKUP_MIN_BYTES` | `102400` (100 KB) | Defense against silent backup corruption when an empty/rogue DB gets dumped (L12 / Kanban #1120) — runner aborts before upload if the pg_dump output is below this threshold. Retention pruner also refuses to delete anything when < 2 backups exist. |
+| `REQUEST_MAX_BYTES` | `2097152` (2 MB) | FastAPI middleware short-circuits with 413 on Content-Length above this (L18 / Kanban #1115). Defense-in-depth for the Pydantic field-level caps (title 200, description 20_000, halt_reason / status_change_reason 1_000, AC list 50). |
+| `RATE_LIMIT_PROJECTS_POST` | `5/minute` | slowapi rate limit on POST /api/projects per IP (L19 / Kanban #1124). Defense against scaffold DOS (FINDING #11: 20 POST in <5s = 20 folder creates). Soft-delete handler also moves `context/projects/<name>/` → `context/projects/.deleted/<name>-<ts>/` for archival vs orphan accumulation. |
+| `MAX_ACTIVE_CHILDREN_DEFAULT` | `100` | Recurrence template safety cap (L21 / Kanban #1125) — `fire_template` halts the template (BLOCKED + `halt_reason='max_active_children_reached'`) when active children reach the cap. Per-template override via `tasks.max_active_children` column. Closes FINDING #13 (runaway `* * * * *` template spawning 1440 children/day). |
 
 ---
 
@@ -559,11 +569,18 @@ To apply a migration to the live `agent_teams` DB:
 The conftest is unaffected: every pytest invocation builds `agent_teams_test` which satisfies the `_test` suffix and skips the gate transparently.
 
 ### Reset everything (DEV ONLY)
-Drop containers + volume + DB content:
-```bash
-docker compose down -v
+Use the hardened wrapper script (L13 / Kanban #1127):
+```powershell
+.\bin\reset.ps1            # interactive: prompts you to type 'WIPE' to confirm
+.\bin\reset.ps1 -Yes       # CI / scripted bypass
 ```
-`-v` removes the named volume `agent-teams-pgdata` — Postgres re-initializes on the next `up`.
+```bash
+./bin/reset.sh             # interactive: prompts you to type 'WIPE'
+./bin/reset.sh --yes       # CI / scripted bypass
+```
+Both scripts pin `-p agent-teams` on the `docker compose down -v` call (defense vs cwd / worktree / multi-installation drift) and refuse to run from `.claude/worktrees/` or from a directory without `docker-compose.yml`. `-v` removes the named volume `agent-teams-pgdata` — Postgres re-initializes on the next `up`.
+
+If you must call docker directly, the equivalent is `docker compose -p agent-teams down -v` — the `-p agent-teams` flag is critical when multiple compose projects exist on the same host.
 
 ### A subagent claims it edited shared/ or standards/
 **Check:** `git status` / `git diff` against `context/projects/*/shared/` and `context/standards/`.
