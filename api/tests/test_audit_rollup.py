@@ -27,6 +27,7 @@ from src.models.project import Project
 from src.models.session import Session as SessionModel
 from src.models.session import SessionCompact, SessionRun
 from src.models.task import Task, TaskHistory
+from tests.helpers.db_safety import assert_test_db_or_die
 
 
 # ---- fixtures: scoped DB purge so each test starts from a known baseline ---
@@ -47,6 +48,7 @@ async def empty_db():
     so sweep after) → projects.
     """
     async with SessionLocal() as session:
+        assert_test_db_or_die(session)  # L6 gate: refuse if not a _test DB
         await session.execute(delete(SessionCompact))
         await session.execute(delete(SessionRun))
         await session.execute(delete(SessionModel))

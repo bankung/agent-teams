@@ -38,6 +38,8 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import delete, select
 
+from tests.helpers.db_safety import assert_test_db_or_die
+
 
 def _unique_name(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
@@ -852,6 +854,7 @@ async def test_cascade_delete_on_hard_task_delete(
 
     # Hard delete the parent task via ORM (test DB only — avoids raw-DML audit
     # trip while still exercising the FK cascade path).
+    assert_test_db_or_die(db_session)  # L6 gate: refuse if not a _test DB
     await db_session.execute(delete(Task).where(Task.id == task_id))
     await db_session.commit()
 

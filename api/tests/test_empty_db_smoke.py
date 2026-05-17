@@ -43,6 +43,7 @@ from src.models.project import Project
 from src.models.session import Session as SessionModel
 from src.models.session import SessionCompact, SessionRun
 from src.models.task import Task, TaskHistory
+from tests.helpers.db_safety import assert_test_db_or_die
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -66,6 +67,7 @@ async def _purge_db_for_empty_smoke():
     the seed pattern stays single-source-of-truth.
     """
     async with SessionLocal() as session:
+        assert_test_db_or_die(session)  # L6 gate: refuse if not a _test DB
         await session.execute(delete(SessionCompact))
         await session.execute(delete(SessionRun))
         await session.execute(delete(SessionModel))

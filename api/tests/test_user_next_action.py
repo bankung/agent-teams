@@ -31,6 +31,7 @@ from src.db import SessionLocal
 from src.models.project import Project
 from src.models.session import Session as SessionModel
 from src.models.session import SessionCompact, SessionRun
+from tests.helpers.db_safety import assert_test_db_or_die
 from src.models.task import Task, TaskHistory
 from src.services.next_action_ranker import (
     AGING_HOURS_FULL,
@@ -59,6 +60,7 @@ async def _purge_db_per_test():
     cross-project queries see only the tasks we explicitly create.
     """
     async with SessionLocal() as session:
+        assert_test_db_or_die(session)  # L6 gate: refuse if not a _test DB
         await session.execute(delete(SessionCompact))
         await session.execute(delete(SessionRun))
         await session.execute(delete(SessionModel))
