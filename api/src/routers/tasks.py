@@ -37,6 +37,7 @@ from src.services.ai_task_parser import (
     MissingApiKey as AiMissingApiKey,
     parse_task_text,
 )
+from src.services.content_moderation import scan_task_payload
 from src.services.is_pending import assert_is_pending_with_process_status
 from src.services.recurrence import fire_template, next_cron_fire
 from src.services.budget_enforcer import check_budget
@@ -80,6 +81,28 @@ _DETAIL_FIRE_NOW_NOT_TEMPLATE_TEMPLATE = (
 _DETAIL_FIRE_NOW_MAX_CHILDREN_TEMPLATE = (
     "Task id={task_id} is at max_active_children cap; template halted. "
     "Resolve open children or raise max_active_children to resume."
+)
+
+# Kanban #1122 (L15 prevention): a template that wants to run unattended
+# (run_mode=auto_headless AND is_template=true) must be explicitly confirmed
+# by a human via POST /api/tasks/{id}/confirm-template-auto-run BEFORE its
+# next fire. Resolved-final 422 surfaces on POST (Pydantic) and on the PATCH
+# router-side check below. Source-text-locked by
+# test_template_auto_run_confirm — keep both in sync.
+_DETAIL_TEMPLATE_AUTO_RUN_NEEDS_CONFIRM = (
+    "is_template=true AND run_mode='auto_headless' requires "
+    "template_auto_run_confirmed_at to be set (per-template confirmation, "
+    "Kanban #1122 L15). POST /api/tasks/{task_id}/confirm-template-auto-run first."
+)
+
+# Kanban #1121 (L14 prevention): a task whose author-supplied content matched
+# a destructive-intent pattern in services/content_moderation.py carries
+# requires_human_review=true. The auto-headless gate below refuses any PATCH
+# that resolves run_mode=auto_headless on such a row. Source-text-locked by
+# test_content_moderation — keep both in sync.
+_DETAIL_REQUIRES_HUMAN_REVIEW = (
+    "task requires human review before auto-run (matched fields: {matched}). "
+    "PATCH requires_human_review=false explicitly to unblock."
 )
 
 # #771 cross-row rejections → 422; parent_task_id legacy → 400 (do not migrate)
@@ -832,11 +855,32 @@ async def create_task(
     # test in test_routes_smoke.py — keep in sync with services/run_mode.py.
     await assert_consent_for_run_mode(session, payload.project_id, payload.run_mode)
 
+    # Kanban #1121 (L14 prevention): scan author-supplied fields for
+    # destructive-intent patterns. The scanner is pure (no DB I/O) — runs here
+    # AFTER the consent gate so a clearly-bad POST surfaces consent issues
+    # first (consent is the bigger blast-radius gate). A match TAGS the row
+    # via requires_human_review=true; downstream auto-pickup paths (worker
+    # L17, auto-headless PATCH gate below) honor the tag. Empty list = clean,
+    # falsy in Python.
+    moderation_matches = scan_task_payload(
+        title=payload.title,
+        description=payload.description,
+        acceptance_criteria=payload.acceptance_criteria,
+        halt_reason=payload.halt_reason,
+        status_change_reason=payload.status_change_reason,
+    )
+
     # #801 — model_dump(mode='json') coerces datetime → str for JSONB writes; pattern reused for sibling fields below. See standards/sqlalchemy/orm.md.
     payload_dict = payload.model_dump()
     # #858 — persist post-coerce values (no-op when interaction_kind='work')
     payload_dict["task_kind"] = coerced_task_kind
     payload_dict["run_mode"] = coerced_run_mode
+    # L14: stamp the flag iff the scanner matched. A clean POST leaves the
+    # column at its DB DEFAULT (false). Note we do NOT raise here — the tag
+    # is non-blocking by design; the operator may legitimately FILE
+    # destructive work, only auto-headless is gated.
+    if moderation_matches:
+        payload_dict["requires_human_review"] = True
     if payload_dict.get("acceptance_criteria") is not None:
         payload_dict["acceptance_criteria"] = [
             c.model_dump(mode="json") for c in payload.acceptance_criteria
@@ -1160,6 +1204,100 @@ async def update_task(
 
     await assert_consent_for_run_mode(session, task.project_id, resolved_run_mode)
 
+    # Kanban #1122 (L15 prevention) resolved-final check: a row that lands at
+    # is_template=true AND run_mode='auto_headless' MUST also have a non-null
+    # template_auto_run_confirmed_at. Resolve all three the same way as the
+    # other resolved-final gates above (PATCH-supplied if present, else
+    # existing row's value). Fires AFTER consent (which is the broader gate —
+    # project-level consent must be granted first; then the per-template L15
+    # confirm refines it). Detail string source-text-locked above.
+    resolved_template_auto_run_confirmed_at = (
+        updates["template_auto_run_confirmed_at"]
+        if "template_auto_run_confirmed_at" in updates
+        else task.template_auto_run_confirmed_at
+    )
+    if (
+        resolved_is_template is True
+        and resolved_run_mode == TaskRunMode.AUTO_HEADLESS
+        and resolved_template_auto_run_confirmed_at is None
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=_DETAIL_TEMPLATE_AUTO_RUN_NEEDS_CONFIRM.format(task_id=task_id),
+        )
+
+    # Kanban #1121 (L14 prevention) — scan + auto-headless gate.
+    #
+    # Step 1: scan the PATCH-supplied content fields (title / description /
+    # acceptance_criteria / halt_reason / status_change_reason) for
+    # destructive intent. We pull from `updates` rather than `payload`
+    # because:
+    #   (a) `updates` already has `exclude_unset=True` applied — fields the
+    #       caller didn't touch are absent, so the scanner doesn't waste
+    #       cycles on the row's stored value (which by definition was
+    #       already scanned on its OWN POST/PATCH).
+    #   (b) The acceptance_criteria + question_payload entries in `updates`
+    #       are already model_dump'd to dicts (see #801 pattern above) when
+    #       the caller supplied them, so the scanner's dict-or-model
+    #       fallback handles them cleanly.
+    #
+    # The PATCH-only scan deliberately differs from POST's full-payload scan:
+    # POST has no prior row state, so every author-field is in scope. PATCH
+    # only inspects the diff — a row that landed flagged on a prior scan
+    # stays flagged via the resolved-final logic below regardless of whether
+    # the current PATCH touches the originally-matched field.
+    patch_moderation_matches = scan_task_payload(
+        title=updates.get("title"),
+        description=updates.get("description"),
+        acceptance_criteria=updates.get("acceptance_criteria"),
+        halt_reason=updates.get("halt_reason"),
+        status_change_reason=updates.get("status_change_reason"),
+    )
+
+    # Step 2: resolve the final requires_human_review value.
+    #   (a) Caller-supplied (in `updates`) wins — that's the reviewer-ack
+    #       channel (PATCH `requires_human_review=false` clears the flag).
+    #   (b) Otherwise, sticky-on-match: a fresh PATCH-scan hit escalates
+    #       false → true; an unmatched scan does NOT auto-clear (one-way).
+    #   (c) Otherwise, the row's existing stored value carries forward.
+    if "requires_human_review" in updates:
+        resolved_requires_human_review = updates["requires_human_review"]
+    elif patch_moderation_matches:
+        resolved_requires_human_review = True
+        # Stamp into `updates` so the value persists alongside the rest of
+        # the PATCH. The no-op skip a few blocks below will silently drop
+        # the field if it equals the row's current value, so this doesn't
+        # generate audit-row noise when a previously-flagged task gets
+        # another flagged PATCH.
+        updates["requires_human_review"] = True
+    else:
+        resolved_requires_human_review = task.requires_human_review
+
+    # Step 3: auto-headless gate. If the row would land at
+    # run_mode='auto_headless' AND requires_human_review is True, refuse
+    # the PATCH with 422 and the source-text-locked detail. This is the
+    # primary enforcement point — the scanner TAGS, this gate BLOCKS auto-
+    # pickup. Note the gate fires REGARDLESS of whether the caller is
+    # PATCHing run_mode in this body (a flipped flag + an existing
+    # auto_headless row is the same risk surface as an explicit flip).
+    if (
+        resolved_run_mode == TaskRunMode.AUTO_HEADLESS
+        and resolved_requires_human_review is True
+    ):
+        # Build the matched-fields list for the error detail. Prefer the
+        # patch-scan result (fresh signal); if empty (the flag came from an
+        # earlier scan), say "previously flagged" so the operator knows the
+        # gate is firing on stored state rather than the current PATCH.
+        matched_for_detail = (
+            ", ".join(patch_moderation_matches)
+            if patch_moderation_matches
+            else "previously flagged"
+        )
+        raise HTTPException(
+            status_code=422,
+            detail=_DETAIL_REQUIRES_HUMAN_REVIEW.format(matched=matched_for_detail),
+        )
+
     # V3+ T2 (Kanban #707): if a template's recurrence_rule or timezone changes,
     # recompute next_fire_at from now() unless the client explicitly supplied
     # one in the same PATCH (cron is TZ-sensitive — even a TZ-only flip means
@@ -1342,6 +1480,64 @@ async def update_task(
 
     await session.refresh(task)
     return task
+
+
+@router.post(
+    "/{task_id}/confirm-template-auto-run",
+    status_code=http_status.HTTP_200_OK,
+)
+async def confirm_template_auto_run(
+    task_id: int,
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Kanban #1122 (L15 prevention): stamp the per-template auto-headless
+    confirmation timestamp.
+
+    Idempotent — re-POSTing on an already-confirmed template overwrites the
+    timestamp with `now()` (intentionally; a re-confirm signals the operator
+    has re-reviewed the template). Returns
+    `{"task_id": int, "confirmed_at": ISO8601}`.
+
+    Errors:
+    - 404 if task not found or soft-deleted.
+    - 400 on cross-project header mismatch.
+    - 422 if the task is not a template (`is_template=false`).
+
+    NOTE: does NOT require the task to already be `run_mode='auto_headless'`.
+    Operators can pre-confirm a template (run_mode='auto_pickup') before
+    flipping it to auto_headless — the resolved-final check on PATCH enforces
+    the actual cross-column rule.
+    """
+    task = await get_or_404(
+        session, Task, detail=f"Task id={task_id} not found", id=task_id
+    )
+    if task.status == RecordStatus.DELETED:
+        raise HTTPException(
+            status_code=404, detail=f"Task id={task_id} not found"
+        )
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+
+    if not task.is_template:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "template_auto_run_confirmed_at only meaningful for templates "
+                "(is_template=true)"
+            ),
+        )
+
+    # Use a Python-side UTC datetime so the return value is a real datetime
+    # (not a SQL func expression) — easier to consume on the wire + in tests.
+    now = datetime.now(timezone.utc)
+    task.template_auto_run_confirmed_at = now
+    task.updated_at = func.now()
+    await session.commit()
+    await session.refresh(task)
+    return {
+        "task_id": task_id,
+        "confirmed_at": task.template_auto_run_confirmed_at,
+    }
 
 
 @router.post(

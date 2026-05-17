@@ -286,6 +286,19 @@ class TaskCreate(BaseModel):
     # (a template that wants more than 10k concurrent children probably
     # shouldn't be a recurrence template at all — file separate tasks).
     max_active_children: int | None = Field(default=None, ge=1, le=10_000)
+    # Kanban #1122 (2026-05-17, L15 prevention) — per-template auto-headless
+    # confirmation timestamp. Only meaningful when is_template=true AND
+    # run_mode='auto_headless'. Cross-column rule enforced by
+    # _validate_template_auto_headless_confirmed below: a POST that sets
+    # BOTH is_template=true AND run_mode='auto_headless' requires this field
+    # to be non-null. The standard create flow is:
+    #   1. POST /api/tasks with run_mode='auto_pickup' (or any non-headless),
+    #   2. POST /api/tasks/{id}/confirm-template-auto-run (stamps timestamp),
+    #   3. PATCH /api/tasks/{id} run_mode='auto_headless' (now passes the rule).
+    # The endpoint is the only normal writer; this field is accepted on POST
+    # only to support test fixtures and replay/import workflows that already
+    # carry a confirmed timestamp.
+    template_auto_run_confirmed_at: datetime | None = None
     # Kanban #771 (2026-05-12): single-blocker dependency. None = unblocked;
     # non-null = points at the task that blocks this one. Same-project +
     # existence + not-self checks happen in the router (need DB lookup).
@@ -304,15 +317,23 @@ class TaskCreate(BaseModel):
     # files a task that's pending external input). min_length=1 rejects "" at
     # 422; explicit null = unhalt (PATCH semantics, no _reject_explicit_null
     # validator). Parity with `description`, `working_path`, etc.
-    halt_reason: str | None = Field(default=None, min_length=1, max_length=2_000)
+    # Kanban #1115 (L18, 2026-05-17) — initial cap of 2000.
+    # Kanban #1123 (L16, 2026-05-17) — TIGHTENED to 1000. The agent-context
+    # sanitizer (services/agent_context_sanitizer.py) caps at 500 on the way
+    # IN to LLM prompts; the wider DB cap leaves room for operator audit
+    # context (verbose halt rationale recorded for UI display) while still
+    # bounding attacker-controlled fluff at the API boundary.
+    halt_reason: str | None = Field(default=None, min_length=1, max_length=1_000)
     # Kanban #854 (2026-05-13): free-form rationale captured on a
     # process_status flip — most commonly when the user cancels a task
     # (process_status -> 6). Independent of the value: any PATCH may set
     # it. None / absent on POST → NULL in DB. min_length=1 rejects ""
     # at 422 (parity with halt_reason / description). Audit-trigger
     # snapshot captures the field automatically — no separate plumbing.
-    # Kanban #1115 (2026-05-17, L18) — max_length=2000 cap.
-    status_change_reason: str | None = Field(default=None, min_length=1, max_length=2_000)
+    # Kanban #1115 (L18, 2026-05-17) — initial cap of 2000.
+    # Kanban #1123 (L16, 2026-05-17) — TIGHTENED to 1000 (parity with
+    # halt_reason; same agent-context sanitizer protection on the LLM side).
+    status_change_reason: str | None = Field(default=None, min_length=1, max_length=1_000)
     # Kanban #797 (2026-05-12): optional structured exit-criteria array. Each
     # element validated by AcceptanceCriterion (text required, status Literal,
     # etc.). PATCH semantics for the field on TaskUpdate mirror description /
@@ -398,6 +419,29 @@ class TaskCreate(BaseModel):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _validate_template_auto_headless_confirmed(self) -> "TaskCreate":
+        """Kanban #1122 (L15 prevention): a POST that sets BOTH
+        is_template=true AND run_mode='auto_headless' MUST also carry a
+        non-null template_auto_run_confirmed_at. Without it the scheduler
+        would refuse to spawn children anyway (recurrence.fire_template gate)
+        — surfacing the 422 here is the friendlier outcome than a silently-
+        idle template the operator notices three days later.
+
+        Detail message source-text-locked: pinned by the test in
+        api/tests/test_template_auto_run_confirm.py. Includes the endpoint
+        name so the operator can act on the 422 without consulting docs.
+        """
+        if self.is_template and self.run_mode == TaskRunMode.AUTO_HEADLESS:
+            if self.template_auto_run_confirmed_at is None:
+                raise ValueError(
+                    "is_template=true AND run_mode='auto_headless' requires "
+                    "template_auto_run_confirmed_at to be set (per-template "
+                    "confirmation, Kanban #1122 L15). POST "
+                    "/api/tasks/{id}/confirm-template-auto-run first."
+                )
+        return self
+
 
 class TaskUpdate(BaseModel):
     """Request body for PATCH /api/tasks/{id} — all fields optional.
@@ -480,6 +524,38 @@ class TaskUpdate(BaseModel):
     #                       TODO in the same PATCH (or a follow-up) — the
     #                       cap alone doesn't un-halt the template.
     max_active_children: int | None = Field(default=None, ge=1, le=10_000)
+    # Kanban #1122 (2026-05-17, L15 prevention) — per-template auto-headless
+    # confirmation timestamp. PATCH-able only as a server-managed write path
+    # (the dedicated POST /api/tasks/{id}/confirm-template-auto-run is the
+    # normal writer; this field is exposed on TaskUpdate solely for backfill /
+    # explicit-null clear flows). Semantics:
+    #   - key absent      → leave unchanged (exclude_unset=True in router)
+    #   - explicit null   → clear (back to un-confirmed)
+    #   - non-null dt     → stamp (rare on PATCH; the endpoint is preferred)
+    # Cross-column rule (run_mode='auto_headless' + is_template requires
+    # non-null) is enforced router-side on RESOLVED final values, NOT here
+    # at the validator (mirrors the resolved-final pattern used for
+    # is_template+scheduled_at XOR — a single-field PATCH cannot see the
+    # existing row's other column from the schema layer).
+    template_auto_run_confirmed_at: datetime | None = None
+    # Kanban #1121 (2026-05-17, L14 prevention) — PATCH-able for the explicit
+    # human-review-cleared flow. Semantics:
+    #   - key absent      → leave unchanged (exclude_unset=True in router)
+    #   - explicit False  → reviewer ACKed; clears the flag so subsequent
+    #                       PATCHes can flip run_mode to auto_headless.
+    #   - explicit True   → operator manually flagging a task they want gated
+    #                       (rare; the scanner does this automatically).
+    # No `_reject_explicit_null` validator — the column is NOT NULL with DEFAULT
+    # FALSE, so `None` is semantically meaningless here; Pydantic's
+    # `Optional[bool]` accepts it, the router treats it as a no-op via
+    # `exclude_unset=True` if absent, and explicit-null PATCH would hit the
+    # NOT NULL constraint and 400 fallback (acceptable: callers should send
+    # false explicitly). The scanner ALSO runs on every PATCH — if the PATCH
+    # rewrites a flagged field to a clean value, the scanner does NOT
+    # auto-clear the flag (one-way sticky); the caller must include
+    # `requires_human_review=false` in the same PATCH if they want the
+    # flag dropped.
+    requires_human_review: bool | None = None
     # Kanban #771 (2026-05-12): PATCH-able. Semantics:
     #   - key absent      → leave unchanged (exclude_unset=True in router)
     #   - explicit null   → clear / unblock the task (null IS meaningful —
@@ -508,8 +584,11 @@ class TaskUpdate(BaseModel):
     #   - non-empty       → set halt reason
     # No _reject_explicit_null validator — parity with `description`,
     # `working_path`, etc.
-    # Kanban #1115 (2026-05-17, L18) — max_length=2000 cap.
-    halt_reason: str | None = Field(default=None, min_length=1, max_length=2_000)
+    # Kanban #1115 (L18, 2026-05-17) — initial cap of 2000.
+    # Kanban #1123 (L16, 2026-05-17) — TIGHTENED to 1000 (parity with
+    # TaskCreate; sanitizer caps at 500 on the LLM side, DB allows 1000
+    # for operator audit context).
+    halt_reason: str | None = Field(default=None, min_length=1, max_length=1_000)
     # Kanban #854 (2026-05-13): PATCH-able. Semantics:
     #   - key absent      → leave unchanged (exclude_unset=True in router)
     #   - explicit null   → clear the reason (null IS meaningful)
@@ -517,8 +596,10 @@ class TaskUpdate(BaseModel):
     #   - non-empty       → set / overwrite the reason
     # No _reject_explicit_null validator — parity with halt_reason / description.
     # Most common use: paired with `{"process_status": 6}` on a cancel PATCH.
-    # Kanban #1115 (2026-05-17, L18) — max_length=2000 cap.
-    status_change_reason: str | None = Field(default=None, min_length=1, max_length=2_000)
+    # Kanban #1115 (L18, 2026-05-17) — initial cap of 2000.
+    # Kanban #1123 (L16, 2026-05-17) — TIGHTENED to 1000 (parity with
+    # TaskCreate halt_reason).
+    status_change_reason: str | None = Field(default=None, min_length=1, max_length=1_000)
     # Kanban #797 (2026-05-12): PATCH-able. Semantics:
     #   - key absent      → leave unchanged (exclude_unset=True in router)
     #   - explicit null   → clear the array (null IS meaningful — column is
@@ -764,6 +845,19 @@ class TaskRead(BaseModel):
     # concurrently-active children. Backfilled to NULL on existing rows by
     # migration 0035's nullable=true. NULL = use env default at fire-time.
     max_active_children: int | None = None
+    # Kanban #1122 (2026-05-17) — L15 prevention per-template auto-headless
+    # confirmation timestamp. Backfilled to NULL on existing rows by
+    # migration 0036's nullable=true. NULL = un-confirmed (the scheduler
+    # refuses to spawn children if run_mode='auto_headless'). Stamped via
+    # POST /api/tasks/{id}/confirm-template-auto-run.
+    template_auto_run_confirmed_at: datetime | None = None
+    # Kanban #1121 (2026-05-17) — L14 prevention content-moderation tag. Set
+    # to TRUE by routers/tasks.py via the scanner in services/content_moderation.py
+    # when destructive intent matches in any author-supplied field. Backfilled
+    # to FALSE on existing rows by migration 0037's server_default. The auto-
+    # headless gate in routers/tasks.py refuses run_mode=auto_headless PATCHes
+    # while this is TRUE. Reviewer clears via PATCH requires_human_review=false.
+    requires_human_review: bool = False
     # Kanban #771 (2026-05-12) — single-blocker dependency. Backfilled to NULL
     # on existing rows by migration 0017's nullable=true. NULL = unblocked.
     blocked_by: int | None

@@ -99,6 +99,28 @@ async def fire_template(db: "AsyncSession", template: Task) -> Task | None:
     UPDATE on an already-BLOCKED row). Once operator un-halts (PATCH
     process_status back to TODO + clear halt_reason), normal spawn resumes.
     """
+    # L15 (#1122) per-template auto-headless confirmation gate — runs FIRST
+    # because it's a static prerequisite (no DB I/O) and a refusal here is
+    # idempotent / state-preserving (returns None without halting the
+    # template, so the next tick re-evaluates after operator confirmation).
+    # Contrast with L21 (cap) below, which DOES mutate template state on
+    # refusal — we want to avoid that state mutation when an earlier
+    # cheaper gate would have refused anyway.
+    if (
+        template.run_mode == "auto_headless"
+        and template.template_auto_run_confirmed_at is None
+    ):
+        logger.warning(
+            "recurrence.fire_template: REFUSING to spawn child of "
+            "template_id=%d — auto_headless template without per-template "
+            "confirmation (L15, Kanban #1122). Spawn skipped; "
+            "next_fire_at not advanced. POST "
+            "/api/tasks/%d/confirm-template-auto-run to confirm.",
+            template.id,
+            template.id,
+        )
+        return None
+
     # L21 cap gate — runs BEFORE the child INSERT so we don't leak a half-spawn.
     cap_env = os.environ.get("MAX_ACTIVE_CHILDREN_DEFAULT")
     cap_default = int(cap_env) if cap_env else _MAX_ACTIVE_CHILDREN_DEFAULT_FALLBACK

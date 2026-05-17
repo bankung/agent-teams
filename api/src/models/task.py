@@ -248,6 +248,36 @@ class Task(Base):
         Integer,
         nullable=True,
     )
+    # Kanban #1122 (2026-05-17): L15 prevention — per-template auto-headless
+    # confirmation timestamp. Only meaningful on rows with is_template=true
+    # AND run_mode='auto_headless'. NULL = not yet confirmed; the scheduler
+    # refuses to spawn children from this template (fire_template returns
+    # None, advance is skipped). Non-null = a human POSTed
+    # /api/tasks/{id}/confirm-template-auto-run. No DB CHECK — the cross-
+    # column rule is app-layer-only (mirrors run_mode='auto_headless' needs
+    # project.auto_run_consent_at pattern in services/run_mode.py).
+    template_auto_run_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    # Kanban #1121 (2026-05-17): L14 prevention — content-moderation tag.
+    # Set to TRUE by `routers/tasks.py` on POST + PATCH when the scanner in
+    # `src/services/content_moderation.py` matches a destructive-intent pattern
+    # in any of (title, description, acceptance_criteria[*].text, halt_reason,
+    # status_change_reason). The auto-headless gate refuses
+    # `run_mode=auto_headless` PATCHes on flagged rows — reviewer must
+    # explicitly clear via PATCH `requires_human_review=false`. NOT NULL with
+    # server_default=false so existing rows backfill cleanly via migration
+    # 0037. Sticky: false → true happens on every scan-match; true → false
+    # ONLY via an explicit caller-supplied PATCH (the router never re-clears
+    # the flag based on a scan, even if the PATCH rewrites a flagged field
+    # to a clean value — clearing requires a deliberate human ack).
+    requires_human_review: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+        default=False,
+    )
     # Kanban #771 (2026-05-12): single-blocker dependency. NULL = unblocked;
     # non-null = points at the task that blocks this one. ON DELETE SET NULL
     # (NOT CASCADE) — hard-deleting a blocker must NOT delete the blocked task.
