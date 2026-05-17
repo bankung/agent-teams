@@ -20,6 +20,12 @@ binds its module-level engine to the test DB. The session-scoped fixture
 below drops + creates the DB, runs alembic upgrade, runs seed, then drops the
 DB on teardown. See context/projects/agent-teams/shared/decisions.md for the
 locked design rationale.
+
+2026-05-17 incident response (L2 prevention): `_live_db_row_count_invariant`
+previously silenced ALL pre-snapshot failures via a bare `except Exception:
+yield; return`, hiding live-DB drift for the entire session. The guard now
+emits a loud `UserWarning` (markers: "DISABLED", "2026-05-17") and retries
+once before accepting a genuine offline state.
 """
 
 from __future__ import annotations
@@ -117,16 +123,32 @@ async def _live_db_row_count_invariant():
                 result[tbl] = int(n)
         return result
 
+    import warnings
+
     try:
         pre = await _counts()
-    except Exception:
-        # If the live DB isn't reachable (CI without it, dev workstation
-        # offline), skip the invariant rather than mis-fire. The two import-
-        # time checks in `tests/test_db_isolation.py` remain as the load-
-        # bearing canary.
-        await live_engine.dispose()
-        yield
-        return
+    except Exception as _first_exc:
+        warnings.warn(
+            f"_live_db_row_count_invariant: pre-snapshot failed ({_first_exc!r}). "
+            "Live-DB guard DISABLED for this session — row-count drift will NOT be "
+            "detected. See 2026-05-17 incident postmortem for why this is loud now.",
+            UserWarning,
+            stacklevel=2,
+        )
+        # Retry once — absorbs transient connection blips without disabling the guard.
+        try:
+            pre = await _counts()
+        except Exception as _retry_exc:
+            warnings.warn(
+                f"_live_db_row_count_invariant: retry also failed ({_retry_exc!r}). "
+                "Guard staying DISABLED — accepting genuine offline/CI state. "
+                "DISABLED marker: 2026-05-17.",
+                UserWarning,
+                stacklevel=2,
+            )
+            await live_engine.dispose()
+            yield
+            return
 
     yield
 

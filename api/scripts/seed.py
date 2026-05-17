@@ -8,17 +8,27 @@ not already exist. Does NOT scaffold the on-disk folder — agent-teams already
 has hand-written shared docs we must not overwrite.
 
 Exits 0 on success or "already seeded"; non-zero on any DB / connection error.
+
+NOTE on imports (2026-05-17 incident L3 fix): `from src.db import ...` is
+INTENTIONALLY deferred into the `_seed()` / `_main()` function bodies. Putting
+it at module top would resolve `get_settings()` (and the module-level engine
+build inside src.db) at import time — and `scripts.seed` is itself imported
+from inside pytest's conftest setup fixture, which means the engine could
+bind to whatever DATABASE_URL was visible BEFORE conftest's in-process rewrite.
+The defensive `endswith("_test")` gate at the top of `_seed()` is the
+belt-and-suspenders that catches the bug class even if the lazy import races.
+See `context/projects/agent-teams/shared/incidents/2026-05-17-dev-db-wipe.md`.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 
 from sqlalchemy import select
 
 from src.constants import TaskPriority, TaskRole, TaskStatus
-from src.db import SessionLocal, engine
 from src.models.project import Project
 from src.models.task import Task
 from src.settings import get_settings
@@ -81,6 +91,30 @@ def _sample_tasks(project_id: int) -> list[Task]:
 
 
 async def _seed() -> int:
+    # Resolve engine + SessionLocal at call time, not module-import time.
+    # Module-level import would cache the URL via get_settings()'s @lru_cache
+    # before conftest's in-process DATABASE_URL rewrite runs — see 2026-05-17
+    # incident postmortem at
+    # context/projects/agent-teams/shared/incidents/2026-05-17-dev-db-wipe.md.
+    from src.db import SessionLocal, engine
+
+    # Defensive gate — refuse to seed a non-test DB unless explicitly
+    # acknowledged. Catches the lru_cache-poisoning class of bug even if
+    # everything upstream (conftest rewrite, harness hook, etc.) misbehaves.
+    # endswith("_test") rejects 'agent_teams' but accepts 'agent_teams_test'
+    # (does NOT accept e.g. 'agent_teams_test_subname' — only true _test suffix).
+    url_str = str(engine.url)
+    db_name = engine.url.database or ""
+    if not db_name.endswith("_test"):
+        if os.environ.get("SEED_TARGET") != "production":
+            raise RuntimeError(
+                f"_seed(): refusing to seed against URL {url_str!r} — "
+                f"DB name {db_name!r} does not end with '_test'. "
+                "If this IS intended (initial production seed), set "
+                "env SEED_TARGET=production and re-run. "
+                "See context/projects/agent-teams/shared/incidents/2026-05-17-dev-db-wipe.md."
+            )
+
     async with SessionLocal() as session:
         existing = await session.execute(
             select(Project).where(Project.name == PROJECT_NAME)
@@ -105,6 +139,9 @@ async def _seed() -> int:
 
 
 async def _main() -> int:
+    # Lazy-import engine for the same reason as _seed() above — see header NOTE.
+    from src.db import engine
+
     try:
         return await _seed()
     finally:

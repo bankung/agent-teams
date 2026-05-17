@@ -324,6 +324,11 @@
             "type": "command",
             "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-bitdefender-triggers.ps1\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-pytest-on-live-db.ps1\"",
+            "timeout": 5
           }
         ]
       },

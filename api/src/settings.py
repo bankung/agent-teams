@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
 from pathlib import Path
 
 from pydantic import Field, field_validator
@@ -63,7 +62,17 @@ class Settings(BaseSettings):
         return v
 
 
-@lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Cached settings accessor — call from app/Alembic env.py."""
+    """Settings accessor — call from app / Alembic env.py / scripts.
+
+    INTENTIONALLY NOT cached (`@lru_cache` removed 2026-05-17 per the
+    dev-DB-wipe incident L3 fix). Settings construction is microsecond-cheap;
+    caching the singleton lets the FIRST `get_settings()` call's
+    DATABASE_URL bind to the module-level engine in `src.db` PERMANENTLY,
+    even when conftest later rewrites `os.environ["DATABASE_URL"]` to the
+    test DB. Re-reading env on each call costs nothing measurable and
+    eliminates a whole class of test-isolation poisoning.
+
+    See `context/projects/agent-teams/shared/incidents/2026-05-17-dev-db-wipe.md`.
+    """
     return Settings()
