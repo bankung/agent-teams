@@ -17,9 +17,12 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import FastAPI
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy.engine.url import make_url
 from starlette.middleware.cors import CORSMiddleware
 
+from src.middleware.rate_limit import limiter
 from src.middleware.request_size import request_size_middleware
 from src.routers import audit as audit_router
 from src.routers import events as events_router
@@ -250,6 +253,23 @@ def create_app() -> FastAPI:
     # Content-Length exceeds REQUEST_MAX_BYTES (default 2 MB). See
     # src/middleware/request_size.py for hammer-test FINDING #10 context.
     app.middleware("http")(request_size_middleware)
+
+    # Kanban #1124 (2026-05-17, L19 prevention) — per-IP rate limit on routes
+    # that allocate disk resources (POST /api/projects scaffolds a folder).
+    # Attach the limiter to app.state so the @limiter.limit decorator on the
+    # route can find it via the slowapi-injected `request` arg. The middleware
+    # propagates rate-limit headers (X-RateLimit-*); the exception handler
+    # converts a RateLimitExceeded into a 429 response.
+    app.state.limiter = limiter
+    app.add_middleware(SlowAPIMiddleware)
+
+    @app.exception_handler(RateLimitExceeded)
+    async def _rate_limit_handler(request, exc: RateLimitExceeded):  # type: ignore[no-untyped-def]
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            {"detail": f"Rate limit exceeded: {exc.detail}"},
+            status_code=429,
+        )
 
     @app.get("/health", tags=["meta"])
     async def health() -> dict[str, str]:

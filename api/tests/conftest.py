@@ -331,6 +331,29 @@ async def _setup_test_database():
 
 
 @pytest.fixture(autouse=True)
+def _reset_rate_limiter_per_test():
+    """Reset slowapi's in-memory rate-limit counter between tests.
+
+    Kanban #1124 (L19 prevention) — POST /api/projects is limited to
+    `5/minute` per IP. Under ASGITransport every test "client" appears as
+    127.0.0.1, so without this reset the counter accumulates across the
+    session and any subsequent test that POSTs more than 5 projects from
+    a fresh limiter perspective sees an unexpected 429.
+
+    Reset via slowapi.Limiter.reset() which clears all buckets in the
+    in-memory MovingWindowStorage. No-op when slowapi isn't yet installed
+    (defensive guard for import-time failures during initial migration).
+    """
+    try:
+        from src.middleware.rate_limit import limiter
+
+        limiter.reset()
+    except Exception:
+        pass
+    yield
+
+
+@pytest.fixture(autouse=True)
 async def _reset_engine_pool_per_test():
     """Drop the async engine's connection pool before each test so connections
     re-bind to whatever loop the current test is running on. Without this,
@@ -397,6 +420,16 @@ def scaffold_cleanup():
         target = repo_root / "context" / "projects" / name
         if target.exists():
             shutil.rmtree(target, ignore_errors=True)
+
+        # Kanban #1124 (L19 prevention) — DELETE /api/projects/{id} now MOVES
+        # the scaffolded folder to context/projects/.deleted/<name>-<ts>/
+        # rather than leaving it in place. Sweep those archive dirs too so a
+        # full test run doesn't leak hundreds of `.deleted/` dirs into the
+        # working tree.
+        deleted_root = repo_root / "context" / "projects" / ".deleted"
+        if deleted_root.exists():
+            for archived in deleted_root.glob(f"{name}-*"):
+                shutil.rmtree(archived, ignore_errors=True)
 
 
 @pytest.fixture

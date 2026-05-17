@@ -17,10 +17,12 @@ clears other rows; GET /api/projects/active returns 410 Gone (use
 from __future__ import annotations
 
 import logging
+import shutil
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi import status as http_status
 from sqlalchemy import Integer, select
 from sqlalchemy.exc import IntegrityError
@@ -30,6 +32,7 @@ from sqlalchemy.sql.elements import ClauseElement
 
 from src.constants import RecordStatus, TaskRunMode, TaskStatus  # TaskStatus.CANCELLED used by stats
 from src.db import get_or_404, get_session
+from src.middleware.rate_limit import _projects_post_limit, limiter
 from src.models.project import Project
 from src.models.session import Session as SessionModel
 from src.models.session import SessionRun
@@ -343,7 +346,9 @@ async def get_project_by_id(
 
 
 @router.post("", response_model=ProjectRead, status_code=http_status.HTTP_201_CREATED)
+@limiter.limit(_projects_post_limit)
 async def create_project(
+    request: Request,  # required by slowapi key_func — not used in handler body
     payload: ProjectCreate,
     session: AsyncSession = Depends(get_session),
 ) -> Project:
@@ -621,4 +626,34 @@ async def delete_project(
     project.updated_at = func.now()
 
     await session.commit()
+
+    # Kanban #1124 (2026-05-17, L19 prevention) — archive the scaffolded
+    # folder instead of leaving it to accumulate. Hammer-test FINDING #11
+    # showed soft-delete cleans the DB row but NOT the disk folder; over time
+    # `context/projects/` fills with orphaned dirs.
+    #
+    # Design choice: MOVE to `context/projects/.deleted/<name>-<ts>/` rather
+    # than hard `rmtree`. This preserves the on-disk audit trail (operator can
+    # recover content, or run a periodic janitor against `.deleted/`). The
+    # timestamp suffix ensures successive soft-deletes of a project that was
+    # restored + re-deleted (a future capability) don't collide.
+    #
+    # Side effect — failure is NON-FATAL: the DB row is the source of truth
+    # for the soft-delete; a filesystem error must not roll back the commit.
+    try:
+        src_dir = Path(get_settings().repo_root) / "context" / "projects" / project.name
+        if src_dir.exists():
+            deleted_dir = (
+                Path(get_settings().repo_root) / "context" / "projects" / ".deleted"
+            )
+            deleted_dir.mkdir(exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            dst = deleted_dir / f"{project.name}-{ts}"
+            shutil.move(str(src_dir), str(dst))
+    except Exception:
+        logger.exception(
+            "delete_project: failed to archive scaffolded folder for project %d",
+            project_id,
+        )
+
     return Response(status_code=http_status.HTTP_204_NO_CONTENT)

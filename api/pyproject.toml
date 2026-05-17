@@ -29,6 +29,10 @@ dependencies = [
     # for encryption (single-recipient public-key, private key stays offline).
     "boto3>=1.43,<2.0",
     "pyrage>=1.2,<2.0",
+    # Kanban #1124 (L19 prevention) — per-IP rate limit on POST /api/projects.
+    # In-memory storage (default) is fine for single-instance docker-compose dev;
+    # production-scale would swap to a Redis backend via slowapi config.
+    "slowapi>=0.1.9,<1.0",
 ]
 
 [project.optional-dependencies]
