@@ -278,6 +278,14 @@ class TaskCreate(BaseModel):
     # forbids re-parenting lineage). Optional + ge=1 so regular user POSTs
     # default to None.
     spawned_from_task_id: int | None = Field(default=None, ge=1)
+    # Kanban #1125 (2026-05-17, L21 prevention) — per-template cap on
+    # concurrently-active children. Only meaningful when is_template=true
+    # (the scheduler ignores it on non-template rows). NULL = use env default
+    # MAX_ACTIVE_CHILDREN_DEFAULT (currently 100). ge=1 mirrors the DB CHECK
+    # ck_tasks_max_active_children_positive; le=10000 is a sanity ceiling
+    # (a template that wants more than 10k concurrent children probably
+    # shouldn't be a recurrence template at all — file separate tasks).
+    max_active_children: int | None = Field(default=None, ge=1, le=10_000)
     # Kanban #771 (2026-05-12): single-blocker dependency. None = unblocked;
     # non-null = points at the task that blocks this one. Same-project +
     # existence + not-self checks happen in the router (need DB lookup).
@@ -460,6 +468,18 @@ class TaskUpdate(BaseModel):
     # declared so we can REJECT it explicitly; explicit-null is treated
     # identically to a non-null value.
     spawned_from_task_id: int | None = Field(default=None, ge=1)
+    # Kanban #1125 (2026-05-17, L21 prevention) — PATCH-able. Semantics:
+    #   - key absent      → leave unchanged (exclude_unset=True in router)
+    #   - explicit null   → clear (NULL — falls back to env
+    #                       MAX_ACTIVE_CHILDREN_DEFAULT at next fire)
+    #   - non-null int    → set / change the cap. Common use: bump the cap
+    #                       on a halted template (process_status=BLOCKED,
+    #                       halt_reason='max_active_children_reached') so
+    #                       the next tick can resume spawning. Operator
+    #                       must ALSO clear halt_reason + flip ps back to
+    #                       TODO in the same PATCH (or a follow-up) — the
+    #                       cap alone doesn't un-halt the template.
+    max_active_children: int | None = Field(default=None, ge=1, le=10_000)
     # Kanban #771 (2026-05-12): PATCH-able. Semantics:
     #   - key absent      → leave unchanged (exclude_unset=True in router)
     #   - explicit null   → clear / unblock the task (null IS meaningful —
@@ -740,6 +760,10 @@ class TaskRead(BaseModel):
     recurrence_timezone: str
     next_fire_at: datetime | None
     spawned_from_task_id: int | None
+    # Kanban #1125 (2026-05-17) — L21 prevention per-template cap on
+    # concurrently-active children. Backfilled to NULL on existing rows by
+    # migration 0035's nullable=true. NULL = use env default at fire-time.
+    max_active_children: int | None = None
     # Kanban #771 (2026-05-12) — single-blocker dependency. Backfilled to NULL
     # on existing rows by migration 0017's nullable=true. NULL = unblocked.
     blocked_by: int | None

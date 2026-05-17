@@ -73,6 +73,15 @@ _DETAIL_FIRE_NOW_NOT_TEMPLATE_TEMPLATE = (
     "Task id={task_id} is not a template; fire-now only applies to is_template=true"
 )
 
+# Kanban #1125 (L21 prevention): fire-now must respect the same cap as the
+# scheduler tick. When fire_template returns None (cap reached), surface
+# a 409 Conflict to the operator with the resolved cap so they know what
+# to do (resolve children OR raise max_active_children on the template).
+_DETAIL_FIRE_NOW_MAX_CHILDREN_TEMPLATE = (
+    "Task id={task_id} is at max_active_children cap; template halted. "
+    "Resolve open children or raise max_active_children to resume."
+)
+
 # #771 cross-row rejections → 422; parent_task_id legacy → 400 (do not migrate)
 
 # Kanban #771: maximum depth for the PATCH-time blocked_by cycle walk. Pins a
@@ -1375,6 +1384,15 @@ async def fire_now(
         )
 
     child = await fire_template(session, task)
+    if child is None:
+        # L21 (#1125): cap reached — template was halted in-place by fire_template
+        # (process_status flipped to BLOCKED, halt_reason set). Surface 409
+        # Conflict (not 400) since the request was syntactically valid but
+        # the resource state forbids the action.
+        raise HTTPException(
+            status_code=409,
+            detail=_DETAIL_FIRE_NOW_MAX_CHILDREN_TEMPLATE.format(task_id=task_id),
+        )
     return child
 
 

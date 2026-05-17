@@ -238,6 +238,16 @@ class Task(Base):
         ForeignKey("tasks.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Kanban #1125 (2026-05-17): L21 prevention — per-template cap on the
+    # number of concurrently-active children spawned by recurrence.fire_template.
+    # Only meaningful on is_template=true rows; non-template rows ignore it.
+    # NULL = use the env default (MAX_ACTIVE_CHILDREN_DEFAULT, currently 100)
+    # at fire-time. Mirror of migration 0035's CHECK predicate — defense-in-
+    # depth against raw-SQL writes of zero / negative values.
+    max_active_children: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
     # Kanban #771 (2026-05-12): single-blocker dependency. NULL = unblocked;
     # non-null = points at the task that blocks this one. ON DELETE SET NULL
     # (NOT CASCADE) — hard-deleting a blocker must NOT delete the blocked task.
@@ -415,6 +425,12 @@ class Task(Base):
         CheckConstraint(
             "audit_retry_count >= 0",
             name="ck_tasks_audit_retry_count_nonneg",
+        ),
+        # Kanban #1125 (2026-05-17): L21 prevention — max_active_children must
+        # be NULL or strictly positive. Mirror of migration 0035's CHECK.
+        CheckConstraint(
+            "max_active_children IS NULL OR max_active_children > 0",
+            name="ck_tasks_max_active_children_positive",
         ),
         Index("ix_tasks_project_id", "project_id"),
         Index("ix_tasks_process_status", "process_status"),

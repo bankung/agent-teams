@@ -31,6 +31,7 @@ pg-advisory lock — out of scope per #707 spec.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -41,6 +42,12 @@ from sqlalchemy.sql import func
 
 from src.constants import RecordStatus, TaskStatus
 from src.models.task import Task
+
+# Kanban #1125 (2026-05-17): L21 prevention — env-configurable default for
+# max_active_children when the template's column is NULL. Picked at the
+# fire-time tick (not import time) via os.environ.get so test monkeypatches
+# can override per-test.
+_MAX_ACTIVE_CHILDREN_DEFAULT_FALLBACK = 100
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -66,7 +73,7 @@ def next_cron_fire(
     return nxt.astimezone(timezone.utc)
 
 
-async def fire_template(db: "AsyncSession", template: Task) -> Task:
+async def fire_template(db: "AsyncSession", template: Task) -> Task | None:
     """Spawn a child row from `template` and advance its next_fire_at.
 
     Used by both the scheduler tick (Path A) and the manual `fire-now` endpoint.
@@ -74,7 +81,64 @@ async def fire_template(db: "AsyncSession", template: Task) -> Task:
     `AFTER UPDATE OR DELETE ON tasks` only — project-wide audit policy skips
     INSERTs). Only the template's `next_fire_at` UPDATE is captured in
     `tasks_history`; the spawned child appears there once it is first mutated.
+
+    Kanban #1125 (2026-05-17, L21 prevention): before spawning, count active
+    children (status=ACTIVE AND spawned_from_task_id=template.id AND
+    process_status NOT IN (DONE, CANCELLED — terminal states)). If the count
+    has reached the cap (per-template `max_active_children` if non-null, else
+    env `MAX_ACTIVE_CHILDREN_DEFAULT`, fallback 100), HALT the template
+    (process_status=BLOCKED, halt_reason='max_active_children_reached',
+    status_change_reason set with the resolved cap + count for operator
+    debugging) and return None — NO child is spawned this tick. Operator
+    must resolve open children (mark them DONE / CANCELLED) or raise
+    `max_active_children` to resume. The next scheduler tick re-evaluates:
+    once the template is BLOCKED its `next_fire_at` is never visited again
+    (no Path-A filter on process_status, so a BLOCKED template with a stale
+    next_fire_at <= now() would still be picked up — but the cap check at
+    the TOP of fire_template re-fires and halts again, which is a no-op
+    UPDATE on an already-BLOCKED row). Once operator un-halts (PATCH
+    process_status back to TODO + clear halt_reason), normal spawn resumes.
     """
+    # L21 cap gate — runs BEFORE the child INSERT so we don't leak a half-spawn.
+    cap_env = os.environ.get("MAX_ACTIVE_CHILDREN_DEFAULT")
+    cap_default = int(cap_env) if cap_env else _MAX_ACTIVE_CHILDREN_DEFAULT_FALLBACK
+    cap = template.max_active_children if template.max_active_children is not None else cap_default
+
+    # Count active children: same project, spawned by this template, soft-active,
+    # process_status NOT in terminal states (DONE / CANCELLED). REVIEW / BLOCKED
+    # / IN_PROGRESS / TODO all count as "active children clogging the queue".
+    active_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(Task)
+            .where(
+                Task.spawned_from_task_id == template.id,
+                Task.status == RecordStatus.ACTIVE,
+                Task.process_status.notin_((TaskStatus.DONE, TaskStatus.CANCELLED)),
+            )
+        )
+    ).scalar_one()
+
+    if active_count >= cap:
+        logger.warning(
+            "recurrence.fire_template: template_id=%d has %d active children "
+            "(cap=%d) — halting template (no child spawned)",
+            template.id,
+            active_count,
+            cap,
+        )
+        template.process_status = TaskStatus.BLOCKED
+        template.halt_reason = "max_active_children_reached"
+        template.status_change_reason = (
+            f"recurrence template halted: {active_count} active children "
+            f"reached cap {cap}. Resolve open children or raise "
+            "max_active_children to resume."
+        )
+        template.updated_at = func.now()
+        await db.commit()
+        await db.refresh(template)
+        return None
+
     child = Task(
         project_id=template.project_id,
         parent_task_id=template.parent_task_id,
@@ -166,8 +230,13 @@ async def tick_once(
 
         for tpl in templates:
             try:
-                await fire_template(db, tpl)
-                spawned += 1
+                # L21 (#1125): fire_template returns None when the cap is hit —
+                # template gets halted in-place, no child spawned. Don't count
+                # halted ticks against `spawned` (it's an observability metric
+                # for actual child creates; halts are logged separately).
+                result = await fire_template(db, tpl)
+                if result is not None:
+                    spawned += 1
             except Exception:
                 logger.exception(
                     "recurrence.tick_once: fire_template failed template_id=%d",
