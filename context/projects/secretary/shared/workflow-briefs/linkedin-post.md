@@ -7,8 +7,8 @@
 
 ## Pre-flight (Lead checks)
 
-- [ ] `secretary/shared/linkedin-strategy.md` no `[TODO]` markers
-- [ ] `secretary/shared/voice.md` exists with sample posts
+- [ ] Lead extracted `operator_context` — recommended: `linkedin_handle` (sanity), `operator_themes` (3-5), `audience` OR `audience_NOT_for`, `stance_for_this_post` (optional); optional `operator_rss_feeds` for source augmentation
+- [ ] `general/voice-samples.md` exists (operator's authored samples) OR operator pastes 1+ sample inline with the request
 - [ ] Chrome MCP connected + LinkedIn logged-in
 - [ ] Operator stated topic OR confirmed "propose 3 candidates"
 - [ ] Today's date directory exists
@@ -17,7 +17,12 @@ If pre-flight fails → halt + report.
 
 ## Mode A — Topic provided by operator
 
-1. **Read knowledge base**: `linkedin-strategy.md`, `voice.md`
+1. **Read frameworks + operator_context + voice samples**:
+   - `shared/linkedin-strategy.md` — generic framework (hooks, CTA conventions, content sources)
+   - `shared/voice.md` — generic anti-patterns + tone framework
+   - `operator_context` from spawn brief — themes / audience / stance
+   - `general/voice-samples.md` (if exists) — operator's authored writing as voice exemplars
+   - If voice samples missing both in file AND spawn brief → drafts will be safer-but-blander; flag in HITL
 2. **Research the topic** (≤15 min):
    - `WebSearch` / `firecrawl-search` for recent angles
    - Read 2-3 reference articles, extract 1 specific insight from each

@@ -1,150 +1,183 @@
-# LinkedIn content strategy
+# LinkedIn content strategy — framework + generic sources
 
-> **Lead is the only writer of this file.** Operator dictates; Lead writes.
->
-> Used by secretary for: topic discovery, post drafting, comment drafting, content cadence. All posts pause for HITL approval before going live.
+> **Audience specifics, operator's personal LinkedIn URL, content themes operator wants to be known for ARE PII** (reveal positioning + identity). Operator injects per-session. This file holds the GENERIC framework + a starter list of operator-agnostic content sources.
 
-## Audience [TODO — operator fills]
+## Goal framework (operator selects per-session)
 
-Who is operator writing FOR on LinkedIn?
+Operator declares per-workflow what they're trying to get out of LinkedIn:
 
-- **Primary audience**: [TODO e.g. "Backend engineers + tech leads in Thailand/SEA who care about pragmatic AI integration"]
-- **Secondary audience**: [TODO e.g. "Founder/CTO at small SaaS, possible future clients/employers"]
-- **Audience NOT for**: [TODO e.g. "AI hypers, hustle-bro influencers — operator doesn't want this orbit"]
+```yaml
+session_goal: one_of:
+  - "build credibility for senior IC role"
+  - "build credibility for executive role (CTO / VP Eng)"
+  - "warm pipeline for next role / consulting"
+  - "thought-leadership on a specific topic"
+  - "share project work / build-in-public"
+  - "comment on industry trend"
 
-## Goals [TODO]
+audience: list (operator-provided per session)
+  - e.g. "backend engineers + tech leads in SEA who care about pragmatic AI integration"
+  - e.g. "founder/CTO at small SaaS"
+  - e.g. "operator's existing network at <industry>"
 
-What does operator want OUT of LinkedIn?
+audience_NOT_for: list (anti-audience)
+  - e.g. "AI hypers / hustle-bros / 'manifestation' crowd"
 
-- [TODO e.g. "Build credibility for senior backend / AI agent work — secondary goal: warm pipeline for next role / consulting"]
-- [TODO e.g. "NOT for sales / not for course launches / not for political opinions"]
+operator_themes: list (3-5 themes operator wants to be associated with)
+  - operator-provided per session
 
-## Content themes [TODO]
+anti_themes: list (NEVER draft on these regardless of operator's request)
+  - politics / nationalism (any direction)
+  - religion / spirituality
+  - hot takes on specific people / companies
+  - salary / financial / health / medical advice
+  - "I've heard..." / "people say..." content (no direct experience)
+```
 
-3-5 themes operator writes about. Specific enough that AI-drafted topics are recognizable.
+## Content format framework (operator-agnostic)
 
-1. **[Theme name]**: [TODO e.g. "Pragmatic AI agent engineering — concrete patterns from real production code, NOT speculative future-of-AI takes"]
-   - Sub-topics: [TODO e.g. "auditor pattern, HITL design, context budget, multi-agent orchestration"]
-   - Frequency: [TODO e.g. "1-2 posts/week"]
+### Default format mix (override per session)
 
-2. **[Theme name]**: [TODO e.g. "Backend craft — Python idioms, FastAPI/SQLAlchemy patterns, postgres tricks"]
-   - Sub-topics: [TODO]
-   - Frequency: [TODO]
+- 70% narrative paragraphs (personal experience / specific observation)
+- 20% short list with context (NOT raw listicle)
+- 10% screenshot + commentary (project shots, code, real artifacts)
 
-3. **[Theme name]**: [TODO e.g. "Solo SaaS / indie hacker mindset — building agent-teams in public, lessons from operator's projects"]
-   - Sub-topics: [TODO]
-   - Frequency: [TODO]
+### Length budgets (per `voice.md`)
 
-4. **[Theme name]**: [TODO if any — e.g. "Career notes — interviews, hiring, what good looks like"]
-   - Sub-topics: [TODO]
-   - Frequency: [TODO]
+- Standard post: 150-400 words
+- Long essay: 400-600 words (use sparingly)
+- Pure announcement: 30-80 words
 
-## Anti-themes
+### Hook conventions (banned + preferred)
 
-Topics secretary NEVER drafts on operator's behalf (even if trending):
+**Banned hooks:**
+- Question opener ("Have you ever wondered...?")
+- Generic motivational ("In today's fast-paced world...")
+- Statistic-only ("90% of devs don't...")
+- "I have a confession to make..."
 
-- Politics / religion / nationalism
-- Salary specifics / job-hunting drama (handle in DMs, not public)
-- Hot takes on people / companies (legal + reputation risk)
-- Generic motivational content / hustle-bro
-- Listicles that are content-thin ("10 things every X must know" without substance)
-- Anything operator hasn't directly experienced (no "I've heard...")
+**Preferred hooks (per voice.md):**
+- Specific observation ("Most agent frameworks treat failure as a timeout — auditor flips it.")
+- Contrarian frame ("Everyone says X. Here's why it's wrong.")
+- Personal anecdote opening ("Last week I spent 4 hours debugging...")
+- Concrete artifact reference ("This 3-line change saved 40% of our cost.")
 
-## Post format preferences [TODO]
+### CTA conventions
 
-- **Default length**: [TODO e.g. "150-300 words for technical posts; 400-600 for longer essays"]
-- **Format mix**: [TODO e.g. "70% narrative paragraphs, 20% short-list with context, 10% screenshot+commentary"]
-- **Hook style**: [TODO e.g. "open with a specific observation or contrarian frame, NEVER with a question"]
-- **CTA preference**: [TODO e.g. "soft CTAs only — 'curious how others handle this' beats 'comment your thoughts!'"]
-- **Hashtag count**: [TODO e.g. "2-4 max, lowercase, specific over generic"]
+- Soft CTAs only: "curious how others handle this" / "interested to hear if you've seen this"
+- BANNED: "comment your thoughts!" / "agree?" / "tag a friend" / "DM me for details"
 
-## Cadence
+### Hashtags
 
-- **Posting frequency target**: [TODO e.g. "2 posts/week — Tue + Fri, before 10am ICT for SEA timezone reach"]
-- **Engagement floor**: if a post gets <N impressions in 24h, don't post another for 48h (don't compound a bad reach window)
-- **Burst policy**: max 1 post / day even if multiple drafts ready
+- 2-4 max
+- Lowercase
+- Specific over generic (#langgraph beats #ai)
 
-## Content discovery sources [TODO operator fills]
+## Cadence framework
 
-Where secretary looks for topic ideas:
+- Posting frequency target: operator-defined per session OR session-default "2 posts/week"
+- Engagement floor: if <100 impressions in first 24h → don't compound with another post within 48h
+- Burst policy: max 1 post / day even if multiple drafts ready (looks spammy)
 
-### RSS feeds (curated, operator-approved)
-- [TODO e.g. "Hacker News top: https://news.ycombinator.com/rss"]
-- [TODO e.g. "Simon Willison's blog: https://simonwillison.net/atom/everything/"]
-- [TODO add operator's trusted technical sources]
+## Content discovery sources (operator-agnostic starter set)
 
-### Newsletters (operator-subscribed)
-- [TODO e.g. "TLDR AI, The Pragmatic Engineer"]
+Generic high-signal sources that work regardless of operator's niche. Operator overlays domain-specific sources per session.
 
-### Specific blogs / authors
-- [TODO]
+### RSS / news (engineering / AI)
+- Hacker News top: https://news.ycombinator.com/rss
+- Hacker News new: https://news.ycombinator.com/rss (filtered for niche)
+- TLDR AI archive: https://tldr.tech/api/latest/ai/rss
+- The Pragmatic Engineer: https://newsletter.pragmaticengineer.com/feed
+- Simon Willison: https://simonwillison.net/atom/everything/
+- arxiv-sanity recent ML: http://www.arxiv-sanity.com/top
+- LangChain blog: https://blog.langchain.com/rss/
+- Anthropic blog: https://www.anthropic.com/news (no RSS — secretary WebFetches periodically)
 
-### Recent topics operator has been thinking about (volatile, operator updates weekly)
-- [TODO e.g. "Anthropic's Computer Use, langgraph 1.x, MCP protocol adoption"]
+### Engineering blogs (RSS-enabled)
+- High Scalability: http://highscalability.com/rss.xml
+- Martin Fowler: https://martinfowler.com/feed.atom
+- Postgres weekly: https://postgresweekly.com/rss
 
-### What NOT to source from
-- Twitter (too noisy + format mismatch)
+### Public job-market signal (for content tied to hiring trends)
+- HN "Who's hiring": secretary fetches monthly thread
+
+### Sources to AVOID (low-signal for content)
+- Twitter / X (format mismatch + noise)
 - Reddit (sourcing it explicitly is fine; drafting "as seen on Reddit" feels lazy)
 - Other LinkedIn posts (don't be a remix account)
+- Generic "AI news roundup" newsletters (too shallow)
+
+### Operator-specific sources (session-time injection)
+
+```yaml
+operator_rss_feeds:
+  - <feed URLs operator subscribes to>
+operator_newsletter_subscriptions:
+  - <names>
+operator_recent_topics_thinking:
+  - <volatile, operator refreshes weekly>
+```
+
+OR operator stores in `general/operator-context.md` for persistence.
 
 ## Drafting protocol
 
-When operator asks "draft a linkedin post on [topic]" or "find 3 topic candidates":
+### Mode A — Operator provides topic
 
-### Find 3 topic candidates
-1. Scan content discovery sources for last 48h
-2. Filter to operator's themes
-3. Pick 3 with strongest "operator's specific angle" hook
-4. Surface to operator: title + 1-sentence angle + 1-sentence reason it fits
+1. Read `voice.md` + session-time injected `operator_themes` + `audience`
+2. Research topic (≤15 min Chrome MCP + WebFetch):
+   - Operator-specific sources first
+   - Generic sources second
+   - 2-3 references with 1 specific insight each
+3. Outline 3-5 points in `_scratch/linkedin-outline-{slug}.md`
+4. Draft in `general/linkedin-drafts-{date}/{slug}.md`
+5. Self-check:
+   - [ ] Voice.md anti-patterns clean
+   - [ ] No banned hooks
+   - [ ] CTA is soft (or absent)
+   - [ ] Em-dash budget within voice.md per-200w
+   - [ ] Length within session-target
+   - [ ] No anti-themes content
+   - [ ] No conclusion paragraph that restates body
+6. Return to Lead with draft path + 1-paragraph summary + self-check pass/fail
+7. Lead surfaces to operator: "approve, edit, save_for_later, skip?"
 
-### Draft 1 post
-1. Read `voice.md` thoroughly
-2. Outline 3-5 points
-3. Draft in `general/linkedin-draft-<date>-<slug>.md`
-4. Self-check against voice.md ANTI-PATTERNS — if any present, redraft
-5. HITL pause: "approve draft as-is, request edits, or skip?"
+### Mode B — Operator asks "find 3 topic candidates"
 
-### Reply to comment / DM (operator-initiated)
+1. Read `voice.md` + session-time `operator_themes` + `anti_themes`
+2. Scan content discovery sources (last 48h)
+3. Filter to operator's themes (NOT anti-themes)
+4. Score 3 candidates with operator's specific angle:
+   - Title (10-15 words)
+   - Angle (1 sentence — operator's specific take)
+   - Theme it fits
+   - Source(s) for backup
+5. Return to Lead (no draft yet) — operator picks 1
+6. Re-enter Mode A with picked topic
 
-- Read the original conversation
-- Draft a reply per voice.md (casual context unless DM is from a recruiter)
-- HITL pause always
-
-## Engagement automation rules
+## Engagement automation (Mode A defaults)
 
 Secretary CAN (no HITL):
-- Read comments on operator's posts (so operator can scan summary)
-- Read DMs from known senders (summarize for operator)
+- Read comments on operator's posts (summary for operator)
+- Read DMs from known senders (summary for operator)
 
-Secretary CANNOT (HITL or operator-only):
-- Reply to comments (HITL pause)
-- Reply to DMs (HITL pause)
+Secretary CANNOT (always HITL or operator-only):
+- Reply to comments / DMs
 - Like / react to other posts (operator-only — don't manage operator's social graph)
 - Connect / accept connection requests (operator-only)
 - Follow / unfollow (operator-only)
 
-## Tracking
+## Per-session output
 
-`general/linkedin-log-<YYYY-MM>.md`:
+`general/linkedin-log-{YYYY-MM}.md`:
 ```
-- 2026-05-17 — POSTED — "Auditor pattern in LangGraph" — 1200 chars — link: https://...
-- 2026-05-17 — DRAFT — "MCP vs OpenAI function calling" — operator marked "save for later"
-- 2026-05-18 — SKIPPED — "10 AI agent frameworks ranked" — voice.md anti-pattern (listicle)
+- 2026-05-18 — POSTED — "Auditor pattern in LangGraph" — 320 words — link: https://...
+- 2026-05-18 — DRAFT — "MCP vs OpenAI function calling" — operator marked "save for later"
+- 2026-05-18 — SKIPPED — "10 AI frameworks ranked" — voice.md anti-pattern (listicle)
 ```
 
-## Operator fill checklist
+## Tuning hooks
 
-- [ ] Audience (primary + secondary + NOT-for)
-- [ ] Goals (and explicit non-goals)
-- [ ] 3-5 themes with sub-topics + frequency
-- [ ] Anti-themes (don't-touch list)
-- [ ] Post format preferences (length / format mix / hook / CTA / hashtags)
-- [ ] Cadence target + bad-reach policy
-- [ ] RSS feeds (5-10 trusted sources)
-- [ ] Newsletter subscriptions list
-- [ ] Specific authors operator follows
-- [ ] Recent topics file (weekly-updated)
-- [ ] Drafting protocol confirmed
-- [ ] Engagement automation rules confirmed
-
-**Time estimate**: 20-30 min — themes + audience are the slow part; sources can grow over time.
+- **Generic sources**: edit this file (additions/removals propagate to all sessions)
+- **Operator's themes / audience**: session-time inject or `general/operator-context.md`
+- **Voice / format**: edit `voice.md`

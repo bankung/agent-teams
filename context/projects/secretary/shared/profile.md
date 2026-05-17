@@ -1,116 +1,104 @@
-# Operator profile
+# Operator identity — session-time injection convention
 
-> **Lead is the only writer of this file.** Operator dictates content; Lead writes.
+> **DO NOT fill PII into this file.** Operator identity (name, email signature, phone, resume path, exact employer, etc.) MUST be passed per-session, NEVER persisted to repo. Reasoning: repo is git-tracked; identity should be ephemeral + revocable at the conversation level.
 >
-> Used by secretary for: cover letter prefill, email signature, application form auto-fill, content attribution. Single source of truth for "who is the operator."
+> This file documents **how** operator provides identity each time secretary runs.
 
-## Identity [TODO — operator fills tonight]
+## Two ways to provide identity
 
-- **Full name (English)**: [TODO]
-- **Full name (Thai)**: [TODO]
-- **Preferred name / nickname**: [TODO]
-- **Pronouns**: [TODO if relevant]
-- **Date of birth / age**: [TODO if needed for job apps]
+### Option 1 — Inline at session start (RECOMMENDED)
 
-## Contact
+When operator opens Claude Code + binds to secretary project, type identity context inline with the first workflow command. Lead pulls fields out and passes to secretary's spawn brief.
 
-- **Primary email**: bankung99@gmail.com
-- **Phone (mobile)**: [TODO]
-- **LinkedIn URL**: [TODO]
-- **GitHub URL**: https://github.com/bankung
-- **Personal site / portfolio**: [TODO if any]
-- **Current location**: [TODO — city, country, timezone]
-- **Willing-to-relocate**: [TODO yes/no/conditions]
+**Example session start:**
 
-## Current role
+```
+operator: secretary ครับ
+Lead:     [bootstraps, binds project_id=599]
 
-- **Title**: [TODO e.g. "Senior Software Engineer at X"]
-- **Company**: [TODO]
-- **Tenure**: [TODO start date]
-- **Notice period required**: [TODO e.g. "2 weeks"]
-- **Comfortable to publicize search?**: [TODO yes/no/discreet — affects LinkedIn visibility settings]
+operator: triage today's inbox.
+          context for this session:
+            name: <Full Name>
+            signature: <how you sign off — first name only, "Best, X", etc.>
+            tone for unknowns: <formal-warm | casual | crisp>
+            priority senders: <2-5 emails/domains that always reply_now>
+            auto-archive: <patterns like "newsletter@*", "noreply+receipts@stripe.com">
 
-## One-line summary
+Lead:     [spawns secretary with operator_context above]
+```
 
-[TODO — 1 sentence the secretary uses in cover letter openings + LinkedIn About section.
+### Option 2 — Personal note file on disk (LOCAL ONLY, gitignored)
 
-Example: "Senior backend engineer specializing in Python/FastAPI + LangGraph agent orchestration, 8 years building data-heavy products in fintech and content tech."]
+If operator wants persistence across sessions WITHOUT git tracking, save a personal note at:
 
-## Long summary / About
+```
+context/projects/secretary/general/operator-context.md
+```
 
-[TODO — 2-3 paragraphs for resume / LinkedIn About. Should include:
-- Career arc (key roles / companies / outcomes)
-- Domain expertise (industries / problem types you specialize in)
-- What you're known for / signature skills
-- A line of personality / interests (humanizes the pitch)
-]
+This folder is **gitignored** (`general/` is per-role ephemeral state — see `.gitignore` line `context/projects/secretary/general`). Files inside survive across sessions but never get committed.
 
-## Resume / CV files
+Use this convention if you find typing identity at every session annoying. Lead will check the file at session start and surface a "loaded from general/operator-context.md" confirmation.
 
-- **Latest PDF location** (on operator's machine): [TODO absolute path]
-- **Last updated**: [TODO date]
-- **Version notes**: [TODO if multiple variants exist — e.g., "v3 emphasizes backend; v4 emphasizes AI/agent work"]
+**Risk:** the file lives on operator's disk. If operator backs up their machine to cloud, identity backs up too. Operator's call.
 
-> Secretary references the path when filling "upload resume" forms. Operator manually uploads via Chrome MCP file_upload during HITL approval (not auto-uploaded).
+## What identity fields secretary actually consumes
 
-## Skills (canonical list)
+For email triage:
+- **name** + **signature** (for draft signing)
+- **tone preferences** (overlays `voice.md` defaults)
+- **priority senders** (overlays `email-rules.md` rule shapes)
+- **auto-archive list** (overlays)
 
-Used by secretary to score job matches. Group by category.
+For job application:
+- **name** + **email** + **phone** + **LinkedIn URL** (for form prefill)
+- **resume path on disk** (for HITL-pause upload via Chrome MCP file_upload)
+- **target roles** (filters scoring)
+- **salary floor** (filters scoring)
+- **location preferences** (filters scoring)
+- **work authorization** (excludes jobs requiring sponsorship operator can't provide)
 
-### Languages / runtimes
-- [TODO e.g. Python (8y), TypeScript (4y), Go (1y, learning)]
+For LinkedIn post:
+- **name** (post attribution — already in operator's LinkedIn session)
+- **themes operator wants to be known for** (filters topic candidates)
+- **anti-themes** (rejects unwanted topics)
 
-### Frameworks / libraries
-- [TODO e.g. FastAPI, LangGraph, Next.js, React, SQLAlchemy, Pydantic]
+For ALL workflows:
+- **language preference** (Thai / English / mixed) — overlays `voice.md` "Language mix"
 
-### Infrastructure
-- [TODO e.g. PostgreSQL, Docker, Kubernetes, AWS, Tailscale]
+## Operator session-start template (copy + adapt)
 
-### AI / ML
-- [TODO e.g. LangChain, LangGraph, prompt engineering, agent orchestration, RAG]
+Save this in a personal note (outside repo) so it's easy to paste:
 
-### Domain knowledge
-- [TODO e.g. fintech compliance, content moderation, payment processing]
+```
+context for this session:
+  name: <Full English name as used on CV / LinkedIn>
+  signature: <how you sign off informally>
+  email: <primary email; bankung99@gmail.com is the public sample but use your real if different per context>
+  phone: <if needed for job forms>
+  linkedin_url: <https://linkedin.com/in/...>
+  resume_path: <absolute path on your machine>
+  target_roles: <list — e.g. CTO, Head of Engineering, Staff/Principal>
+  target_companies: <stage / industry / specific companies>
+  salary_floor: <currency + amount>
+  location: <Bangkok / remote / hybrid preference>
+  work_authorization: <citizenship / visa status if relevant>
+  tone_unknowns: <formal-warm | casual | crisp>
+  language: <Thai / English / mixed>
+  priority_senders: <list>
+  auto_archive: <patterns>
+  themes_to_be_known_for: <2-3 themes>
+  anti_themes: <topics to avoid publicly>
+```
 
-## Education
+Trim to what's relevant for the workflow you're starting. Email triage doesn't need salary_floor; job apply doesn't need themes_to_be_known_for; etc.
 
-- **Degree(s)**: [TODO]
-- **Institution(s)**: [TODO]
-- **Year(s)**: [TODO]
-- **Notable coursework / honors**: [TODO if recent enough to matter]
+## What this file does NOT contain (intentionally)
 
-## Certifications / continuous learning
+- ❌ Operator's actual name
+- ❌ Operator's resume path
+- ❌ Target job titles / companies
+- ❌ Salary numbers
+- ❌ Email priority sender list
+- ❌ Any other PII
 
-- [TODO list any AWS / GCP / vendor certs + year]
-
-## Languages (human)
-
-- [TODO e.g. Thai (native), English (professional working proficiency, IELTS X)]
-
-## Work authorization
-
-- **Citizenship / residency**: [TODO]
-- **Visa status (if applying outside home country)**: [TODO]
-
-## Personal preferences (secretary uses for filtering)
-
-- **Working hours**: [TODO e.g. "9-6 ICT, no weekends"]
-- **Remote / hybrid / onsite preference**: [TODO]
-- **Open to**: [TODO e.g. "remote globally; hybrid only in Bangkok; onsite only at Singapore/Tokyo offices"]
-- **Communication style preference**: [TODO e.g. "async-first; meetings ≤ 2/day"]
-
----
-
-## Operator fill checklist
-
-- [ ] Identity (name, contact, location)
-- [ ] Current role + visibility preference
-- [ ] One-line summary (for cover letter opener)
-- [ ] Long summary (for LinkedIn About)
-- [ ] Resume PDF path + last-updated date
-- [ ] Skills list (canonical groups)
-- [ ] Education + certs
-- [ ] Languages + work authorization
-- [ ] Working preferences
-
-**Time estimate**: 20-30 min if you have a recent CV; copy-paste then adapt.
+If you see PII in this file, it's a regression — strip and replace with the convention text above. Lead is the only writer; subagents flag the regression in their final report.

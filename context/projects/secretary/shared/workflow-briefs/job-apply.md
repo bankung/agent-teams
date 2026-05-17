@@ -7,18 +7,20 @@
 
 ## Pre-flight (Lead checks before spawn)
 
-- [ ] `secretary/shared/job-criteria.md` no `[TODO]` markers
-- [ ] `secretary/shared/profile.md` includes resume path + signature
-- [ ] `secretary/shared/voice.md` exists (cover letter tone)
+- [ ] Lead extracted `operator_context` — REQUIRED fields: `name`, `email`, `phone`, `linkedin_url`, `resume_path`, `target_roles`, `must_have_skills`, `salary_floor`, `location_preferences`, `work_authorization`, `sources` (jobsdb_url + linkedin_url). If any missing → ask operator to provide before spawning.
 - [ ] Chrome MCP connected + JobsDB + LinkedIn logged-in (operator pre-login)
-- [ ] Operator confirmed application volume cap for today (default: 5)
+- [ ] Operator confirmed application volume cap for today (default: 5; operator-overridable)
 - [ ] Today's date directory exists: `context/projects/secretary/general/{YYYY-MM-DD}/`
 
 If any pre-flight fails → halt + report.
 
 ## Secretary's expected workflow
 
-1. **Read knowledge base** (mandatory): `job-criteria.md`, `profile.md`, `voice.md`
+1. **Read frameworks + operator_context** (mandatory):
+   - `shared/job-criteria.md` — scoring algorithm + cover letter structure + anti-patterns
+   - `shared/voice.md` — generic voice anti-patterns
+   - `operator_context` from spawn brief — all PII for scoring + form prefill + cover letter signature
+   - If spawn brief lacks fields + `general/operator-context.md` exists → fallback (spawn brief OVERRIDES)
 2. **Compose search URLs** from criteria:
    - JobsDB: per `job-criteria.md` "Sources to check per run"
    - LinkedIn Jobs: per same section

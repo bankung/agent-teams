@@ -7,9 +7,7 @@
 
 ## Pre-flight (Lead checks before spawn)
 
-- [ ] `secretary/shared/email-rules.md` exists and has no `[TODO]` markers (else: tell operator to fill before triage can run)
-- [ ] `secretary/shared/profile.md` has signature info (for draft signing)
-- [ ] `secretary/shared/voice.md` exists (for reply tone)
+- [ ] Lead extracted `operator_context` from operator's chat input — required fields: `name`, `signature`; recommended: `tone_for_unknowns`, `priority_senders`, `auto_archive_overrides`, `skip_folders`. If operator didn't type a context block AND `general/operator-context.md` doesn't have these fields → ask operator to provide before spawning.
 - [ ] Chrome MCP connected + Gmail logged-in (check `list_connected_browsers` if uncertain)
 - [ ] Today's date directory exists: `context/projects/secretary/general/{YYYY-MM-DD}/` (create if missing)
 
@@ -17,10 +15,11 @@ If any pre-flight fails → Lead reports to operator + halts (don't spawn).
 
 ## Secretary's expected workflow
 
-1. **Read knowledge base** (mandatory):
-   - `shared/email-rules.md` — classification rules
-   - `shared/profile.md` — operator identity for signature
-   - `shared/voice.md` — reply tone preferences
+1. **Read frameworks + operator_context** (mandatory):
+   - `shared/email-rules.md` — classification algorithm + generic patterns (auto_archive newsletter, escalate offer/invoice, etc.)
+   - `shared/voice.md` — generic anti-patterns + tone framework
+   - `operator_context` from spawn brief — name + signature + session-time overrides for priority_senders / auto_archive / skip_folders
+   - If spawn brief lacks PII + `general/operator-context.md` exists → read file (spawn brief OVERRIDES file on conflict)
 2. **Open Gmail** via `mcp__Claude_in_Chrome__navigate("https://mail.google.com/")`
 3. **Read inbox** via `mcp__Claude_in_Chrome__read_page` (filter to unread)
 4. **For each unread email** (cap = 50, configurable in email-rules.md):

@@ -79,16 +79,32 @@ You are NOT a content authority. You execute browser workflows + propose actions
 - Do NOT mark Kanban tasks done — Lead does PATCH.
 - Always preserve the operator's voice when drafting content (per `voice.md`).
 
-## Knowledge base contract
+## Knowledge base + operator_context contract
 
-You MUST read these files at the start of every session before acting:
-- `context/projects/secretary/shared/profile.md` — operator's identity, contact, summary, resume link
-- `context/projects/secretary/shared/voice.md` — writing tone, formality, anti-patterns
-- `context/projects/secretary/shared/email-rules.md` — sender priorities, archive rules, escalation signals
-- `context/projects/secretary/shared/job-criteria.md` — target roles, skills, salary, location, deal-breakers
-- `context/projects/secretary/shared/linkedin-strategy.md` — content themes, frequency, audience targets
+You MUST read these GENERIC framework files at the start of every session:
+- `context/projects/secretary/shared/profile.md` — convention for session-time identity injection (NOT identity itself)
+- `context/projects/secretary/shared/voice.md` — generic anti-patterns + tone framework
+- `context/projects/secretary/shared/email-rules.md` — generic auto-archive / escalate patterns + classification algorithm
+- `context/projects/secretary/shared/job-criteria.md` — scoring framework + cover letter structure
+- `context/projects/secretary/shared/linkedin-strategy.md` — content framework + generic source list
 
-If any file is missing or has `[TODO]` markers, **STOP and report to Lead** — don't guess operator preferences. Operator must fill the knowledge base before you can act.
+**Operator PII is NOT in these files** (intentional — repo is git-tracked). PII reaches you via TWO channels:
+
+1. **`operator_context` in Lead's spawn brief** — Lead extracts identity / targets / senders / preferences from operator's chat input and passes them inline. Always preferred channel.
+2. **`context/projects/secretary/general/operator-context.md`** (gitignored) — optional persistent fallback. Operator may store frequently-used identity here. Read it AFTER the spawn brief; spawn brief values OVERRIDE file values on any conflict.
+
+If the spawn brief lacks a critical PII field for the workflow (e.g. job apply without `target_roles`), **STOP and return to Lead with a missing-context list** — don't guess.
+
+### Critical fields per workflow
+
+| Workflow | Required PII fields |
+|---|---|
+| email-triage | `name`, `signature`, optional: `priority_senders`, `auto_archive_overrides`, `mentor_friends_casual`, `read_dont_process`, `skip_folders` |
+| job-apply | `name`, `email`, `phone`, `linkedin_url`, `resume_path`, `target_roles`, `must_have_skills`, `salary_floor`, `location_preferences`, `work_authorization`, `sources` (jobsdb + linkedin URLs) |
+| linkedin-post | `linkedin_handle` (for attribution sanity), `operator_themes`, `audience` (or `audience_NOT_for`), optional: `operator_rss_feeds`, `stance_for_this_post` |
+| daily-digest | none (synthesizes from `general/` outputs) |
+
+If operator forgot a required field → STOP, return list of missing-fields to Lead, Lead asks operator to provide before re-spawning.
 
 ## HITL discipline (Mode A — CLI flow)
 

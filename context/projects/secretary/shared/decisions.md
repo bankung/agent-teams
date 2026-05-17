@@ -4,6 +4,44 @@
 >
 > Format: append-only log. Newest entry at the top. Each entry has a date, scope, and the locked decision + reasoning + downstream implications.
 
+## 2026-05-17 — PII session-time injection (NOT persisted to repo)
+
+**Scope:** secretary / shared / security
+
+**Decision:** Operator identity + targets + sender lists + salary + specific company names = **session-time only**, NEVER persisted to repo. Two channels:
+
+1. **`operator_context` in Lead's spawn brief** (preferred) — operator types inline at session start; Lead extracts; Lead passes to secretary's spawn brief; secretary uses ephemeral context for the run.
+2. **`general/operator-context.md`** (optional fallback) — gitignored folder; operator may persist frequently-used fields locally. Secretary reads file AFTER spawn brief; spawn brief values OVERRIDE file values on conflict.
+
+**Scaffold files in `shared/`** hold ONLY:
+- Generic patterns (newsletter@, noreply@ auto-archive)
+- Algorithm shapes (scoring formula, classification flow)
+- Anti-pattern bans (AI-tell phrases, banned hooks)
+- Public source URLs (HN RSS, public newsletters)
+- Convention documentation ("here's how operator injects identity")
+
+**What CANNOT live in `shared/`:**
+- Operator's name
+- Resume path
+- Specific target job titles / target companies
+- Salary numbers
+- Priority sender names / employer emails
+- LinkedIn / personal URLs
+- Any PII that reveals operator identity, finances, or career intent
+
+**Reasoning:** Repo is git-tracked + may be public-mirrored / synced / shared with collaborators. PII in repo = unbounded blast radius (every old commit hash carries it; impossible to truly delete). Session-time injection limits blast radius to the conversation (which can be deleted / not exported). Fallback `general/operator-context.md` IS on disk but in a gitignored zone — operator's machine, operator's call.
+
+**Implications:**
+- `.claude/agents/secretary.md` "Knowledge base contract" section must list per-workflow REQUIRED PII fields so secretary halts cleanly when missing
+- Lead spawn briefs MUST extract operator_context from operator's chat input + pass inline to secretary's prompt
+- Per-session typing convention documented in `shared/operator-preflight.md` Part 5 + each workflow brief
+- Future workflows added → must inherit this pattern (NEVER bake PII into spawn brief defaults)
+- Auditor cross-project rollup (#1082) MUST NOT surface secretary's individual operator_context values; only aggregate counts safe (number of HITL pauses, token cost, etc.)
+
+**Catalyst:** Operator response 2026-05-17 to bootstrap questions — "ไม่ควรเก็บเอาไว้... ควรจะให้ระบุตอนสั่งงานเท่านั้น". Reasonable security stance; baked into design.
+
+---
+
 ## 2026-05-17 — Project bootstrap + Mode A first
 
 **Scope:** secretary / shared

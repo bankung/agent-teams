@@ -1,122 +1,135 @@
-# Voice & writing style
+# Voice & writing style — framework + generic anti-patterns
 
-> **Lead is the only writer of this file.** Operator dictates; Lead writes.
+> **Operator voice samples are PII** (operator's authentic writing reveals identity + opinions). Samples go in `general/voice-samples.md` (gitignored), NOT here. This file holds the GENERIC anti-pattern bans + tone framework that applies regardless of operator.
 >
-> Used by secretary for: email replies, cover letter drafts, LinkedIn posts, any operator-attributed content. Captures the operator's voice so AI-drafted content sounds like them, not like generic AI prose.
+> Per-session overrides: operator can paste 1-2 voice samples inline at session start ("draft a linkedin post on X — match the voice of: [paste sample]").
 
-## Tone profile [TODO — operator fills with examples]
+## Tone framework (operator selects per-session)
 
-### Formality
+Secretary asks operator to pick ONE tone per workflow context. Defaults if operator skips:
 
-- **Email to strangers / cold outreach**: [TODO e.g. "formal but warm; signature with title; no emoji"]
-- **Email to known colleagues**: [TODO e.g. "casual, direct; first-name only; emoji OK in moderation"]
-- **LinkedIn public posts**: [TODO e.g. "professional but with personality; conversational; emoji sparingly"]
-- **LinkedIn DMs**: [TODO]
-- **Cover letters**: [TODO e.g. "confident, specific, no hyperbole; show don't tell"]
+| Context | Default if not specified |
+|---|---|
+| Email to strangers / cold outreach | formal-warm (professional but human; no emoji; signature with name) |
+| Email to known colleagues | crisp (short, direct; first name; emoji OK if domain-appropriate) |
+| LinkedIn public posts | conversational-confident (narrative + 1-2 hooks; emoji sparingly) |
+| LinkedIn DMs | crisp-friendly |
+| Cover letters | confident-specific (show > tell; no hyperbole; concrete claims) |
 
-### Sentence rhythm
-
-- **Length preference**: [TODO e.g. "mix — short punches paired with one longer sentence"]
-- **Paragraph length**: [TODO e.g. "2-3 sentences max for online content; 4-5 for emails"]
-- **Hooks**: [TODO e.g. "open with a contrarian observation or a personal anecdote, not a definition"]
-
-### Words / phrases to USE
-
-- [TODO list words/phrases that feel authentic to operator]
-- Example: "Let me think out loud for a sec...", "Here's what I'd actually do:", "Quick note:"
-
-### Words / phrases to AVOID
-
-- [TODO list AI-tells operator hates]
-- Common AI-tells to default-ban:
-  - "Delve into" / "navigate the landscape" / "in today's fast-paced world"
-  - "It's important to note that" / "It's worth noting that"
-  - "In conclusion" / "To summarize"
-  - "Indeed" / "moreover" / "furthermore" (overused transitions)
-  - Em-dashes at "thoughtful pause" frequency (1-2 per post max, not every paragraph)
-  - "Game-changer" / "revolutionary" / "cutting-edge"
-  - LinkedIn hustle-bro lingo: "grind", "hustle", "10x", "crushing it"
-
-### Punctuation tics
-
-- **Em-dashes**: [TODO e.g. "use sparingly — 1-2 per post max"]
-- **Ellipses**: [TODO e.g. "avoid in formal; OK in casual replies"]
-- **Exclamation points**: [TODO e.g. "max 1 per post; 0 in formal email"]
-- **Emoji**: [TODO e.g. "OK in LinkedIn posts (1-2); never in cover letters; OK in known-colleague email"]
-
-### Language mix
-
-- **Default**: [TODO e.g. "English for professional content; Thai with Thai-speaking known colleagues"]
-- **Mixing**: [TODO e.g. "OK to drop a Thai word in casual LinkedIn post for authenticity; never in cover letter"]
-
-## Voice samples [TODO — operator provides 2-3 of each]
-
-Drop in 2-3 examples of operator's actual writing for the secretary to pattern-match. The more raw + recent the better.
-
-### Email sample 1 (formal — cold outreach or reply to stranger)
-
+Operator overrides per-session:
 ```
-[TODO paste a recent example]
+tone for unknowns: <formal-warm | casual | crisp>
 ```
 
-### Email sample 2 (casual — to known colleague)
+## Generic anti-patterns (ALWAYS banned regardless of operator)
+
+These are AI-tell patterns universally hated by humans who know what AI sounds like. Secretary's self-check rejects any draft containing:
+
+### Phrase bans (case-insensitive)
+- "Delve into"
+- "Navigate the landscape" / "in today's fast-paced world" / "in today's rapidly evolving"
+- "It's important to note that" / "It's worth noting that"
+- "In conclusion" / "To summarize" / "In summary"
+- "Indeed" used as opener
+- "Moreover" / "furthermore" — max 1 per 400 words combined
+- "Game-changer" / "revolutionary" / "cutting-edge" / "paradigm shift"
+- "10x" / "crushing it" / "grind" / "hustle" (LinkedIn hustle-bro)
+- "I'm passionate about" (cover letter cliché)
+- "I believe my skills make me a strong fit"
+- "Looking forward to hearing from you" as default closer
+- "Hope this email finds you well"
+
+### Structural anti-patterns
+- Listicle when narrative is appropriate
+- Conclusion paragraph that just restates the body
+- Em-dash every paragraph (budget: ≤1 per 200 words)
+- Generic motivational opener ("In today's world...")
+- Hook = question ("Have you ever wondered...?")
+- 3+ rhetorical questions in a single post
+
+### Voice-tells (LLM giveaways)
+- Equal-length paragraphs (real humans have varied rhythm)
+- Bullet-point everything (real humans use prose for most things)
+- Every sentence starts with subject ("I" / "We" / "The") — vary openings
+- Triadic structures everywhere ("Fast, reliable, secure" stacked across 3 sentences)
+- AI-style "as an AI" disclaimers — NEVER (secretary writes AS the operator, not as itself)
+
+## Length budgets
+
+- Email (formal): 80-150 words ideal
+- Email (casual): 30-80 words ideal
+- LinkedIn post: 150-400 words
+- Cover letter: 200-350 words
+- LinkedIn DM reply: 1-3 sentences
+
+If draft exceeds budget by >20%, reject in self-check + redraft tighter.
+
+## Punctuation budget (per draft)
+
+| Mark | Email formal | Email casual | LinkedIn post | Cover letter |
+|---|---|---|---|---|
+| Em-dash | max 1 | max 2 | 1-2 per 200w | max 2 |
+| Exclamation | 0 | max 1 | 0-1 | 0 |
+| Ellipsis | 0 | OK | max 1 | 0 |
+| Emoji | 0 | max 2 | max 2 | 0 |
+| Rhetorical question | 0 | OK | max 1 | 0 |
+
+Over-budget → self-check fails → redraft.
+
+## Voice-sample loading
+
+Secretary reads `general/voice-samples.md` (gitignored, operator-curated) at the start of every drafting task. Shape:
+
+```markdown
+# Voice samples
+
+## Email — formal (cold / unknown)
+> [paste a real email operator wrote, 1-3 samples]
+
+## Email — casual (known colleague)
+> [paste samples]
+
+## LinkedIn post (well-performing)
+> [paste 1-3 posts operator authored that they're proud of]
+
+## Cover letter opener
+> [paste 1-2 cover letter openings that landed an interview]
+```
+
+If `general/voice-samples.md` is missing or empty, secretary uses the generic anti-patterns above only. Drafts will be safer-but-blander; operator's call whether to invest in samples.
+
+## Per-session sample injection (alternative to file)
+
+Operator can paste a sample inline with the workflow command:
 
 ```
-[TODO]
+operator: draft a linkedin post on the auditor pattern.
+          match this voice:
+          ---
+          [paste 1 sample]
+          ---
 ```
 
-### LinkedIn post sample 1
+Secretary uses pasted sample + generic anti-patterns + tone framework. Pasted samples are ephemeral (this session only).
+
+## Topic stance template (operator chooses per-session)
+
+For drafting on opinionated topics, operator declares stance:
 
 ```
-[TODO paste a recent LinkedIn post you wrote that performed well]
+operator: stance for this post:
+  contrarian-but-respectful | hot-take | neutral-summary | personal-experience
 ```
 
-### LinkedIn post sample 2
+Secretary shapes the draft accordingly. Default (if operator doesn't specify): `neutral-summary` for unknown topics, `personal-experience` if operator mentions "I" / "my project" / "I've been thinking" in the topic prompt.
 
-```
-[TODO another sample, different topic if possible]
-```
+## Anti-stance defaults (NEVER take these stances on operator's behalf)
 
-### Cover letter snippet sample
+- Politics / nationalism (any direction)
+- Religion
+- Hot takes on specific people / companies (legal + reputation risk)
+- Salary advice / financial advice
+- Health / medical advice
+- Anything operator hasn't directly experienced ("I've heard..." or "people say...")
 
-```
-[TODO opening paragraph of a recent cover letter — secretary uses as opener template]
-```
-
-## Topic preferences
-
-### Topics operator is comfortable opining on publicly
-
-- [TODO e.g. "Python / FastAPI engineering, agent architecture, LangGraph patterns, building solo SaaS"]
-
-### Topics operator AVOIDS publicly
-
-- [TODO e.g. "Politics, religion, salary specifics, employer details without permission, personal life details"]
-
-### Specific stances / takes operator wants to project
-
-- [TODO e.g. "Pragmatic over dogmatic; show working code over abstract theory; honest about tradeoffs"]
-
-## Anti-pattern signals
-
-When the secretary's draft drifts toward AI-generic, these signals tell Lead/operator to reject:
-- Three "It's important to note that..." in 5 paragraphs → reject
-- Em-dash every paragraph → reject, ask for rewrite
-- Listicle format when operator's voice samples are narrative → reject
-- Generic openers ("In today's rapidly evolving landscape...") → reject
-- Conclusion paragraph that restates the post → reject (cut the conclusion)
-
-## Operator fill checklist
-
-- [ ] Tone profile (formality across 5 contexts)
-- [ ] Sentence rhythm preferences
-- [ ] Words/phrases to USE (3-5 signature phrases)
-- [ ] Words/phrases to AVOID (operator-specific bans + defaults above)
-- [ ] Punctuation tics
-- [ ] Language mix policy
-- [ ] 2-3 email samples (formal + casual)
-- [ ] 2-3 LinkedIn post samples
-- [ ] 1 cover letter opening sample
-- [ ] Topic preferences (comfortable / avoid / stances)
-
-**Time estimate**: 30-45 min — the voice samples are the slow part; pick high-quality recent work.
+Secretary halts + escalates if operator's topic falls in this list.
