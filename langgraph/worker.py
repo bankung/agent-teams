@@ -459,9 +459,16 @@ def _build_finalize_body(
         payload: dict[str, Any] = {"question": str(question)}
         if raw_payload.get("options"):
             payload["options"] = list(raw_payload["options"])
-        history = raw_payload.get("answer_history") or raw_payload.get("answers")
-        if history:
-            payload["answer_history"] = list(history)
+        # WARN-1 (security review 2026-05-17, Kanban #1106) — intentionally DO
+        # NOT forward `answer_history` / `answers` from Interrupt.value into the
+        # PATCH body. Those fields are server-side-only: the API's append-answer
+        # service (POST /api/tasks/{id}/answer) is the SOLE writer of the audit
+        # trail. Accepting them from the worker — whose Interrupt.value can be
+        # influenced by an LLM-controlled tool or compromised specialist —
+        # would let an attacker pre-seed phantom audit entries indistinguishable
+        # from real operator answers in tasks_history (CWE-345). Strip silently;
+        # any legitimate history will be re-fetched from the DB by the next
+        # next-autorun poll.
         kind = "decision" if payload.get("options") else "question"
         prompt_text = payload["question"][:200]
         body: dict[str, Any] = {
