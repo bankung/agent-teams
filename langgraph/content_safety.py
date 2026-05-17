@@ -99,3 +99,66 @@ def scan_task_content(
         if regex.search(full):
             matched.append(name)
     return matched
+
+
+# ----------------------------------------------------------------------------
+# L23 prevention layer — agent-output sanitizer (Kanban #1126, 2026-05-17)
+# ----------------------------------------------------------------------------
+#
+# Worker-side copy of api/src/services/content_moderation.sanitize_agent_action.
+# Mirrored here for the same reason _DESTRUCTIVE_PATTERNS is mirrored: the
+# langgraph container has no runtime access to the `api/src` source tree.
+# When the L14/L17 refactor lands (a shared module both can import) this
+# duplicate goes away with it.
+#
+# CONTRACT: differs from `scan_task_content` above.
+#   - scan_task_content TAGS author content for a sticky human-review flag.
+#   - sanitize_agent_action REFUSES to forward an extracted command — caller
+#     treats None as "halt + escalate".
+#
+# Motivating incident: Phase 9B Ollama red-team finding (2026-05-17). When
+# asked to execute a destructive task, 2 of 3 Ollama models REFUSED but echoed
+# the dangerous SQL string verbatim inside their refusal explanation. If
+# downstream code (e.g., the worker's `_build_finalize_body` extracting
+# `final_result` into `status_change_reason`) forwards that text into an
+# executable or operator-trusted context, the SQL string could be picked up.
+#
+# Pattern set is intentionally TIGHTER than `_DESTRUCTIVE_PATTERNS` above:
+# only the truly-cannot-be-forwarded keywords. Author-time only matches
+# (GRANT/REVOKE prose, shell-escape mentions) deliberately stay OUT — a
+# refusal text legitimately discussing "we should not GRANT ALL" should still
+# be forwardable, and the L23 false-positive cost is "halt the task" not "ack
+# to unblock". The bar is higher.
+DANGEROUS_IN_ACTION = re.compile(
+    r"(?i)\b(DROP\s+(TABLE|DATABASE|SCHEMA|TRIGGER|FUNCTION)"
+    r"|TRUNCATE\b"
+    r"|DELETE\s+FROM\b"
+    r"|ALTER\s+TABLE\b.*\b(DISABLE|DROP)\s+(TRIGGER|CONSTRAINT))",
+    re.DOTALL,
+)
+
+
+def sanitize_agent_action(text: str | None) -> str | None:
+    """Return None if `text` contains destructive SQL — caller must escalate to a human.
+
+    Intended use: extracting an actionable command / next-step / status
+    message from agent free-form output BEFORE it lands in an executable or
+    operator-trusted context (e.g., the worker's status_change_reason field,
+    a recommender's next-step parser).
+
+    Contract:
+      - None / empty string in → same value out (no extraction happened).
+      - Clean text in → text out unchanged.
+      - Text containing a destructive SQL pattern → None.
+
+    Caller decides the policy: replace with a safe placeholder, drop the
+    field, or stamp a halt. This function makes the detection call only.
+
+    See incident 2026-05-17 Phase 9B (Ollama refused but echoed SQL) and the
+    L23 spec at _scratch/pending-kanban-2026-05-17/27-p2-bug-L23-agent-output-sanitizer.md.
+    """
+    if not text:
+        return text
+    if DANGEROUS_IN_ACTION.search(text):
+        return None
+    return text

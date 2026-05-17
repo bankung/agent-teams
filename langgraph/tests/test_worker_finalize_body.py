@@ -248,6 +248,114 @@ def test_finalize_body_hitl_strips_answers_alias_from_interrupt_value() -> None:
     assert body["question_payload"]["question"] == "What now?"
 
 
+# ===========================================================================
+# L23 (Kanban #1126) — sanitize agent output before it lands in PATCH body
+# ===========================================================================
+#
+# Phase 9B Ollama incident: even when REFUSING a destructive task, the local
+# LLMs echoed the SQL string verbatim in their refusal explanation. The
+# worker's `_build_finalize_body` extracts `final_result` directly into
+# `status_change_reason` — i.e., LLM free-form text crosses the LLM→operator
+# trust boundary right here. L23 sanitizes at the extraction site; the tests
+# below pin both directions of the contract for each finalize category.
+
+
+def test_finalize_body_done_sanitizes_destructive_final_result() -> None:
+    """L23: a "DONE" final_result that echoes destructive SQL is demoted to
+    BLOCKED + sanitized placeholder instead of forwarding the SQL string into
+    status_change_reason."""
+    final_state: dict[str, Any] = {
+        "halt_reason": None,
+        "final_result": (
+            "I refused the task because it contained "
+            "TRUNCATE tasks_history which would lose audit data."
+        ),
+    }
+    body = _build_finalize_body(final_state, completed_at=_FAKE_COMPLETED_AT)
+
+    # Demoted from DONE → BLOCKED.
+    assert body["process_status"] == STATUS_BLOCKED
+    assert body["halt_reason"] == "agent_output_sanitized"
+    # Placeholder text — the SQL string MUST NOT appear in the PATCH body.
+    assert "TRUNCATE" not in body["status_change_reason"]
+    assert "sanitized" in body["status_change_reason"]
+    # is_pending stays out (API validator rule).
+    assert body.get("is_pending", False) is not True
+
+
+def test_finalize_body_done_passes_clean_final_result_through() -> None:
+    """L23: a clean DONE final_result lands in status_change_reason unchanged."""
+    clean = "Implemented login endpoint; 4/4 AC verified."
+    final_state: dict[str, Any] = {
+        "halt_reason": None,
+        "final_result": clean,
+    }
+    body = _build_finalize_body(final_state, completed_at=_FAKE_COMPLETED_AT)
+
+    assert body["process_status"] == STATUS_DONE
+    assert body["status_change_reason"] == clean
+
+
+def test_finalize_body_halt_sanitizes_destructive_final_result() -> None:
+    """L23: a halted task with destructive content in final_result keeps its
+    halt_reason but the status_change_reason gets sanitized."""
+    final_state: dict[str, Any] = {
+        "halt_reason": "transient_error",
+        "final_result": "specialist halted: TRUNCATE tasks would lose data",
+    }
+    body = _build_finalize_body(final_state, completed_at=_FAKE_COMPLETED_AT)
+
+    assert body["process_status"] == STATUS_BLOCKED
+    # Engine-stamped halt_reason preserved.
+    assert body["halt_reason"] == "transient_error"
+    # status_change_reason sanitized — SQL string stripped.
+    assert "TRUNCATE" not in body["status_change_reason"]
+    assert "sanitized" in body["status_change_reason"]
+
+
+def test_finalize_body_interrupt_sanitizes_destructive_prompt() -> None:
+    """L23: an interrupt prompt that echoes destructive SQL is replaced with a
+    safe placeholder in status_change_reason. The question_payload itself is
+    unchanged (it's an audit record of what the engine actually asked); the
+    sanitization happens only at the operator-trusted status field."""
+    final_state: dict[str, Any] = {
+        "__interrupt__": [
+            SimpleNamespace(
+                value={
+                    "question": (
+                        "Should I run DELETE FROM tasks_history "
+                        "WHERE older_than 90d?"
+                    ),
+                }
+            )
+        ],
+    }
+    body = _build_finalize_body(final_state, completed_at=_FAKE_COMPLETED_AT)
+
+    assert body["process_status"] == STATUS_BLOCKED
+    assert body["halt_reason"] == "question"
+    # status_change_reason had the prompt substituted with placeholder.
+    assert "DELETE" not in body["status_change_reason"]
+    assert "sanitized" in body["status_change_reason"]
+
+
+def test_finalize_body_interrupt_clean_prompt_unchanged() -> None:
+    """L23: a clean interrupt prompt flows through to status_change_reason
+    unchanged (no false-positive on benign questions)."""
+    final_state: dict[str, Any] = {
+        "__interrupt__": [
+            SimpleNamespace(
+                value={"question": "Which database role should I use?"}
+            )
+        ],
+    }
+    body = _build_finalize_body(final_state, completed_at=_FAKE_COMPLETED_AT)
+
+    assert body["process_status"] == STATUS_BLOCKED
+    assert body["halt_reason"] == "question"
+    assert "Which database role should I use?" in body["status_change_reason"]
+
+
 def test_finalize_body_done_carries_audit_fields() -> None:
     """A clean run with auditor outputs surfaces audit_report +
     audit_retry_count on the DONE body."""

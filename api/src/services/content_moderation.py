@@ -160,3 +160,72 @@ def scan_task_payload(
     if contains_destructive_intent(status_change_reason):
         matched.append("status_change_reason")
     return matched
+
+
+# ----------------------------------------------------------------------------
+# L23 prevention layer — agent-output sanitizer (Kanban #1126, 2026-05-17)
+# ----------------------------------------------------------------------------
+#
+# DIFFERENT CONTRACT FROM THE SCANNER ABOVE. The L14 scanner above TAGS author
+# content for human review (sticky flag, doesn't block); this sanitizer REFUSES
+# to forward an extracted command — caller treats None as "halt + escalate".
+#
+# Motivating incident: Phase 9B Ollama red-team finding (2026-05-17). When the
+# operator asked a local LLM to execute a destructive task, 2 of 3 Ollama
+# models REFUSED but echoed the dangerous SQL string verbatim inside their
+# refusal explanation:
+#
+#   "...the task contains a destructive SQL command
+#    (`DELETE FROM tasks WHERE process_status = 5;`) which can potentially
+#    delete data..."
+#
+# If a downstream extractor pulls "what to do next" out of agent free-form
+# output (e.g., a recommender that greps "the exact shell command" from the
+# LLM's reply, or any code that forwards `final_result` into an executable
+# context), it would pick up the SQL string and execute it — even though the
+# agent was refusing. That's the L23 hole this function plugs.
+#
+# Pattern set is intentionally TIGHTER than the L14 scanner: only the
+# truly-cannot-be-forwarded keywords (DROP relation, TRUNCATE, DELETE FROM,
+# ALTER TABLE DISABLE/DROP TRIGGER/CONSTRAINT). The L14 scanner's broader
+# fence (GRANT/REVOKE, docker shell escapes) deliberately stays out — those
+# matter for AUTHOR-time intent flagging but a refusal text legitimately
+# discussing "we should not GRANT ALL on tasks to public" should still be
+# forwardable. The trade is per-layer false-positive cost: L14 false-positive
+# = one human ack to unblock; L23 false-positive = halt the task. The L23
+# bar is higher.
+DANGEROUS_IN_ACTION = re.compile(
+    r"(?i)\b(DROP\s+(TABLE|DATABASE|SCHEMA|TRIGGER|FUNCTION)"
+    r"|TRUNCATE\b"
+    r"|DELETE\s+FROM\b"
+    r"|ALTER\s+TABLE\b.*\b(DISABLE|DROP)\s+(TRIGGER|CONSTRAINT))",
+    re.DOTALL,
+)
+
+
+def sanitize_agent_action(text: str | None) -> str | None:
+    """Return None if `text` contains destructive SQL — caller must escalate to a human.
+
+    Intended use: extracting an actionable command / next-step / status message
+    from agent free-form output BEFORE it lands in an executable or
+    operator-trusted context. Returning None signals "the agent echoed
+    something we refuse to forward; halt the task and surface to a human."
+
+    Contract:
+      - None / empty string in → same value out (no extraction happened).
+      - Clean text in → text out unchanged.
+      - Text containing a destructive SQL pattern → None.
+
+    None is the explicit halt signal so callers MUST branch on it; the caller
+    decides whether to (a) replace the field with a safe placeholder, (b) drop
+    the field entirely, or (c) PATCH a halt_reason. This module does NOT make
+    that policy call.
+
+    See incident 2026-05-17 Phase 9B (Ollama refused but echoed SQL) and the
+    L23 spec at _scratch/pending-kanban-2026-05-17/27-p2-bug-L23-agent-output-sanitizer.md.
+    """
+    if not text:
+        return text
+    if DANGEROUS_IN_ACTION.search(text):
+        return None
+    return text

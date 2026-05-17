@@ -51,7 +51,7 @@ import httpx
 
 from agent_context_sanitizer import sanitize_for_agent_context
 from approval_evaluator import evaluate_policy
-from content_safety import scan_task_content
+from content_safety import sanitize_agent_action, scan_task_content
 from hitl import (
     CheckpointMissingError,
     EngineCrashError,
@@ -488,7 +488,22 @@ def _build_finalize_body(
         # any legitimate history will be re-fetched from the DB by the next
         # next-autorun poll.
         kind = "decision" if payload.get("options") else "question"
-        prompt_text = payload["question"][:200]
+        # L23 (Kanban #1126) — `payload["question"]` is LLM-authored free text.
+        # If the agent echoed destructive SQL inside an interrupt prompt
+        # (Phase 9B Ollama pattern), the sanitizer returns None; demote the
+        # prompt to a safe placeholder and stamp a CRITICAL halt instead so
+        # the operator sees the trigger before re-running.
+        raw_prompt = payload["question"][:200]
+        prompt_text = sanitize_agent_action(raw_prompt)
+        if prompt_text is None:
+            logger.critical(
+                "L23: interrupt prompt echoed destructive SQL; demoting "
+                "to sanitized placeholder. raw_prompt_prefix=%r",
+                raw_prompt[:80],
+            )
+            prompt_text = (
+                "[sanitized: agent echoed destructive SQL — review needed]"
+            )
         body: dict[str, Any] = {
             "process_status": STATUS_BLOCKED,
             "halt_reason": kind,
@@ -501,12 +516,39 @@ def _build_finalize_body(
     else:
         halt = final_state.get("halt_reason")
         final_result = (final_state.get("final_result") or "").strip()
-        if halt is None:
+        # L23 (Kanban #1126) — `final_result` is LLM free-form output extracted
+        # into the operator-trusted status_change_reason field. Phase 9B showed
+        # LLMs can REFUSE a destructive task but echo the SQL string verbatim
+        # in their refusal; if a downstream UI / cron / recommender extracts
+        # "next action" from this field, the SQL leaks back into an executable
+        # context. Sanitize before the field crosses the LLM→operator
+        # trust boundary.
+        safe_final_result = sanitize_agent_action(final_result)
+        sanitized_fired = (
+            safe_final_result is None and final_result != ""
+        )
+        if sanitized_fired:
+            logger.critical(
+                "L23: final_result echoed destructive SQL; demoting task to "
+                "BLOCKED with sanitized placeholder. raw_prefix=%r",
+                final_result[:80],
+            )
+        if halt is None and not sanitized_fired:
             body = {
                 "process_status": STATUS_DONE,
                 "completed_at": completed_at,
                 "status_change_reason": (
-                    final_result or "(no final_result emitted)"
+                    safe_final_result or "(no final_result emitted)"
+                )[:_REASON_MAX],
+            }
+        elif halt is None and sanitized_fired:
+            # L23 override: would have been DONE, but the sanitizer fired —
+            # halt for human review instead of forwarding the echoed SQL.
+            body = {
+                "process_status": STATUS_BLOCKED,
+                "halt_reason": "agent_output_sanitized",
+                "status_change_reason": (
+                    "[sanitized: agent echoed destructive SQL — review needed]"
                 )[:_REASON_MAX],
             }
         else:
@@ -515,12 +557,19 @@ def _build_finalize_body(
             # attention. `is_pending` is omitted (defaults False) — the API
             # validator (services/is_pending.py) rejects `is_pending=True`
             # paired with any process_status other than IN_PROGRESS (2).
+            reason_body = (
+                safe_final_result
+                if (safe_final_result and not sanitized_fired)
+                else (
+                    "[sanitized: agent echoed destructive SQL — review needed]"
+                    if sanitized_fired
+                    else f"halted: {halt}"
+                )
+            )
             body = {
                 "process_status": STATUS_BLOCKED,
                 "halt_reason": str(halt)[:_HALT_REASON_MAX],
-                "status_change_reason": (final_result or f"halted: {halt}")[
-                    :_REASON_MAX
-                ],
+                "status_change_reason": reason_body[:_REASON_MAX],
             }
 
     # Kanban #952 — auditor outputs. Surface audit_report / audit_retry_count
@@ -831,6 +880,23 @@ async def _resume_hitl_task(
     final_result = ""
     if isinstance(final_state, dict):
         final_result = (final_state.get("final_result") or "").strip()
+    # L23 (Kanban #1126) — same defense as `_build_finalize_body`. The HITL
+    # resume path lands `final_result` in `status_change_reason` (operator-
+    # trusted), so an LLM that echoes destructive SQL in its post-resume
+    # output must be caught here too.
+    safe_final_result = sanitize_agent_action(final_result)
+    sanitized_fired = safe_final_result is None and final_result != ""
+    if sanitized_fired:
+        logger.critical(
+            "L23 (resume path): final_result echoed destructive SQL; "
+            "demoting to BLOCKED + sanitized placeholder. raw_prefix=%r",
+            final_result[:80],
+        )
+        final_result = (
+            "[sanitized: agent echoed destructive SQL — review needed]"
+        )
+    else:
+        final_result = safe_final_result or ""
     # Also check for a fresh __interrupt__ — the graph paused again (multi-step
     # HITL). Treat as BLOCKED with halt_reason='question' (default; the node's
     # own emission semantics would have set halt_reason if it wanted a
@@ -848,7 +914,7 @@ async def _resume_hitl_task(
         else ""
     )
 
-    if halt is None and not fresh_interrupt:
+    if halt is None and not fresh_interrupt and not sanitized_fired:
         reason_body = final_result or "(resumed; no final_result)"
         body: dict[str, Any] = {
             "process_status": STATUS_DONE,
@@ -858,6 +924,17 @@ async def _resume_hitl_task(
             # would keep the FE banner up.
             "halt_reason": None,
             "is_pending": False,
+            "resume_context": _stamped_resume_context(
+                task.get("resume_context"), answered_at
+            ),
+        }
+    elif halt is None and not fresh_interrupt and sanitized_fired:
+        # L23 override: would have been DONE, but sanitizer fired — halt for
+        # human review instead of forwarding the echoed SQL.
+        body = {
+            "process_status": STATUS_BLOCKED,
+            "halt_reason": "agent_output_sanitized",
+            "status_change_reason": f"{policy_prefix}{final_result}"[:_REASON_MAX],
             "resume_context": _stamped_resume_context(
                 task.get("resume_context"), answered_at
             ),

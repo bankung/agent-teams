@@ -539,6 +539,115 @@ async def test_patch_clean_field_does_not_clear_flag(
 # ============================================================================
 
 
+# ============================================================================
+# 5. L23 sanitize_agent_action — Kanban #1126
+# ============================================================================
+#
+# DIFFERENT CONTRACT from the L14 scanner. The scanner TAGS author content;
+# the sanitizer REFUSES to forward an extracted command (returns None →
+# caller halts + escalates). Tests assert both halves of that contract.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The Phase 9B literal-echo case from the incident: a refusal text that
+        # repeats the SQL string verbatim inside the explanation.
+        (
+            "I cannot execute this task because the task contains a destructive "
+            "SQL command (`TRUNCATE tasks WHERE process_status = 5;`) which can "
+            "potentially delete data."
+        ),
+        # Plain destructive SQL string echoed from an agent next-step extractor.
+        "Next action: DELETE FROM tasks WHERE older_than 90d",
+        "Recommended: DROP TABLE archived_rows",
+        "DROP DATABASE agent_teams_test",
+        "DROP SCHEMA legacy",
+        "DROP TRIGGER tasks_audit_trg ON tasks",
+        "DROP FUNCTION cleanup_old()",
+        # ALTER TABLE ... DISABLE/DROP variants.
+        "ALTER TABLE tasks DISABLE TRIGGER tasks_audit_trg",
+        "alter table x drop constraint fk_y",
+        # Lowercase / mixed-case prose forms.
+        "we should truncate the audit log",
+        "...might delete from tasks_history...",
+    ],
+)
+def test_sanitize_agent_action_refuses_destructive(text: str) -> None:
+    """AC 2 + AC 4: text containing destructive SQL → None (refuse to forward)."""
+    from src.services.content_moderation import sanitize_agent_action
+
+    assert sanitize_agent_action(text) is None, (
+        f"sanitizer should have refused: {text!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # AC 5 (Lead-issued spec): a clean refusal text that does NOT echo SQL
+        # passes through unchanged. The agent refusing without echoing the
+        # specific command is the right behavior; the sanitizer must let that
+        # text reach the operator.
+        "I cannot execute this task as it appears to violate safety policies.",
+        "Refusing to proceed — please escalate to a human reviewer.",
+        # General benign output strings.
+        "Task complete: updated 3 rows in the staging table.",
+        "Specialist finished: see _scratch/report.md for details.",
+        # Prose containing destructive English words but NO SQL keyword pair
+        # (the false-positive guard — must not over-fire).
+        # NB: bare "Drop" / "Delete" without a SQL-shape neighbor must NOT match.
+        # The L23 pattern is intentionally more aggressive than L14 (e.g., it
+        # matches bare `TRUNCATE\b` because "halt for human review" is the
+        # cheaper failure mode at the extraction site), so we don't probe
+        # truncate-style English here — see the spec at #1126 for that
+        # trade-off.
+        "Drop the existing approach and try again",
+        "Delete the obsolete docs from the wiki",
+        # ALTER TABLE WITHOUT a destructive verb is forwardable.
+        "ALTER TABLE tasks ADD COLUMN new_field TEXT",
+    ],
+)
+def test_sanitize_agent_action_forwards_clean(text: str) -> None:
+    """AC 5: clean text passes through unchanged."""
+    from src.services.content_moderation import sanitize_agent_action
+
+    assert sanitize_agent_action(text) == text
+
+
+def test_sanitize_agent_action_handles_none_and_empty() -> None:
+    """Defensive: None / empty / whitespace pass through unchanged (no
+    extraction happened — nothing to refuse)."""
+    from src.services.content_moderation import sanitize_agent_action
+
+    assert sanitize_agent_action(None) is None
+    assert sanitize_agent_action("") == ""
+    # Whitespace is treated as 'not text' by the `if not text:` short-circuit;
+    # this is documented behaviour (no SQL → no risk → return as-is).
+    assert sanitize_agent_action("   ") == "   "
+
+
+def test_sanitize_agent_action_contract_diverges_from_scanner() -> None:
+    """The L23 sanitizer is intentionally TIGHTER than the L14 scanner.
+
+    L14 catches GRANT/REVOKE prose + docker shell escapes — those matter for
+    AUTHOR-time intent flagging but a refusal text legitimately discussing
+    "we should not GRANT ALL on tasks to public" should still be forwardable
+    by L23 (whose false-positive cost is "halt the task" not "ack to unblock").
+
+    This test pins that contract: the GRANT prose triggers contains_destructive_intent
+    (TAG) but is forwarded by sanitize_agent_action (REFUSE only the tightest set).
+    """
+    from src.services.content_moderation import (
+        contains_destructive_intent,
+        sanitize_agent_action,
+    )
+
+    grant_text = "we should NOT GRANT ALL ON tasks TO public"
+    assert contains_destructive_intent(grant_text) is True
+    assert sanitize_agent_action(grant_text) == grant_text
+
+
 def test_l14_detail_string_pinned_in_router_source() -> None:
     """The wire-contract detail string for the L14 gate is text-locked so
     a future refactor can't silently drift its public-facing message.

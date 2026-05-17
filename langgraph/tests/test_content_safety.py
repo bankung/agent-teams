@@ -218,3 +218,69 @@ def test_halt_reason_field_not_in_signature() -> None:
 
     params = list(inspect.signature(scan_task_content).parameters.keys())
     assert params == ["title", "description", "acceptance_criteria"]
+
+
+# ============================================================================
+# L23 sanitize_agent_action (Kanban #1126) — worker-side mirror
+# ============================================================================
+#
+# Different contract from scan_task_content: REFUSES to forward (returns None)
+# rather than TAGGING. Tests cover the extraction-time defense for the
+# Phase 9B Ollama echo-on-refuse pattern (incident 2026-05-17).
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The Phase 9B literal-echo case from the incident.
+        (
+            "I cannot execute this task because the task contains a destructive "
+            "SQL command (`TRUNCATE tasks WHERE process_status = 5;`) which can "
+            "potentially delete data."
+        ),
+        "Next action: DELETE FROM tasks WHERE older_than 90d",
+        "Recommended: DROP TABLE archived_rows",
+        "ALTER TABLE tasks DISABLE TRIGGER tasks_audit_trg",
+        "alter table x drop constraint fk_y",
+        "DROP DATABASE agent_teams_test",
+        "DROP SCHEMA legacy",
+        "DROP TRIGGER tasks_audit_trg ON tasks",
+        "DROP FUNCTION cleanup_old()",
+    ],
+)
+def test_sanitize_agent_action_refuses_destructive(text: str) -> None:
+    """Destructive SQL in agent output → None (caller must escalate)."""
+    from content_safety import sanitize_agent_action
+
+    assert sanitize_agent_action(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I cannot execute this task as it violates safety policies.",
+        "Refusing to proceed — please escalate to a human reviewer.",
+        "Task complete: updated 3 rows in the staging table.",
+        "Specialist finished: see _scratch/report.md for details.",
+        # Prose using destructive English words but no SQL-shape neighbor.
+        # Bare TRUNCATE/DELETE FROM/DROP TABLE matches per spec (#1126);
+        # "Drop the existing approach" has no relation keyword so is clean.
+        "Drop the existing approach and try again",
+        "Delete the obsolete docs from the wiki",
+        "ALTER TABLE tasks ADD COLUMN new_field TEXT",
+    ],
+)
+def test_sanitize_agent_action_forwards_clean(text: str) -> None:
+    """Clean text passes through unchanged."""
+    from content_safety import sanitize_agent_action
+
+    assert sanitize_agent_action(text) == text
+
+
+def test_sanitize_agent_action_none_and_empty() -> None:
+    """None / empty / whitespace pass through (no extraction → no risk)."""
+    from content_safety import sanitize_agent_action
+
+    assert sanitize_agent_action(None) is None
+    assert sanitize_agent_action("") == ""
+    assert sanitize_agent_action("   ") == "   "
