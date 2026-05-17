@@ -186,6 +186,18 @@ class Project(Base):
         nullable=True,
     )
 
+    # Kanban #960 (2026-05-17): per-project Health monitor tuning knobs.
+    # JSONB element shape (validated at the API boundary):
+    # {enabled, stale_hours, max_retry_cycles, token_burn_threshold_per_hour,
+    #  burn_spike_multiplier}. NULL = use env defaults. `enabled=false`
+    # short-circuits the sweep for the project entirely. No DB CHECK on
+    # element shape (mirrors config / agent_overrides / sources / tools_config
+    # precedent — JSONB element-shape validation lives at the API layer).
+    health_thresholds: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
     tasks: Mapped[list["Task"]] = relationship(
         "Task",
         back_populates="project",

@@ -319,6 +319,16 @@ class ProjectUpdate(BaseModel):
     # CHECK `ck_projects_hitl_timeout_positive` is defense-in-depth.
     hitl_timeout_hours: int | None = Field(default=None, ge=1)
 
+    # Kanban #960 (2026-05-17): per-project Health monitor tuning. PATCH
+    # semantics — key-absent leaves unchanged (exclude_unset); explicit dict
+    # REPLACES the prior value (no deep merge); explicit `null` clears to
+    # NULL (= use env defaults). Operator-facing surface for over-rides like
+    # `{"enabled": false}` to silence a noisy project. Element shape is
+    # value-tolerant here (free-form dict) since detector knobs evolve
+    # together; the service layer validates required keys + types when it
+    # merges with defaults.
+    health_thresholds: dict[str, Any] | None = Field(default=None)
+
     @field_validator("agent_overrides")
     @classmethod
     def _validate_agent_override_keys(cls, v):
@@ -405,6 +415,11 @@ class ProjectRead(BaseModel):
     # GET /api/tasks/next-autorun stamps `halt_reason='hitl_timeout'` on
     # any BLOCKED HITL task waiting longer than this threshold.
     hitl_timeout_hours: int | None = None
+
+    # Kanban #960 (2026-05-17): per-project Health monitor tuning. NULL = use
+    # env defaults. `enabled=false` short-circuits the sweep for this project.
+    # Value-tolerant on read (dict[str, Any]) for legacy / hand-edited resilience.
+    health_thresholds: dict[str, Any] | None = None
 
     @field_validator("sources", mode="before")
     @classmethod

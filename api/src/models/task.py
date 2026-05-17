@@ -299,6 +299,14 @@ class Task(Base):
         default=0,
     )
 
+    # Kanban #960 (2026-05-17): periodic Health monitor sweep output.
+    # Single-object latest-only JSONB (audit history flows via tasks_history
+    # trigger — same precedent as audit_report #952). Element shape:
+    # {detector, severity, evidence, alerted_at, threshold_used}. NULL = no
+    # current alert. No DB CHECK on element shape (JSONB element-shape
+    # validation lives at the API / service layer).
+    health_alert: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

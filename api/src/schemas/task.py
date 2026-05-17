@@ -534,6 +534,15 @@ class TaskUpdate(BaseModel):
     # Kanban #952: retry counter. Non-negative; CHECK ck_tasks_audit_retry_count_nonneg
     # at the DB layer catches drift.
     audit_retry_count: int | None = Field(default=None, ge=0)
+    # Kanban #960 (2026-05-17): Health monitor sweep output. PATCH-able by the
+    # Health monitor service (the only writer in normal operation). Semantics:
+    #   - key absent      → leave unchanged (exclude_unset=True in router)
+    #   - explicit dict   → replace whole alert (single-object latest-only)
+    #   - explicit null   → clear the alert (null IS meaningful — column is
+    #                       nullable JSONB; used when a detector clears)
+    # No element-shape validation this slice — the service is the only writer
+    # and shapes the dict server-side.
+    health_alert: dict[str, Any] | None = None
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=False)
@@ -773,6 +782,10 @@ class TaskRead(BaseModel):
     # Backfilled to NULL / 0 on existing rows by migration 0030.
     audit_report: dict[str, Any] | None = None
     audit_retry_count: int = 0
+    # Kanban #960 (2026-05-17): periodic Health monitor sweep output. Single-
+    # object latest-only JSONB. None = no current alert. Backfilled to NULL on
+    # existing rows by migration 0031.
+    health_alert: dict[str, Any] | None = None
 
 
 class NextAutorunResponse(BaseModel):

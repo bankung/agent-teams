@@ -124,6 +124,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "BACKUP_S3_SECRET_ACCESS_KEY, BACKUP_AGE_PUBKEY to enable nightly snapshots"
         )
 
+    # Kanban #960 — periodic Health monitor sweep. ENABLED by default; set
+    # HEALTH_MONITOR_DISABLED=1 to skip. Uses IntervalTrigger (not Cron) since
+    # the sweep is short and idempotent — every N minutes is the natural cadence.
+    from src.services.health_monitor import HealthMonitor, HealthMonitorConfig
+
+    hm_cfg = HealthMonitorConfig.from_env()
+    if hm_cfg.is_enabled:
+        hm = HealthMonitor(hm_cfg)
+        scheduler.add_job(
+            hm.run_sweep,
+            trigger=IntervalTrigger(minutes=hm_cfg.interval_minutes),
+            id="health-monitor",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        logger.info(
+            "health monitor enabled — sweep every %d min (api_base=%s)",
+            hm_cfg.interval_minutes, hm_cfg.api_base,
+        )
+    else:
+        logger.info("health monitor disabled via HEALTH_MONITOR_DISABLED")
+
     scheduler.start()
     _scheduler = scheduler
     logger.info(
