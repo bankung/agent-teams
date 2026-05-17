@@ -28,9 +28,72 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 from typing import Literal
 
 from langchain_core.language_models import BaseChatModel
+
+# ---------------------------------------------------------------------------
+# Safety prelude (Kanban #1116 — L22 prevention)
+# ---------------------------------------------------------------------------
+#
+# Every system message the engine sends to ANY provider (anthropic / openai /
+# ollama / future DeepSeek #1086) must be prefixed with the safety prelude.
+# Rationale (Phase 9B Ollama injection test 2026-05-17): provider-side RLHF
+# safety guards are uneven — local LLMs like llama3.2 default-obey destructive
+# task descriptions. With 4-line CLAUDE.md-style rules in the system prompt,
+# llama3.2 FLIPPED to refuse. Cheap, high-leverage, provider-agnostic.
+#
+# File lives at `langgraph/safety_prelude.txt` (provider-agnostic LANGGRAPH-LOCAL
+# copy). The same text should ALSO live at `context/standards/llm/safety-prelude.md`
+# as the canonical universal-standard source — but that path is humans-only
+# (zone rule Q1) so Lead proposes; humans elevate. Until then the langgraph
+# local copy is the source of truth for the engine.
+#
+# Cached after first read — file is small + read-only.
+
+SAFETY_PRELUDE_PATH = Path(__file__).parent / "safety_prelude.txt"
+_SAFETY_PRELUDE_CACHE: str | None = None
+
+
+def _load_safety_prelude() -> str:
+    """Read + cache the safety prelude text.
+
+    Raises RuntimeError with a clear message if the file is missing — the
+    engine MUST NOT silently fall back to an unprefixed system prompt
+    (would defeat the whole purpose of L22 prevention).
+    """
+    global _SAFETY_PRELUDE_CACHE
+    if _SAFETY_PRELUDE_CACHE is None:
+        if not SAFETY_PRELUDE_PATH.exists():
+            raise RuntimeError(
+                f"safety prelude file missing at {SAFETY_PRELUDE_PATH}; "
+                "every langgraph LLM call must be prefixed with the prelude "
+                "(Kanban #1116). Restore the file or check your container "
+                "image."
+            )
+        _SAFETY_PRELUDE_CACHE = SAFETY_PRELUDE_PATH.read_text(encoding="utf-8")
+    return _SAFETY_PRELUDE_CACHE
+
+
+def build_system_message(role_brief: str) -> str:
+    """Prepend the safety prelude to a role-specific system prompt.
+
+    Call this at EVERY langgraph LLM call site that constructs a SystemMessage.
+    The `\\n\\n---\\n\\n` separator gives the LLM a visual boundary between
+    safety rules + role brief so a malformed role brief (e.g., one that itself
+    contains `STRICT RULES — NEVER VIOLATE:`) doesn't fool the LLM into
+    re-reading the brief as the rules.
+
+    Args:
+        role_brief: the role-specific system-prompt content (e.g.,
+            `_SYSTEM_PROMPT` for the backend specialist or
+            `_AUDITOR_LLM_SYSTEM_PROMPT` for the auditor).
+
+    Returns:
+        The full system-message string with safety prelude prepended.
+    """
+    return _load_safety_prelude() + "\n\n---\n\n" + role_brief
 
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 DEFAULT_OPENAI_MODEL = "gpt-4o"

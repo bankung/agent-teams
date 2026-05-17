@@ -85,6 +85,12 @@ def test_backend_prompt_drops_fastapi_postgres_specialist_plan_anchors(
     directive ("do not propose ... project plans ..."), so we assert the
     specific old-phrase 'produce a concise plan' is gone rather than the
     bare word.
+
+    #1116 note: the safety prelude (prepended by build_system_message) DOES
+    contain the word "fastapi" (rule 1: "DB writes go through FastAPI
+    endpoints ONLY"). We inspect only the role-brief portion (text AFTER
+    the `\\n\\n---\\n\\n` separator) so the historical anti-anchor check
+    keeps holding for what it was designed to guard — the persona prompt.
     """
     captured = _install_capture(monkeypatch)
     state = {
@@ -96,11 +102,14 @@ def test_backend_prompt_drops_fastapi_postgres_specialist_plan_anchors(
 
     sys_msg = captured["prompt"][0]
     assert isinstance(sys_msg, SystemMessage)
-    sys_lower = sys_msg.content.lower()
-    assert "fastapi" not in sys_lower, sys_msg.content
-    assert "postgresql" not in sys_lower, sys_msg.content
-    assert "specialist" not in sys_lower, sys_msg.content
-    assert "produce a concise plan" not in sys_lower, sys_msg.content
+    # Split on the safety-prelude separator; check only the role-brief half.
+    parts = sys_msg.content.split("\n\n---\n\n", 1)
+    assert len(parts) == 2, "system message missing safety-prelude separator"
+    role_brief_lower = parts[1].lower()
+    assert "fastapi" not in role_brief_lower, parts[1]
+    assert "postgresql" not in role_brief_lower, parts[1]
+    assert "specialist" not in role_brief_lower, parts[1]
+    assert "produce a concise plan" not in role_brief_lower, parts[1]
 
 
 def test_backend_prompt_contains_generic_persona_and_anti_scaffolding(

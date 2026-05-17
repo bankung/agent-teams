@@ -46,7 +46,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 
 from audit import record_tool_invocation
 from hitl import request_user_input  # noqa: F401 — re-exported for specialist authors
-from llm import make_chat_model, resolve_provider
+from llm import build_system_message, make_chat_model, resolve_provider
 from state import AgentState
 from tools import (
     GLOBAL_REGISTRY,
@@ -199,8 +199,12 @@ async def backend_specialist_node(state: AgentState) -> dict:
     # tools. We try, and on failure log + fall back to the no-tools path.
     bound = _bind_tools_safely(model, project_id, tools_config)
 
+    # Kanban #1116 — wrap role brief with safety prelude (L22 prevention).
+    # Applies to every provider (anthropic / openai / ollama / future DeepSeek
+    # #1086) because the prepend happens HERE, before provider-specific
+    # message formatting in make_chat_model().
     initial_messages: list[Any] = [
-        SystemMessage(content=_SYSTEM_PROMPT),
+        SystemMessage(content=build_system_message(_SYSTEM_PROMPT)),
         HumanMessage(content=brief),
     ]
 
@@ -1007,8 +1011,9 @@ async def auditor_node(state: AgentState) -> dict[str, Any]:
     raw_text = ""
     try:
         model = make_chat_model()
+        # Kanban #1116 — same safety-prelude wrap as the backend specialist.
         messages: list[Any] = [
-            SystemMessage(content=_AUDITOR_LLM_SYSTEM_PROMPT),
+            SystemMessage(content=build_system_message(_AUDITOR_LLM_SYSTEM_PROMPT)),
             HumanMessage(content=user_prompt),
         ]
         ainvoke = getattr(model, "ainvoke", None)
