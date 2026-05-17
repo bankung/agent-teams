@@ -16,6 +16,32 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-17 — Dev DB wipe incident + 3-layer test isolation prevention
+**Scope:** backend / qa / devops / shared
+
+**Decision A — Root-cause acknowledged:** The conftest.py 3-layer test-DB isolation (DATABASE_URL rewrite + `_live_db_row_count_invariant` + `_setup_test_database`) bypassed during 2026-05-17 pytest -q run by 2 compounding bugs: (1) `get_settings()` `@lru_cache` poisoning via `scripts.seed` module-level `from src.db import SessionLocal` running BEFORE conftest rewrite → `_seed()` bound to LIVE URL → wiped + reseeded `agent_teams`; (2) invariant fixture silent skip on pre-snapshot failure (lines 120-129 `except Exception: yield; return`) → guard never asserted post-counts → pytest "854 passed" hid the wipe. Cost: ~7h Kanban audit trail loss (recoverable via R2 backup). Full postmortem at `context/projects/agent-teams/shared/incidents/2026-05-17-dev-db-wipe.md`.
+
+**Decision B — 3-layer defense:** Land all three before any pytest -q from a Lead session.
+
+- **L1 (harness):** `.claude/hooks/block-pytest-on-live-db.ps1` PreToolUse hook on Bash. Inspects command for `pytest`; checks `$env:DATABASE_URL`; DENY if endswith != `_test` (escape valve: `BYPASS_LIVE_DB_PYTEST_HOOK=1`). Mirrors `block-raw-sql-dml.ps1` pattern.
+- **L2 (pytest):** Fail-loud the silent skip in `api/tests/conftest.py:120-129`. Replace `except Exception: yield; return` with `warnings.warn(...) + retry once + visible-warning skip`. Add `test_conftest_invariant.py` covering both the retry-success and the post-snapshot drift assertions.
+- **L3 (application):** Lazy-load `from src.db import SessionLocal` INSIDE `_seed()` (not module-level). Add defensive `assert engine.url.database.endswith("_test")` gate at top of `_seed()`; raise `RuntimeError` if non-`_test` target AND `SEED_TARGET != "production"`. Drop `@lru_cache` on `get_settings()` OR call `cache_clear()` at conftest module-import time after the env rewrite.
+
+L1 catches shell invocations; L2 makes silent failures loud; L3 closes the lru_cache poisoning path. None alone is sufficient. L4 (postgres-role permissions on test DB only) deferred — wait for recurrence.
+
+**Decision C — Pytest discipline brief amendment:** Any specialist spawn brief that includes "run pytest" MUST require the agent to report the live DB row count BEFORE + AFTER the run as part of their reply. "N passed" is insufficient proof of non-mutation. Lead independently verifies via `curl /api/tasks | jq length` before flipping any Kanban state to DONE.
+
+**Decision D — Karpathy Mode B escalation forced:** Strike #5 (this incident) is catastrophic. Per the escalation path in `feedback_karpathy_lane.md`, the PostToolUse hook on Agent ("verify before PATCH" reminder) is now critical-priority. Must land within 72h. Soft-layer (memory file + CLAUDE.md text) PROVEN insufficient for Mode B.
+
+**Decision E — Restore-loss accountability:** Code committed to git is preserved (today's 6 commits including 5ba9899 next-action API + digest spec survive). Lost = Kanban audit rows only (DB-bound). Operator notes: when the design-and-build cycle relies on Kanban for audit trail, the loss is RECOVERY-COST not DATA-LOSS — the work was done; the receipts are gone. Restoration brings back the receipts.
+
+**Implications:**
+- Replay script staged at `_scratch/pending-kanban-2026-05-17/replay-all.ps1` runs post-restore to inject 6 new tasks (L1/L2/L3 P1 bugs + WARN-1/2 P2 bugs + Obsidian P3 doc) and PATCH #1009/#1010/#1084 to DONE.
+- The 3 L-prevention tasks become P1 bugs; do NOT close the incident until all 3 land.
+- `feedback_karpathy_lane.md` updated with strike #5 (catastrophic) — Mode B escalation now mandatory.
+
+---
+
 ## 2026-05-17 — Per-project HITL approval policies — Kanban #957
 **Scope:** backend / langgraph / shared
 
