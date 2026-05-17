@@ -50,6 +50,7 @@ from typing import Any
 import httpx
 
 from approval_evaluator import evaluate_policy
+from content_safety import scan_task_content
 from hitl import (
     CheckpointMissingError,
     EngineCrashError,
@@ -234,6 +235,40 @@ async def _poll_once(
 
     task_id = task["id"]
     logger.info("picked task %d: %r", task_id, task.get("title"))
+
+    # 1c) L17 content-safety gate (Kanban #1114). Static regex scan of task
+    # title + description + AC text BEFORE any LLM invocation. If matched,
+    # PATCH BLOCKED with halt_reason='destructive_intent_detected' and SKIP
+    # the IN_PROGRESS flip + the LLM call entirely (zero token spend). This is
+    # the last automated layer before prompt-layer discipline takes over; a
+    # red-team task that slipped past L14 creation-tag + L15 template-confirm
+    # gets halted here. See content_safety.py + 2026-05-17-dev-db-wipe.md.
+    matched = scan_task_content(
+        task.get("title"),
+        task.get("description"),
+        task.get("acceptance_criteria"),
+    )
+    if matched:
+        logger.warning(
+            "L17: REFUSING to invoke agent on task %d — content matched destructive patterns: %s",
+            task_id,
+            matched,
+        )
+        await _patch_task(
+            client,
+            cfg,
+            headers,
+            task_id,
+            {
+                "process_status": STATUS_BLOCKED,
+                "halt_reason": "destructive_intent_detected",
+                "status_change_reason": (
+                    f"L17 worker gate: task content matched destructive patterns "
+                    f"({matched}). Human review required before auto-run."
+                )[:_REASON_MAX],
+            },
+        )
+        return
 
     # 2) Flip to IN_PROGRESS.
     started_at = _now_iso()
