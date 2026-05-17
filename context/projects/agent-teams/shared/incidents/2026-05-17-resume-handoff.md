@@ -525,3 +525,81 @@ Don't chase 85+. Diminishing returns are steep:
 Operator + Lead agreed: ship to ~80, hold the line, revisit after P1 + P2 land. No premature investment in Tier-3 / architecture-change items. This is **acceptance of measured residual risk**, not negligence — the residual is documented + sized so future Lead doesn't drift toward false confidence.
 
 If a NEW strike happens after P1+P2 ship, escalate to architecture review. Until then, stay on the 27-layer plan.
+
+---
+
+## ADDENDUM 2026-05-17 (end of session) — P1 + P2 sprint complete
+
+**Single-session marathon shipped 21 prevention layers + soft-cleanup of L18 smoke artifact.**
+
+### Shipped layers (21 / 27 — 78%)
+
+| Layer | Kanban | Commit | One-line |
+|---|---|---|---|
+| L6 | #1111 | 5df5705 | purge fixture URL gate — disarmed the wipe weapon |
+| L18 | #1115 | 601757c | payload size limits 10MB / 10k ACs → 422/413 |
+| L8 | #1113 | f4d5782 | api lifespan DB allowlist |
+| L22 | #1116 | 90a9bbc | LLM safety prelude (provider-agnostic) |
+| L7 | #1112 | fafd0ee | langgraph DATABASE_URI lifespan validation |
+| L4 | #1109 | 1aaf429 | postgres pytest_runner role (DB-engine LAST RESORT) |
+| L5 | #1110 | 31a52ad | PostToolUse Agent verify-before-PATCH hook |
+| L17 | #1114 | e368929 | worker pickup content scan |
+| L10 | #1117 | adac410 | alembic MIGRATION_TARGET gate |
+| L11 | #1118 | 6e50618 | _build_engine pytest-binding canary |
+| L12 | #1120 | ec4a3e0 | backup min-size check + prune guard |
+| L21 | #1125 | eba96b6 | recurrence max_active_children cap |
+| WARN-1 | #1106 | bdec709 | strip answer_history from Interrupt.value |
+| WARN-2 | #1107 | 024f679 | HITL demo branch env gate |
+| L1.5 | #1119 | 71264c5 | hook bash command string parse |
+| L15 | #1122 | e42b8df | per-template auto-headless confirmation |
+| L14 | #1121 | dea3b14 | API content moderation tag |
+| L16 | #1123 | 8197c39 | agent context sanitizer |
+| L23 | #1126 | 94328e8 | agent output sanitizer |
+| L19 | #1124 | 2a05f5a | scaffold rate limit + .deleted/ archive |
+| L13 | #1127 | 4611d5d | bin/reset.* WIPE confirm + -p pin |
+
+3 alembic migrations applied to live via `MIGRATION_TARGET=live` (L10 gate). Live DB row count 289 → 288 (288 after #1137 smoke-artifact cleanup). Zero drift across ~300 new tests + ~15 agent spawns.
+
+### Final security score: **55 → ~82/100** (+27 in one session)
+
+| Dimension | Start | End |
+|---|---|---|
+| Recovery | 85 | 85 |
+| Detection | 55 | 55 |
+| Prevention | 35 | **~95** (+60) |
+| Containment | 50 | **~95** (+45) |
+| LLM safety | 30 | **~85** (+55) |
+
+Close to practical ceiling (~85 was the projected ceiling without architecture change). Remaining gap is structural — bus factor 1, supply chain, Windows host surface, single-vendor backup, context rot, local LLMs.
+
+### Operator action queue (post-session)
+
+1. **🔴 RESTART Claude Code** — settings.json read at startup; L5 PostToolUse hook activation requires this.
+2. **🟡 RESTART langgraph container** — L7 / L17 / L22 / L23 / L14 wire-in takes effect.
+3. **🟡 docker compose build api** — bake slowapi into image (currently runtime-installed only — survives restart, but not rebuild).
+4. **🟢 Cleanup `context/projects/.deleted/<name>-*/`** — ~500 leftover dirs from L19 test suite (safe to `Remove-Item -Recurse`).
+5. **🟢 Cleanup `_scratch/L1.5-draft/` + other patch JSON files** — draft staging area, all consumed.
+6. **🟢 Rotate `PYTEST_DB_PASSWORD`** — currently dev default `pytest_runner_dev_only_NOT_FOR_PROD`. Production needs strong rotation.
+
+### Outstanding (P3 backlog — next session)
+
+- #1108 Obsidian-vault-compatible secretary KB (heavier design task)
+- #1128 L20 optimistic locking on PATCH (migration + version column + tests, ~2h)
+- #1129 Backup decrypt drill (recurring — quarterly)
+- #1130 Mode B-read Phase 1 design doc
+- #1131 Stale langgraph checkpoint cleanup
+- #1132 Secretary Mode A capture session
+
+### Standards promotion candidates (humans-only zone — operator decides)
+
+- `context/standards/llm/safety-prelude.md` (from L22 — verbatim text in `langgraph/safety_prelude.txt`)
+- `context/standards/python/test-isolation.md` (from L6 + L11 + L2)
+- `context/standards/postgres/role-grants.md` (from L4 split-admin-vs-runtime pattern)
+- `context/standards/python/alembic/revision-id-length.md` (from L15 32-char incident)
+
+### Bootstrap for next session
+
+```
+Resume from 2026-05-17 incident — ALL 27-layer prevention plan ~78% shipped
+(21/27 layers). P1 + P2 complete. P3 backlog: #1108, #1128, #1129-1132.
+```
