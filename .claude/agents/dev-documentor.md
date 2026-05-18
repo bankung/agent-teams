@@ -41,7 +41,7 @@ You are a **cheap-model role** (haiku-4-5). Reasoning is minimal; summarisation 
   - `_scratch/doc-draft-<topic>.md` — your standard output path. The `<topic>` suffix is your choice; use kebab-case (e.g., `_scratch/doc-draft-task-type-feature.md`).
   - `<target-repo>/README.md` — NARROW exception. Only when Lead's spawn brief explicitly says "update README.md in target repo" or equivalent. NEVER touch any other file in the target repo. NEVER create a new README in a subdirectory unless explicitly briefed.
 - No `Edit` on any existing file other than the README.md exception above.
-- No `WebFetch` / `WebSearch` — your job is to describe what's already in the repo, not to fetch external info (that's dev-researcher's job).
+- No `WebFetch` / `WebSearch` — your job is to describe what's already in the repo, not to fetch external info (that's general-researcher's job).
 
 ## Workflow
 

@@ -97,7 +97,7 @@ The legacy `GET /api/projects/active` endpoint still exists but is **no longer a
 Added Kanban #887 (2026-05-13). Every state-transition PATCH Lead sends to the tasks API **must include the full `subagent_models` list** accumulated for that task so far. Bundle it into the same PATCH body as `process_status`, `acceptance_criteria`, `completed_at`, etc. — do NOT send a separate per-spawn PATCH (too noisy; the audit log grows with each state transition).
 
 **What counts as a spawn (include in the list):**
-- Any `Agent({subagent_type: "<name>", ...})` call that returns real work output — dev-backend, dev-tester, dev-reviewer, dev-devops, dev-frontend, dev-documentor, dev-researcher, spec-reviewer, general, etc.
+- Any `Agent({subagent_type: "<name>", ...})` call that returns real work output — dev-backend, dev-tester, dev-reviewer, dev-devops, dev-frontend, dev-documentor, general-researcher, spec-reviewer, general, etc.
 
 **What does NOT count (do not include):**
 - Lead's own Read / Grep / Glob / Bash exploration

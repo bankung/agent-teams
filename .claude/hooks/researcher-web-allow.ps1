@@ -1,6 +1,6 @@
-# Auto-approves WebFetch (https-only) + WebSearch from dev-researcher subagent.
+# Auto-approves WebFetch (https-only) + WebSearch from general-researcher subagent.
 #
-# Scoped via .claude/agents/dev-researcher.md frontmatter (PreToolUse on WebFetch + WebSearch).
+# Scoped via .claude/agents/general-researcher.md frontmatter (PreToolUse on WebFetch + WebSearch).
 # Other roles (Lead, dev-backend, dev-frontend, dev-devops, dev-tester, dev-reviewer,
 # dev-documentor) do NOT inherit this hook — they fall through to settings.json's
 # normal allow/ask flow.
@@ -33,7 +33,7 @@ if ($toolName -eq 'WebSearch') {
         hookSpecificOutput = @{
             hookEventName            = "PreToolUse"
             permissionDecision       = "allow"
-            permissionDecisionReason = "WebSearch auto-approved for dev-researcher (.claude/hooks/researcher-web-allow.ps1)"
+            permissionDecisionReason = "WebSearch auto-approved for general-researcher (.claude/hooks/researcher-web-allow.ps1)"
         }
     } | ConvertTo-Json -Compress -Depth 4
     Write-Output $output
@@ -49,7 +49,7 @@ if ($toolName -eq 'WebFetch') {
             hookSpecificOutput = @{
                 hookEventName            = "PreToolUse"
                 permissionDecision       = "allow"
-                permissionDecisionReason = "https WebFetch auto-approved for dev-researcher (.claude/hooks/researcher-web-allow.ps1)"
+                permissionDecisionReason = "https WebFetch auto-approved for general-researcher (.claude/hooks/researcher-web-allow.ps1)"
             }
         } | ConvertTo-Json -Compress -Depth 4
         Write-Output $output
@@ -57,11 +57,11 @@ if ($toolName -eq 'WebFetch') {
     }
 
     $reason = @"
-Non-https WebFetch blocked from dev-researcher role.
+Non-https WebFetch blocked from general-researcher role.
 
 URL: $url
 
-dev-researcher is scoped to https:// URLs only (public web documentation).
+general-researcher is scoped to https:// URLs only (public web documentation).
 http://, file://, ftp:// and other schemes are denied by default to prevent:
   - insecure transport leaking the fetched content
   - local-FS bypass attempts (file://) — researcher uses Read tool for local files

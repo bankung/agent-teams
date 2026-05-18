@@ -19,7 +19,7 @@ The `general` team has **one core agent** plus **access to all specialist agents
 | *dev-tester* | (available if task becomes test-focused) | `context/projects/<active>/dev-tester/` |
 | *dev-reviewer* | (available for quality review) | `context/projects/<active>/dev-reviewer/` |
 | *dev-documentor* | (available for navigational docs) | `_scratch/doc-draft-*.md` (Lead promotes); README.md exception |
-| *dev-researcher* | (available for external research) | `_scratch/research-*.md` (Lead reads, embeds) |
+| *general-researcher* | (available for external research; team-agnostic — shared across teams) | `_scratch/research-*.md` (Lead reads, embeds) |
 | *novel-writer* | (available for fiction writing) | `context/projects/<active>/novel-writer/` |
 | *novel-editor* | (available for fiction editing) | `context/projects/<active>/novel-editor/` |
 
@@ -81,7 +81,7 @@ The design: `assigned_role=NULL` signals that this task started with the `genera
 3. **Assess task scope — decide on role(s)**:
    - **If clearly domain-specific** (the task description / Kanban title names a specialist's domain): spawn that specialist directly. Lead's role: remove ambiguity by choosing the specialist before spawning.
    - **If ambiguous or cross-stack**: spawn `general`. The agent may escalate mid-task if they discover the work is squarely in a specialist's domain (e.g., "optimize this endpoint" → turns out to need schema redesign → escalates to dev-backend).
-3b. **Research-first discipline — standing rule.** Before spawning the chosen role(s), check whether the task crosses a "non-trivial" threshold. When yes → spawn `dev-researcher` (Haiku tier — cheap; the general team borrows it from the dev roster) FIRST or in the first parallel batch; its summary feeds the specialist brief. Cheap-tier survey upfront catches "unknown unknowns" before Opus-tier specialists (or `general` itself, which often runs Opus) commit to a direction.
+3b. **Research-first discipline — standing rule.** Before spawning the chosen role(s), check whether the task crosses a "non-trivial" threshold. When yes → spawn `general-researcher` (Haiku tier — cheap; team-agnostic shared role) FIRST or in the first parallel batch; its summary feeds the specialist brief. Cheap-tier survey upfront catches "unknown unknowns" before Opus-tier specialists (or `general` itself, which often runs Opus) commit to a direction.
 
    **General-team "non-trivial" signals:**
    - Cross-stack scope (one fix touches schema + API + FE + tests + standards).

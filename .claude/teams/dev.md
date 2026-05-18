@@ -17,7 +17,7 @@ The universal Lead rules (no editing target-project artifacts, write only `share
 | **dev-reviewer** | Read-only review (quality, security, performance) | `context/projects/<active>/dev-reviewer/` |
 | **dev-security-reviewer** | Deeper read-only security review on sensitive surfaces (auth, new endpoints, tool layer, deps, file/shell ops) — Sonnet, complements dev-reviewer's baseline | `context/projects/<active>/dev-security-reviewer/` |
 | **dev-documentor** | Navigational docs (architecture map, feature summary, README) — Haiku-class, read-heavy | `_scratch/doc-draft-*.md` (Lead promotes); README.md exception when explicitly briefed |
-| **dev-researcher** | External info gathering (web docs, library reference, comparison facts) — Haiku-class | `_scratch/research-*.md` (Lead reads, embeds into specialist brief or promotes) |
+| **general-researcher** | External info gathering (web docs, library reference, comparison facts) — Haiku-class. Team-agnostic — borrowed from the shared roster. | `_scratch/research-*.md` (Lead reads, embeds into specialist brief or promotes) |
 
 Definitions: [.claude/agents/](.claude/agents/) (the `dev-*` and `dev-sr-*` files).
 
@@ -41,9 +41,9 @@ Lead uses the following defaults. **Override is always allowed** — this is a d
 2. **New-project bootstrap with `working_repo`** — first session on a project that has a non-null `working_repo`. Documentor produces `_scratch/doc-draft-architecture.md` for Lead to seed the project's shared/docs.
 3. **Explicit user request** — "documentor write the architecture / update the README / summarise feature X".
 
-### Research-first discipline (when to spawn dev-researcher)
+### Research-first discipline (when to spawn general-researcher)
 
-**Standing rule:** every non-trivial dev task starts with a research step. `dev-researcher` (Haiku tier — cheap) spawns FIRST or in the first parallel batch alongside other specialists. Cheap-tier survey upfront catches "unknown unknowns" before Opus-tier specialists (`dev-sr-*`) commit to a direction.
+**Standing rule:** every non-trivial dev task starts with a research step. `general-researcher` (Haiku tier — cheap; team-agnostic, shared across teams) spawns FIRST or in the first parallel batch alongside other specialists. Cheap-tier survey upfront catches "unknown unknowns" before Opus-tier specialists (`dev-sr-*`) commit to a direction.
 
 **Dev-specific "non-trivial" signals:**
 
@@ -57,7 +57,7 @@ Lead uses the following defaults. **Override is always allowed** — this is a d
 **Escape valves (skip research):**
 
 - Pure execution — typo fix, well-understood mechanical update (variable rename, dep version bump that's already in the lockfile).
-- Continuation of an already-researched task (the prior dev-researcher report is fresh in `_scratch/research-*.md` or referenced in the parent task description).
+- Continuation of an already-researched task (the prior general-researcher report is fresh in `_scratch/research-*.md` or referenced in the parent task description).
 - Trivial single-edit follow-up to a still-open task (the parent already did the research).
 - UI tweak on an existing surface using existing components and patterns.
 

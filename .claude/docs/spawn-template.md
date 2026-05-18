@@ -110,12 +110,12 @@ When Lead (or a subagent at Lead's direction) files a Kanban task on a DIFFERENT
 
 Examples (good):
 - `[platform-rule] Cross-project tasks must use [purpose] prefix in title`
-- `[content-team] Rename dev-researcher → general-researcher`
+- `[content-team] Draft .claude/teams/content.md playbook`
 - `[methodology] Promote Thai translatese taxonomy`
 - `[novel-drift] Audit Chapter 12 voice drift`
 
 Examples (bad — missing prefix, blends with project-internal work):
-- `Rename dev-researcher to general-researcher`
+- `Draft content team playbook`
 - `Audit Chapter 12 voice drift`
 
 Reasoning: the receiving project's future Lead needs instant context about WHY this task was filed from outside. Without the prefix, cross-project asks lose audit signal at batch-triage. Full rule + storage architecture rationale lives in root `CLAUDE.md` golden rules — "Cross-project edits to agent-teams platform files" bullet.
