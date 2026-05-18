@@ -1,15 +1,14 @@
-## langgraph engine container — Phase 4 (Kanban #851 scaffold; #850 fills in graph.py)
+## langgraph engine container — dev image.
 ##
-## When #850 lands and replaces graph.py with a real LangGraph StateGraph, the CMD
-## below will change to a langgraph server invocation (e.g.
-##   ["langgraph", "dev", "--host", "0.0.0.0", "--port", "8000"]
-## or a custom uvicorn entrypoint wrapping the compiled graph). For #851 we ship a
-## minimal FastAPI stub so `docker compose up langgraph` is healthy before the
-## graph implementation lands.
+## At runtime, docker-compose bind-mounts the repo root at /repo, overlaying the
+## COPY below so edits in langgraph/*.py trigger uvicorn --reload. The COPY is
+## still required because `pip install -e .` needs the package layout (the
+## py-modules + tools/ subpackage listed in pyproject.toml) to resolve at
+## build time. Same pattern as the api service.
 
 FROM python:3.12-slim
 
-WORKDIR /app
+WORKDIR /repo/langgraph
 
 # System deps:
 # - git: required by the specialist tool layer (Kanban #977 → git_diff,
@@ -19,16 +18,15 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy package metadata first so the pip layer caches across graph.py edits.
-COPY pyproject.toml ./
-RUN pip install --no-cache-dir -e .
+# Copy the package layout. setuptools needs the py-modules listed in
+# pyproject.toml (graph, state, nodes, llm, worker, hitl, content_safety) and
+# the tools/ subpackage visible at install time.
+COPY . /repo/langgraph/
 
-# Source. In dev the compose bind-mount `.:/repo` overlays the langgraph/ dir
-# so edits hot-reload via uvicorn --reload (added when #850 lands).
-COPY . .
+RUN pip install --no-cache-dir -e .
 
 EXPOSE 8000
 
-# Stub entrypoint — boots a FastAPI shell exposing GET /ok. #850 will replace
-# this with a real langgraph server invocation.
-CMD ["uvicorn", "graph:app", "--host", "0.0.0.0", "--port", "8000"]
+# uvicorn --reload watches /repo/langgraph (the WORKDIR, overlaid by the compose
+# bind-mount) and restarts on source edits. Mirrors the api service.
+CMD ["uvicorn", "graph:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
