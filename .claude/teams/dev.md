@@ -111,6 +111,20 @@ Within `team='dev'` projects, integer codes map to:
 
 These are dev-specific. Other teams define their own mapping in their own playbook. The DB-level CHECK constraint on `assigned_role` is dropped in the soft-delete migration (#8) — app-layer validation per active team replaces it. Range partition still applies: 1..10 = dev, 11..20 = novel, 21+ = future teams (see `api/src/constants.py::TaskRole`).
 
+### Per-project role gate (Kanban #7 Section A, 2026-05-18)
+
+The active project may carry `config.enabled_roles: int[]` — a whitelist of role codes that the project's Lead is allowed to spawn. Semantics:
+
+- **Key absent OR `null`** → all roles allowed (default; backward-compat for every existing project).
+- **Empty list `[]`** → no AI-role spawns allowed; Lead does the work directly or returns to operator. (Edge case — most projects won't use this.)
+- **Non-empty list** → Lead refuses to spawn agents whose role code is NOT in the list.
+
+**Lead enforcement at spawn time:** before calling `Agent({subagent_type: "<role>", ...})`, resolve `subagent_type` to its TaskRole code (see "Kanban schema codes" table above) and check it against `project.config.enabled_roles`. If not allowed, halt and tell the operator "project <name> has not enabled role <X> — add it to `config.enabled_roles` if you want this spawn".
+
+**Wire-layer validation:** `ProjectCreate.config` and `ProjectUpdate.config` reject `enabled_roles` with out-of-range / non-int / `bool` values at 422 (Pydantic). The DB stores the JSONB blob unchanged.
+
+**UI:** the Kanban task-creation modal's `assigned_role` dropdown filters to `enabled_roles` (if set) — operator can't accidentally assign a task to a role the project doesn't allow.
+
 ## Lifecycle (per task)
 
 1. **Active project + team** are already resolved by the meta-Lead before this playbook is loaded.

@@ -48,8 +48,19 @@ Five named zones. The zone determines (a) who may write, (b) who reads, (c) blas
 | **DB** | PostgreSQL (`projects` + `tasks` + `tasks_history`) | UI / Lead via API | UI + Lead | per-project transactional state |
 | **Standards** | `context/standards/<framework>/` | **humans only** | Lead + subagents (per lane) | universal — every team, every project |
 | **Team methodology** | `context/teams/<team>/` | Lead | Lead + subagents of any project under that team | every project under one team |
-| **Project shared** | `context/projects/<p>/shared/` | Lead | every subagent of project p | one project, every role |
-| **Role state** | `context/projects/<p>/<role>/` | that role only | other roles in project p | one project × one role |
+| **Project shared** | `<working_path>/shared/` (or `context/projects/<p>/shared/` when `working_path` is null) | Lead | every subagent of project p | one project, every role |
+| **Role state** | `<working_path>/<role>/` (or `context/projects/<p>/<role>/` when `working_path` is null) | that role only | other roles in project p | one project × one role |
+
+### Path resolution — `projects.working_path` (Kanban #1185, 2026-05-18)
+
+The two project-scoped zones (Project shared + Role state) resolve their filesystem path via the `projects.working_path` column:
+
+- **`working_path` is set** (typical for non-agent-teams projects) → `<working_path>/shared/` + `<working_path>/<role>/` (flat — no `context/projects/<name>/` nesting). Lives OUTSIDE the agent-teams repo, in its own working folder. Example: secretary (id=599) uses `C:/Users/banku/Documents/Personal/Projects/WebApp/secretary/`.
+- **`working_path` is null** (agent-teams itself + legacy projects pre-migration) → fallback `agent-teams/context/projects/<name>/shared|<role>/`. agent-teams's own context legitimately lives in agent-teams repo since the project IS agent-teams.
+
+**Rule:** every NEW non-agent-teams project SHOULD set `working_path` immediately on creation to avoid bloating agent-teams git history with content that belongs in the project's own working folder. Migration audit for existing wrong-place projects: see Kanban #941 (architecture audit) + per-project migration tasks filed under it.
+
+**Agent prompts** that reference project-scoped files must use the resolved absolute path (e.g., `C:/Users/banku/Documents/Personal/Projects/WebApp/secretary/shared/voice.md`), not the legacy relative form `context/projects/secretary/shared/voice.md`. When `working_path` changes, both the DB row AND any agent prompt with hardcoded references must be updated together.
 
 ### Q0–Q2 — where does this content go?
 
