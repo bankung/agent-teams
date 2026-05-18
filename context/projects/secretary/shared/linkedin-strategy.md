@@ -1,183 +1,240 @@
-# LinkedIn content strategy — framework + generic sources
+# LinkedIn Strategy: Content framework + generic source list
 
-> **Audience specifics, operator's personal LinkedIn URL, content themes operator wants to be known for ARE PII** (reveal positioning + identity). Operator injects per-session. This file holds the GENERIC framework + a starter list of operator-agnostic content sources.
+**Purpose:** Define theme pillars, post-shape templates, and cadence guidelines for LinkedIn content drafting. Operator-specific themes, audience, and RSS feeds arrive via `operator_context` in spawn brief.
 
-## Goal framework (operator selects per-session)
+**Source:** Secretary agent definition, Pattern 3, lines 160–168.
 
-Operator declares per-workflow what they're trying to get out of LinkedIn:
+## Content framework: Theme pillars
 
-```yaml
-session_goal: one_of:
-  - "build credibility for senior IC role"
-  - "build credibility for executive role (CTO / VP Eng)"
-  - "warm pipeline for next role / consulting"
-  - "thought-leadership on a specific topic"
-  - "share project work / build-in-public"
-  - "comment on industry trend"
+Generic pillars suitable for most engineering / professional backgrounds. Operator's personal themes override these at spawn time via `operator_context.operator_themes`.
 
-audience: list (operator-provided per session)
-  - e.g. "backend engineers + tech leads in SEA who care about pragmatic AI integration"
-  - e.g. "founder/CTO at small SaaS"
-  - e.g. "operator's existing network at <industry>"
+### Tier 1 — Core pillars (always in rotation)
 
-audience_NOT_for: list (anti-audience)
-  - e.g. "AI hypers / hustle-bros / 'manifestation' crowd"
+1. **Technical learning / problem-solving**
+   - Deep dives into a tool, pattern, or language you learned recently.
+   - "I spent 2 weeks learning Kubernetes and made these 5 mistakes..."
+   - How-to posts: "3 patterns for testing async code in Python"
+   - Avoid: generic "why X is important" (everyone says it); focus on concrete lessons.
 
-operator_themes: list (3-5 themes operator wants to be associated with)
-  - operator-provided per session
+2. **Career insight / growth**
+   - Lessons from role transitions, job hunts, negotiation.
+   - "Negotiating my last offer taught me these 3 things about asking for what you want..."
+   - Mistakes and recoveries.
+   - Avoid: career advice that sounds like LinkedIn clichés ("always be learning").
 
-anti_themes: list (NEVER draft on these regardless of operator's request)
-  - politics / nationalism (any direction)
-  - religion / spirituality
-  - hot takes on specific people / companies
-  - salary / financial / health / medical advice
-  - "I've heard..." / "people say..." content (no direct experience)
+3. **Project shipped / shipped wins**
+   - What you shipped, what you learned, metrics if public.
+   - "We shipped a real-time collab feature and halved latency in the process; here's how."
+   - Milestone posts (1 year at company, project launched, milestone hit).
+   - Avoid: humble-bragging; own your wins.
+
+4. **Industry commentary / trends**
+   - Reaction to news, framework releases, industry shifts.
+   - "The move to serverless is real; here's what changed for backend teams."
+   - Contrarian takes (supported by evidence).
+   - Avoid: editorializing without substance; back claims up.
+
+5. **Personal essay / reflection**
+   - Longer-form thought piece about work life, priorities, or philosophy.
+   - "Why I left a big tech company for a startup—and what I learned."
+   - Lessons on remote work, burnout, career trajectory.
+   - Avoid: pure venting; reframe as insight for others.
+
+### Tier 2 — Optional pillars (as suited to operator's background)
+
+- **Hiring / team building** (if operator leads or interviews)
+- **Open source / community** (if operator contributes or organizes)
+- **Startup / founder** (if operator is building)
+- **Mentorship** (if operator actively mentors)
+
+## Post-shape templates
+
+### Template 1: Hook + list (best for practical posts)
+
+```
+[HOOK: bold claim or open question]
+
+Here are N keys [to achieving X / I learned about Y]:
+
+1. [Point 1 in ≤10 words] — [one sentence of context/proof]
+2. [Point 2 in ≤10 words] — [one sentence of context/proof]
+3. [Point N in ≤10 words] — [one sentence of context/proof]
+
+[TAKEAWAY: one memorable sentence]
+
+[CTA question]
 ```
 
-## Content format framework (operator-agnostic)
+**Example:**
+```
+I spent 2 months rebuilding our payment system and learned these 3 things:
 
-### Default format mix (override per session)
+1. Feature flags beat big-bang deploys — we split traffic 80/20 and hit parity in a week
+2. Monitoring > guessing — set up alerts before go-live, not after incidents
+3. Communicate async — 15 status updates beat 10 sync meetings
 
-- 70% narrative paragraphs (personal experience / specific observation)
-- 20% short list with context (NOT raw listicle)
-- 10% screenshot + commentary (project shots, code, real artifacts)
+This is why iterative > all-or-nothing.
 
-### Length budgets (per `voice.md`)
-
-- Standard post: 150-400 words
-- Long essay: 400-600 words (use sparingly)
-- Pure announcement: 30-80 words
-
-### Hook conventions (banned + preferred)
-
-**Banned hooks:**
-- Question opener ("Have you ever wondered...?")
-- Generic motivational ("In today's fast-paced world...")
-- Statistic-only ("90% of devs don't...")
-- "I have a confession to make..."
-
-**Preferred hooks (per voice.md):**
-- Specific observation ("Most agent frameworks treat failure as a timeout — auditor flips it.")
-- Contrarian frame ("Everyone says X. Here's why it's wrong.")
-- Personal anecdote opening ("Last week I spent 4 hours debugging...")
-- Concrete artifact reference ("This 3-line change saved 40% of our cost.")
-
-### CTA conventions
-
-- Soft CTAs only: "curious how others handle this" / "interested to hear if you've seen this"
-- BANNED: "comment your thoughts!" / "agree?" / "tag a friend" / "DM me for details"
-
-### Hashtags
-
-- 2-4 max
-- Lowercase
-- Specific over generic (#langgraph beats #ai)
-
-## Cadence framework
-
-- Posting frequency target: operator-defined per session OR session-default "2 posts/week"
-- Engagement floor: if <100 impressions in first 24h → don't compound with another post within 48h
-- Burst policy: max 1 post / day even if multiple drafts ready (looks spammy)
-
-## Content discovery sources (operator-agnostic starter set)
-
-Generic high-signal sources that work regardless of operator's niche. Operator overlays domain-specific sources per session.
-
-### RSS / news (engineering / AI)
-- Hacker News top: https://news.ycombinator.com/rss
-- Hacker News new: https://news.ycombinator.com/rss (filtered for niche)
-- TLDR AI archive: https://tldr.tech/api/latest/ai/rss
-- The Pragmatic Engineer: https://newsletter.pragmaticengineer.com/feed
-- Simon Willison: https://simonwillison.net/atom/everything/
-- arxiv-sanity recent ML: http://www.arxiv-sanity.com/top
-- LangChain blog: https://blog.langchain.com/rss/
-- Anthropic blog: https://www.anthropic.com/news (no RSS — secretary WebFetches periodically)
-
-### Engineering blogs (RSS-enabled)
-- High Scalability: http://highscalability.com/rss.xml
-- Martin Fowler: https://martinfowler.com/feed.atom
-- Postgres weekly: https://postgresweekly.com/rss
-
-### Public job-market signal (for content tied to hiring trends)
-- HN "Who's hiring": secretary fetches monthly thread
-
-### Sources to AVOID (low-signal for content)
-- Twitter / X (format mismatch + noise)
-- Reddit (sourcing it explicitly is fine; drafting "as seen on Reddit" feels lazy)
-- Other LinkedIn posts (don't be a remix account)
-- Generic "AI news roundup" newsletters (too shallow)
-
-### Operator-specific sources (session-time injection)
-
-```yaml
-operator_rss_feeds:
-  - <feed URLs operator subscribes to>
-operator_newsletter_subscriptions:
-  - <names>
-operator_recent_topics_thinking:
-  - <volatile, operator refreshes weekly>
+How does your team approach large system rebuilds? Curious about your strategy.
 ```
 
-OR operator stores in `general/operator-context.md` for persistence.
+### Template 2: Narrative (best for lessons learned / personal essays)
 
-## Drafting protocol
-
-### Mode A — Operator provides topic
-
-1. Read `voice.md` + session-time injected `operator_themes` + `audience`
-2. Research topic (≤15 min Chrome MCP + WebFetch):
-   - Operator-specific sources first
-   - Generic sources second
-   - 2-3 references with 1 specific insight each
-3. Outline 3-5 points in `_scratch/linkedin-outline-{slug}.md`
-4. Draft in `general/linkedin-drafts-{date}/{slug}.md`
-5. Self-check:
-   - [ ] Voice.md anti-patterns clean
-   - [ ] No banned hooks
-   - [ ] CTA is soft (or absent)
-   - [ ] Em-dash budget within voice.md per-200w
-   - [ ] Length within session-target
-   - [ ] No anti-themes content
-   - [ ] No conclusion paragraph that restates body
-6. Return to Lead with draft path + 1-paragraph summary + self-check pass/fail
-7. Lead surfaces to operator: "approve, edit, save_for_later, skip?"
-
-### Mode B — Operator asks "find 3 topic candidates"
-
-1. Read `voice.md` + session-time `operator_themes` + `anti_themes`
-2. Scan content discovery sources (last 48h)
-3. Filter to operator's themes (NOT anti-themes)
-4. Score 3 candidates with operator's specific angle:
-   - Title (10-15 words)
-   - Angle (1 sentence — operator's specific take)
-   - Theme it fits
-   - Source(s) for backup
-5. Return to Lead (no draft yet) — operator picks 1
-6. Re-enter Mode A with picked topic
-
-## Engagement automation (Mode A defaults)
-
-Secretary CAN (no HITL):
-- Read comments on operator's posts (summary for operator)
-- Read DMs from known senders (summary for operator)
-
-Secretary CANNOT (always HITL or operator-only):
-- Reply to comments / DMs
-- Like / react to other posts (operator-only — don't manage operator's social graph)
-- Connect / accept connection requests (operator-only)
-- Follow / unfollow (operator-only)
-
-## Per-session output
-
-`general/linkedin-log-{YYYY-MM}.md`:
 ```
-- 2026-05-18 — POSTED — "Auditor pattern in LangGraph" — 320 words — link: https://...
-- 2026-05-18 — DRAFT — "MCP vs OpenAI function calling" — operator marked "save for later"
-- 2026-05-18 — SKIPPED — "10 AI frameworks ranked" — voice.md anti-pattern (listicle)
+[ANECDOTE / STORY: 2–3 sentences setting context]
+
+[MID-STORY TURN: where things went wrong, or the lesson hit]
+
+[LESSON EXTRACTED: broad takeaway in 1–2 sentences]
+
+[REFLECTION: how operator applies this now / what changed as a result]
+
+[CTA: question or invitation to share similar experience]
 ```
 
-## Tuning hooks
+**Example:**
+```
+I joined a startup as the 5th engineer and spent the first month writing code no one read.
 
-- **Generic sources**: edit this file (additions/removals propagate to all sessions)
-- **Operator's themes / audience**: session-time inject or `general/operator-context.md`
-- **Voice / format**: edit `voice.md`
+We shipped features nobody asked for. We'd build for 2 weeks then discard the work. 
+The problem: we had no metric for "success." We just... built.
+
+The turning point was when the CEO stopped us mid-sprint and said, "What are we trying 
+to learn this week?" That one question rewired how we worked.
+
+We defined a metric per sprint. We measured. We cut features ruthlessly. Velocity 
+tripled; burnout fell. We shipped a product.
+
+If you're in a team that feels like it's spinning, ask: "What are we trying to learn?" 
+It changes everything.
+
+Have you had a moment that flipped how your team thinks about shipping?
+```
+
+### Template 3: Contrarian take (best for industry commentary)
+
+```
+[PROVOCATIVE CLAIM]
+
+The common wisdom is [X]. But here's why [X] is incomplete / wrong:
+
+[Reason 1 — evidence or example]
+[Reason 2 — evidence or example]
+[Reason 3 — evidence or example]
+
+[NUANCE / CAVEAT: when the common wisdom IS right]
+
+[Call to action: What's your take?]
+```
+
+**Example:**
+```
+Microservices aren't worth it for most startups.
+
+Everyone says "scale with microservices." But here's what I've seen:
+
+1. You're not Twitter-scale. The operational complexity of 20 services + Kubernetes 
+   slows shipping, not speeds it.
+2. Monoliths are underrated. Stripe, GitHub, Figma all started monolith. They scaled 
+   one service out AFTER they hit real scale, not before.
+3. Premature distribution is premature optimization. Split your system when your 
+   monolith is the actual bottleneck, not when you're "expecting" growth.
+
+(Caveat: if you're actually at 10M requests/sec, this doesn't apply. But most of us 
+aren't thinking in terms of 10M.)
+
+When did you split your architecture? Was it pressure-driven or speculative?
+```
+
+## Cadence + volume guidelines
+
+**Target:** 1–2 posts per week (sustainable over months; avoid burnout or spam perception).
+
+**Pacing:**
+- Publish 2–3 days apart (not daily; not once per month).
+- Mix pillar types: don't do 4 "technical learning" posts in a row. Vary.
+- Avoid Sundays / early mornings (engagement lower; post early week, daytime).
+
+**Seasonal:**
+- Avoid long silences (>3 weeks) — algorithm penalizes low-activity accounts.
+- Ramp up around job change, company milestone, or personal event.
+- Post-drafting: if batch-drafting 5 posts, schedule over 2–3 weeks, not day 1.
+
+## Generic source list for topic research
+
+**Note:** Operator's personal `operator_rss_feeds` (if provided) take priority. These are fallback generic sources for topic discovery when operator doesn't specify.
+
+### Tier 1: News + trending
+
+- **Hacker News** (`news.ycombinator.com/newest`) — tech news + discussion; filter by category (AI, databases, cloud, etc.)
+- **Lobsters** (`lobste.rs`) — curated tech community; high signal-to-noise ratio
+- **dev.to** (`dev.to`) — developer blog platform; search by tag
+- **IndieHackers** (`indiehackers.com`) — startup + indie builder perspective
+
+### Tier 2: Domain-specific blogs + publications
+
+- **Engineering blogs:** grab company engineering blog URLs from companies on operator's target list or companies they admire. Examples: Stripe, Figma, Slack, Airbnb, Twilio engineering blogs. RSS feeds available on most.
+- **Language/framework news:** Python Weekly, JavaScript Weekly, Golang Blog, Rust Blog (search "X weekly newsletter").
+- **Cloud + infrastructure:** AWS What's New, Azure Blog, GCP Blog, Kubernetes Blog.
+
+### Tier 3: Newsletters (operator-curated)
+
+- Operator provides via `operator_rss_feeds` or spawn brief.
+- Common examples (not required, just reference): Pointer.io, Sidebar.io, tldr.tech, Morning Brew (for business context).
+
+### Tier 4: Social listening (real-time, no RSS)
+
+- LinkedIn feed: scroll top-20 posts in operator's network; note engagement + topic.
+- Twitter/X: search operator's interests (e.g., "#Kubernetes", "#CareerGrowth"); find threads with engagement.
+
+## How to pick topics for LinkedIn post (secretary workflow)
+
+1. **Operator provides topic** (spawn brief, e.g., "post about API design") → skip to step 3.
+2. **Secretary proposes 3 topics** from recent reading:
+   - Scan sources above (Hacker News, blogs, operator RSS feeds).
+   - Pick 1 trending topic (technical / industry-relevant).
+   - Pick 1 evergreen topic (from operator's core pillar).
+   - Pick 1 contrarian / hot-take topic.
+   - Return 3-line pitches to Lead. Operator chooses, or says "none of these, do X instead."
+3. **Research:** WebSearch + firecrawl-search for 2–3 references (articles, docs, discussions). Secretary skims, not reads-in-full.
+4. **Outline:** 3–5 points mapped to one of the post-shape templates above.
+5. **Draft:** per `voice.md` tone (professional, concrete, no jargon, active voice).
+6. **Return to Lead** with draft in `general/linkedin-draft-<date>-<slug>.md`. Lead surfaces to operator for approval.
+
+## Post-publish: follow-up engagement (not secretary job; operator manual)
+
+After posting:
+- Monitor comments for 24 hours.
+- Respond to substantive comments (builds algorithm engagement + community).
+- Pin the post if it gets high engagement (LinkedIn feature; operator does this).
+- Repost to Twitter/other if operator wants cross-posting (not secretary automation for now).
+
+## Operator-specific overrides at spawn time
+
+Spawn brief may include:
+
+```json
+{
+  "operator_themes": ["backend systems", "career pivots", "bootstrapping"],
+  "audience": "engineers transitioning to management",
+  "audience_NOT_for": ["pure sales/recruiting", "cryptocurrency"],
+  "operator_rss_feeds": ["https://example.com/feed.xml"],
+  "stance_for_this_post": "technical + witty, emoji OK, contrarian welcome",
+  "skip_topics": ["blockchain", "AI hype"]
+}
+```
+
+Use overrides to:
+- Filter topic proposals (e.g., "no AI hype" → don't suggest AI topics).
+- Adjust tone (e.g., "witty" → add light humor to template).
+- Weight sources (operator RSS feeds > generic sources).
+- Tailor audience (e.g., "for managers" → focus on leadership / delegation angles).
+
+## Metrics to track (optional; inform future posts)
+
+After each post publishes:
+- Engagement rate (likes + comments / impressions).
+- Top comment / most common reaction.
+- Highest-engagement time-of-day (optimize next post).
+
+Secretary can track in `general/linkedin-metrics-<month>.md` if operator wants trend data.

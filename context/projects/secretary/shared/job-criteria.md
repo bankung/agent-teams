@@ -1,190 +1,201 @@
-# Job match criteria — scoring framework
+# Job Criteria: Scoring framework + cover letter structure
 
-> **Target roles, specific companies, salary numbers, deal-breakers ARE PII** (reveal operator's career intent + finances). Operator injects at session-time. This file holds the GENERIC scoring framework + algorithm.
+**Purpose:** Provide a 0–100 scoring rubric for job match quality, and define cover letter structure. Operator-specific target roles, salary floor, and location preferences arrive via `operator_context` in spawn brief.
 
-## Scoring algorithm (operator-agnostic)
+**Source:** Secretary agent definition, Pattern 2, lines 150–158. Required fields from `profile.md` lines 104.
+
+## Scoring framework (0–100)
+
+Secretary scores each job posting independently. Use the rubric below; final score is weighted average of 4 categories.
+
+### Category 1: Skills overlap (35% weight)
+
+**Rubric:**
+
+| Score | Criteria |
+|---|---|
+| **90–100** | Job lists all 3+ of operator's must-have skills. 2+ bonus skills match. |
+| **70–89** | Job lists 2 of 3+ must-have skills. 1 bonus skill match. Minor skill gap bridgeable in 1–3 months. |
+| **50–69** | Job lists 1 of 3+ must-have skills. Job requires skill learning but in operator's domain (e.g., operator knows Python, job wants Golang). |
+| **30–49** | Job lists 1 must-have skill. 2+ required skills are new to operator (different programming paradigm, unfamiliar domain). |
+| **0–29** | Job requires few/none of operator's must-have skills. Steep learning curve; operator would struggle in first 3 months. |
+
+**How to assess:** Read job posting title + responsibilities section. Look for explicit skill names (Python, Kubernetes, etc.). Cross-reference against `operator_context.must_have_skills` (e.g., ["Python", "PostgreSQL", "Kubernetes"]).
+
+**Note:** Don't penalize for "nice-to-have" section; it's negotiable. Focus on the main responsibilities.
+
+### Category 2: Salary fit (25% weight)
+
+**Rubric:**
+
+| Score | Criteria |
+|---|---|
+| **90–100** | Salary band (low end) is 10%+ above operator's floor. No ceiling cap needed. |
+| **70–89** | Salary band (low end) meets or slightly below operator's floor (≥95%). Upside negotiation likely. |
+| **50–69** | Salary band (low end) is 15–30% below floor. Negotiable; operator willing to discuss but prefers higher. |
+| **0–49** | Salary band (low end) is >30% below floor OR salary not listed (unknown). Deal-breaker for operator's financial target. |
+
+**How to assess:** Extract salary range from job posting. If range is "100k–150k" and operator's `salary_floor` is 120k, score is around 70–80 (low end = 100k, which is 83% of floor). If not listed, ask operator (spawn brief) or score 0 (too risky).
+
+**Special case — equity + bonus:** If posting lists equity/bonus + salary, note it in scoring comment ("base 90k + equity package worth ~120k vesting 4yr"), but score on BASE salary. Equity is upside, not guaranteed.
+
+**Note:** If score is 0–49 but job is otherwise perfect fit (skills 95, location 100), flag to operator in summary: "Low pay but strong match otherwise — review?"
+
+### Category 3: Location (20% weight)
+
+**Rubric:**
+
+| Score | Criteria |
+|---|---|
+| **100** | Job is remote or in operator's top 1–2 preferred cities. |
+| **80–99** | Job is remote-flexible (3–5 days/week in-office in one of operator's preferred cities) OR in preferred city but on-site 5 days/week (operator willing). |
+| **60–79** | Job location is secondary preference. Operator willing to relocate / commute, but not ideal. Example: not preferred city, but good relocation package or temporary assignment. |
+| **40–59** | Job location mismatches preferences. Operator would need relocation or visa sponsorship not listed. |
+| **0–39** | Job location is outside operator's geographical scope entirely. Relocation not feasible OR visa sponsorship not mentioned AND operator needs it. |
+
+**How to assess:** Extract location + work-arrangement from job posting. Cross-reference against `operator_context.location_preferences` (e.g., ["remote", "San Francisco", "Singapore"]).
+
+**Work auth:** If operator needs visa sponsorship and posting says "no sponsorship", score 0 regardless of location. If posting doesn't mention sponsorship, ask operator (score 50 = "unclear — verify before applying").
+
+### Category 4: Deal-breakers (20% weight)
+
+**Rubric:**
+
+| Score | Criteria |
+|---|---|
+| **100** | No deal-breakers detected. Company, industry, and team size align with operator's preferences or are neutral. |
+| **70–99** | One minor deal-breaker or concern. Example: company is startup (operator prefers stable) but team seems strong. OR: industry is X (operator neutral on), but role is strategic. Operator willing to consider. |
+| **40–69** | One moderate deal-breaker. Example: company is in industry operator wants to avoid (finance if operator said "not finance"), but salary/skills are too good to ignore. Flag to operator. |
+| **0–39** | One major deal-breaker or 2+ minor ones. Example: company in forbidden industry, OR team size is >5000 and operator wants <500, OR non-negotiable requirement (must be remote; job is on-site). Auto-decline unless operator overrides. |
+
+**How to assess:** Extract company, industry, size, team structure from posting + company research (LinkedIn, Crunchbase, website). Cross-reference against `operator_context` for:
+- **Forbidden industries** (e.g., operator said "no finance/defense/tobacco").
+- **Company size preference** (e.g., "startups only" or "stable 50–500 person company").
+- **Team composition** (e.g., "avoid 100+ person orgs" or "need 3–5 person focused team").
+- **Work style** (e.g., "no micromanagement" = red flag if posting says "daily standups + surveillance").
+
+**Note:** If deal-breaker is ambiguous, mention in score comment and ask operator.
+
+## Composite score (final: weighted average)
 
 ```
-base = 0
-
-# Skills overlap (operator provides skill list session-time with weights)
-for each operator.must_have_skill in JD:
-    base += skill.weight (default: 15 if not specified)
-for each operator.nice_to_have_skill in JD:
-    base += skill.weight (default: 5)
-
-# Location fit
-if JD.location matches operator.preferred_locations: base += 10
-elif JD.location in operator.acceptable_locations:    base += 0
-else: deal_breaker = true
-
-# Salary fit (if JD discloses)
-if JD.salary >= operator.salary_target:         base += 15
-elif JD.salary >= operator.salary_floor:        base += 5
-elif JD.salary <  operator.salary_floor:        deal_breaker = true
-elif JD.does_not_disclose_salary:               base -= 5 (penalty, not skip)
-
-# Title match
-if JD.title matches operator.target_roles:      base += 20
-elif JD.title in operator.acceptable_roles:     base += 5
-elif JD.title in operator.anti_titles:          deal_breaker = true
-
-# Company stage
-if JD.company.stage in operator.preferred_stages: base += 5
-
-# Company red flags
-if JD.company in operator.blacklist:            deal_breaker = true
-
-# Visa / work authorization
-if JD.requires_visa_sponsorship AND NOT operator.has_local_auth: deal_breaker = true
-
-# Final
-if deal_breaker: return 0
-return base  # operator threshold filter applied next
+Final Score = (Skills × 0.35) + (Salary × 0.25) + (Location × 0.20) + (Deal-breakers × 0.20)
 ```
 
-## Session-time inputs operator provides
+**Guidance:**
+- **80–100:** Strong match. Top-tier candidates for applications.
+- **60–79:** Good fit. Apply if capacity; review each for must-have gaps.
+- **40–59:** Borderline. Secretary proposes to operator for decision.
+- **0–39:** Poor fit. Skip unless operator intervenes.
 
-```yaml
-target_roles:           # List of role titles (synonyms / variations OK)
-  - "<role 1>"
-  - "<role 2>"
-acceptable_roles:       # Roles operator would consider but didn't actively target
-  - "<role>"
-anti_titles:            # Auto-skip regardless of other matches
-  - "<role>"            # e.g. "Junior", "Intern", "QA-only", "Manager-track-only"
+## Cover letter structure (3-paragraph template)
 
-must_have_skills:       # Each item: name + weight (1-25)
-  - { name: "<skill>", weight: 20 }
-nice_to_have_skills:
-  - { name: "<skill>", weight: 5 }
+**Trigger:** When job match scores ≥60 and operator approves application, secretary drafts cover letter per this structure.
 
-preferred_locations:
-  - "Remote"
-  - "<city>"
-acceptable_locations:
-  - "<city or region>"
-unacceptable_locations:
-  - "<city>"
-time_zone_constraint:   # e.g. "must overlap 4h+ with ICT (UTC+7)"
-  hours_overlap_with: "UTC+7"
-  min_hours: 4
+### Paragraph 1: Hook + role-fit understanding (3 sentences, ~50 words)
 
-salary_floor_thb_monthly:    <number>
-salary_target_thb_monthly:   <number>
-salary_currency_conversions: # only fill if applying outside TH
-  USD: <floor>
-  SGD: <floor>
-
-preferred_stages:       # Company stages
-  - "Series B-C startup"
-  - "FAANG-tier specific teams"
-avoided_stages:
-  - "Pre-seed (high failure risk)"
-  - "Enterprise IT services"
-
-blacklist_companies:    # Auto-skip
-  - "<name>"
-
-work_authorization:     # affects visa-requiring postings
-  citizenship: "<country>"
-  visa_status: "<if applying abroad>"
-
-per_run_caps:
-  listings_reviewed: 20-40   # per source, secretary halts beyond
-  applications_proposed: 5   # max secretary shows operator per run
-  applications_submitted: 5  # max actual submits per day (anti-spam)
-
-sources:                # secretary URLs
-  jobsdb_search_url: "<operator's filtered URL>"
-  linkedin_jobs_url: "<operator's filtered URL>"
+**Sentence 1:** Why you're writing (found role, referred, company mission resonates, urgent hiring signal).
+```
+Example: "I found your job posting for Senior Backend Engineer and was immediately interested because you're 
+rebuilding payments infrastructure — a problem I've solved twice."
 ```
 
-## Per-session injection example
-
-Operator inline:
+**Sentence 2:** One sentence showing you understand the role and value you'd bring.
 ```
-operator: find matching jobs.
-          context for this session:
-            target_roles: [CTO, Head of Engineering, VP Eng]
-            must_have_skills: [{name: 'agent orchestration', weight: 20},
-                                {name: 'team leadership', weight: 15},
-                                {name: 'fundraising experience', weight: 10}]
-            salary_floor_thb: 350000
-            location: [Bangkok, Remote-SEA timezone]
-            stages: [Series A-C startup]
-            anti_titles: [Junior, IC-only]
-            sources:
-              jobsdb_url: <pasted URL>
-              linkedin_url: <pasted URL>
-            propose_max: 5
-            submit_today_max: 3
+Example: "Your team is migrating from monolith to microservices; I've led 3 migrations and can hit the ground running."
 ```
 
-OR operator stores in `general/operator-context.md` for persistence.
-
-## Cover letter framework (operator-agnostic)
-
-When secretary drafts a cover letter, follow this structure:
-
-### Structure (200-350 words target per voice.md)
-
-1. **Hook sentence** per `voice.md` opener pattern (1 sentence, specific observation NOT generic motivational)
-2. **Why THIS company** (1 paragraph, 2-3 sentences):
-   - Secretary researches via `WebFetch` on company about/mission/recent news
-   - References ONE concrete thing (not "I love your mission")
-3. **Skill→JD match** (1 paragraph, 2-3 concrete bullets):
-   - Operator's session-time `must_have_skills` → JD requirements
-   - NOT a skill dump; pick the 2-3 most relevant
-4. **One question for recruiter** (1 sentence):
-   - Genuine interest signal + gives them a hook to reply
-5. **Sign-off** per `voice.md` formal tone + operator's session-injected `signature`
-
-### Anti-patterns (from voice.md, also banned in cover letters)
-
-- "I'm passionate about..."
-- "I believe my skills make me a strong fit"
-- Salary expectations stated in letter (let them ask)
-- Generic warmth that says nothing
-
-### Per-company research budget
-
-- Max 5 min Chrome MCP browsing per company (about page + 1 recent post)
-- If can't find specific hook in 5 min → use generic-warm template + flag "low customization possible" in HITL pause
-
-## Quality gates (self-check before HITL pause)
-
-Before pausing operator for application submit, verify:
-- [ ] Cover letter passes voice.md anti-pattern scan
-- [ ] Cover letter includes 1 specific company detail
-- [ ] Cover letter includes 1 genuine question
-- [ ] Length within 200-350 words
-- [ ] All form fields filled per operator profile
-- [ ] Resume path resolves to a real file
-
-If 2+ checks fail → halt + escalate "can't draft to spec, operator review needed".
-
-## Failure modes
-
-- Application form has essay question → halt + show field text + ask operator
-- Form requires login to third-party (Workday, Greenhouse) operator not logged in → halt + ask to login
-- Salary field required + operator hasn't set session policy → halt + ask
-- Captcha → halt + report (operator completes manually)
-- Resume upload fails → halt + report
-- JobsDB / LinkedIn rate-limit → back off + halt + report remaining count
-
-## Tracking output
-
-`general/applications-{YYYY-MM}.md`:
+**Sentence 3:** Express genuine interest (avoid "I am excited to apply for the position of...").
 ```
-- 2026-05-18 — <company> — <role> — score 67/100 — status: submitted — follow-up: 2026-05-25
-- 2026-05-18 — <company> — <role> — score 45/100 — status: skipped (deal-breaker: onsite SG)
+Example: "I'd love to discuss how my experience can accelerate your migration."
 ```
 
-Per-session summary: `general/job-search-{date}/job-search-summary.md`.
+### Paragraph 2: Proof — 2–3 concrete achievements (4 sentences, ~100 words)
 
-## Tuning hooks
+**Pattern per achievement:** "When [situation], I [action], resulting in [metric or outcome]. [Connection to role]."
 
-- **Scoring weights**: operator overrides per session
-- **Cover letter structure**: edit this file (rare)
-- **Sources / volume caps**: operator overrides per session
+```
+Example 1:
+"At TechCorp, I migrated a legacy Postgres 9.6 → 14 with zero downtime, reducing query latency 
+by 35% and unblocking 5 pending features. This mirrors your team's focus on infrastructure stability."
+
+Example 2:
+"I designed a circuit-breaker system that reduced cascading failures by 60% and improved on-call 
+happiness (fewer pages). Your posting mentions reliability as a core value; this is what I'd bring."
+```
+
+**Structure:** Each achievement = 2 sentences (situation + action + metric, then connection to role). Operator's `must_have_skills` or `target_roles` should map to achievements. Secretary pairs job requirements ↔ operator proof points.
+
+### Paragraph 3: Close + call-to-action (2 sentences, ~30 words)
+
+**Sentence 1:** Restate eagerness + focus area.
+```
+Example: "I'm excited to bring my infrastructure and migration expertise to your team and help you ship faster."
+```
+
+**Sentence 2:** Clear CTA (discuss schedule, jump on call, send references, highlight availability).
+```
+Example: "I'm available for a call this week — let me know what works."
+```
+
+**Avoid:** "Sincerely", "Yours truly" (too formal). Use "Thanks," / "Best," / "Cheers," / "Looking forward," / "[Operator name]".
+
+## How to populate cover letter at runtime
+
+1. **Operator context fields needed:**
+   - `name` (from profile)
+   - `must_have_skills` (list, from profile)
+   - `target_roles` (list, from profile)
+   - Operator's achievements (optionally from spawn brief or prior job history)
+
+2. **Job-specific fields:**
+   - Job title + company name (from posting)
+   - Key responsibilities (from posting)
+   - Nice-to-have / bonus skills (from posting)
+
+3. **Secretary workflow:**
+   - Extract 2–3 operator achievements from context that MATCH job requirements.
+   - Rewrite achievements in concrete language (numbers, timelines, impact).
+   - Map each achievement to one job requirement ("You mentioned X, I've done Y").
+   - Draft letter per template above.
+   - Return to Lead with letter in Action-required (HITL before submit).
+
+## Example cover letter (template instance)
+
+```
+Hi [Company Hiring Manager],
+
+I found your job posting for Senior Backend Engineer and was immediately interested 
+because you're scaling to 50M users — a problem I've helped solve twice. Your team is 
+prioritizing reliability and migration velocity; I'd love to discuss how my experience 
+in both areas can accelerate your growth.
+
+At StartupX, I led a migration from Django monolith to FastAPI microservices, reducing 
+API latency by 40% and enabling the team to ship 3 new features that were previously 
+blocked by infrastructure. This directly mirrors your team's goal of supporting faster 
+feature velocity. I also designed a circuit-breaker system that reduced cascading failures 
+by 60% — key for the scale you're operating at.
+
+I'm excited to bring infrastructure expertise and migration patterns to your team. 
+I'm available for a call this week — let me know what works.
+
+Best,
+[Operator Name]
+```
+
+## Operator-specific criteria at spawn time
+
+If spawn brief includes `job_criteria_overlay` or `override_*` fields, they take precedence:
+
+```json
+{
+  "skip_roles": ["DevOps", "QA"],
+  "priority_company_list": ["TechCorp", "Startup Y"],
+  "must_have_skills_override": ["Rust", "PostgreSQL", "AWS"],
+  "salary_floor_override": 150000,
+  "location_preferences_override": ["remote"],
+  "work_auth": "no_sponsorship_needed"
+}
+```
+
+Use overrides to adjust score weights or add/remove companies from review.

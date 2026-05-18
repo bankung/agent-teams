@@ -1,104 +1,97 @@
-# Operator identity — session-time injection convention
+# Profile: Identity & Session Injection Convention
 
-> **DO NOT fill PII into this file.** Operator identity (name, email signature, phone, resume path, exact employer, etc.) MUST be passed per-session, NEVER persisted to repo. Reasoning: repo is git-tracked; identity should be ephemeral + revocable at the conversation level.
->
-> This file documents **how** operator provides identity each time secretary runs.
+**Purpose:** Define how operator identity and preferences reach the secretary agent at runtime. This file documents the CONVENTION for session-time identity injection — NOT the identity itself (which lives in operator_context, sourced from Lead's spawn brief or persistent gitignored file).
 
-## Two ways to provide identity
+**Repository context:** These files are git-tracked; operator PII NEVER lives here. Instead, identity reaches secretary via two channels in priority order:
 
-### Option 1 — Inline at session start (RECOMMENDED)
+1. **Lead's spawn brief** (`operator_context` field) — the preferred channel. Lead extracts operator's chat input and passes identity inline to this agent.
+2. **Persistent fallback** (`context/projects/secretary/general/operator-context.md`, gitignored) — optional secondary channel. Operator may store frequently-used values here for reuse across sessions.
 
-When operator opens Claude Code + binds to secretary project, type identity context inline with the first workflow command. Lead pulls fields out and passes to secretary's spawn brief.
+**Precedence rule:** On any field present in both channels, **the spawn brief value wins**. Persistent file is for convenience, not override.
 
-**Example session start:**
+## Critical fields by workflow
+
+**Source:** Secretary agent definition, lines 100–105. Each row lists required PII fields; missing any field = STOP and escalate to Lead.
+
+| Workflow | Required Fields | Notes |
+|---|---|---|
+| **email-triage** | `name`, `signature` | Reply drafts need name + sig. Optional overlays: `priority_senders` (VIP inbox), `auto_archive_overrides` (site-specific exceptions), `mentor_friends_casual` (tone override for specific senders), `read_dont_process` (folders to skip), `skip_folders` (inbox sections to ignore) |
+| **job-apply** | `name`, `email`, `phone`, `linkedin_url`, `resume_path`, `target_roles`, `must_have_skills`, `salary_floor`, `location_preferences`, `work_authorization`, `sources` | Sources = URLs for JobsDB + LinkedIn job boards to search. Resume path must be absolute (`/path/to/resume.pdf`). Location preferences = list of remote-OK cities or "remote-only". Work auth = visa sponsorship need (boolean or country list). |
+| **linkedin-post** | `linkedin_handle` | Required for attribution sanity. Optional overlays: `operator_themes` (list of personal theme pillars), `audience` (target persona), `audience_NOT_for` (exclusion list), `operator_rss_feeds` (personal subscription list), `stance_for_this_post` (POV override for one post) |
+| **daily-digest** | none | Synthesizes from `general/` outputs; no PII required. |
+
+## Channel-specific overrides (added 2026-05-18 per #1176)
+
+Operator may use multiple email channels (Gmail + Outlook/hotmail confirmed 2026-05-18). Signature handling differs per channel:
+
+| Channel | Signature handling | operator_context field |
+|---|---|---|
+| Gmail (`bankung99@gmail.com`) | Secretary draft uses `operator_context.signature` (manual append) | `signature: "Best,\nThanit"` |
+| Outlook/hotmail (`bankung99@hotmail.com`) | Outlook AUTO-INSERTS its own configured signature at compose body cursor — Lead-direct flow does NOT need to append (would cause duplication) | `outlook_signature_override: <string>` ONLY if operator wants to clear Outlook's auto-sig and use a different one (rare; usually accept Outlook's default) |
+
+### When to use which channel
+
+- **Default (`channel` not specified)**: Gmail for triage + send (Gmail is operator's primary)
+- **`channel: outlook`**: route to Outlook for triage or send — secretary uses `outlook.live.com` URLs + handles auto-sig per channel-UI-differences in `email-rules.md`
+- **Cross-channel**: cross-account sends validated (Gmail→Hotmail + Hotmail→Gmail) — Lead-direct compose with appropriate URL deeplink per `.claude/docs/url-deeplink-tricks.md`
+
+### PII reminder
+
+Outlook's auto-signature contains operator phone (`+66 ...`). When operating on Outlook compose:
+- Do NOT echo auto-sig content back to chat unnecessarily
+- For Lead-direct sends to NON-operator addresses, accept the auto-sig (it's intentional contact info)
+- For ANY workflow that would screenshot/read_page the Outlook compose UI, minimize follow-up references to phone digits
+
+## How to read identity fields at session start
+
+1. **Check Lead's spawn brief** for `operator_context` object. Extract all fields present.
+2. **Check `context/projects/secretary/general/operator-context.md`** (if file exists). Extract fields NOT already in spawn brief.
+3. **Validate against the table above:**
+   - If any **required field** for the chosen workflow is missing → STOP. Return list of missing fields to Lead. Lead prompts operator to provide; re-spawn with the answer.
+   - If **optional fields** are missing → proceed with sensible defaults (e.g., empty `priority_senders` list = no VIP senders, use standard reply tone).
+
+## Spawn brief structure example (for Lead reference)
 
 ```
-operator: secretary ครับ
-Lead:     [bootstraps, binds project_id=599]
-
-operator: triage today's inbox.
-          context for this session:
-            name: <Full Name>
-            signature: <how you sign off — first name only, "Best, X", etc.>
-            tone for unknowns: <formal-warm | casual | crisp>
-            priority senders: <2-5 emails/domains that always reply_now>
-            auto-archive: <patterns like "newsletter@*", "noreply+receipts@stripe.com">
-
-Lead:     [spawns secretary with operator_context above]
+operator_context:
+  name: <placeholder>
+  signature: <placeholder>
+  email: <placeholder>
+  phone: <placeholder>
+  linkedin_url: https://linkedin.com/in/<placeholder>
+  target_roles: ["role1", "role2"]
+  must_have_skills: ["skill1", "skill2"]
+  salary_floor: <number or null>
+  location_preferences: ["remote", "city1", "city2"]
+  priority_senders: ["sender@domain.com"]
+  auto_archive_overrides: {
+    "newsletter@provider.com": "keep-important"
+  }
 ```
 
-### Option 2 — Personal note file on disk (LOCAL ONLY, gitignored)
+## What NOT to store here
 
-If operator wants persistence across sessions WITHOUT git tracking, save a personal note at:
+- Passwords, API keys, tokens — operator logs in once via Chrome MCP; secretary uses that session.
+- Full address, SSN, government ID — never needed for workflows.
+- Credit card numbers — job applications don't ask for payment.
+- Detailed salary history — only floor/ceiling needed for filtering.
 
+## Persistent file location (gitignored fallback)
+
+If operator chooses to store frequently-used identity in the persistent fallback, the file path is:
 ```
 context/projects/secretary/general/operator-context.md
 ```
 
-This folder is **gitignored** (`general/` is per-role ephemeral state — see `.gitignore` line `context/projects/secretary/general`). Files inside survive across sessions but never get committed.
+This file is `.gitignore`-d (kept private). Secretary reads it automatically at session start if the spawn brief is incomplete. Operator is responsible for updating it; Lead does NOT auto-populate it.
 
-Use this convention if you find typing identity at every session annoying. Lead will check the file at session start and surface a "loaded from general/operator-context.md" confirmation.
+## Handoff to Lead: identity gaps
 
-**Risk:** the file lives on operator's disk. If operator backs up their machine to cloud, identity backs up too. Operator's call.
-
-## What identity fields secretary actually consumes
-
-For email triage:
-- **name** + **signature** (for draft signing)
-- **tone preferences** (overlays `voice.md` defaults)
-- **priority senders** (overlays `email-rules.md` rule shapes)
-- **auto-archive list** (overlays)
-
-For job application:
-- **name** + **email** + **phone** + **LinkedIn URL** (for form prefill)
-- **resume path on disk** (for HITL-pause upload via Chrome MCP file_upload)
-- **target roles** (filters scoring)
-- **salary floor** (filters scoring)
-- **location preferences** (filters scoring)
-- **work authorization** (excludes jobs requiring sponsorship operator can't provide)
-
-For LinkedIn post:
-- **name** (post attribution — already in operator's LinkedIn session)
-- **themes operator wants to be known for** (filters topic candidates)
-- **anti-themes** (rejects unwanted topics)
-
-For ALL workflows:
-- **language preference** (Thai / English / mixed) — overlays `voice.md` "Language mix"
-
-## Operator session-start template (copy + adapt)
-
-Save this in a personal note (outside repo) so it's easy to paste:
+If secretary detects a missing required field at task start, the halt message is:
 
 ```
-context for this session:
-  name: <Full English name as used on CV / LinkedIn>
-  signature: <how you sign off informally>
-  email: <primary email; bankung99@gmail.com is the public sample but use your real if different per context>
-  phone: <if needed for job forms>
-  linkedin_url: <https://linkedin.com/in/...>
-  resume_path: <absolute path on your machine>
-  target_roles: <list — e.g. CTO, Head of Engineering, Staff/Principal>
-  target_companies: <stage / industry / specific companies>
-  salary_floor: <currency + amount>
-  location: <Bangkok / remote / hybrid preference>
-  work_authorization: <citizenship / visa status if relevant>
-  tone_unknowns: <formal-warm | casual | crisp>
-  language: <Thai / English / mixed>
-  priority_senders: <list>
-  auto_archive: <patterns>
-  themes_to_be_known_for: <2-3 themes>
-  anti_themes: <topics to avoid publicly>
+HALT: required field(s) missing for workflow '<workflow>': <field1>, <field2>
+— Lead extract from operator's chat + re-spawn with operator_context populated
 ```
 
-Trim to what's relevant for the workflow you're starting. Email triage doesn't need salary_floor; job apply doesn't need themes_to_be_known_for; etc.
-
-## What this file does NOT contain (intentionally)
-
-- ❌ Operator's actual name
-- ❌ Operator's resume path
-- ❌ Target job titles / companies
-- ❌ Salary numbers
-- ❌ Email priority sender list
-- ❌ Any other PII
-
-If you see PII in this file, it's a regression — strip and replace with the convention text above. Lead is the only writer; subagents flag the regression in their final report.
+See `failure-modes.md` for the full escalation protocol.
