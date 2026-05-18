@@ -41,6 +41,11 @@ context/projects/*/*/
 !context/projects/*/shared/**
 !context/projects/*/*/.gitkeep
 
+# Migrated out of repo (Kanban #1185, 2026-05-18) — secretary project lives at
+# C:/Users/banku/Documents/Personal/Projects/WebApp/secretary as plain working folder.
+# Guard against future auto-scaffold accidentally re-creating the dir here.
+context/projects/secretary/
+
 # Test fixtures from api/tests/test_routes_smoke.py — POST /api/projects auto-scaffolds
 # folders, the tests soft-delete the DB row but leave the on-disk dir behind.
 # rmtree-on-teardown is a follow-up (Kanban #17 M8); ignore the prefix-pattern for now.
