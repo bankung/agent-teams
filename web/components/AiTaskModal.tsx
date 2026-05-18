@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import {
@@ -17,6 +17,7 @@ import {
   type TaskPriorityValue,
   type TaskRoleValue,
 } from "@/lib/constants";
+import { filterRoleOptions } from "@/lib/enabledRoles";
 import { Icon } from "./Icon";
 
 // Trigger button + dialog for the AI-task flow (Kanban #857).
@@ -79,6 +80,9 @@ const ROLE_OPTIONS: RoleOption[] = [
 
 type Props = {
   projectId: number;
+  // #7 §A AC#3 — per-project role whitelist (project.config.enabled_roles).
+  // null / undefined / empty array → show all roles (current behaviour).
+  enabledRoles?: number[] | null;
 };
 
 type ErrorKind =
@@ -93,8 +97,14 @@ type ParseError = {
   detail?: string;
 };
 
-export function AiTaskModal({ projectId }: Props) {
+export function AiTaskModal({ projectId, enabledRoles }: Props) {
   const router = useRouter();
+  // #7 §A AC#3 — narrow role dropdown to project.config.enabled_roles when set.
+  // Unassigned sentinel is always retained.
+  const visibleRoleOptions = useMemo(
+    () => filterRoleOptions(ROLE_OPTIONS, enabledRoles),
+    [enabledRoles],
+  );
   const [open, setOpen] = useState(false);
   const [phase, setPhase] = useState<Phase>("input");
   const [text, setText] = useState("");
@@ -494,7 +504,7 @@ export function AiTaskModal({ projectId }: Props) {
                   className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
                   data-ai-task-role
                 >
-                  {ROLE_OPTIONS.map((o) => (
+                  {visibleRoleOptions.map((o) => (
                     <option key={String(o.value)} value={o.value}>
                       {o.label}
                     </option>

@@ -23,6 +23,7 @@ import {
   type TaskRead,
 } from "@/lib/api";
 import { TaskStatus, type TaskStatusValue } from "@/lib/constants";
+import { readEnabledRoles } from "@/lib/enabledRoles";
 import { sortDoneLane, sortLaneTasks } from "@/lib/sortLaneTasks";
 import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
 import { BoardColumn } from "@/components/BoardColumn";
@@ -299,8 +300,15 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
             ))}
           </span>
           <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
-            <AiTaskModal projectId={project.id} />
-            <NewTaskModal projectId={project.id} />
+            {/* #7 §A AC#3 — per-project role whitelist; null/empty → all roles */}
+            <AiTaskModal
+              projectId={project.id}
+              enabledRoles={readEnabledRoles(project.config)}
+            />
+            <NewTaskModal
+              projectId={project.id}
+              enabledRoles={readEnabledRoles(project.config)}
+            />
             <ThemePicker />
           </span>
         </div>

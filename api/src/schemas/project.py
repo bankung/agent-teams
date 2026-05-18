@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from src.constants import ProjectTeam
+from src.constants import ProjectTeam, TaskRole
 
 TeamCode = Literal["dev", "novel", "general", "content"]
 
@@ -46,6 +46,37 @@ _AGENT_OVERRIDE_KEY = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 # user input beyond .strip()).
 _ALLOWED_URL_SCHEMES = ("http", "https", "ref", "file")
 _SCHEME_RE = re.compile(rf"^({'|'.join(_ALLOWED_URL_SCHEMES)})://", re.IGNORECASE)
+
+
+# Kanban #7 Section A (AC#1) — per-project enabled_roles validator (JSONB
+# subkey, not a column). Semantic contract:
+#   - key absent       → "all roles allowed" (no restriction; default behavior)
+#   - value `[]`       → "no role enabled" (explicit empty roster)
+#   - value list[int]  → allowlist of TaskRole codes (each in 1..20)
+# Booleans are rejected — Python treats `bool` as a subclass of `int`, so a
+# naked `isinstance(v, int)` check admits `True`/`False`. The explicit
+# `type(item) is bool` guard rejects them before the range check.
+def _validate_enabled_roles_in_config(config: dict[str, Any]) -> dict[str, Any]:
+    if "enabled_roles" not in config:
+        return config
+    value = config["enabled_roles"]
+    if not isinstance(value, list):
+        raise ValueError(
+            "config.enabled_roles must be a list of int role codes "
+            f"(got {type(value).__name__})"
+        )
+    for idx, item in enumerate(value):
+        if type(item) is bool or not isinstance(item, int):
+            raise ValueError(
+                f"config.enabled_roles[{idx}] must be an int role code "
+                f"(got {type(item).__name__}: {item!r})"
+            )
+        if not (TaskRole.RANGE_MIN <= item <= TaskRole.RANGE_MAX):
+            raise ValueError(
+                f"config.enabled_roles[{idx}]={item} is out of range "
+                f"({TaskRole.RANGE_MIN}..{TaskRole.RANGE_MAX})"
+            )
+    return config
 
 
 class SourceEntry(BaseModel):
@@ -245,6 +276,14 @@ class ProjectCreate(BaseModel):
                 )
         return v
 
+    # Kanban #7 Section A (AC#1) — validate config.enabled_roles JSONB subkey.
+    @field_validator("config")
+    @classmethod
+    def _validate_config_enabled_roles(cls, v):
+        if not v:
+            return v
+        return _validate_enabled_roles_in_config(v)
+
 
 class ProjectUpdate(BaseModel):
     """Request body for PATCH /api/projects/{id} — all fields optional.
@@ -401,6 +440,16 @@ class ProjectUpdate(BaseModel):
                     f"agent_overrides key {key!r} must match {_AGENT_OVERRIDE_KEY.pattern}"
                 )
         return v
+
+    # Kanban #7 Section A (AC#1) — validate config.enabled_roles JSONB subkey
+    # on PATCH (mirrors ProjectCreate). Key-absent → leave unchanged
+    # (exclude_unset); explicit dict → validate enabled_roles if present.
+    @field_validator("config")
+    @classmethod
+    def _validate_config_enabled_roles(cls, v):
+        if v is None or not v:
+            return v
+        return _validate_enabled_roles_in_config(v)
 
 
 class ProjectRead(BaseModel):
