@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from src.constants import ProjectTeam
 
-TeamCode = Literal["dev", "novel", "general"]
+TeamCode = Literal["dev", "novel", "general", "content"]
 
 # Kanban #777: per-project agent-model overrides. Values are constrained to the
 # three Claude tiers we route across via AgentModelLiteral (Pydantic enforces at

@@ -40,6 +40,7 @@ export const ProjectTeam = {
   DEV: "dev",
   NOVEL: "novel",
   GENERAL: "general",
+  CONTENT: "content",
 } as const;
 export type ProjectTeamValue = typeof ProjectTeam[keyof typeof ProjectTeam];
 

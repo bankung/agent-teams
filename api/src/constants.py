@@ -60,13 +60,14 @@ class RecordStatus:
 
 
 class ProjectTeam:
-    """projects.team — 'dev'/'novel'/'general'. Mirror of migration 0021 (intentionally duplicated)."""
+    """projects.team — 'dev'/'novel'/'general'/'content'. Mirror of migration 0038 (intentionally duplicated)."""
 
     DEV = "dev"
     NOVEL = "novel"
     GENERAL = "general"
+    CONTENT = "content"
 
-    ALL = (DEV, NOVEL, GENERAL)
+    ALL = (DEV, NOVEL, GENERAL, CONTENT)
 
 
 class TaskPriority:
