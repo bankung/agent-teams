@@ -53,6 +53,7 @@ from src.schemas.project import (
     ReviveProjectResponse,
     UnpauseProjectRequest,
 )
+from src.services.budget_gate import reconcile_budget
 from src.services.kill_switch import kill_project, revive_project
 from src.services.pause_switch import pause_project, unpause_project
 from src.services.project_scaffold import scaffold_project_folder
@@ -778,6 +779,35 @@ async def unpause_project_endpoint(
         session=session,
     )
     return PauseUnpauseResponse(**result)
+
+
+@router.post("/{project_id}/reconcile-budget")
+async def reconcile_project_budget(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """On-demand budget reconciliation (Kanban #1194 AC6).
+
+    Recomputes the project's daily spend + projected pct against the daily
+    cap. No write — `budget_gate` stores nothing; the answer is derived from
+    `tasks.estimated_cost_usd` + `session_runs.total_cost_usd` via the same
+    `compute_spend` pipeline that powers the spawn-time gate. Callers that
+    want a scheduled reconciliation should arrange to POST this on a cron;
+    the scheduled cron half of #1194 is deferred.
+
+    404 on missing / soft-deleted project. 200 with the reconciled numbers
+    on success.
+    """
+    # Cheap pre-check so we can return the canonical 404 (the gate raises
+    # ValueError, which would land as 500 without translation).
+    project = await get_or_404(
+        session,
+        Project,
+        detail=f"Project id={project_id} not found",
+        id=project_id,
+        status=RecordStatus.ACTIVE,
+    )
+    return await reconcile_budget(session, project.id)
 
 
 @router.delete("/{project_id}", status_code=http_status.HTTP_204_NO_CONTENT)

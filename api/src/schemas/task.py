@@ -393,6 +393,31 @@ class TaskCreate(BaseModel):
         default=None, max_length=20
     )
 
+    # Kanban #1194 (2026-05-19): per-task pre-spawn cost estimate consumed by
+    # the budget_gate.check_budget projection at POST time. Optional — None
+    # means "no estimate", which still routes through the gate (the existing
+    # daily spend may already be over without any new burn). Distinct from
+    # the server-computed `estimated_cost_usd` column on the row (which is
+    # set on done-flip by task_cost_estimator) — this is the caller's
+    # PROPOSAL, used only for the spawn-time decision. Persisted onto the
+    # row's estimated_cost_usd column so a later reconcile reflects the
+    # caller's claim; the heuristic at done-flip may overwrite it.
+    estimated_cost_usd: Decimal | None = Field(default=None, ge=0)
+
+    # Kanban #1194 AC4 (2026-05-19): emergency override hatch for the
+    # spawn-time budget gate. Both fields must be supplied together (model
+    # validator below); when present + valid, a 429 is converted to 201 and
+    # the override is recorded in the task description's audit footer. The
+    # operator value 'operator' is the typical signal — free-form to allow
+    # other authorized-by labels in the future (CI bots, scheduled cron
+    # jobs, etc.) without a schema bump.
+    budget_override_authorized_by: str | None = Field(
+        default=None, min_length=1, max_length=64
+    )
+    budget_override_reason: str | None = Field(
+        default=None, min_length=10, max_length=1_000
+    )
+
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=True)
     )
@@ -464,6 +489,23 @@ class TaskCreate(BaseModel):
                 "allow_during_pause=true requires allow_during_pause_reason "
                 "(>=10 chars) — operator-supplied rationale for bypassing "
                 "the project pause gate; captured into projects_audit."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_budget_override_pair(self) -> "TaskCreate":
+        """Kanban #1194 AC4: the spawn-time budget gate's emergency override
+        requires BOTH `budget_override_authorized_by` AND `budget_override_reason`
+        to be present together. Asymmetric supply fails 422 before reaching the
+        router — keeps the audit semantics intact (reason without authorizer
+        is signal-less; authorizer without reason has no explanation to log).
+        """
+        if (self.budget_override_authorized_by is None) != (
+            self.budget_override_reason is None
+        ):
+            raise ValueError(
+                "budget_override_authorized_by and budget_override_reason "
+                "must be supplied together (both or neither)"
             )
         return self
 

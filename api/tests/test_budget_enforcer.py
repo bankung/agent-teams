@@ -454,8 +454,9 @@ async def test_next_autorun_hard_halt_stamps_halt_reason(
     """Over-cap project + runnable auto_pickup task → next_task=None +
     candidate row gets halt_reason='budget_exceeded:<cap>'."""
     pid = await _make_fresh_project(client, scaffold_cleanup, "budget-gate")
-    await _patch_project_budget(client, pid, daily=Decimal("1.00"))
-    # Burn $10 today → 1000% of $1 cap, definitely over.
+    # Seed an already-completed burn task BEFORE setting the cap — otherwise
+    # Kanban #1194 AC4 (spawn-time gate at POST /api/tasks) would 429-refuse
+    # the burn task. The cap then activates for any subsequent spawn.
     burn_task = await _make_task(client, pid, "already-burned task")
     await _set_task_cost(
         db_session,
@@ -463,9 +464,18 @@ async def test_next_autorun_hard_halt_stamps_halt_reason(
         Decimal("10.0000"),
         completed_at=datetime.now(timezone.utc),
     )
-    # Now add a runnable auto_pickup task — the gate should refuse it.
+    await _patch_project_budget(client, pid, daily=Decimal("1.00"))
+    # Now add a runnable auto_pickup task. The #1194 spawn gate would refuse
+    # this (already $10 over $1 cap), so use the AC4 emergency override to
+    # let the row hit the DB — the next-autorun gate (Kanban #951) is what
+    # we're actually exercising here.
     runnable = await _make_task(
-        client, pid, "wants to run", run_mode="auto_pickup"
+        client,
+        pid,
+        "wants to run",
+        run_mode="auto_pickup",
+        budget_override_authorized_by="test",
+        budget_override_reason="test exercises the next-autorun gate not the spawn gate",
     )
 
     headers = {"X-Project-Id": str(pid)}
@@ -516,7 +526,8 @@ async def test_manual_bypass_via_next_autorun(client, scaffold_cleanup, db_sessi
     """AC #4: a run_mode='manual' task is NEVER returned by next-autorun
     regardless of budget state — bypass is implicit at the gate layer."""
     pid = await _make_fresh_project(client, scaffold_cleanup, "budget-manual")
-    await _patch_project_budget(client, pid, daily=Decimal("1.00"))
+    # Seed the burn BEFORE setting the cap, so the spawn gate (#1194 AC4)
+    # doesn't 429 the seed POST. Cap activates next.
     burn = await _make_task(client, pid, "burned")
     await _set_task_cost(
         db_session,
@@ -524,9 +535,17 @@ async def test_manual_bypass_via_next_autorun(client, scaffold_cleanup, db_sessi
         Decimal("10.0000"),
         completed_at=datetime.now(timezone.utc),
     )
-    # Create a manual task — next-autorun should ignore it entirely.
+    await _patch_project_budget(client, pid, daily=Decimal("1.00"))
+    # Create a manual task. The #1194 spawn gate would refuse a default
+    # AI POST against this overspent project; use the override to land the
+    # row — the next-autorun gate is the actual subject under test.
     manual = await _make_task(
-        client, pid, "manual mode task", run_mode="manual"
+        client,
+        pid,
+        "manual mode task",
+        run_mode="manual",
+        budget_override_authorized_by="test",
+        budget_override_reason="test exercises run_mode=manual bypass at the next-autorun gate",
     )
 
     headers = {"X-Project-Id": str(pid)}

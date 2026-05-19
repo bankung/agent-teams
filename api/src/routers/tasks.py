@@ -42,6 +42,7 @@ from src.services.content_moderation import scan_task_payload
 from src.services.is_pending import assert_is_pending_with_process_status
 from src.services.recurrence import fire_template, next_cron_fire
 from src.services.budget_enforcer import check_budget
+from src.services.budget_gate import check_budget as check_spawn_budget
 from src.services.run_mode import assert_consent_for_run_mode
 from src.services.task_cost_estimator import estimate_task_cost, resolve_provider_model
 from src.services.task_interaction import (
@@ -928,6 +929,68 @@ async def create_task(
         payload.interaction_kind, payload.task_kind, payload.run_mode
     )
 
+    # Kanban #1194 AC4 (2026-05-19): spawn-time hard cap gate. Only fires for
+    # AI tasks — human tasks (interaction_kind in {question,decision} or
+    # explicit task_kind='human') don't burn LLM budget. Override hatch:
+    # body carries `budget_override_authorized_by` + `budget_override_reason`
+    # (pair-validated in the Pydantic model_validator); when present, the
+    # gate is bypassed AND the override is recorded as a structured footer
+    # on the task description for auditability.
+    #
+    # Skip the gate entirely when the project row is missing (proj_row is None)
+    # — letting the downstream IntegrityError handler surface the canonical
+    # `project_id N does not exist` 400 string (source-text-locked by
+    # test_post_task_returns_stable_detail_on_fk_violation +
+    # test_post_task_auto_headless_with_missing_project_returns_project_does_not_exist).
+    # The gate's "project not found" ValueError would otherwise surface as 500.
+    if coerced_task_kind == "ai" and proj_row is not None:
+        bc = await check_spawn_budget(
+            session, payload.project_id, payload.estimated_cost_usd
+        )
+        if not bc.allowed:
+            override_ok = (
+                payload.budget_override_authorized_by is not None
+                and payload.budget_override_reason is not None
+            )
+            if not override_ok:
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "message": (
+                            "Spawn would exceed project's daily budget cap. "
+                            "Supply budget_override_authorized_by + "
+                            "budget_override_reason to bypass."
+                        ),
+                        "used_today_usd": str(bc.used_today_usd),
+                        "cap_daily_usd": (
+                            str(bc.cap_daily_usd) if bc.cap_daily_usd else None
+                        ),
+                        "projected_usd": str(bc.projected_usd),
+                        "pct_used": (
+                            str(bc.pct_used) if bc.pct_used is not None else None
+                        ),
+                        "reason": bc.reason,
+                        "override_hint": (
+                            "set budget_override_authorized_by + "
+                            "budget_override_reason to bypass"
+                        ),
+                    },
+                )
+            # Override engaged — log the structured audit line. We mutate the
+            # caller's description (or seed one) with a stable footer that
+            # operators can grep for; this is the audit signal since AC5
+            # already covers the operational notification on the threshold.
+            logger.warning(
+                "budget_gate_override: project=%d authorized_by=%s "
+                "used_today=%s cap=%s projected=%s reason=%s",
+                payload.project_id,
+                payload.budget_override_authorized_by,
+                bc.used_today_usd,
+                bc.cap_daily_usd,
+                bc.projected_usd,
+                payload.budget_override_reason,
+            )
+
     # V3+ T1 (Kanban #706) cross-table validator: task_kind='human' is
     # incompatible with run_mode != 'manual'. Pure function (no DB I/O) so
     # fires BEFORE the consent gate (cheaper check first; both are app-layer
@@ -967,6 +1030,12 @@ async def create_task(
 
     # #801 — model_dump(mode='json') coerces datetime → str for JSONB writes; pattern reused for sibling fields below. See standards/sqlalchemy/orm.md.
     payload_dict = payload.model_dump()
+    # Kanban #1194 (AC4): the budget-gate override pair is request-only metadata
+    # — not Task columns. Strip BEFORE the Task(**payload_dict) construction
+    # so SQLAlchemy doesn't see the extras. Logged + structured audit lives in
+    # the gate-evaluation block above.
+    payload_dict.pop("budget_override_authorized_by", None)
+    payload_dict.pop("budget_override_reason", None)
     # #858 — persist post-coerce values (no-op when interaction_kind='work')
     payload_dict["task_kind"] = coerced_task_kind
     payload_dict["run_mode"] = coerced_run_mode
