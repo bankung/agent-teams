@@ -339,7 +339,12 @@ async def test_reconcile_endpoint_returns_current_numbers(
     body = resp.json()
     assert body["used_today_usd"] == "2.5000"
     assert body["cap_daily_usd"] == "10.00"
-    assert body["pct_used"] == "25.0000"
+    assert body["pct_used_daily"] == "25.0000"
+    # AC6 monthly fields present (used_this_month >= used_today since this
+    # session's spend lands within the current calendar month).
+    assert Decimal(body["used_this_month_usd"]) >= Decimal("2.5000")
+    assert "cap_monthly_usd" in body
+    assert "pct_used_monthly" in body
 
 
 @pytest.mark.asyncio

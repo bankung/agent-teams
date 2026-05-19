@@ -41,7 +41,10 @@ config.set_main_option("sqlalchemy.url", settings.database_url)
 # documented under readme_dev.md "Live migration procedure". See
 # context/projects/agent-teams/shared/incidents/2026-05-17-dev-db-wipe.md.
 _db_name = make_url(settings.database_url).database or ""
-if not _db_name.endswith("_test") and os.environ.get("MIGRATION_TARGET") != "live":
+if (
+    not (_db_name.endswith("_test") or "_test_" in _db_name)
+    and os.environ.get("MIGRATION_TARGET") != "live"
+):
     raise RuntimeError(
         f"alembic: refusing to migrate against {_db_name!r} (non-_test DB). "
         "If this IS intended (live migration), set MIGRATION_TARGET=live env "

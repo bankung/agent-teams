@@ -41,7 +41,11 @@ from typing import Any, Literal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.project import Project
-from src.services.budget_enforcer import _utc_midnight, compute_spend
+from src.services.budget_enforcer import (
+    _utc_first_of_month,
+    _utc_midnight,
+    compute_spend,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -313,14 +317,22 @@ async def reconcile_budget(
 
     now = datetime.now(timezone.utc)
     used_today = await compute_spend(db, project_id, since=_utc_midnight(now))
-    cap = project.budget_daily_usd
-    pct = None
-    if cap is not None and cap > 0:
-        pct = (used_today / cap * Decimal("100")).quantize(Decimal("0.0001"))
+    used_this_month = await compute_spend(db, project_id, since=_utc_first_of_month(now))
+    cap_daily = project.budget_daily_usd
+    cap_monthly = project.budget_monthly_usd
+    pct_daily = None
+    if cap_daily is not None and cap_daily > 0:
+        pct_daily = (used_today / cap_daily * Decimal("100")).quantize(Decimal("0.0001"))
+    pct_monthly = None
+    if cap_monthly is not None and cap_monthly > 0:
+        pct_monthly = (used_this_month / cap_monthly * Decimal("100")).quantize(Decimal("0.0001"))
     return {
         "project_id": project_id,
         "used_today_usd": str(used_today),
-        "cap_daily_usd": str(cap) if cap is not None else None,
-        "pct_used": str(pct) if pct is not None else None,
+        "used_this_month_usd": str(used_this_month),
+        "cap_daily_usd": str(cap_daily) if cap_daily is not None else None,
+        "cap_monthly_usd": str(cap_monthly) if cap_monthly is not None else None,
+        "pct_used_daily": str(pct_daily) if pct_daily is not None else None,
+        "pct_used_monthly": str(pct_monthly) if pct_monthly is not None else None,
         "reconciled_at": now.isoformat(),
     }
