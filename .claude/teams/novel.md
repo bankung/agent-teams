@@ -12,7 +12,7 @@ The universal Lead rules live in root `CLAUDE.md`. This file holds novel-specifi
 |---|---|---|
 | **novel-writer** | Drafts new chapters and scenes from outline | `context/projects/<active>/novel-writer/` |
 | **novel-editor** | Line edits, copy edits, voice/tone consistency | `context/projects/<active>/novel-editor/` |
-| **novel-proofreader** | **Sentence-level Thai naturalness pass — flag translatese, propose rewrites (read-only on prose)** | `context/projects/<active>/novel-proofreader/` |
+| **thai-proofreader** | **Sentence-level Thai naturalness pass — flag translatese, propose rewrites (read-only on prose)** | `context/projects/<active>/thai-proofreader/` |
 
 (More roles to add as needed: `novel-researcher`, `novel-plot-architect`, `novel-beta-reader`.)
 
@@ -33,7 +33,7 @@ Concrete framework folders (e.g., `context/standards/voice/`, `context/standards
 |---|---|
 | novel-writer | `voice` + `structure` |
 | novel-editor | `voice` + `structure` + `markup` |
-| novel-proofreader | `voice` + `markup` |
+| thai-proofreader | `voice` + `markup` |
 
 `context/standards/general.md` injects into every role regardless.
 
@@ -45,7 +45,7 @@ Within `team='novel'` projects:
 |---|---|
 | 11 | novel-writer |
 | 12 | novel-editor |
-| 13 | novel-proofreader |
+| 13 | thai-proofreader |
 
 Code range 11-20 reserved for novel domain (dev domain uses 1-10). Each team's playbook owns its own range.
 
@@ -70,7 +70,7 @@ Code range 11-20 reserved for novel domain (dev domain uses 1-10). Each team's p
 3. **Draft.** Spawn novel-writer with outline + voice standards + continuity notes.
 4. **Edit pass.** After draft lands, spawn novel-editor for line edits + voice/structural consistency.
 5. **Continuity check.** Editor cross-references with `shared/continuity.md` (named characters, established facts).
-6. **Proofread pass.** Spawn novel-proofreader for sentence-level Thai naturalness — flag translatese, propose rewrites (proposals only; Lead applies). **Critical for Thai-language projects where AI-drafted prose often reads translated.**
+6. **Proofread pass.** Spawn thai-proofreader for sentence-level Thai naturalness — flag translatese, propose rewrites (proposals only; Lead applies). **Critical for Thai-language projects where AI-drafted prose often reads translated.**
 7. **Revise.** Loop back to writer with editor's notes if structural changes are needed.
 8. **Lock.** Lead applies proofreader proposals + writes final chapter into `shared/chapters/<n>.md`.
 
