@@ -15,6 +15,91 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-19 — #1226 Phase 2 closed — Firecrawl 3-tier fallback chain (cloud → selfhost → ai_direct)
+
+**Scope:** shared (pipeline scraper + ai_client + docker-compose)
+**Proposed by:** user (RAM footprint review session) → implemented by dev-backend specialist
+**Status:** Phase 2 DONE 2026-05-19 (commit `c9d87a5` on NewsAnalyzer main, not yet pushed). Phase 1 docs landed in this entry. Phase 3/4 filed as follow-up Kanban (`blocked_by=#1226`).
+
+**Supersedes (in spirit, not by rollback):**
+- Decision lock #2 (Cloud → self-host pivot, 2026-05-14 PM). Self-host is no longer the only path; it becomes Tier B fallback. Cloud comes back as Tier A default when a real key is configured.
+
+**What landed:**
+
+Three-tier fallback resolved once per `run_full_fetch` invocation in the pre-flight phase (cached in `_firecrawl_mode`, reset at the start of each run so a mid-process `.env` edit is picked up without a container restart):
+
+```
+Tier A "cloud"     — settings.firecrawl_api_key set AND value not in {"", "dev-key"}
+                     → FirecrawlApp(api_key=key)  # SDK defaults to https://api.firecrawl.dev
+Tier B "selfhost"  — A unavailable AND firecrawl_api_url/v1/health/liveness == 200
+                     → FirecrawlApp(api_key="dev-key", api_url=settings.firecrawl_api_url)
+Tier C "ai_direct" — neither A nor B
+                     → httpx GET raw HTML → CallPurpose.SCRAPE_EXTRACT via ai_client →
+                       Firecrawl-shaped dict {markdown, html, metadata, duration_ms, engine_tier="ai_direct"}
+                     → 4 source classes consume the dict unchanged.
+```
+
+**Compose profile shift:** `firecrawl-api`, `firecrawl-worker`, `firecrawl-puppeteer`, `firecrawl-redis` now gated by `profiles: ["scrape-selfhost"]`. Default `docker compose up` brings **6** services (db, redis, backend, frontend, pipeline, worker); `docker compose --profile scrape-selfhost up` brings **10**. Verified via `docker compose config --services` (both states).
+
+**Per-tier RAM expectation (steady-state):**
+- Tier A (cloud) + 6 services: ~1.0 GB containers; ~$0–19/mo cash cost (Hobby tier supports ~660 req/mo headroom for 11 sources × 2/day).
+- Tier B (selfhost) + 10 services: same as pre-#1226 (~2.4–2.8 GB).
+- Tier C (ai_direct): same as Tier A footprint; quota burn falls on the operator's `claude -p` plan (Max 20x).
+
+**Tier C constraints (accepted degradations):**
+- JS-heavy sources (bangkokbiznews, thansettakij) usually escalated to playwright-service on Tier B. In Tier C the httpx fetch sees only initial HTML; `_ai_direct_scrape` emits structured WARN `event=ai_direct_thin_content url=… len=…` when markdown < 200 chars. The downstream calibration loop will surface this via reduced article counts.
+- SSR sources (kaohoon, thunhoon) routinely pass on cheerio per past engine_tier logs — Tier C should handle them without thin-content warnings.
+- `SCRAPE_EXTRACT` purpose intentionally NOT mapped in `_AGENT_RUN_PURPOSE_MAP` (cost-tracking pollution avoidance) — the AgentRun row is skipped with a logged warning.
+
+**WSL2 RAM cap (Phase 1 — host-side, user-applied):**
+
+Create `C:\Users\banku\.wslconfig` (or `~/.wslconfig` from a WSL shell — same file resolved):
+
+```ini
+[wsl2]
+memory=3GB
+processors=4
+swap=0
+```
+
+Apply by closing all WSL terminals + Docker Desktop, then in PowerShell:
+```
+wsl --shutdown
+```
+Restart Docker Desktop. `vmmemWSL` will plateau at 3 GB instead of expanding to host-RAM-fraction default (~25%). Lead does NOT auto-write this file — host config, user-applied. Verified previously on agent-teams [#1225](http://localhost:5431/tasks/1225) sibling task.
+
+**Phase 1 closure also covers:**
+- Default `docker compose up` semantic: 6 containers, no firecrawl-* (Phase 2's compose profile shift achieves this directly — Phase 1.B AC subsumed).
+- Operator workflow note: to start a Tier B scrape, run `docker compose --profile scrape-selfhost up -d firecrawl-api firecrawl-worker firecrawl-puppeteer firecrawl-redis` before `Fetch Now`. Containers can be stopped (`docker compose stop firecrawl-*`) after the scrape batch settles.
+
+**Deferred follow-ups (filed as separate Kanban tasks):**
+- **Phase 3** — Compose footprint slim. `next dev` → `next build && next start` profile; pipeline `--reload` off in `prod` profile; consolidate any remaining Redis duplication; drop Claude Code CLI from worker image if worker becomes non-AI (depends on Phase 4 outcome).
+- **Phase 4** — `claude -p` subprocess → direct Anthropic / Gemini API. Gated by Kanban #1100 (Gemini Flash-Lite bench result). Motivated by recurring credential-refresh pain (#1036). APScheduler in-process to retire the worker container is bundled in Phase 4.
+
+**Phase 5 (Vercel + Neon + Fly.io) — explicitly out of scope this round.** Defer to the mobile/arena timeline.
+
+**Acceptance criteria (from #1226):**
+
+| AC | Status | Evidence |
+|---|---|---|
+| #1 cloud tier | passed | `test_resolve_mode_cloud_when_api_key_set` (test_resilience.py:349) + `test_get_client_cloud_omits_api_url` (L419). Boot log includes `firecrawl_mode=cloud` (tasks.py pre-flight). |
+| #2 selfhost tier | passed | `test_resolve_mode_selfhost_when_liveness_ok` (L361) + `test_get_client_selfhost_passes_api_url` (L437). Existing 3 retry-policy tests still pass with mode primed. |
+| #3 ai_direct tier | passed | `test_ai_direct_scrape_happy_path_mock_mode` (L478), `test_ai_direct_scrape_dispatches_via_resolve_mode` (L514), `test_ai_direct_scrape_emits_thin_content_warning` (L549). |
+| #4 compose profile | passed | `docker compose config --services` default → 6 services; `--profile scrape-selfhost` → 10 services. Lead re-verified post-commit (this entry). |
+| #5 smoke | passed | Full pipeline pytest: **68 passed, 1 warning in 5.88s**. No agent-teams DB touched (verified by inspection of pipeline/tests/conftest.py). |
+| #6 WSL doc | passed | This entry's snippet block above. |
+| #7 closure log | passed | This entry. |
+| #8 Phase 3 follow-up | passed | Kanban task filed with `blocked_by=#1226`. |
+| #9 Phase 4 follow-up | passed | Kanban task filed with `blocked_by=#1226` + `#1100`. |
+
+**Cross-references:**
+- agent-teams sibling task `#1225` — same review pattern on the platform stack; that one stayed deferred (no immediate execution, just plan + AC).
+- Decision lock #2 (Cloud→self-host) — superseded in spirit (Cloud back as default, self-host as Tier B fallback).
+- Decision lock #1 (`claude -p` subprocess) — UNCHANGED for now. Phase 4 may revisit pending #1100.
+- `working_path` is set for NewsAnalyzer (id=567), but historical decisions.md content lives at `agent-teams/context/projects/NewsAnalyzer/shared/`. This entry continues the legacy path to preserve history. Migration to `<working_path>/shared/decisions.md` is tracked separately in Kanban #941.
+
+---
+
 ## 2026-05-16 — Phase 1 wave 1 closed — #1087 frontend UX, #1040 RAM right-sizing, #1092 NO-OP
 
 **Scope:** shared (frontend + devops; one karpathy lesson)
