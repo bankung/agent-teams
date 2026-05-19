@@ -16,6 +16,32 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-19 — Fresh-install installer hardening — Kanban #1175 fix path
+**Scope:** devops / docs / shared
+
+**Decision A — Fix path = Option B + C (installer hardening + docs sync), NOT Option A (entrypoint auto-migrate) or D (env-var rename).** The 2026-05-17 dev-DB-wipe incident's lesson (decisions.md entry below) is that the L10 / L11 guards exist to prevent destructive ops against non-`_test` DBs. Option A would have added a NEW code path inside FastAPI startup that BYPASSES those guards based on "empty DB detection" heuristic — every detection bug becomes a guard hole. Option B (wrapper-only) preserves the guards untouched; users running raw `docker compose up` still get blocked correctly, which is the right semantic for the non-installer path. Option D is pure cosmetic and doesn't fix the bug.
+
+**Decision B — Installer changes (Option B):** `bin/install.sh` + `bin/install.ps1` must:
+1. Add a new step (between current step 2 "compose up" and step 3 "wait API healthy"): `docker compose exec -T -e MIGRATION_TARGET=live api alembic upgrade head` — runs migrations BEFORE the healthy-wait, otherwise the healthy-wait would hang 60s and exit 3 (the `GET /api/projects` endpoint returns 500 UndefinedTableError without tables).
+2. Update existing step 4 ("seed"): prefix with `-e SEED_TARGET=production` env var so the L11 guard passes.
+3. Add a friendly preflight banner BEFORE the migration step explaining: "First-time install: bypassing live-DB guards (MIGRATION_TARGET=live + SEED_TARGET=production) for the initial schema + seed. This is safe on a fresh DB. Subsequent re-runs of the installer skip schema changes (alembic no-op) and seed (idempotent)." Banner is one-time visual cue only; doesn't gate execution.
+
+**Decision C — Docs sync (Option C):** Two surgical updates:
+1. `docker-compose.yml` header comment (lines 5-13): remove the raw 3-step sequence (`docker compose up` + `alembic upgrade head` + `python -m scripts.seed`) which now fails post-L10/L11. Replace with: "First-time install: use `./bin/install.sh` (Linux/Mac) or `.\bin\install.ps1` (Windows). Manual flow for developers: see `readme_dev.md` 'Live migration procedure'."
+2. `readme_dev.md` "Live migration procedure" section: add a clarifying paragraph distinguishing **first-time install** (use installer, bypass-guards-once is safe) vs **live migration on populated prod DB** (requires careful pre-backup, scary phrasing intentional). Keep the scary phrasing for the live-migration case; new paragraph clearly demarcates first-time as the safe path.
+
+**Decision D — Out of scope (defer):** Option A (entrypoint auto-migrate) explicitly rejected per Decision A reasoning. Option D (env-var rename `MIGRATION_TARGET=live` → `=allow_non_test`) is pure UX polish; defer to a separate task if operator wants it later — does NOT block #1175 close.
+
+**Decision E — Reporter's Ubuntu setup detail (host Python on PATH) is a red herring.** Migrations + seed run INSIDE the api container; whether the host has python on PATH is irrelevant to this code path. Note this in #1175 close-out to clear it from future repro reports of similar shape.
+
+**Implications:**
+- Implementation followup filed as a separate Kanban task (#TBD on file). #1175 closes referring to that task's commit on land.
+- Estimated LOC: ~50 across 3 files (install.sh + install.ps1 + docker-compose.yml) + small readme_dev.md paragraph.
+- L10/L11 guards remain untouched. Any future test or pytest still hits the same guard semantics — no regression in the 2026-05-17 prevention surface.
+- Users who skip the installer + run raw `docker compose up` will still get the 500 + the guards' RuntimeError on manual `alembic` / `seed` calls. Docs update directs them to the installer instead of pretending the manual flow still works.
+
+---
+
 ## 2026-05-17 — Dev DB wipe incident + 3-layer test isolation prevention
 **Scope:** backend / qa / devops / shared
 

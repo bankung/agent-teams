@@ -16,6 +16,7 @@
 #   2  docker compose up failed
 #   3  API healthy-wait timed out
 #   4  seed failed
+#   5  schema migration failed
 
 set -euo pipefail
 
@@ -68,6 +69,20 @@ if ! docker compose up -d --build; then
   exit 2
 fi
 
+# ---- 2b. Schema migration (live-DB guard bypass) ----------------------------
+# The L10 guard in api/alembic/env.py refuses non-_test DBs without
+# MIGRATION_TARGET=live. Same for L11 in scripts/seed.py / SEED_TARGET=production.
+# Both are SAFE to bypass on a fresh install — there's no data to lose. Subsequent
+# re-runs of this installer are no-ops (alembic reports 'no new revisions';
+# seed is idempotent). The guards remain in force for any other code path.
+log "First-time install: bypassing live-DB guards (MIGRATION_TARGET=live + SEED_TARGET=production) for the initial schema + seed."
+log "  This is safe on a fresh DB. Subsequent re-runs are no-ops (alembic no-op + seed idempotent)."
+log "Running schema migration (docker compose exec -T -e MIGRATION_TARGET=live api alembic upgrade head)..."
+if ! docker compose exec -T -e MIGRATION_TARGET=live api alembic upgrade head; then
+  err "Schema migration failed. Check logs: docker compose logs api"
+  exit 5
+fi
+
 # ---- 3. Wait for API healthy ------------------------------------------------
 log "Waiting for API at ${HEALTH_URL} (cap ${WAIT_TIMEOUT_SEC}s)..."
 elapsed=0
@@ -93,8 +108,8 @@ log "API healthy."
 # ---- 4. Seed ----------------------------------------------------------------
 # Seed is idempotent — re-runs print 'already seeded' and exit 0.
 # Use -T to disable pseudo-TTY (safe in non-interactive CI / scripts).
-log "Running seed (docker compose exec -T api python -m scripts.seed)..."
-if ! docker compose exec -T api python -m scripts.seed; then
+log "Running seed (docker compose exec -T -e SEED_TARGET=production api python -m scripts.seed)..."
+if ! docker compose exec -T -e SEED_TARGET=production api python -m scripts.seed; then
   err "Seed failed. Check logs: docker compose logs api"
   exit 4
 fi

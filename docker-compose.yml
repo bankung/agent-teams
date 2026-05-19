@@ -2,12 +2,8 @@
 # Phase 3: db + api + web. Production multi-stage Dockerfile for web is deferred
 # to a later slice (dev image only — `next dev` with hot reload via bind mount).
 #
-# Bring-up:
-#   cp .env.example .env
-#   docker compose up --build
-#   # in another shell, once api logs say "Application startup complete":
-#   docker compose exec api alembic upgrade head
-#   docker compose exec api python -m scripts.seed
+# First-time install: use ./bin/install.sh (Linux/Mac) or .\bin\install.ps1 (Windows).
+# Manual flow for developers: see readme_dev.md "Live migration procedure".
 #
 # Reset (DEV ONLY — wipes DB):
 #   docker compose down -v

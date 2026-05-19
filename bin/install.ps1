@@ -24,6 +24,7 @@
       2  docker compose up failed
       3  API healthy-wait timed out
       4  seed failed
+      5  schema migration failed
 #>
 [CmdletBinding()]
 param()
@@ -94,6 +95,28 @@ if ($composeExit -ne 0) {
     exit 2
 }
 
+# ---- 2b. Schema migration (live-DB guard bypass) ----------------------------
+# The L10 guard in api/alembic/env.py refuses non-_test DBs without
+# MIGRATION_TARGET=live. Same for L11 in scripts/seed.py / SEED_TARGET=production.
+# Both are SAFE to bypass on a fresh install — there's no data to lose. Subsequent
+# re-runs of this installer are no-ops (alembic reports 'no new revisions';
+# seed is idempotent). The guards remain in force for any other code path.
+Write-Log "First-time install: bypassing live-DB guards (MIGRATION_TARGET=live + SEED_TARGET=production) for the initial schema + seed."
+Write-Log "  This is safe on a fresh DB. Subsequent re-runs are no-ops (alembic no-op + seed idempotent)."
+Write-Log "Running schema migration (docker compose exec -T -e MIGRATION_TARGET=live api alembic upgrade head)..."
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    & docker compose exec -T -e MIGRATION_TARGET=live api alembic upgrade head
+    $alembicExit = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $prevEAP
+}
+if ($alembicExit -ne 0) {
+    Write-Err "Schema migration failed. Check logs: docker compose logs api"
+    exit 5
+}
+
 # ---- 3. Wait for API healthy ------------------------------------------------
 Write-Log "Waiting for API at $HealthUrl (cap ${WaitTimeoutSec}s)..."
 $elapsed = 0
@@ -124,12 +147,12 @@ Write-Log "API healthy."
 # ---- 4. Seed ----------------------------------------------------------------
 # Seed is idempotent — re-runs print 'already seeded' and exit 0.
 # -T disables pseudo-TTY (required when stdin is not a terminal).
-Write-Log "Running seed (docker compose exec -T api python -m scripts.seed)..."
+Write-Log "Running seed (docker compose exec -T -e SEED_TARGET=production api python -m scripts.seed)..."
 # Seed emits sqlalchemy INFO on stderr — same NativeCommandError trap as above.
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 try {
-    & docker compose exec -T api python -m scripts.seed
+    & docker compose exec -T -e SEED_TARGET=production api python -m scripts.seed
     $seedExit = $LASTEXITCODE
 } finally {
     $ErrorActionPreference = $prevEAP

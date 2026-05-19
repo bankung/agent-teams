@@ -547,6 +547,8 @@ Lead:
 
 ### Live migration procedure (production / dev DB)
 
+> **First-time install vs live migration.** If you are installing agent-teams for the first time on a freshly checked-out repo + freshly-created docker compose db volume, use `./bin/install.sh` (Linux/Mac) or `.\bin\install.ps1` (Windows). The installer transparently bypasses the L10/L11 safety guards with `MIGRATION_TARGET=live` + `SEED_TARGET=production` env vars — this is safe because a fresh DB has nothing to lose. The procedure below ("Live migration procedure") applies ONLY to a DIFFERENT scenario: applying a new migration against a populated production DB where the L10 guard exists to prevent accidental destructive ops. If you're a non-tech installer, you don't need this section.
+
 `api/alembic/env.py` refuses to apply migrations to any DB whose name does NOT end with `_test` unless the env var `MIGRATION_TARGET=live` is set. This is the L10 prevention layer from the 2026-05-17 incident response — defense against silent migration on the wrong DB (see `context/projects/agent-teams/shared/incidents/2026-05-17-dev-db-wipe.md`).
 
 To apply a migration to the live `agent_teams` DB:
