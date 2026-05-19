@@ -15,6 +15,48 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-19 — Cleanup pass — polarity scale bug + 2 N+1s + over-engineering scrub (#1281)
+
+**Scope:** shared (backend + pipeline)
+**Proposed by:** dev-reviewer audit (Karpathy lens) + dev-backend execution + lead verification
+**Status:** Karpathy-lane hygiene applied to today's #1259 + #1277 surfaces immediately after landing. 1 correctness bug + 2 N+1 query patterns + 7 over-engineering pockets cleaned in one commit. Net **-34 LOC** with **+8 reported tests** (parametrize expansion of one multi-assertion test).
+
+### What landed (Kanban [#1281](http://localhost:5431/tasks/1281) — commit `2039149`)
+
+**Correctness — polarity scale was inconsistent.** Public endpoint's `TickerEvent.polarity` used `sentiment_score / 100.0 * 3.0` but the L2B aggregator that fed the stored `q_score` used `* 5.0`. Created `pipeline/app/services/rollup_weights.NEWS_POLARITY_MAX=5.0` + `NEWS_SEVERITY_MAX=3.0` as canonical source; mirrored in new `backend/app/constants.py` (no shared import root across pipeline/backend services — kept in sync via clearly marked comments). The two services now reference identical named constants; the scale drift surface is closed.
+
+**Performance — 2 N+1 patterns killed.**
+- `/api/tickers/today` now bulk-fetches all `top_event_ids` titles in **one** query per page (was N+1 = 21 round-trips at limit=20; now constant 3 queries).
+- `/api/tickers/{symbol}` events block bulk-fetches primary article ids in **one** query (was 2× per event = up to 21 round-trips for 10 events; now constant 2).
+- `_build_history` close-pct calculation: pre-computed `prev_close_by_date` dict once before the loop. Was O(n²) inside the per-row loop; now O(n log n) total.
+
+**Over-engineering scrub.** Removed 7 single-call private helpers (4 in aggregator + 3 in router); inlined their bodies. Dropped 6 section-divider comment blocks from aggregator. Removed dead `isinstance` branch in `_safe_raw`. Inlined `_build_summary` + `compute_foreign_flow_reserved` (the latter loses its meaningless `meta.status="reserved_pending_1247"` string — no consumer existed).
+
+**Test cleanup.** Parameterized `test_derive_recommendation` (1 multi-assertion test → 9 parametrize cases — same coverage, better failure reporting). Dropped unused `price_3d`/`_7d`/`_14d` kwargs from the `make_price_outcome` factory and the single test using them; the wrapper's 5d/90d-null contract is still proven against `price_30d` alone.
+
+### Smoke evidence
+
+Live `GET /api/tickers/today?date=2026-05-19&limit=2` returns DELTA (q=2.61, bullish) first + PTT (q=1.19, neutral) — exact same response shape as pre-cleanup commit 5cb9022. Pipeline pytest 116 passed (was 108; +8 from parametrize expansion). Backend pytest 10 passed (unchanged). agent_teams DB stable at 51 rows pre/during/post pytest. `git show 2039149 --stat`: 7 files, 223 insertions / 257 deletions = **-34 LOC**.
+
+### Karpathy lane check (postmortem)
+
+Reviewer recommended ALL flagged items be acted on except `_NewsAggregate` dataclass (judgment call — kept for readability) and `_today_bangkok` (used 2x; semantic name earns its keep). The cleanup pass introduced NO new abstractions (only constants extraction, mandated by the scale-fix). Net code is shorter AND correcter AND faster — the trifecta the Karpathy lane is designed to produce when applied promptly after a large landing.
+
+**Lesson re-confirmed:** spawning a dev-reviewer audit immediately after a large multi-file ship (>1500 LOC) catches over-engineering while it's still fresh, before the surface area calcifies. The audit cost (~10 min specialist time, ~5 min for Lead to triage) bought a $/LOC reduction with a real bug fix in the same pass. Consider documenting this as a standards proposal: post-large-landing audit is a load-bearing step, not optional polish.
+
+### Standards proposals (NOT auto-applied — for human MA)
+
+- `context/standards/process/post-landing-audit.md` (new): document that a dev-reviewer Karpathy-audit spawn should be considered after any single ship >1000 LOC or >5 files. Cite this Phase 2.4.6-2.4.7-2.4.8 chain (1957 + 2449 + cleanup = ~4400 LOC across 4 hours) as the worked example. The audit found a real bug AND meaningfully reduced surface area; not theoretical.
+- (Carry forward from #1277:) `context/standards/fastapi/testing.md` for the SQLite + JSONB→JSON swap pattern + `TestClient(app)` bypass.
+
+### Cross-references
+
+- Closes the post-#1277 review concern raised by Lead ("review/clean up over-engineered code").
+- Coexists with the locked architecture decisions (3-layer composite, externalized weights, contract endpoints) — none changed.
+- Surfaced one finding worth noting: the inlined `_filter_events_for_ticker_date` had a latent `isinstance(evt_date, date)` bug that would have mishandled bare `datetime` inputs (the `(date, datetime)` branch was dead because `datetime` IS a `date` subclass). Fixed in place; current fixtures all use ISO strings so no test ever hit the bug. Documented in dev-backend's finding #8.
+
+---
+
 ## 2026-05-19 — Phase 2.4.6 executed — Public wrapper `/api/tickers/today` + `/api/tickers/{symbol}` (#1277) landed — MVP unlock LIVE
 
 **Scope:** shared (backend; frontend mocks)
