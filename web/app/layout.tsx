@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
+import { FlagBellBadge } from "@/components/FlagBellBadge";
 import { ThemeProvider } from "@/components/ThemeProvider";
 
 const inter = Inter({ subsets: ["latin"], display: "swap" });
@@ -29,7 +30,13 @@ export default function RootLayout({
           Desktop is unaffected: Board.tsx pins main at lg:h-screen lg:overflow-hidden
           so no document scroll is needed; dashboard typically fits one viewport. */}
       <body className="antialiased h-full">
-        <ThemeProvider>{children}</ThemeProvider>
+        <ThemeProvider>
+          {children}
+          {/* Kanban #1212 AA4 (D5) — global bell badge linking to /review.
+              Fixed top-right of every page; count auto-refreshes via SSE +
+              60s poll. Hides itself when no flags are open. */}
+          <FlagBellBadge />
+        </ThemeProvider>
       </body>
     </html>
   );

@@ -59,6 +59,21 @@ export type ProjectRead = {
   is_killed?: boolean;
   killed_at?: string | null;
   killed_reason?: string | null;
+  // Kanban #1211 AA3 — soft-pause state (separate from AA1 hard kill).
+  // is_paused stays true between the audit task DONE and the operator's
+  // resolve-flag action. paused_at / paused_reason preserved across unpause
+  // for audit-trail continuity (D4 history pattern from AA1).
+  is_paused?: boolean;
+  paused_at?: string | null;
+  paused_reason?: string | null;
+  // Kanban #1212 AA4 — adjustments allowlist (services/pause_switch.py
+  // ADJUST_CONTINUE_ALLOWED_KEYS). FE pre-fills the Adjust+Continue form
+  // from these. NULL on health_thresholds = use auditor defaults
+  // (budget_burn_threshold_pct=100, failure_rate_threshold_pct=20, etc).
+  health_thresholds?: Record<string, unknown> | null;
+  approval_policies?: Record<string, unknown> | null;
+  hitl_timeout_hours?: number | null;
+  audit_enabled?: boolean;
 };
 
 // AcceptanceCriterion — one entry in TaskRead.acceptance_criteria (#797).
@@ -82,10 +97,42 @@ export type AnswerHistoryEntry = {
 };
 
 // QuestionPayload — JSONB payload for question/decision tasks (#834).
+//
+// Kanban #1211 AA3 (2026-05-19) added the AA3-flag bookkeeping fields below
+// (`is_audit_flag`, `breach_streak_days`, `audit_history`, `latest_audit`,
+// `latest_audit_summary`, `reasons`, `metrics`, plus the resolution sentinel
+// triplet written by AA3 resolve_flag). All are optional — generic question
+// tasks (approval prompts, design Option A/B questions) carry only the base
+// triad (question/options/answer_history); only AA3-spawned flag rows set
+// `is_audit_flag=true` and the AA3 fields.
 export type QuestionPayload = {
   question: string;
   options: string[] | null;
   answer_history: AnswerHistoryEntry[];
+  // ---- AA3 audit-flag fields (services/audit_flag.py:_new_flag_payload) ----
+  is_audit_flag?: boolean;
+  breach_streak_days?: number;
+  audit_history?: number[];
+  latest_audit?: number;
+  latest_audit_summary?: {
+    verdict?: string | null;
+    severity?: string | null;
+    recommendation?: string | null;
+  };
+  // Optional auditor-surfaced extras (rendered in the expand-card view when
+  // present). Auditor schema is still evolving (AA2 ownership) — value-
+  // tolerant on shape.
+  reasons?: string[];
+  metrics?: Record<string, unknown>;
+  raw_evidence?: unknown;
+  // Resolution sentinel written by services/pause_switch.resolve_flag on
+  // keep_paused / terminate branches (also set on continue / adjust_continue
+  // for symmetry once the flag is DONE). Lets the AA4 UI show
+  // "kept paused on YYYY-MM-DD" rather than just "DONE".
+  resolved_action?: "continue" | "adjust_continue" | "keep_paused" | "terminate";
+  resolved_at?: string | null;
+  resolved_by?: string | null;
+  kill_audit_id?: number;
 };
 
 // TaskRead — mirror of api/src/schemas/task.py:TaskRead.
@@ -650,4 +697,133 @@ export async function getTaskToolCalls(
   return jsonFetch<ToolCallRead[]>(`/api/tasks/${taskId}/tool-calls`, {
     headers: { "X-Project-Id": String(projectId) },
   });
+}
+
+// ============================================================================
+// Kanban #1212 AA4 — operator board-chairman /review surface.
+// ============================================================================
+
+// AuditFlagAction — vocabulary mirror of services/pause_switch.RESOLVE_FLAG_ACTIONS
+// + schemas/project.ResolveFlagAction. Kept here as a string union so callers
+// type-check at the call site rather than relying on string literals.
+export type AuditFlagAction =
+  | "continue"
+  | "adjust_continue"
+  | "keep_paused"
+  | "terminate";
+
+// ResolveFlagAdjustments — allowlisted keys mirror of pause_switch.py
+// ADJUST_CONTINUE_ALLOWED_KEYS (2026-05-19). Non-allowlisted keys are
+// silently dropped by the BE; the FE form only exposes the subset that
+// has a concrete UI today (budget triad + health_thresholds). Other keys
+// (approval_policies / hitl_timeout_hours / audit_enabled) round-trip via
+// the `Record<string, unknown>` escape hatch when future UI lands.
+export type ResolveFlagAdjustments = {
+  budget_daily_usd?: string | number | null;
+  budget_monthly_usd?: string | number | null;
+  budget_total_usd?: string | number | null;
+  health_thresholds?: Record<string, number | null> | null;
+  approval_policies?: Record<string, unknown> | null;
+  hitl_timeout_hours?: number | null;
+  audit_enabled?: boolean;
+};
+
+// ResolveFlagBody — POST body for /api/tasks/{flag_id}/resolve-flag.
+// `adjustments` required (and non-empty) ONLY when action='adjust_continue';
+// BE returns 422 otherwise. extra='forbid' on the BE schema — don't sneak
+// in extra keys at the top level.
+export type ResolveFlagBody = {
+  action: AuditFlagAction;
+  adjustments?: ResolveFlagAdjustments;
+};
+
+// ResolveFlagResponse — extra='allow' on BE so branch-specific keys
+// (is_paused / is_killed / kill_audit_id / adjustments_applied / stale)
+// surface as optional. Always carries the triad below.
+export type ResolveFlagResponse = {
+  flag_id: number;
+  project_id: number;
+  action: AuditFlagAction;
+  flag_completed_at: string | null;
+  is_paused?: boolean | null;
+  is_killed?: boolean | null;
+  audit_id?: number | null;
+  kill_audit_id?: number | null;
+  adjustments_applied?: Record<string, unknown> | null;
+  drain_summary?: Record<string, unknown> | null;
+  stale?: boolean | null;
+};
+
+export async function resolveFlag(
+  flagId: number,
+  projectId: number,
+  body: ResolveFlagBody,
+  actor?: string,
+): Promise<ResolveFlagResponse> {
+  // X-Project-Id required (the resolve-flag endpoint is /api/tasks/* and
+  // gates on the session-bound project header per Kanban #695).
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "X-Project-Id": String(projectId),
+  };
+  if (actor && actor.trim().length > 0) headers["X-Actor"] = actor.trim();
+  return jsonFetch<ResolveFlagResponse>(
+    `/api/tasks/${flagId}/resolve-flag`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+// AuditFlagWithProject — bundle a flag task with its parent project for
+// the /review surface. The page groups by project_id so consumers want
+// the project metadata adjacent to each flag.
+export type AuditFlagWithProject = {
+  flag: TaskRead;
+  project: ProjectRead;
+};
+
+// listAuditFlags — cross-project aggregation for the AA4 /review page.
+//
+// Implementation: the existing /api/tasks endpoint is single-project-scoped
+// (gates on X-Project-Id per Kanban #695). To aggregate across N projects
+// we (1) list active projects, (2) per project fetch open question tasks
+// in parallel, (3) client-side filter on `question_payload.is_audit_flag`.
+//
+// Why client-side filter: there is no BE filter for JSONB-path predicates
+// on the tasks endpoint today. The volume is small (≤10s of question tasks
+// per project) so a single round-trip per project + a in-memory predicate
+// is acceptable for v1. If this grows, add a BE filter param + revisit.
+//
+// `pending=true` returns process_status != 5 (TODO/IN_PROGRESS/REVIEW/BLOCKED);
+// `include_cancelled` defaults to false so CANCELLED (ps=6) is also out.
+// AA3 flag tasks are created with process_status=BLOCKED (4); operator-resolved
+// flags transition to DONE (5) which the pending filter naturally drops.
+export async function listAuditFlags(): Promise<AuditFlagWithProject[]> {
+  const projects = await listProjects({ status: 1 });
+  // Per-project parallel fetch. Errors on individual projects degrade to
+  // an empty list for that project rather than failing the whole page —
+  // a single project's API outage shouldn't blank the /review surface for
+  // the other N-1 projects.
+  const perProject = await Promise.all(
+    projects.map(async (project) => {
+      try {
+        const tasks = await listTasks(project.id, {
+          pending: true,
+          limit: 500,
+        });
+        const flags = tasks.filter(
+          (t) =>
+            t.interaction_kind === "question" &&
+            t.question_payload?.is_audit_flag === true,
+        );
+        return flags.map((flag) => ({ flag, project }));
+      } catch {
+        return [];
+      }
+    }),
+  );
+  return perProject.flat();
 }

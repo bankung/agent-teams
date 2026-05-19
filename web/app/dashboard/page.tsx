@@ -3,6 +3,7 @@ import Link from "next/link";
 import {
   getAuditDailyRollup,
   getProjectsStats,
+  listAuditFlags,
   listProjects,
   type AuditDailyRollupEntry,
   type ProjectRead,
@@ -13,6 +14,7 @@ import { BudgetBar, pickBudgetDisplay } from "@/components/BudgetBar";
 import { DashboardRefresher } from "@/components/DashboardRefresher";
 import { EditProjectModal } from "@/components/EditProjectModal";
 import { NewProjectModal } from "@/components/NewProjectModal";
+import { ReviewSummaryWidget } from "@/components/ReviewSummaryWidget";
 import { ThemePicker } from "@/components/ThemePicker";
 
 // Cross-project dashboard — aggregate-first layout (Kanban #869, 2026-05-13).
@@ -596,10 +598,15 @@ export default async function DashboardPage() {
   // calls. BE defaults the window to today-7..today inclusive (UTC); we omit
   // the query params and let the server decide. Empty array is the typical
   // state today; AuditorActivity hides the entire section when so.
-  const [stats, projects, auditRollup] = await Promise.all([
+  // Kanban #1212 AA4 (D5) — listAuditFlags joins listProjects + per-project
+  // tasks; runs in parallel with the existing aggregate fetches. Failure
+  // degrades to [] (the helper swallows per-project errors), so a single
+  // backend hiccup doesn't blank the dashboard.
+  const [stats, projects, auditRollup, openFlags] = await Promise.all([
     getProjectsStats(),
     listProjects({ status: 1 }),
     getAuditDailyRollup(),
+    listAuditFlags().catch(() => []),
   ]);
   const projectsById = new Map<number, ProjectRead>();
   for (const p of projects) projectsById.set(p.id, p);
@@ -630,6 +637,9 @@ export default async function DashboardPage() {
         </p>
       ) : (
         <>
+          {/* AA4 — operator review surface. Hidden when no flags are open. */}
+          <ReviewSummaryWidget flags={openFlags} />
+
           <AggregateSummary stats={stats} />
 
           {/* Cost/token strip (Kanban #871). Sibling section BETWEEN the
