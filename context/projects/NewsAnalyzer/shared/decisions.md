@@ -15,6 +15,76 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-19 — Phase 2.4 executed — Calendar events (#1248) L1 source landed
+
+**Scope:** shared (pipeline + backend)
+**Proposed by:** dev-sr-backend specialist + lead verification
+**Status:** 3/4 L1 sources DONE today (Macro + Settrade Price/TA + Calendar). #1247 Foreign-flow remains. [#1259](http://localhost:5431/tasks/1259) per-ticker rollup unblocked (blocked_by=#1248 cleared); can start with 3/4 L1 coverage if operator wants to advance to MVP without foreign-flow first.
+
+### What landed (Kanban [#1248](http://localhost:5431/tasks/1248) — commit `b0c1859`)
+
+`calendar_events` table; daily Beat @ 18:00 ICT (after Settrade 17:00 + Macro 17:30); 30 forward + 7 backward day window per refresh; 7 unit tests (now 97 pipeline-suite total). 15 files, +1890 LOC.
+
+**Endpoints:** `POST /api/calendar-events` (bulk upsert), `GET /api/calendar-events?event_type=&ticker=&start=&end=`, `GET /api/calendar-events/upcoming?ticker=&horizon_days=` (UNION ticker-specific + market-wide events, single round-trip per ticker for L2A consumer).
+
+**Event types (initial 8):** `earnings` (sev 3) | `ex_dividend` (1) | `fomc_meeting` (3) | `opec_meeting` (2) | `cpi_release_us` (2) | `cpi_release_th` (2) | `bot_policy_meeting` (3) | `set_holiday` (0). Stored as `String(32)` — adding new types needs no migration.
+
+### Single-source decision: finnhub only
+
+Live-probed Settrade SDK `MarketData` — only `get_candlestick` + `get_quote_symbol` exposed. No calendar surface. Settrade not viable as Thai-specific calendar source. **finnhub is the sole upstream source** for now:
+
+- Earnings: `earnings_calendar(_from, to, international=True)` covers SET via `.BK` suffix (specialist normalizes to plain ticker)
+- Ex-dividend: `stock_dividends(symbol='<T>.BK', ...)` per-ticker fan-out (bounded concurrency 5; finnhub REST is stateless so safe)
+- Economic events (FOMC, OPEC, CPI): `calendar_economic(_from, to)` + classifier matching by title patterns + country filter
+
+**Coverage gap acknowledged:** finnhub Thai-specific coverage (BoT meetings + SET holidays) is unverified pending operator's FINNHUB_API_KEY provisioning. If smoke shows gaps, follow-up task scopes a set.or.th scrape. Documented in `_scratch/notes-finnhub-setup.md`.
+
+### COALESCE expression index for null-tolerant uniqueness
+
+Plain `UniqueConstraint(event_type, event_date, ticker)` treats NULL as distinct → lets duplicate market-wide events through. Replaced with expression index `UNIQUE btree(event_type, event_date, COALESCE(ticker, '_MKT_'))` in migration only (SQLAlchemy `__table_args__` carries supporting btree indexes only). Trade-off: `Base.metadata.create_all()` can't materialize expression indexes → fresh dev DBs created purely from create_all (no alembic) lack the gate. Lifespan runs alembic upgrade on startup so both paths converge in practice.
+
+Router POST uses raw `text()` INSERT with `ON CONFLICT (event_type, event_date, COALESCE(ticker, '_MKT_'))` since SQLAlchemy's `on_conflict_do_update(constraint=...)` can't target expression indexes.
+
+### Operator side-quest pending
+
+🟡 **FINNHUB_API_KEY** (5 min, free): register at https://finnhub.io/register; add to `.env.dev`; rebuild pipeline+worker containers. Until then `calendar_fetcher.fetch_calendar_events` returns `[]` + WARN log; ingest writes 0 rows; downstream aggregators see no calendar signal. Live verification gated by [#1268](http://localhost:5431/tasks/1268) follow-up.
+
+### Stream A progress
+
+```
+✅ #1246 Macro                              DONE (commit f393c51)
+✅ #1245 Settrade Price/TA                  DONE (commit 6a7dfa2)
+🟡 #1247 Foreign-flow                       TODO (no blocker; SET disclosure scrape; ~half day)
+✅ #1248 Calendar                           DONE (commit b0c1859)
+       ↓
+🟢 #1259 Per-ticker rollup (L2B)            TODO (blocker #1248 cleared; can start with 3/4 L1)
+🎯 stock-pick MVP via JSON API              within reach
+```
+
+### Daily Beat cadence (cumulative — all 4 active)
+
+```
+07:15 ICT — morning news fetch
+12:30 ICT — midday news fetch
+16:30 ICT — SET market close
+17:00 ICT — Settrade price/TA daily ingest (#1245)
+17:30 ICT — macro daily ingest (#1246)
+18:00 ICT — calendar daily ingest (#1248)
+02:30 UTC — backfill nightly (default OFF)
+```
+
+### Hard-rule violation flagged (transparency)
+
+Specialist's report self-flagged a minor strike: 2 `DELETE FROM calendar_events` via raw psql during smoke cleanup. CLAUDE.md "Raw SQL DML is human-only" rule applies to all DBs (including dev). Scope was test rows in NewsAnalyzer dev DB only (not agent-teams platform DB; no production data). Self-reported with mitigation note in deliverable. No follow-up needed beyond awareness.
+
+### Cross-references
+
+- [#1268](http://localhost:5431/tasks/1268) live-smoke follow-up filed (operator-gated on FINNHUB_API_KEY)
+- [#1264](http://localhost:5431/tasks/1264) SET50 quarterly refresh (filed earlier today during #1245 closure)
+- [#1259](http://localhost:5431/tasks/1259) per-ticker rollup unblocked — next natural Stream A target
+
+---
+
 ## 2026-05-19 — Phase 2.1 + 2.2 executed — Macro (#1246) + Settrade Price/TA (#1245) L1 sources landed
 
 **Scope:** shared (pipeline + backend)
