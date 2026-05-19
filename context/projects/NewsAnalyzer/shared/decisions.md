@@ -15,6 +15,99 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-19 — Architecture lock — 3-layer composite scoring + weather-brief UX + multi-layer self-learning calibration
+
+**Scope:** shared (product architecture — frontend + backend + pipeline)
+**Proposed by:** user (Phase 2+ thesis discussion) + lead (architectural shape)
+**Status:** **Design LOCKED, implementation PARKED.** Pickup timing TBD by operator. No code change yet.
+
+**Decision:** NewsAnalyzer evolves from single-source-news + LLM-end-to-end synthesis to a **3-layer composite scoring architecture** with **weather-forecast UI** and **multi-layer self-learning calibration**. Operator-fatigue minimization is the load-bearing UX goal — every architectural choice subordinated to "5-second glance → drill-down only on demand."
+
+### Layer 1 — Raw signals (technical, expandable)
+
+Initial 5 sources, priority order locked:
+1. **News** (already in production — 4 Thai scrapers + 7 RSS)
+2. **Price/TA** (OHLCV momentum, breakout, support/resistance proximity)
+3. **Macro** (USD/THB, oil, Fed funds rate, Asia indices)
+4. **Foreign-flow** (SET disclosure: net buy/sell by foreign vs retail)
+5. **Earnings calendar** (earnings, ex-div, FOMC, OPEC dates — third-party API)
+
+Each L1 source emits dimensional signals (raw score + confidence). Schema per-source TBD. Design principle: **AI may propose new L1 dimensions** post-calibration (e.g., "rolling 60d foreign-flow correlation = 0.65; promote?") — operator approves with initial weight 0.5 + 30-day monitor before auto-tune lock-in.
+
+### Layer 2 — Thematic aggregates (4-5 themes)
+
+Weighted sums of L1 signals projecting to small fixed scales:
+- `sentiment_composite` (news ↔ price agreement)
+- `macro_tailwind` (currency + rates + commodity alignment)
+- `risk_regime` (volatility + flow + breadth)
+- `event_density` (severity × novelty × time-decay)
+- (5th slot reserved for emerging theme post-calibration)
+
+### Layer 3 — Weather brief (operator-facing primary output)
+
+Daily brief presents 5 composite indicators in everyday-weather language:
+- ☀️ **ความสดใส (brightness)** — 0-100% bullish bias
+- 🧭 **ลมส่ง (wind)** — direction × strength (macro flow)
+- 🌧️ **ฝน (rain)** — 0-100% downside risk probability
+- 🌫️ **หมอก (fog)** — uncertainty level (L2 disagreement × confidence spread)
+- ⚡ **พายุเตือน (storm warning)** — severe-event flag
+
+Below the weather row: TIER-1 (3-5 must-review events Q≥3 or severity≥3), TIER-2 (selective, expandable, 10-15), TIER-3 (FYI, collapsed, 15-20).
+
+**Operator volume target**: 20-40 events/day; weather glance + TIER-1 = full daily review in 1-2 min; TIER-2 selective; TIER-3 drill-only.
+
+### Self-learning — 3 calibration loops
+
+Outcomes feed back to ALL 3 layers:
+- **L3 weights** (weather → operator action): outcome = daily P&L direction vs sky brightness; rolling 30-90 day regression
+- **L2 weights** (themes → L3): per-theme accuracy from outcome rows
+- **L1 → L2 weights**: 90-day correlation of raw signal X with aggregate Y outcomes → rebalance
+
+Before each weight-tuning batch: show operator the delta + accept/veto. Not auto-deployed. AI may propose new L1 dimensions as above.
+
+### UI redesign — PARKED (operator decision, not rushed)
+
+Full dashboard redesign — simple front-view (weather row + TIER-1), drill-down on tap for indicator detail + reasoning chain. Mobile-friendly. Storm push notification designed AND shipped together with the redesign (single coherent UX rollout).
+
+### Tradeoffs accepted
+
+- **Transparency rubric ⩾ LLM end-to-end opacity** — operator trust comes from disagreeing with specific dimensions, not trusting a black box. LLM may still score individual L1 dimensions internally; aggregation layer stays transparent.
+- **Data-plumbing cost vs L1 richness** — start with 5 sources; expand when outcome data points to missing signals (not preemptively).
+- **Multi-layer calibration complexity** — accepted for the audit-by-dimension benefit.
+
+### Implications
+
+- **Phase 1 P1 (calibration-loop activation)** stays current scope — close the outcome→AI feedback loop on the existing single-event recommendation. This work is COMPATIBLE with the new 3-layer architecture; it eventually feeds L3 calibration as a special case (current L3 = sentiment-only weather).
+- **Phase 2 work order** (when unparked): L1 expansion (sources 2→5) → L2 aggregator → L3 weather computation → Phase 3 UI redesign + storm push (joined).
+- **Phase 4 (LLM API engine swap, #1229)** — independent of this architecture; LLM is still the L1 news-dimension scorer + optional L2 aggregator.
+- **`SCRAPE_DEV_LIMIT=3` clamp (commit 6b68894)** — protects credit budget during the long parked period. Unlock by setting `SCRAPE_DEV_LIMIT=0` only when full L1 data plumbing is ready to consume it.
+
+### Kanban backlog — filed 2026-05-19
+
+10 tasks pre-mapped + filed against NewsAnalyzer (project_id=567). All PARKED — `process_status=1 (TODO)` for unblocked L1 sources, `process_status=4 (BLOCKED)` for downstream L2/L3/Phase 3 with `blocked_by` FK chain. Pickup timing = operator decision.
+
+- **Phase 2** — 3-layer composite scoring + weather brief backend (priority 2-3)
+  - [#1245](http://localhost:5431/tasks/1245) Phase 2.1: L1 Price/TA dimensional signals — no blocker
+  - [#1246](http://localhost:5431/tasks/1246) Phase 2.2: L1 Macro signals (USD/THB + oil + Fed + Asia indices) — no blocker
+  - [#1247](http://localhost:5431/tasks/1247) Phase 2.3: L1 Foreign-flow signals (SET disclosure) — no blocker
+  - [#1248](http://localhost:5431/tasks/1248) Phase 2.4: L1 Earnings + calendar events — no blocker
+  - [#1249](http://localhost:5431/tasks/1249) Phase 2.5: L2 thematic aggregator (4 themes + 1 reserved) — blocked_by #1248
+  - [#1250](http://localhost:5431/tasks/1250) Phase 2.6: L3 weather computation + daily brief generator — blocked_by #1249
+  - [#1251](http://localhost:5431/tasks/1251) Phase 2.7: Self-learning weight tuning batch (3 calibration loops) — blocked_by #1250
+
+- **Phase 3** — UI redesign + storm push (PARKED; can start parallel once #1250 lands; priority 4)
+  - [#1252](http://localhost:5431/tasks/1252) Phase 3.1: Dashboard redesign — weather row + TIER-1/2/3 — blocked_by #1250
+  - [#1253](http://localhost:5431/tasks/1253) Phase 3.2: Drill-down view per event — blocked_by #1252
+  - [#1254](http://localhost:5431/tasks/1254) Phase 3.3: Storm push notification (Tailscale-mobile path candidate) — blocked_by #1252
+
+### Cross-references
+
+- agent-teams sibling #1225 (Docker RAM review) — parallel platform work
+- This entry succeeds [#1226 Phase 2 closure (3-tier scrape fallback)] below + [#1235 stale-lock self-heal] + scrape-cost fix commit `6b68894`
+- QuantAgent research (2026-05-19, `_scratch/research-quantagent-2026-05-19.md`) — verdict NO-PIVOT; mine 5 ideas (decision-synthesis prompt + multi-LLM factory most relevant to this architecture)
+
+---
+
 ## 2026-05-19 — #1226 Phase 2 closed — Firecrawl 3-tier fallback chain (cloud → selfhost → ai_direct)
 
 **Scope:** shared (pipeline scraper + ai_client + docker-compose)
