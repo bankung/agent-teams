@@ -383,6 +383,15 @@ class Task(Base):
     # validation lives at the API / service layer).
     health_alert: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
+    # Kanban #1224 (2026-05-19): per-task push-notification targets override.
+    # NULL = inherit `projects.notification_targets` at delivery time. Element
+    # shape validated at API boundary by Pydantic NotificationTarget. No DB
+    # CHECK on element shape (mirrors notification_targets at project level
+    # + the wider JSONB-element-shape-at-API-layer precedent).
+    notification_targets: Mapped[list[dict] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -575,8 +584,13 @@ class TaskHistory(Base):
     )
 
     __table_args__ = (
+        # Kanban #1224 (2026-05-19): extended from `IN ('U','D')` to
+        # `IN ('U','D','N')`. 'N' is the NOTIFY delivery-attempt audit row,
+        # inserted directly by services/notification_router.py (the existing
+        # tasks_audit_trg trigger writes 'U'/'D' only). Mirror of migration
+        # 0041's CHECK predicate.
         CheckConstraint(
-            "operation IN ('U', 'D')",
+            "operation IN ('U', 'D', 'N')",
             name="ck_tasks_history_operation_valid",
         ),
         Index("ix_tasks_history_task_id", "task_id"),

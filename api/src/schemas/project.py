@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from src.constants import ProjectTeam, TaskRole
 from src.models.projects_audit import PROJECT_AUDIT_ACTIONS
+from src.schemas.notification import NotificationTarget
 
 TeamCode = Literal["dev", "novel", "general", "content"]
 
@@ -265,6 +266,17 @@ class ProjectCreate(BaseModel):
     # validator on `ToolsConfig` fires before the row reaches the DB.
     tools_config: ToolsConfig | None = Field(default=None)
 
+    # Kanban #1224 (2026-05-19): per-project default push-notification targets.
+    # None = no default (router falls back to local-file write per AC4).
+    # Element shape validated by NotificationTarget at the API boundary.
+    # max_length=20 caps the array size at the boundary (defense-in-depth
+    # against payload bloat — operator-configured surface, low cardinality
+    # expected). See `src/services/notification_router.py` for resolution
+    # priority (task override > project default > local-file fallback).
+    notification_targets: list[NotificationTarget] | None = Field(
+        default=None, max_length=20
+    )
+
     @field_validator("agent_overrides")
     @classmethod
     def _validate_agent_override_keys(cls, v):
@@ -416,6 +428,15 @@ class ProjectUpdate(BaseModel):
     legal_entity: str | None = Field(default=None, min_length=1, max_length=200)
     fiscal_year_start: int | None = Field(default=None, ge=1, le=12)
     currency_default: str | None = Field(default=None, min_length=3, max_length=3)
+
+    # Kanban #1224 (2026-05-19): PATCH-able per-project default targets.
+    # Semantics — key-absent leaves unchanged (exclude_unset); explicit dict
+    # REPLACES the prior value (no deep merge — same as agent_overrides /
+    # tools_config); explicit `null` CLEARS to NULL (= no default; router
+    # falls back to local-file). Element shape validated by NotificationTarget.
+    notification_targets: list[NotificationTarget] | None = Field(
+        default=None, max_length=20
+    )
 
     @field_validator("currency_default")
     @classmethod
@@ -570,6 +591,14 @@ class ProjectRead(BaseModel):
     paused_at: datetime | None = None
     paused_reason: str | None = None
     audit_enabled: bool = True
+
+    # Kanban #1224 (2026-05-19) — push-notification routing targets. NULL =
+    # no default configured (router falls back to local-file fallback per
+    # AC4). Value-tolerant on read (list[dict[str, Any]]) for legacy /
+    # hand-edited resilience — mirrors `sources` / `tools_config` precedent.
+    # Writes still go through the strict `NotificationTarget` validator on
+    # POST/PATCH.
+    notification_targets: list[dict[str, Any]] | None = None
 
     @field_validator("sources", mode="before")
     @classmethod

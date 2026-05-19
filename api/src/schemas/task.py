@@ -42,6 +42,7 @@ from src.constants import (
     TaskStatus,
     TaskType,
 )
+from src.schemas.notification import NotificationTarget
 
 # Wire enum for tasks.run_mode; lockstep guard at module bottom
 TaskRunModeLiteral = Literal["manual", "auto_pickup", "auto_headless"]
@@ -382,6 +383,15 @@ class TaskCreate(BaseModel):
     allow_during_pause_reason: str | None = Field(
         default=None, min_length=10, max_length=1_000
     )
+    # Kanban #1224 (2026-05-19): per-task notification-targets override. None
+    # (the default) = inherit the project-level default at delivery time. An
+    # explicit list REPLACES the project default for this task's notifications
+    # only (no merge). Element shape validated by NotificationTarget; max
+    # length 20 (parity with the project-level cap). See
+    # `src/services/notification_router.py` for resolution priority.
+    notification_targets: list[NotificationTarget] | None = Field(
+        default=None, max_length=20
+    )
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=True)
@@ -711,6 +721,14 @@ class TaskUpdate(BaseModel):
     allow_during_pause_reason: str | None = Field(
         default=None, min_length=10, max_length=1_000
     )
+    # Kanban #1224 (2026-05-19): PATCH-able per-task notification-targets
+    # override. Semantics — key-absent leaves unchanged (exclude_unset);
+    # explicit list REPLACES the prior value (no deep merge); explicit `null`
+    # CLEARS to NULL (= inherit project default again). Element shape
+    # validated by NotificationTarget.
+    notification_targets: list[NotificationTarget] | None = Field(
+        default=None, max_length=20
+    )
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=False)
@@ -978,6 +996,11 @@ class TaskRead(BaseModel):
     # can render a "bypassed pause" badge / surface the operator rationale.
     allow_during_pause: bool = False
     allow_during_pause_reason: str | None = None
+    # Kanban #1224 (2026-05-19) — per-task notification-targets override.
+    # NULL = inherit project default. Value-tolerant on read (list of dicts)
+    # for legacy / hand-edited resilience — mirrors the project-level
+    # ProjectRead.notification_targets shape.
+    notification_targets: list[dict[str, Any]] | None = None
 
 
 class NextAutorunResponse(BaseModel):

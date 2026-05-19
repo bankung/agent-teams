@@ -401,6 +401,16 @@ async def create_project(
     if payload.tools_config is not None:
         data["tools_config"] = payload.tools_config.model_dump()
 
+    # Kanban #1224 — push-notification targets. OMIT when None so the DB
+    # column lands NULL (= "no default configured"; router falls back to
+    # local-file write). model_dump() each NotificationTarget to a plain
+    # dict for JSONB persistence; the API boundary validator already enforced
+    # kind/priority/chat_id/label shape.
+    if payload.notification_targets is not None:
+        data["notification_targets"] = [
+            t.model_dump() for t in payload.notification_targets
+        ]
+
     # Kanban #694, Phase 2: `is_active` is a free boolean — no atomic-clear of
     # other rows. The legacy `_clear_other_active(keep_id=None)` here was
     # load-bearing on the dropped `ux_projects_active_one` invariant.
@@ -514,6 +524,14 @@ async def update_project(
                 {k: v for k, v in entry.items() if v is not None}
                 for entry in updates["sources"]
             ]
+
+    # Kanban #1224: PATCH explicit-null on notification_targets CLEARS to NULL
+    # (= "no default configured"; router falls back to local-file write). The
+    # DB column IS nullable, and ProjectRead surfaces None as null on the
+    # wire — unlike `sources`, we do NOT coerce to []. The "no default" state
+    # is semantically distinct from "[] configured" (which has zero priority
+    # targets but still triggers the kind filter). `model_dump(exclude_unset=True)`
+    # has already serialized each NotificationTarget to a plain dict.
 
     # M10: cannot reactivate a soft-deleted project via PATCH — restore is a
     # separate (not-yet-built) admin path. Other fields ARE editable on a

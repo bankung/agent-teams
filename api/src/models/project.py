@@ -214,6 +214,18 @@ class Project(Base):
         nullable=True,
     )
 
+    # Kanban #1224 (2026-05-19): push-notification routing targets (Hermes
+    # DeliveryTarget DSL borrowed shape). Element shape (validated at API
+    # boundary by Pydantic NotificationTarget): {kind, chat_id, priority,
+    # label}. NULL = no default configured (router falls back to local-file
+    # write per AC4). No DB CHECK on element shape (mirrors agent_overrides /
+    # tools_config / sources / acceptance_criteria precedent — JSONB
+    # element-shape validation lives at the API layer).
+    notification_targets: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
     # Kanban #953 (2026-05-17): per-project financial-separation columns.
     # Each project becomes an isolated accounting unit. All four NULLABLE for
     # legacy-row resilience; fiscal_year_start + currency_default carry
