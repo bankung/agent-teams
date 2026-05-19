@@ -15,6 +15,70 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-19 — Phase 2.4.6 executed — Public wrapper `/api/tickers/today` + `/api/tickers/{symbol}` (#1277) landed — MVP unlock LIVE
+
+**Scope:** shared (backend; frontend mocks)
+**Proposed by:** dev-backend specialist + lead verification
+**Status:** Operator-facing read endpoints are LIVE. Stock-pick MVP via JSON API is now `curl`-callable end-to-end. Stream A reaches first usable surface for the original "เลือกและแนะนำหุ้น" goal.
+
+### What landed (Kanban [#1277](http://localhost:5431/tasks/1277) — commit `5cb9022`)
+
+Thin read-wrapper backed by L2B [#1259](http://localhost:5431/tasks/1259) persistence. New router `backend/app/routers/tickers.py` (847 LOC) joining `TickerDailyRollup` + `NewsEvent`/`EventSummary`/`EventAnalysis` + `PriceTaSignal` + `PriceOutcome` + `DecisionTag`/`TagValue` to deliver the locked Decision-Engine API contract (`api-contracts.md` 2026-05-19) field-by-field. 9 files, +2449 LOC. Backend's FIRST pytest infra landed alongside (`backend/tests/conftest.py` 330 LOC SQLite-in-memory + JSONB→JSON swap + dependency-override factory helpers) + 10 contract-shape tests. Frontend mock fixtures regenerated to match live response shape — frontend (Phase 3.1 #1252) can begin in parallel under `NEXT_PUBLIC_USE_MOCK_OUTLOOK=true`.
+
+**Endpoints (operator-facing):**
+- `GET /api/tickers/today?date=&limit=&offset=&recommendation=` — ranked ticker list; sort `ABS(q_score) DESC, confidence DESC, ticker ASC` (deterministic pagination); `summary` field is placeholder `"Top events: ..."` per anti-goal — AI polish is a future task.
+- `GET /api/tickers/{symbol}?date=&history_days=` — drill-down with `current` + `events[]` (≤10 most recent) + `price_context` + `history[]` (default 30d, max 365d) + `operator_action`.
+
+### Schema gap handled — PriceOutcome 5d/30d/90d vs current 3d/7d/14d/30d
+
+Contract requires `outcome.{5d, 30d, 90d}`; existing `price_outcomes` table has 3d/7d/14d/30d columns. Wrapper shipped with `direction_30d`+`pct_30d` populated (from `price_30d`) and `5d`+`90d` returning `null`. Contract permits per-horizon nulls (per its own docstring "fields are null until the date has been reached + 1 trading day buffer"), so the response is contract-conformant. Real fix filed as [#1279](http://localhost:5431/tasks/1279) — alembic add columns + populator update + router unblanking + test extension. Blocks the self-learning batch (#1251) only AFTER L3 (#1250) lands, so MVP path unaffected.
+
+### Decision-label → action mapping (locked)
+
+Resolution of `Decision` TagClass values to contract `action` enum: `{Invest → act, Not Invest → pass, Not Sure → note}`. This is wired into the wrapper today. If frontend Phase 3.1 wants a different semantic (e.g. `Not Sure → null` vs `note`), revise here + in the router. Not load-bearing for MVP — just a UI-visible label.
+
+### Tie-break rule (added)
+
+`/api/tickers/today` default sort got a third tie-break — `ticker ASC` — so paginated results are deterministic across pages. Mirrors the canonical `ticker_rollups.py` convention. Not in the original contract but harmless and operator-friendly.
+
+### Live smoke evidence
+
+`curl GET /api/tickers/today?date=2026-05-19&limit=2` → DELTA (q=2.61, bullish) → PTT (q=1.19, neutral). All contract fields present. `curl GET /api/tickers/PTT?date=2026-05-19&history_days=30` → 30 history rows, all 30d outcome nulls (PriceOutcome populator hasn't run yet for these rollup dates; expected; tracked in [#1279](http://localhost:5431/tasks/1279)). `operator_action: null` (no DecisionTags yet for PTT). `events: []` — root cause is upstream `news_events.companies` is null in dev DB (legacy entity-extraction issue documented in the same-day "Watchlist scope reality" addendum). Wrapper code is correct; companies-field backfill is a future task.
+
+### Updated Stream A scoreboard
+
+```
+✅ #1246 Macro · ✅ #1245 Settrade · 🟡 #1247 Foreign-flow · ✅ #1248 Calendar
+       ↓
+✅ #1259 Per-ticker rollup (L2B)            DONE (commit 4781099)
+       ↓
+✅ #1277 Public wrapper /api/tickers/*      DONE (commit 5cb9022)  🎯 MVP LIVE
+       │
+       ├ #1249 L2A thematic aggregator      TODO (unblocked)
+       ├ #1250 L3 weather computation       BLOCKED ← #1249
+       ├ #1251 Self-learning batch          BLOCKED ← #1250
+       │
+       └ #1252 Frontend dashboard wiring    TODO (parallel; mocks ready)
+```
+
+### Follow-ups filed
+
+- [#1279](http://localhost:5431/tasks/1279) **PriceOutcome schema realignment (5d/30d/90d) + populator update** — needs to land before #1251 self-learning batch can evaluate accuracy at 5d/90d checkpoints. Priority 3. Not blocking MVP.
+
+### Standards proposals (NOT auto-applied — for human MA)
+
+- `context/standards/fastapi/testing.md` (new): document the SQLite-backed unit-test pattern with `Base.metadata.tables.values()` walk + JSONB→JSON column-type swap. Pattern is reusable across any Postgres-JSONB FastAPI project; specialist reinvented from scratch because no canonical reference existed.
+- `context/standards/fastapi/testing.md` (same file or sibling): document `TestClient(app)` WITHOUT the `with ... as client:` context-manager form — bypasses the app's lifespan and avoids retriggering `Base.metadata.create_all` against the production engine in test mode. Easy footgun.
+
+### Cross-references
+
+- Wraps [#1259](http://localhost:5431/tasks/1259) L2B persistence.
+- Filed [#1279](http://localhost:5431/tasks/1279) PriceOutcome schema realignment (will eventually unblock the 5d/90d horizons in `history[].outcome`).
+- Frontend Phase 3.1 ([#1252](http://localhost:5431/tasks/1252)) can begin in parallel via the regenerated mocks at `frontend/lib/mocks/{tickers-today,ticker-detail-PTT}.json`.
+- Open design points captured: `Decision → action` mapping (lockable later) + per-row `operator_action` semantic when multiple events on one day have decisions (currently `latest tagged_at`).
+
+---
+
 ## 2026-05-19 — Phase 2.4.5 executed — L2B per-ticker Q-score rollup (#1259) landed — MVP unlock at hand
 
 **Scope:** shared (pipeline + backend)
