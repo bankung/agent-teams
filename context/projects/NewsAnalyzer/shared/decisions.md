@@ -15,6 +15,103 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-19 (addendum) — 2-stream split + Settrade lock + per-ticker rollup gap-fill + API contract
+
+**Scope:** shared (architecture refinement post-lock; critical-path framing for "เลือกและแนะนำหุ้น")
+**Proposed by:** user (critical-path question) + lead (gap identification + critical-path analysis)
+**Status:** Design refinement on top of the same-day architecture lock. Implementation still parked overall; contract + #1245 unlock once user starts the parallel work.
+
+**Decision 1 — 2-Stream work split for parallel execution:**
+
+| Stream | Scope | Output interface |
+|---|---|---|
+| **A. Decision Engine** | ingest → score → rank → produce JSON-shaped daily-outlook + per-ticker recommendations | `GET /api/daily-outlook`, `GET /api/tickers/today`, `GET /api/tickers/{symbol}` |
+| **B. Operator Interaction** | UI (Phase 3 dashboard redesign + drill-down) + storm push + future trading APIs | consumes Stream A's JSON |
+
+Stream A can deliver operator value INDEPENDENTLY via JSON API (curl/CLI). Stream B = UX polish + push + execution. Sharp separation lets the two streams develop in parallel against a locked API contract.
+
+**Decision 2 — Settrade Open API LOCKED for Phase 2.1 (#1245) Price/TA:**
+
+Operator chose Settrade Streaming + Historical for Phase 2.1 data source. Rationale:
+- Official SET subsidiary — most authoritative Thai stock data source
+- Same vendor for future Phase 5+ trading execution (creds/audit/onboarding unified — no re-integration cost when trading layer ships)
+- Real-time + historical OHLCV in one API surface
+- Aligns with the long-term path where decision-support → trading execution happens through ONE vendor relationship
+
+Phase 5+ trading integration will reuse the Settrade auth/audit foundation. Other Thai broker APIs were considered (BLS, Kasikorn, Liberator) but Settrade has the cleanest official API + SET-data-vendor alignment.
+
+**Watchlist for #1245 ingest:** SET50 (top-50 by market cap) ∪ {tickers appearing in news events past 30 days}. Override via config later.
+
+**Decision 3 — Architecture gap fill: `L2B Per-ticker rollup` (Kanban #1259):**
+
+Critical-path review found that the locked architecture is event-centric (Q-score per news event) but the operator goal `เลือกและแนะนำหุ้น` is ticker-centric (Q-score per ticker, ranked). The L2A thematic aggregator (#1249) produces MARKET-level themes, not per-ticker rollups.
+
+Filed [#1259](http://localhost:5431/tasks/1259) as sibling to #1249 — same dependency on L1 sources (#1245-1248), feeds L3 (#1250) alongside L2A. Per-ticker rollup is the "glue" that turns L1 signals into actionable per-stock recommendations.
+
+**Decision 4 — API contract design FIRST (Kanban [#1258](http://localhost:5431/tasks/1258)):**
+
+Per operator's "ถ้ามี API contract แล้วก็สามารถทำขนานกันไปได้เลย", we LOCK the Stream A ↔ Stream B contract before starting parallel implementation. Contract drafted same-day in `shared/api-contracts.md`:
+- `GET /api/daily-outlook` — daily weather brief + TIER-1/2/3 event partitions
+- `GET /api/tickers/today` — ranked ticker recommendations with contributing-signals breakdown
+- `GET /api/tickers/{symbol}` — per-ticker drill-down (events + price context + history + operator action)
+
+Stream B mocks via `frontend/lib/mocks/*.json` fixtures matching the contract; Stream A implements behind the same shape.
+
+**Critical-path narrative for "เลือกและแนะนำหุ้น":**
+
+```
+NOW ──► #1258 API contract (Lead-direct, this commit)
+   parallel after contract locked:
+        ──► #1245 Settrade Price/TA  ┐
+        ──► #1246 Macro              │  L1 ingest (4 parallel)
+        ──► #1247 Foreign-flow       │
+        ──► #1248 Earnings calendar  ┘
+              ↓
+        ──► #1259 Per-ticker rollup (L2B)
+              ↓
+        ──► [USABLE MVP] daily ranked list via JSON API 🎯
+              ↓
+        #1249 (L2A themes) → #1250 (L3 weather) → #1251 (self-learning)
+                                ↓
+                          #1252 (Dashboard) → #1253 (drill-down) + #1254 (storm push)
+                                              ↓
+                                  Phase 5+ Settrade trading integration
+```
+
+**Usability milestones (per critical-path):**
+- After **L1 #1245 + #1259** alone — first useful "today's stock picks" via JSON
+- After **L1 #1245 + #1246 + #1247 + #1248 + #1259** — full L1 coverage MVP (≈ stock-pick MVP)
+- After **#1250 L3 weather** — adds market mood overlay
+- After **#1251 self-learning** — quality improves over 3-6 months of outcome data
+- After **#1252-1254 UI** — end-to-end production-shape UX (Stream A + B integrated)
+- **Phase 5+** — Settrade trading execution (auto/HITL) attaches to Stream B
+
+**External APIs (data side) — Phase 2 candidates:**
+
+| Source | Vendor | Cost | Difficulty |
+|---|---|---|---|
+| Price/TA (#1245) | **Settrade Open API** (locked) | Account-tier dep. | Medium (OAuth + WebSocket/REST) |
+| Macro USD/THB/oil (#1246) | FRED API + yfinance | Free | Easy |
+| Asia indices (#1246) | yfinance | Free | Easy |
+| Foreign-flow (#1247) | SET disclosure scrape | Free | Hard (HTML report parsing) |
+| Earnings calendar (#1248) | finnhub / alpha vantage / investing.com scrape | Free tier or scrape | Medium |
+
+**External APIs (trading side) — Phase 5+ deferred:**
+
+Trading integration is a separate phase. Stream A delivers JSON `/api/tickers/today`; Stream B + Phase 5+ adds:
+- Settrade order placement API (same vendor as #1245 — single auth surface)
+- Paper-trading sandbox mode FIRST (no real money during trust-building)
+- Risk gates (max position, daily loss limit, kill-switch reuse from agent-teams parallel work)
+- HITL approval on every order (financial-action golden rule — never auto-execute)
+
+**Cross-references:**
+- This entry refines the same-day Architecture lock immediately below
+- New Kanban tasks: [#1258](http://localhost:5431/tasks/1258) (API contract), [#1259](http://localhost:5431/tasks/1259) (per-ticker rollup)
+- #1245 description PATCHed with Settrade lock + watchlist default + sequencing reminder
+- Contract drafted in `shared/api-contracts.md` (3 endpoints + mocking convention)
+
+---
+
 ## 2026-05-19 — Architecture lock — 3-layer composite scoring + weather-brief UX + multi-layer self-learning calibration
 
 **Scope:** shared (product architecture — frontend + backend + pipeline)
