@@ -65,3 +65,135 @@ def test_pricing_table_has_three_locked_models() -> None:
     assert ("anthropic", "claude-sonnet-4-6") in PRICING
     assert ("anthropic", "claude-haiku-4-5-20251001") in PRICING
     assert PRICING[("anthropic", "claude-opus-4-7")] == {"input": 15.0, "output": 75.0}
+
+
+# ---------------------------------------------------------------------------
+# Cache-aware pricing (Kanban #1186)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_cost_backward_compat_no_cache_fields() -> None:
+    """Callers passing only (input, output) tokens — no cache fields — must
+    get the same result as before #1186. This is the load-bearing backward
+    compat invariant: every existing caller in the codebase predates cache
+    fields and must keep working unchanged.
+    """
+    from src.services.cost_tracker import compute_cost
+
+    # Identical to test_compute_cost_sonnet_500k_in_100k_out (existing test).
+    result_no_cache = compute_cost(
+        "anthropic", "claude-sonnet-4-6", 500_000, 100_000
+    )
+    # Same call, but explicit zero cache fields.
+    result_zero_cache = compute_cost(
+        "anthropic", "claude-sonnet-4-6", 500_000, 100_000,
+        cache_read_input_tokens=0, cache_creation_input_tokens=0,
+    )
+    assert result_no_cache == Decimal("3.0000")
+    assert result_zero_cache == Decimal("3.0000")
+
+
+def test_compute_cost_cache_read_priced_at_0_10x_input() -> None:
+    """Cache read = 0.10x base input rate.
+
+    Sonnet input = $3/1M. 1M cache-read tokens at 0.10x = $0.30. Zero regular
+    input + zero output → total $0.3000.
+    """
+    from src.services.cost_tracker import compute_cost
+
+    result = compute_cost(
+        "anthropic",
+        "claude-sonnet-4-6",
+        input_tokens=0,
+        output_tokens=0,
+        cache_read_input_tokens=1_000_000,
+        cache_creation_input_tokens=0,
+    )
+    # 1M * $3 * 0.10 / 1M = $0.30 exactly.
+    assert result == Decimal("0.3000")
+
+
+def test_compute_cost_cache_creation_priced_at_1_25x_input() -> None:
+    """Cache write = 1.25x base input rate. 1M write tokens on Sonnet input
+    $3/1M at 1.25x = $3.75.
+    """
+    from src.services.cost_tracker import compute_cost
+
+    result = compute_cost(
+        "anthropic",
+        "claude-sonnet-4-6",
+        input_tokens=0,
+        output_tokens=0,
+        cache_read_input_tokens=0,
+        cache_creation_input_tokens=1_000_000,
+    )
+    # 1M * $3 * 1.25 / 1M = $3.75 exactly.
+    assert result == Decimal("3.7500")
+
+
+def test_compute_cost_combined_cache_read_write_plus_regular() -> None:
+    """All four cost components add together.
+
+    Sonnet: input $3/1M, output $15/1M.
+    - 100k regular input  → 100_000 * 3 / 1M       = $0.30
+    - 10k output          → 10_000 * 15 / 1M       = $0.15
+    - 10k cache_creation  → 10_000 * 3 * 1.25 / 1M = $0.0375
+    - 50k cache_read      → 50_000 * 3 * 0.10 / 1M = $0.015
+    Total = $0.5025
+    """
+    from src.services.cost_tracker import compute_cost
+
+    result = compute_cost(
+        "anthropic",
+        "claude-sonnet-4-6",
+        input_tokens=100_000,
+        output_tokens=10_000,
+        cache_read_input_tokens=50_000,
+        cache_creation_input_tokens=10_000,
+    )
+    assert result == Decimal("0.5025")
+
+
+def test_compute_cost_cache_savings_vs_uncached_amortization() -> None:
+    """The whole point of caching: after the first call, cache-read cost is
+    10% of the regular-input cost it replaces.
+
+    Simulate a 10-iteration loop with a 10k stable prefix.
+    - WITHOUT cache: 10 * 10k * $3 / 1M = $0.30 input
+    - WITH cache: iter 1 writes (1.25x) + iters 2-10 read (0.10x).
+      Write: 10_000 * 3 * 1.25 / 1M = $0.0375
+      Read:  9 * 10_000 * 3 * 0.10 / 1M = $0.027
+      Total cached input = $0.0645
+    - Savings = ($0.30 - $0.0645) / $0.30 = 78.5%
+    """
+    from src.services.cost_tracker import compute_cost
+
+    # Uncached: 10 calls each charging 10k input tokens at base rate, no output.
+    uncached_total = Decimal("0")
+    for _ in range(10):
+        uncached_total += compute_cost(
+            "anthropic", "claude-sonnet-4-6", 10_000, 0
+        )
+    # Cached: first call writes the cache (creation=10k); next 9 calls read it.
+    cached_total = compute_cost(
+        "anthropic", "claude-sonnet-4-6",
+        input_tokens=0, output_tokens=0,
+        cache_read_input_tokens=0,
+        cache_creation_input_tokens=10_000,
+    )
+    for _ in range(9):
+        cached_total += compute_cost(
+            "anthropic", "claude-sonnet-4-6",
+            input_tokens=0, output_tokens=0,
+            cache_read_input_tokens=10_000,
+            cache_creation_input_tokens=0,
+        )
+
+    # Savings must exceed the AC3 floor of 40%.
+    savings_pct = (uncached_total - cached_total) / uncached_total * 100
+    assert savings_pct > Decimal("40"), (
+        f"cache savings {savings_pct}% under 40% floor; expected ~78.5%"
+    )
+    # Exact arithmetic check.
+    assert uncached_total == Decimal("0.3000")
+    assert cached_total == Decimal("0.0645")

@@ -43,14 +43,48 @@ PRICING: dict[tuple[str, str], dict[str, float]] = {
 _PER_MILLION = Decimal("1000000")
 _QUANT = Decimal("0.0001")
 
+# Anthropic prompt-caching multipliers (Kanban #1186).
+# Cache writes cost 1.25x the base input rate; cache reads cost 0.10x. Locked
+# from Anthropic's public price card 2026-05 (5-min ephemeral TTL). The two
+# multipliers are intentionally module constants so future-tier pricing (1-hour
+# TTL = 2.0x write, etc.) can land as a parallel constant without disturbing
+# the regular-input path.
+_CACHE_WRITE_MULTIPLIER = Decimal("1.25")
+_CACHE_READ_MULTIPLIER = Decimal("0.10")
+
 
 def compute_cost(
-    provider: str, model: str, input_tokens: int, output_tokens: int
+    provider: str,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_input_tokens: int = 0,
+    cache_creation_input_tokens: int = 0,
 ) -> Decimal:
     """Return total USD cost for the run, rounded to 4 decimal places.
 
-    Raises `ValueError` for unknown `(provider, model)` pairs — the caller
-    decides whether to log + leave the column unchanged or propagate.
+    Args:
+        provider: `"anthropic"` | `"openai"` | `"ollama"`.
+        model: model identifier (e.g., `"claude-sonnet-4-6"`).
+        input_tokens: regular (non-cached) input tokens billed at the base
+            input rate. **Excludes** cache reads + cache writes — the
+            Anthropic API reports `usage.input_tokens` as the non-cached
+            remainder, so callers should pass that field directly.
+        output_tokens: output tokens billed at the base output rate.
+        cache_read_input_tokens: tokens served from the prompt cache
+            (Kanban #1186). Billed at `0.10x` the base input rate. Defaults
+            to 0 — callers that don't pass this field get the pre-#1186
+            behavior (backward compatible).
+        cache_creation_input_tokens: tokens written into the prompt cache
+            on first read (Kanban #1186). Billed at `1.25x` the base input
+            rate. Defaults to 0.
+
+    Returns:
+        Total USD cost as Decimal, quantized to 4 decimal places.
+
+    Raises:
+        ValueError: unknown `(provider, model)` pair — the caller decides
+            whether to log + leave the column unchanged or propagate.
     """
     key = (provider, model)
     rates = PRICING.get(key)
@@ -58,9 +92,17 @@ def compute_cost(
         raise ValueError(
             f"unknown (provider, model) pair: {provider!r}, {model!r}"
         )
-    input_cost = (Decimal(str(rates["input"])) * Decimal(input_tokens)) / _PER_MILLION
-    output_cost = (
-        Decimal(str(rates["output"])) * Decimal(output_tokens)
+    base_input_rate = Decimal(str(rates["input"]))
+    base_output_rate = Decimal(str(rates["output"]))
+
+    input_cost = (base_input_rate * Decimal(input_tokens)) / _PER_MILLION
+    output_cost = (base_output_rate * Decimal(output_tokens)) / _PER_MILLION
+    cache_write_cost = (
+        base_input_rate * _CACHE_WRITE_MULTIPLIER * Decimal(cache_creation_input_tokens)
     ) / _PER_MILLION
-    total = input_cost + output_cost
+    cache_read_cost = (
+        base_input_rate * _CACHE_READ_MULTIPLIER * Decimal(cache_read_input_tokens)
+    ) / _PER_MILLION
+
+    total = input_cost + output_cost + cache_write_cost + cache_read_cost
     return total.quantize(_QUANT, rounding=ROUND_HALF_UP)

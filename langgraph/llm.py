@@ -26,12 +26,15 @@ Ollama runs locally so `max_retries` is left at the langchain default.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from langchain_core.language_models import BaseChatModel
+
+logger = logging.getLogger("langgraph.llm")
 
 # ---------------------------------------------------------------------------
 # Safety prelude (Kanban #1116 — L22 prevention)
@@ -94,6 +97,187 @@ def build_system_message(role_brief: str) -> str:
         The full system-message string with safety prelude prepended.
     """
     return _load_safety_prelude() + "\n\n---\n\n" + role_brief
+
+
+# ---------------------------------------------------------------------------
+# Cached system message bundle (Kanban #1186 — prompt caching)
+# ---------------------------------------------------------------------------
+#
+# Anthropic's prompt caching requires a stable content block above the
+# 1024-token minimum (Sonnet family). The safety prelude alone (~50 tokens) is
+# too small. Bundling CLAUDE.md (project rules, ~5K tokens) + the team
+# playbook (~3-4K tokens) + the agent definition (~1-1.5K tokens) inflates the
+# stable prefix to ~10K tokens, comfortably above threshold.
+#
+# Cache placement: `cache_control: {"type": "ephemeral"}` is attached to the
+# LAST stable content block. The role_brief lives in a SEPARATE, NON-cached
+# content block so the cached prefix is byte-identical across calls and the
+# Anthropic cache key actually hits.
+#
+# Provider gate: only `anthropic` returns the list-of-content-blocks form.
+# OpenAI / Ollama get the flat-string form (backward compatible with
+# build_system_message). cache_control is Anthropic-only.
+
+# Resolve agent-teams repo root by walking up from this file. The langgraph
+# container bind-mounts the host repo at /repo (see docker-compose.yml), so
+# the path resolution works in both host-dev and container contexts.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Cache the loaded bundle text per (team, agent_name) so we don't re-read 3
+# files on every node invocation. Bundle is identical across all invocations
+# for a given (team, agent_name) — that's literally the point.
+_BUNDLE_CACHE: dict[tuple[str, str | None], str] = {}
+
+
+def _read_or_empty(path: Path, what: str) -> str:
+    """Read a file's text content; return "" + WARN-log if missing.
+
+    Missing CLAUDE.md / team playbook / agent definition is non-fatal: the
+    bundle simply degrades to whatever IS present. Helps unit tests run in
+    a checkout that doesn't have all three files, and degrades gracefully
+    if a team name is unknown.
+    """
+    if not path.exists():
+        logger.warning(
+            "cache bundle: %s file missing at %s; skipping (bundle will be smaller)",
+            what,
+            path,
+        )
+        return ""
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning(
+            "cache bundle: failed to read %s at %s (%r); skipping",
+            what,
+            path,
+            exc,
+        )
+        return ""
+
+
+def _load_cacheable_bundle(team: str, agent_name: str | None) -> str:
+    """Concatenate safety prelude + CLAUDE.md + team playbook + agent def.
+
+    Result is intentionally LARGE (~10K tokens) — that's the design.
+    Cached after first build per (team, agent_name).
+    """
+    key = (team, agent_name)
+    if key in _BUNDLE_CACHE:
+        return _BUNDLE_CACHE[key]
+
+    parts: list[str] = [_load_safety_prelude()]
+
+    claude_md = _read_or_empty(_REPO_ROOT / "CLAUDE.md", "CLAUDE.md")
+    if claude_md:
+        parts.append("\n\n---\n\n# Project rules (CLAUDE.md)\n\n" + claude_md)
+
+    team_playbook = _read_or_empty(
+        _REPO_ROOT / ".claude" / "teams" / f"{team}.md",
+        f"team playbook ({team})",
+    )
+    if team_playbook:
+        parts.append(f"\n\n---\n\n# Team playbook ({team})\n\n" + team_playbook)
+
+    if agent_name:
+        agent_def = _read_or_empty(
+            _REPO_ROOT / ".claude" / "agents" / f"{agent_name}.md",
+            f"agent definition ({agent_name})",
+        )
+        if agent_def:
+            parts.append(
+                f"\n\n---\n\n# Agent definition ({agent_name})\n\n" + agent_def
+            )
+
+    bundle = "".join(parts)
+    _BUNDLE_CACHE[key] = bundle
+    return bundle
+
+
+def build_cached_system_content(
+    role_brief: str,
+    team: str = "dev",
+    agent_name: str | None = None,
+    provider: str | None = None,
+) -> str | list[dict[str, Any]]:
+    """Build the system message content for a langgraph LLM call.
+
+    Two return shapes depending on provider:
+
+    - **anthropic**: returns `[{"type":"text","text":<bundle>,
+      "cache_control":{"type":"ephemeral"}},{"type":"text","text":<role_brief>}]`
+      so prompt caching activates on the BIG stable bundle while role_brief
+      stays mutable per call. Per langchain-anthropic 1.4.3, content-block
+      cache_control is the supported plumbing (see middleware/prompt_caching.py
+      + chat_models.py `_format_messages`).
+
+    - **openai / ollama / unknown**: returns a flat string (concat of bundle +
+      `\\n\\n---\\n\\n` + role_brief). `cache_control` is Anthropic-only;
+      other providers ignore it. The string shape preserves the prior
+      `build_system_message()` contract for those providers.
+
+    The role_brief is ALWAYS the last segment so safety rules + project rules
+    + team playbook + agent definition come first — the LLM reads the
+    governance frame before the per-task instruction. Existing tests that
+    split on `\\n\\n---\\n\\n` and inspect the LAST section still see
+    role_brief on the right-hand side.
+
+    Args:
+        role_brief: per-task / per-role system-prompt body (mutable).
+        team: which team playbook to bundle (default "dev"). Must match a
+            file at `.claude/teams/<team>.md`.
+        agent_name: which agent definition to bundle (e.g., "dev-backend").
+            None → skip the agent-def section.
+        provider: explicit override; None → call resolve_provider().
+
+    Returns:
+        list[dict] for anthropic (with cache_control on stable bundle),
+        str for openai/ollama.
+    """
+    try:
+        resolved_provider = (provider or resolve_provider()).lower()
+    except Exception:
+        # If provider resolution fails (unlikely in normal call paths), fall
+        # back to the string form — safe default that works on every provider.
+        resolved_provider = "openai"
+
+    bundle = _load_cacheable_bundle(team, agent_name)
+
+    if resolved_provider == "anthropic":
+        # Two content blocks: stable (cached) + dynamic (role_brief).
+        return [
+            {
+                "type": "text",
+                "text": bundle,
+                "cache_control": {"type": "ephemeral"},
+            },
+            # Keep the same separator before role_brief so existing tests
+            # that split on it find role_brief on the right.
+            {
+                "type": "text",
+                "text": "\n\n---\n\n" + role_brief,
+            },
+        ]
+
+    # Non-anthropic: flat string. Backward compatible with existing
+    # build_system_message callers (auditor, etc.).
+    return bundle + "\n\n---\n\n" + role_brief
+
+
+def stable_bundle_for(team: str = "dev", agent_name: str | None = None) -> str:
+    """Public accessor for the stable bundle text — used by tests + benchmark
+    math. Returns whatever `_load_cacheable_bundle` produced for the
+    (team, agent_name) pair.
+    """
+    return _load_cacheable_bundle(team, agent_name)
+
+
+def reset_bundle_cache_for_tests() -> None:
+    """Clear the in-process bundle cache. Tests use this to force fresh
+    reads after monkeypatching `_REPO_ROOT` or the underlying files.
+    """
+    _BUNDLE_CACHE.clear()
+
 
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 DEFAULT_OPENAI_MODEL = "gpt-4o"

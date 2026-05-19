@@ -73,6 +73,40 @@ def _run(state: dict[str, Any]) -> dict[str, Any]:
     return asyncio.run(backend_specialist_node(state))
 
 
+def _extract_role_brief(sys_msg: SystemMessage) -> str:
+    """Extract the role-brief portion of the system message.
+
+    Post-#1186, the SystemMessage content can be either:
+      - a flat string (openai/ollama branch, or a test that bypassed the
+        anthropic content-block path), OR
+      - a list of dict content blocks (anthropic branch) where the LAST
+        block holds the role_brief.
+
+    Either way, the role_brief is the segment AFTER the final
+    `\\n\\n---\\n\\n` separator in the concatenated text. Returns just that
+    tail, lower-cased for case-insensitive substring assertions.
+    """
+    content = sys_msg.content
+    if isinstance(content, list):
+        # Content-blocks shape (cached anthropic path). Concatenate text
+        # parts so the rsplit below still works.
+        texts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                texts.append(str(block.get("text", "")))
+            elif isinstance(block, str):
+                texts.append(block)
+        joined = "".join(texts)
+    else:
+        joined = str(content)
+    # The role_brief is appended LAST and follows the final "\n\n---\n\n"
+    # separator (the bundle inserts intermediate separators between
+    # CLAUDE.md / team / agent sections, so we want the LAST split).
+    parts = joined.rsplit("\n\n---\n\n", 1)
+    assert len(parts) == 2, "system message missing role-brief separator"
+    return parts[1]
+
+
 def test_backend_prompt_drops_fastapi_postgres_specialist_plan_anchors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -89,8 +123,13 @@ def test_backend_prompt_drops_fastapi_postgres_specialist_plan_anchors(
     #1116 note: the safety prelude (prepended by build_system_message) DOES
     contain the word "fastapi" (rule 1: "DB writes go through FastAPI
     endpoints ONLY"). We inspect only the role-brief portion (text AFTER
-    the `\\n\\n---\\n\\n` separator) so the historical anti-anchor check
-    keeps holding for what it was designed to guard — the persona prompt.
+    the FINAL `\\n\\n---\\n\\n` separator) so the historical anti-anchor
+    check keeps holding for what it was designed to guard — the persona
+    prompt.
+
+    #1186 note: the system message now bundles CLAUDE.md + team playbook +
+    agent definition before the role_brief; the content shape is a list of
+    blocks on anthropic. `_extract_role_brief` handles both shapes.
     """
     captured = _install_capture(monkeypatch)
     state = {
@@ -102,14 +141,11 @@ def test_backend_prompt_drops_fastapi_postgres_specialist_plan_anchors(
 
     sys_msg = captured["prompt"][0]
     assert isinstance(sys_msg, SystemMessage)
-    # Split on the safety-prelude separator; check only the role-brief half.
-    parts = sys_msg.content.split("\n\n---\n\n", 1)
-    assert len(parts) == 2, "system message missing safety-prelude separator"
-    role_brief_lower = parts[1].lower()
-    assert "fastapi" not in role_brief_lower, parts[1]
-    assert "postgresql" not in role_brief_lower, parts[1]
-    assert "specialist" not in role_brief_lower, parts[1]
-    assert "produce a concise plan" not in role_brief_lower, parts[1]
+    role_brief_lower = _extract_role_brief(sys_msg).lower()
+    assert "fastapi" not in role_brief_lower, role_brief_lower
+    assert "postgresql" not in role_brief_lower, role_brief_lower
+    assert "specialist" not in role_brief_lower, role_brief_lower
+    assert "produce a concise plan" not in role_brief_lower, role_brief_lower
 
 
 def test_backend_prompt_contains_generic_persona_and_anti_scaffolding(
@@ -117,6 +153,10 @@ def test_backend_prompt_contains_generic_persona_and_anti_scaffolding(
 ) -> None:
     """The replacement prompt must carry the generic persona + the
     load-bearing anti-scaffolding directive.
+
+    Post-#1186: the role_brief lives in the LAST content block (anthropic)
+    or the final segment of the flat string (other providers). The persona
+    lines must show up in that role-brief portion.
     """
     captured = _install_capture(monkeypatch)
     state = {
@@ -126,9 +166,9 @@ def test_backend_prompt_contains_generic_persona_and_anti_scaffolding(
     }
     _run(state)
 
-    sys_lower = captured["prompt"][0].content.lower()
-    assert "expert technical assistant" in sys_lower
-    assert "scaffolding" in sys_lower
+    role_brief_lower = _extract_role_brief(captured["prompt"][0]).lower()
+    assert "expert technical assistant" in role_brief_lower
+    assert "scaffolding" in role_brief_lower
 
 
 def test_backend_prompt_brief_sent_verbatim_no_task_n_wrapper(

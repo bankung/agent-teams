@@ -115,12 +115,35 @@ def _install_capture(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return captured
 
 
+def _flatten_system_content(sys_msg: SystemMessage) -> str:
+    """Reduce a SystemMessage content (str OR list-of-blocks) to a single
+    string. The #1186 content-block path produces a list; the legacy /
+    non-anthropic path produces a string."""
+    content = sys_msg.content
+    if isinstance(content, list):
+        out: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                out.append(str(block.get("text", "")))
+            elif isinstance(block, str):
+                out.append(block)
+        return "".join(out)
+    return str(content)
+
+
 def test_backend_specialist_system_message_includes_safety_prelude(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The system message sent to ChatModel by `backend_specialist_node`
     must include the safety prelude (regardless of provider — we mock at
-    `make_chat_model` which is called BEFORE provider branching)."""
+    `make_chat_model` which is called BEFORE provider branching).
+
+    #1186: the system message is now a list of content blocks (anthropic
+    branch — `resolve_provider()` reads env vars in `build_cached_system_content`).
+    We test by flattening to a single string and asserting the prelude
+    markers appear somewhere. The role_brief (persona) is in the LAST
+    segment after the final separator.
+    """
     captured = _install_capture(monkeypatch)
     # The brief mentions a destructive action to mirror the Phase 9B test
     # shape — the prelude's presence is what matters, not the brief content
@@ -138,14 +161,16 @@ def test_backend_specialist_system_message_includes_safety_prelude(
 
     sys_msg = captured["prompt"][0]
     assert isinstance(sys_msg, SystemMessage)
-    content = sys_msg.content
+    content = _flatten_system_content(sys_msg)
     # Prelude markers — same load-bearing phrases as the static test.
     assert "STRICT RULES" in content
     assert "NEVER VIOLATE" in content
     assert "DB writes go through FastAPI endpoints ONLY" in content
     # Separator present + before the role-brief persona text.
     assert "\n\n---\n\n" in content
-    prelude_part, brief_part = content.split("\n\n---\n\n", 1)
+    # The LAST split holds the role_brief; the persona text is there + NOT
+    # in the prelude part (everything before the final separator).
+    prelude_part, brief_part = content.rsplit("\n\n---\n\n", 1)
     assert "expert technical assistant" in brief_part.lower()
     assert "expert technical assistant" not in prelude_part.lower()
 
