@@ -790,6 +790,48 @@ async def create_task(
     # #695 — header is canonical project; body project_id is defense-in-depth (must match)
     assert_body_matches_session(payload.project_id, session_project_id)
 
+    # Kanban #1209 (AA1 hard kill switch): refuse new task POSTs against a
+    # killed project. 423 Locked (per AC#4) distinguishes "project state
+    # blocks this action" from 409 (resource conflict on kill/revive) and
+    # from 422 (validation). The detail surfaces killed_at + killed_reason
+    # so the FE can render an actionable banner ("project N killed since X
+    # because Y; revive to enable POST"). Skipped on the missing-project
+    # path — the FK violation downstream gives a stable detail for that.
+    # Soft-delete filter (P1-2, dev-reviewer audit on #1209): only ACTIVE
+    # projects guard via the kill gate. A soft-deleted (status=0) project
+    # falls through to the downstream FK violation, which is the right shape
+    # for "this project no longer exists" rather than 423 "this project is
+    # locked". (kill_switch.py service-layer already enforces the same
+    # filter via _get_active_project_or_404.)
+    proj_row = (
+        await session.execute(
+            select(Project.id, Project.is_killed, Project.killed_at, Project.killed_reason)
+            .where(
+                Project.id == payload.project_id,
+                Project.status == RecordStatus.ACTIVE,
+            )
+        )
+    ).first()
+    if proj_row is not None and proj_row.is_killed:
+        # P1-1 (dev-reviewer audit on #1209): killed_reason can be up to 2000
+        # chars; embedding it in `message` doubled the payload size AND made
+        # the message field unbounded. Keep the full reason in the dedicated
+        # `killed_reason` field (where consumers expect to find it) and let
+        # `message` stay a fixed-length pointer.
+        raise HTTPException(
+            status_code=423,
+            detail={
+                "message": (
+                    f"Project {payload.project_id} is killed. "
+                    f"POST blocked. See killed_reason field for details."
+                ),
+                "killed_at": (
+                    proj_row.killed_at.isoformat() if proj_row.killed_at else None
+                ),
+                "killed_reason": proj_row.killed_reason,
+            },
+        )
+
     # Subtask parent validation (Kanban #238). Same-project enforcement is
     # app-layer (no DB trigger). Stable detail strings are pinned by
     # test_post_task_400_detail_strings_are_pinned_in_router_source — keep in sync.

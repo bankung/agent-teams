@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi import status as http_status
 from sqlalchemy import Integer, select
 from sqlalchemy.exc import IntegrityError
@@ -38,6 +38,8 @@ from src.models.session import Session as SessionModel
 from src.models.session import SessionRun
 from src.models.task import Task
 from src.schemas.project import (
+    KillProjectRequest,
+    KillProjectResponse,
     ProjectCreate,
     ProjectGrantConsent,
     ProjectRead,
@@ -45,7 +47,10 @@ from src.schemas.project import (
     ProjectStatsEntry,
     ProjectStatsRunModeBreakdown,
     ProjectUpdate,
+    ReviveProjectRequest,
+    ReviveProjectResponse,
 )
+from src.services.kill_switch import kill_project, revive_project
 from src.services.project_scaffold import scaffold_project_folder
 from src.services.zero_config_scaffold import (
     scaffold_orchestration,
@@ -593,6 +598,94 @@ async def grant_project_consent(
     await session.commit()
     await session.refresh(project)
     return project
+
+
+@router.post(
+    "/{project_id}/kill",
+    response_model=KillProjectResponse,
+)
+async def kill_project_endpoint(
+    project_id: int,
+    payload: KillProjectRequest,
+    force: bool = Query(
+        default=False,
+        description=(
+            "If true, skip the 30s grace on in-flight langgraph runs (AC#6 "
+            "emergency path). v1 captures the flag into the audit row; the "
+            "langgraph worker contract is where grace lives, not here."
+        ),
+    ),
+    x_actor: str | None = Header(default=None, alias="X-Actor"),
+    session: AsyncSession = Depends(get_session),
+) -> KillProjectResponse:
+    """Hard-pause a project (Kanban #1209, AA1).
+
+    Operator emergency-stop. Drains recurring tasks (suspends next_fire_at),
+    marks in-flight langgraph runs for graceful checkpoint, freezes open
+    TODO/BLOCKED tasks via `kill_frozen=true`, and stamps a
+    `projects_audit` row with the drain counts.
+
+    Status codes:
+    - 200 — kill applied (returns drain_summary + audit_id).
+    - 404 — project not found / soft-deleted.
+    - 409 — project is already killed (idempotent guard).
+    - 422 — `reason` missing / shorter than 10 chars.
+
+    `X-Actor` header (default 'operator') stamps `projects_audit.actor` —
+    future project-auditor will read this to disambiguate operator vs system
+    kills. The header is optional; the default keeps single-operator dev
+    mode (v1 scope) friction-free. Truncated at 200 chars (P1-4 audit on
+    #1209) to match the hook-layer precedent — an adversarial / runaway
+    caller can otherwise stuff arbitrarily long strings into the audit row.
+    """
+    # P1-4: cap at 200 chars; `or "operator"` after the slice handles a
+    # purely-whitespace header where .strip() returns empty.
+    actor = (x_actor or "operator").strip()[:200] or "operator"
+    result = await kill_project(
+        project_id=project_id,
+        reason=payload.reason,
+        force=force,
+        actor=actor,
+        session=session,
+    )
+    return KillProjectResponse(**result)
+
+
+@router.post(
+    "/{project_id}/revive",
+    response_model=ReviveProjectResponse,
+)
+async def revive_project_endpoint(
+    project_id: int,
+    payload: ReviveProjectRequest,  # noqa: ARG001 — schema present for OpenAPI + forward-compat
+    x_actor: str | None = Header(default=None, alias="X-Actor"),
+    session: AsyncSession = Depends(get_session),
+) -> ReviveProjectResponse:
+    """Inverse of /kill — restore a project to runnable state (Kanban #1209).
+
+    Clears `is_killed=false` (PRESERVING `killed_at` + `killed_reason` as
+    history per D4), recomputes `next_fire_at` for recurring tasks (unless
+    the project was killed > REVIVE_MAX_STALENESS_DAYS — those get
+    `halt_reason='revive_stale'` and require manual re-arm), and clears
+    every `kill_frozen=true` marker.
+
+    Status codes:
+    - 200 — revive applied (returns drain_summary + audit_id).
+    - 404 — project not found / soft-deleted.
+    - 409 — project is NOT currently killed (idempotent guard).
+
+    `X-Actor` truncated at 200 chars (P1-4 audit on #1209) for the same
+    reason as the kill endpoint.
+    """
+    # P1-4: cap at 200 chars; `or "operator"` after the slice handles a
+    # purely-whitespace header where .strip() returns empty.
+    actor = (x_actor or "operator").strip()[:200] or "operator"
+    result = await revive_project(
+        project_id=project_id,
+        actor=actor,
+        session=session,
+    )
+    return ReviveProjectResponse(**result)
 
 
 @router.delete("/{project_id}", status_code=http_status.HTTP_204_NO_CONTENT)

@@ -339,6 +339,22 @@ class Task(Base):
         default=0,
     )
 
+    # Kanban #1209 (2026-05-19): AA1 hard kill switch — per-task frozen-in-place
+    # marker. Set TRUE by `services/kill_switch.py::kill_project` for every open
+    # TODO/IN_PROGRESS row in the killed project (preserved through kill, not
+    # archived — D3 "ค้างไว้แบบไหน กลับมาแบบนั้น"). Cleared back to FALSE on
+    # revive. Orthogonal to process_status — a frozen TODO row stays at
+    # process_status=1 (the worker is blocked at a different gate: project
+    # is_killed=true). No DB CHECK on cross-table coherence (revive sweeps
+    # cover the inverse). NOT NULL DEFAULT false so existing 510 task rows
+    # backfill cleanly via migration 0039.
+    kill_frozen: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+        default=False,
+    )
+
     # Kanban #960 (2026-05-17): periodic Health monitor sweep output.
     # Single-object latest-only JSONB (audit history flows via tasks_history
     # trigger — same precedent as audit_report #952). Element shape:

@@ -50,6 +50,15 @@ export type ProjectRead = {
   budget_daily_usd: string | null;
   budget_monthly_usd: string | null;
   budget_total_usd: string | null;
+  // Kanban #1209 (2026-05-19) AA1 — hard kill switch state. `is_killed` is
+  // ALWAYS present on ProjectRead (NOT NULL DEFAULT false on the column);
+  // `killed_at` / `killed_reason` are preserved through revive (D4 history),
+  // so the FE can show "last killed YYYY-MM-DD" even on revived projects.
+  // Optional in the FE type for legacy-row defensive resilience — pre-AA1
+  // serialized payloads may omit them, in which case treat as not-killed.
+  is_killed?: boolean;
+  killed_at?: string | null;
+  killed_reason?: string | null;
 };
 
 // AcceptanceCriterion — one entry in TaskRead.acceptance_criteria (#797).
@@ -349,6 +358,65 @@ export async function grantConsent(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ confirm_name: confirmName }),
+  });
+}
+
+// killProject / reviveProject — Kanban #1209 AA1 hard kill switch (D5).
+// Shared response shape (`KillReviveResponse`): success, project_id, action,
+// is_killed, killed_at, killed_reason, drain_summary (operator-readable counts),
+// audit_id (FK into projects_audit for any future audit-log deep-link).
+//
+// Status contract (mirrors api/src/routers/projects.py + schemas/project.py):
+//   kill   200 → success
+//          404 → project not found / soft-deleted
+//          409 → already killed (idempotent guard)
+//          422 → reason < 10 chars / missing
+//   revive 200 → success
+//          404 → not found / soft-deleted
+//          409 → not currently killed (idempotent guard)
+//
+// The optional `X-Actor` header stamps `projects_audit.actor`; backend defaults
+// to "operator" when absent. v1 leaves it null on the wire (single-operator
+// dev mode) but the helper exposes it for future multi-operator UIs.
+export type KillReviveResponse = {
+  success: boolean;
+  project_id: number;
+  action: "kill" | "revive";
+  is_killed: boolean;
+  killed_at: string | null;
+  killed_reason: string | null;
+  drain_summary: Record<string, unknown>;
+  audit_id: number;
+};
+
+export type KillProjectBody = { reason: string };
+
+export async function killProject(
+  projectId: number,
+  body: KillProjectBody,
+  force = false,
+  actor?: string,
+): Promise<KillReviveResponse> {
+  const qs = force ? "?force=true" : "";
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (actor && actor.trim().length > 0) headers["X-Actor"] = actor.trim();
+  return jsonFetch<KillReviveResponse>(`/api/projects/${projectId}/kill${qs}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+}
+
+export async function reviveProject(
+  projectId: number,
+  actor?: string,
+): Promise<KillReviveResponse> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (actor && actor.trim().length > 0) headers["X-Actor"] = actor.trim();
+  return jsonFetch<KillReviveResponse>(`/api/projects/${projectId}/revive`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({}),
   });
 }
 

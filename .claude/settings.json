@@ -339,6 +339,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-spawn-on-killed-project.ps1\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [

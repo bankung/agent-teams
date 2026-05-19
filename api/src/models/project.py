@@ -27,6 +27,7 @@ from src.constants import ProjectTeam, RecordStatus, in_clause, in_clause_text
 from src.models.base import Base
 
 if TYPE_CHECKING:
+    from src.models.projects_audit import ProjectsAudit
     from src.models.task import Task
     from src.models.transaction import Transaction
 
@@ -234,6 +235,25 @@ class Project(Base):
         server_default=text("'USD'"),
     )
 
+    # Kanban #1209 (2026-05-19): AA1 hard kill switch. `is_killed` is the hot
+    # pause state — operator-triggered emergency stop, revive-able. Separate
+    # from `is_active` (cold archive). `killed_at` is the first-kill timestamp
+    # (PRESERVED across revive — historical signal); `killed_reason` mirrors
+    # (free-form text, >=10 chars enforced at the Pydantic boundary).
+    # NOT NULL with DEFAULT false on is_killed so existing 91 projects backfill
+    # cleanly via migration 0039 (PG 16 metadata-only ADD COLUMN).
+    is_killed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+        default=False,
+    )
+    killed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    killed_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     tasks: Mapped[list["Task"]] = relationship(
         "Task",
         back_populates="project",
@@ -248,6 +268,16 @@ class Project(Base):
     # rows itself before issuing the parent DELETE).
     transactions: Mapped[list["Transaction"]] = relationship(
         "Transaction",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    # Kanban #1209 — per-project kill/revive audit ledger. Cascade-delete
+    # mirrors `tasks` / `transactions` precedent; the DB-side ON DELETE CASCADE
+    # on projects_audit.project_id is the load-bearing invariant.
+    audit_entries: Mapped[list["ProjectsAudit"]] = relationship(
+        "ProjectsAudit",
         back_populates="project",
         cascade="all, delete-orphan",
         passive_deletes=True,

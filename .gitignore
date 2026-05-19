@@ -74,3 +74,9 @@ context/projects/test-*/
 
 # Private / confidential strategic docs — per-machine, NEVER committed.
 _private/
+
+# Per-machine runtime state — Lead writes the session-bound project_id here at
+# bootstrap (Kanban #1209 AC#2(d) — kill-switch hook contract). Keep the dir
+# tracked via .gitkeep but ignore its contents (project_id is per-terminal).
+_runtime/*
+!_runtime/.gitkeep

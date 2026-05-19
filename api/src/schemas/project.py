@@ -20,6 +20,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.constants import ProjectTeam, TaskRole
+from src.models.projects_audit import PROJECT_AUDIT_ACTIONS
 
 TeamCode = Literal["dev", "novel", "general", "content"]
 
@@ -548,6 +549,16 @@ class ProjectRead(BaseModel):
     fiscal_year_start: int | None = None
     currency_default: str | None = None
 
+    # Kanban #1209 (2026-05-19): AA1 hard kill switch — hot pause state.
+    # `is_killed` always present (NOT NULL DEFAULT false on the column).
+    # `killed_at` / `killed_reason` carry historical signal AFTER revive too —
+    # revive only flips `is_killed=false` and intentionally preserves the
+    # two history columns (D4). FE reads these to show "last killed YYYY-MM-DD"
+    # even on revived projects.
+    is_killed: bool = False
+    killed_at: datetime | None = None
+    killed_reason: str | None = None
+
     @field_validator("sources", mode="before")
     @classmethod
     def _coerce_sources_none_to_empty(cls, v):
@@ -653,10 +664,109 @@ class ProjectGrantConsent(BaseModel):
     confirm_name: str = Field(..., min_length=1, max_length=255)
 
 
+# ---------------------------------------------------------------------------
+# Kanban #1209 (2026-05-19) — AA1 hard kill switch request / response schemas
+# ---------------------------------------------------------------------------
+
+ProjectAuditAction = Literal["kill", "revive"]
+
+
+class KillProjectRequest(BaseModel):
+    """Request body for POST /api/projects/{id}/kill.
+
+    `reason` is REQUIRED with a minimum length of 10 chars — kill is an
+    operator-deliberate action and the audit row should capture WHY. The FE
+    enforces the same minimum (D5: "reason text >=10 chars" + type-project-name
+    confirmation). `extra="forbid"` mirrors `ProjectGrantConsent` — a
+    deliberate-action endpoint should fail loud on smuggled keys.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(
+        ...,
+        min_length=10,
+        max_length=2000,
+        description=(
+            "Operator-supplied rationale for the kill. >=10 chars required; "
+            "captured into projects_audit.reason for future project-auditor read."
+        ),
+    )
+
+
+class ReviveProjectRequest(BaseModel):
+    """Request body for POST /api/projects/{id}/revive.
+
+    No body fields required — revive is a single-button action. The schema
+    exists so the router signature carries a real Pydantic model (FastAPI
+    auto-generates OpenAPI with an empty object schema) and so a future
+    revive-time field (e.g. `recompute_recurrence: bool`) can land without
+    breaking the wire contract.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _KillReviveBase(BaseModel):
+    """Shared response shape for kill + revive endpoints (Kanban #1209).
+
+    `action` discriminates which side fired; `drain_summary` carries the
+    counts the service captured at action time. `audit_id` lets the FE deep-
+    link to the audit row in any future audit-log view.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    success: bool
+    project_id: int
+    action: ProjectAuditAction
+    is_killed: bool
+    killed_at: datetime | None
+    killed_reason: str | None
+    drain_summary: dict[str, Any]
+    audit_id: int
+
+
+class KillProjectResponse(_KillReviveBase):
+    """Response body for POST /api/projects/{id}/kill."""
+
+
+class ReviveProjectResponse(_KillReviveBase):
+    """Response body for POST /api/projects/{id}/revive."""
+
+
+class ProjectsAuditEntry(BaseModel):
+    """Single projects_audit row as exposed via any future GET list endpoint.
+
+    Wire shape is value-tolerant on `drain_summary` (dict[str, Any]) —
+    legacy / hand-edited rows should not 500 a read endpoint. Writes still
+    land through the service layer with concrete dict payloads.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    project_id: int
+    actor: str
+    action: ProjectAuditAction
+    reason: str | None
+    drain_summary: dict[str, Any]
+    created_at: datetime
+
+
 # Sanity: the Literal stays in lockstep with src.constants.ProjectTeam.ALL.
 # Use a real exception (not `assert`) so the guard survives `python -O`.
 if set(TeamCode.__args__) != set(ProjectTeam.ALL):  # type: ignore[attr-defined]
     raise RuntimeError(
         f"TeamCode Literal {TeamCode.__args__!r} drifted from "  # type: ignore[attr-defined]
         f"ProjectTeam.ALL {ProjectTeam.ALL!r}"
+    )
+
+# Sanity (Kanban #1209): ProjectAuditAction Literal stays in lockstep with
+# models.projects_audit.PROJECT_AUDIT_ACTIONS (which mirrors the DB CHECK in
+# migration 0039).
+if set(ProjectAuditAction.__args__) != set(PROJECT_AUDIT_ACTIONS):  # type: ignore[attr-defined]
+    raise RuntimeError(
+        f"ProjectAuditAction Literal {ProjectAuditAction.__args__!r} "  # type: ignore[attr-defined]
+        f"drifted from PROJECT_AUDIT_ACTIONS {PROJECT_AUDIT_ACTIONS!r}"
     )

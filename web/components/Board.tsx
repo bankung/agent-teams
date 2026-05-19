@@ -30,6 +30,8 @@ import { BoardColumn } from "@/components/BoardColumn";
 import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
 import { Icon } from "@/components/Icon";
 import { AiTaskModal } from "@/components/AiTaskModal";
+import { KilledBanner } from "@/components/KilledBanner";
+import { KillProjectModal } from "@/components/KillProjectModal";
 import { NewTaskModal } from "@/components/NewTaskModal";
 import { ProjectConsentBanner } from "@/components/ProjectConsentBanner";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
@@ -309,9 +311,18 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
               projectId={project.id}
               enabledRoles={readEnabledRoles(project.config)}
             />
+            {/* #1209 AA1 D5 — kill is a header action; revive is surfaced inline
+                in KilledBanner (below) so the operator always finds it next to
+                the kill context. Visible only when not currently killed. */}
+            {!project.is_killed && (
+              <KillProjectModal project={project} mode="kill" />
+            )}
             <ThemePicker />
           </span>
         </div>
+        {/* #1209 AA1 D5 — red strip above the consent banner when killed.
+            (Renders nothing when is_killed=false.) */}
+        <KilledBanner project={project} />
         <ProjectConsentBanner
           project={project}
           hasHeadlessTask={hasHeadlessTask}
