@@ -559,6 +559,18 @@ class ProjectRead(BaseModel):
     killed_at: datetime | None = None
     killed_reason: str | None = None
 
+    # Kanban #1211 (2026-05-19): AA3 soft-pause governance — soft pause state.
+    # `is_paused` + `paused_at` + `paused_reason` mirror the kill triad above
+    # (D4 history-preservation pattern). `audit_enabled` is the per-project
+    # opt-out for governance audits — defaults true; operators set false to
+    # suppress audit-template creation/firing for this project (column added
+    # in Phase 1 to avoid a follow-up migration when AC#2 lands; consumed
+    # only by AC#2 work for now).
+    is_paused: bool = False
+    paused_at: datetime | None = None
+    paused_reason: str | None = None
+    audit_enabled: bool = True
+
     @field_validator("sources", mode="before")
     @classmethod
     def _coerce_sources_none_to_empty(cls, v):
@@ -668,7 +680,9 @@ class ProjectGrantConsent(BaseModel):
 # Kanban #1209 (2026-05-19) — AA1 hard kill switch request / response schemas
 # ---------------------------------------------------------------------------
 
-ProjectAuditAction = Literal["kill", "revive"]
+ProjectAuditAction = Literal[
+    "kill", "revive", "pause", "unpause", "pause_override"
+]
 
 
 class KillProjectRequest(BaseModel):
@@ -735,6 +749,124 @@ class ReviveProjectResponse(_KillReviveBase):
     """Response body for POST /api/projects/{id}/revive."""
 
 
+# ---------------------------------------------------------------------------
+# Kanban #1211 (2026-05-19) — AA3 soft-pause request / response schemas
+# ---------------------------------------------------------------------------
+
+
+class PauseProjectRequest(BaseModel):
+    """Request body for POST /api/projects/{id}/pause.
+
+    Mirrors KillProjectRequest's reason-required pattern — soft-pause is also
+    an operator-deliberate action and the audit row must capture WHY. Same
+    `extra='forbid'` posture as the kill body.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(
+        ...,
+        min_length=10,
+        max_length=2000,
+        description=(
+            "Operator/system rationale for the pause. >=10 chars required; "
+            "captured into projects_audit.reason for AA4/AA5 review."
+        ),
+    )
+
+
+class UnpauseProjectRequest(BaseModel):
+    """Request body for POST /api/projects/{id}/unpause.
+
+    No body fields required. Schema exists so the router signature carries
+    a real Pydantic model (FastAPI auto-generates OpenAPI with an empty
+    object schema) and so a future unpause-time field can land without
+    breaking the wire contract.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class PauseUnpauseResponse(BaseModel):
+    """Shared response shape for pause + unpause endpoints (Kanban #1211).
+
+    Mirror of `_KillReviveBase` (deliberately a separate type — pause carries
+    `is_paused` + `paused_*` rather than the kill triad; combining into one
+    base would force null fields in both directions).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    success: bool
+    project_id: int
+    action: ProjectAuditAction  # 'pause' or 'unpause'
+    is_paused: bool
+    paused_at: datetime | None
+    paused_reason: str | None
+    drain_summary: dict[str, Any]
+    audit_id: int
+
+
+# Vocabulary for resolve-flag actions (D4). The Pydantic Literal stays in
+# lockstep with services/pause_switch.RESOLVE_FLAG_ACTIONS via the sanity
+# check at the bottom of this module.
+ResolveFlagAction = Literal[
+    "continue", "adjust_continue", "keep_paused", "terminate"
+]
+
+
+class ResolveFlagRequest(BaseModel):
+    """Request body for POST /api/tasks/{flag_id}/resolve-flag (Kanban #1211).
+
+    `action` discriminates the four operator responses:
+    - continue        → flag DONE + project unpaused (no further input needed).
+    - adjust_continue → adjustments REQUIRED; only allowlisted keys are
+                        applied (see services/pause_switch.ADJUST_CONTINUE_ALLOWED_KEYS).
+    - keep_paused     → flag DONE; project stays paused for next audit cycle.
+    - terminate       → delegates to AA1 kill_project with auto-formatted reason.
+
+    `extra='forbid'` matches the kill/grant-consent deliberate-action posture.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: ResolveFlagAction
+    adjustments: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Required for action='adjust_continue'. Allowlisted keys: "
+            "budget_daily_usd, budget_monthly_usd, budget_total_usd, "
+            "health_thresholds, approval_policies, hitl_timeout_hours, "
+            "audit_enabled. Other keys are silently dropped."
+        ),
+    )
+
+
+class ResolveFlagResponse(BaseModel):
+    """Response body for POST /api/tasks/{flag_id}/resolve-flag.
+
+    Shape varies by branch — `is_paused` / `is_killed` / `kill_audit_id` /
+    `adjustments_applied` / `stale` are all branch-conditional. Using
+    `extra='allow'` to keep the wire contract forward-compatible without
+    forcing every consumer to handle each combination's nulls.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    flag_id: int
+    project_id: int
+    action: ResolveFlagAction
+    flag_completed_at: datetime | None = None
+    # Branch-specific (Pydantic surfaces None when absent):
+    is_paused: bool | None = None
+    is_killed: bool | None = None
+    audit_id: int | None = None
+    kill_audit_id: int | None = None
+    adjustments_applied: dict[str, Any] | None = None
+    drain_summary: dict[str, Any] | None = None
+    stale: bool | None = None
+
+
 class ProjectsAuditEntry(BaseModel):
     """Single projects_audit row as exposed via any future GET list endpoint.
 
@@ -762,11 +894,23 @@ if set(TeamCode.__args__) != set(ProjectTeam.ALL):  # type: ignore[attr-defined]
         f"ProjectTeam.ALL {ProjectTeam.ALL!r}"
     )
 
-# Sanity (Kanban #1209): ProjectAuditAction Literal stays in lockstep with
-# models.projects_audit.PROJECT_AUDIT_ACTIONS (which mirrors the DB CHECK in
-# migration 0039).
+# Sanity (Kanban #1209 + #1211): ProjectAuditAction Literal stays in lockstep
+# with models.projects_audit.PROJECT_AUDIT_ACTIONS (which mirrors the DB CHECK
+# in migration 0039 (kill/revive) + 0040 (pause/unpause/pause_override)).
 if set(ProjectAuditAction.__args__) != set(PROJECT_AUDIT_ACTIONS):  # type: ignore[attr-defined]
     raise RuntimeError(
         f"ProjectAuditAction Literal {ProjectAuditAction.__args__!r} "  # type: ignore[attr-defined]
         f"drifted from PROJECT_AUDIT_ACTIONS {PROJECT_AUDIT_ACTIONS!r}"
+    )
+
+# Sanity (Kanban #1211): ResolveFlagAction Literal stays in lockstep with
+# services.pause_switch.RESOLVE_FLAG_ACTIONS. Imported here at module-bottom
+# to avoid a circular import — pause_switch.py imports nothing from this
+# module, so the late import is safe.
+from src.services.pause_switch import RESOLVE_FLAG_ACTIONS  # noqa: E402
+
+if set(ResolveFlagAction.__args__) != set(RESOLVE_FLAG_ACTIONS):  # type: ignore[attr-defined]
+    raise RuntimeError(
+        f"ResolveFlagAction Literal {ResolveFlagAction.__args__!r} "  # type: ignore[attr-defined]
+        f"drifted from RESOLVE_FLAG_ACTIONS {RESOLVE_FLAG_ACTIONS!r}"
     )

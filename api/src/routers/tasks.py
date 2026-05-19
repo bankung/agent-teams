@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from fastapi import status as http_status
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
@@ -22,13 +22,14 @@ from sqlalchemy.orm import aliased
 from sqlalchemy.sql import func
 from sqlalchemy.sql.elements import ClauseElement
 
-from src.constants import RecordStatus, TaskInteractionKind, TaskRunMode, TaskStatus
+from src.constants import RecordStatus, TaskInteractionKind, TaskRunMode, TaskStatus, TaskType
 from src.db import get_or_404, get_session
 from src.models.project import Project
 from src.models.session import SessionRun
 from src.models.task import Task
 from src.models.transaction import Transaction
 from src.schemas.ai_task import ParseRequest, ParseResponse
+from src.schemas.project import ResolveFlagRequest, ResolveFlagResponse
 from src.schemas.task import NextAutorunResponse, TaskCreate, TaskRead, TaskReorder, TaskUpdate
 from src.services.ai_task_parser import (
     AiCallFailed,
@@ -805,7 +806,15 @@ async def create_task(
     # filter via _get_active_project_or_404.)
     proj_row = (
         await session.execute(
-            select(Project.id, Project.is_killed, Project.killed_at, Project.killed_reason)
+            select(
+                Project.id,
+                Project.is_killed,
+                Project.killed_at,
+                Project.killed_reason,
+                Project.is_paused,
+                Project.paused_at,
+                Project.paused_reason,
+            )
             .where(
                 Project.id == payload.project_id,
                 Project.status == RecordStatus.ACTIVE,
@@ -831,6 +840,50 @@ async def create_task(
                 "killed_reason": proj_row.killed_reason,
             },
         )
+
+    # Kanban #1211 (AA3 soft-pause D3): refuse new task POSTs against a paused
+    # project UNLESS the per-task escape hatch is engaged. Order matters:
+    # the kill check above is stricter (mutex constraint guarantees only
+    # one can fire), so kill takes precedence on the rare race window.
+    #
+    # Escape hatch: body carries `allow_during_pause=true` + a reason
+    # >=10 chars (Pydantic enforces). When both conditions land, we
+    # ALLOW + log a `projects_audit` row with action='pause_override' so
+    # operators can review override frequency (D6 + AA5 callout: "if used
+    # >X times/week, threshold is wrong"). The audit row is written here
+    # at the router after we know the override fired but BEFORE the task
+    # INSERT — same session, same transaction, atomic with the task INSERT.
+    pause_override_audit_pending: dict | None = None
+    if proj_row is not None and proj_row.is_paused:
+        if not (
+            payload.allow_during_pause
+            and payload.allow_during_pause_reason
+            and len(payload.allow_during_pause_reason) >= 10
+        ):
+            raise HTTPException(
+                status_code=423,
+                detail={
+                    "message": (
+                        f"Project {payload.project_id} is paused. "
+                        "POST blocked unless allow_during_pause=true with "
+                        "allow_during_pause_reason set (>=10 chars). "
+                        "See paused_reason field for context."
+                    ),
+                    "paused_at": (
+                        proj_row.paused_at.isoformat()
+                        if proj_row.paused_at
+                        else None
+                    ),
+                    "paused_reason": proj_row.paused_reason,
+                },
+            )
+        # Escape hatch engaged — stage the audit row for the same commit as
+        # the INSERT. Captured as a dict (not the ORM object yet) so we can
+        # add it AFTER the task INSERT and let the audit row reference the
+        # new task's id in drain_summary for AA4 deep-linking.
+        pause_override_audit_pending = {
+            "reason": payload.allow_during_pause_reason,
+        }
 
     # Subtask parent validation (Kanban #238). Same-project enforcement is
     # app-layer (no DB trigger). Stable detail strings are pinned by
@@ -939,6 +992,40 @@ async def create_task(
 
     task = Task(**payload_dict)
     session.add(task)
+
+    # Kanban #1211 (AA3 D6): if the pause-override hatch fired above, stage
+    # a projects_audit row with action='pause_override' in the SAME
+    # transaction as the INSERT — so a failed INSERT also rolls back the
+    # audit row (no orphan signals). flush() materializes task.id so we
+    # can reference it in drain_summary for AA4 deep-linking.
+    if pause_override_audit_pending is not None:
+        from src.models.projects_audit import ProjectsAudit
+        try:
+            await session.flush()  # surfaces task.id for the audit row's drain_summary
+        except IntegrityError as exc:
+            # Same translation pattern as the commit-time block below; the
+            # flush surfaces the same constraint violations the commit would,
+            # so we mirror the detail mapping here.
+            await session.rollback()
+            orig_text = str(exc.orig)
+            if "tasks_project_id_fkey" in orig_text:
+                detail = f"project_id {payload.project_id} does not exist"
+            else:
+                detail = "Task creation violates a database constraint"
+            raise HTTPException(status_code=400, detail=detail) from exc
+        session.add(
+            ProjectsAudit(
+                project_id=payload.project_id,
+                actor="operator",
+                action="pause_override",
+                reason=pause_override_audit_pending["reason"],
+                drain_summary={
+                    "task_id": task.id,
+                    "task_title": task.title[:200],
+                },
+            )
+        )
+
     try:
         await session.commit()
     except IntegrityError as exc:
@@ -967,6 +1054,11 @@ async def create_task(
             )
         elif "ck_tasks_scheduled_xor_template" in orig_text:
             detail = _DETAIL_SCHEDULED_XOR_TEMPLATE
+        elif "ck_tasks_pause_reason_length" in orig_text:
+            detail = (
+                "allow_during_pause=true requires allow_during_pause_reason "
+                "(>=10 chars) violates ck_tasks_pause_reason_length"
+            )
         else:
             detail = "Task creation violates a database constraint"
         raise HTTPException(status_code=400, detail=detail) from exc
@@ -1520,8 +1612,120 @@ async def update_task(
         await auto_unblock_dependents(session, task_id)
         await session.commit()  # second commit for the unblock writes
 
+    # Kanban #1211 (AA3 AC#3): post-PATCH hook — if the patched task is an
+    # audit task (task_type='audit') that just transitioned to DONE, invoke
+    # the flag pipeline. The hook is surgical: it only fires on the
+    # DONE-flip of an 'audit' task, leaving every other PATCH path
+    # unaffected.
+    #
+    # Why here (not in the audit-task DONE flow above): the audit-task
+    # transition is a regular PATCH, not a question/decision answer. We
+    # detect it post-commit so the audit_report (which the same PATCH may
+    # have written) is already persisted before the helper reads it.
+    #
+    # Errors from apply_flag_from_audit_report are LOGGED but NOT raised —
+    # an audit-flag pipeline failure must not crash the audit-task DONE
+    # PATCH (the data-quality issue is downstream tooling's responsibility
+    # to clean up). The helper itself is defensive (returns no-op summary
+    # on malformed input rather than raising).
+    if (
+        _resolved_ps_for_done == TaskStatus.DONE
+        and task.task_type == TaskType.AUDIT
+    ):
+        from src.services.audit_flag import apply_flag_from_audit_report
+        try:
+            flag_summary = await apply_flag_from_audit_report(
+                audit_task_id=task_id,
+                actor="system",
+                session=session,
+            )
+            await session.commit()  # commit flag-pipeline side effects
+            logger.info(
+                "AA3 flag pipeline: audit_task=%d summary=%s",
+                task_id,
+                flag_summary,
+            )
+        except HTTPException:
+            # Defensive re-raise pattern from pause_project (already-killed
+            # 409 etc.) propagates HTTPException through the helper. Roll
+            # back the flag-pipeline side effects, log, and continue — the
+            # audit-task DONE flip itself already committed above so the
+            # caller's response is still 200.
+            await session.rollback()
+            logger.exception(
+                "AA3 flag pipeline raised HTTPException on audit_task=%d; "
+                "audit-task DONE flip stands but flag pipeline rolled back",
+                task_id,
+            )
+        except Exception:  # noqa: BLE001 — defensive: never crash the PATCH
+            await session.rollback()
+            logger.exception(
+                "AA3 flag pipeline crashed on audit_task=%d; "
+                "audit-task DONE flip stands but flag pipeline rolled back",
+                task_id,
+            )
+
     await session.refresh(task)
     return task
+
+
+@router.post(
+    "/{task_id}/resolve-flag",
+    response_model=ResolveFlagResponse,
+    status_code=http_status.HTTP_200_OK,
+)
+async def resolve_flag_endpoint(
+    task_id: int,
+    payload: ResolveFlagRequest,
+    x_actor: str | None = Header(default=None, alias="X-Actor"),
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+) -> ResolveFlagResponse:
+    """Atomic resolve handler for an AA3 audit flag (Kanban #1211 D4).
+
+    Body shape: `{action, adjustments?}` — action is one of
+    'continue' / 'adjust_continue' / 'keep_paused' / 'terminate'.
+    adjustments is required (and non-empty) only for 'adjust_continue';
+    only allowlisted keys are applied
+    (services/pause_switch.ADJUST_CONTINUE_ALLOWED_KEYS).
+
+    Single-transaction atomicity: flag-DONE + side effects commit together.
+    'terminate' splits across two commits (kill_project commits independently);
+    no rollback risk in the second commit (single column flip on the flag).
+
+    Status codes:
+    - 200 — resolve applied (returns shape varies by branch — see ResolveFlagResponse).
+    - 400 — cross-project header mismatch.
+    - 404 — flag task not found / soft-deleted.
+    - 422 — action invalid OR flag is not an AA3 audit flag OR
+            adjust_continue with empty/non-allowlisted adjustments.
+
+    `X-Actor` (default 'operator') stamps `projects_audit.actor` on any
+    audit rows the service writes; truncated at 200 chars (AA1 P1-4 precedent).
+    """
+    from src.services.pause_switch import resolve_flag
+
+    actor = (x_actor or "operator").strip()[:200] or "operator"
+
+    # Pre-fetch the flag to assert cross-project session-header parity.
+    # 404 here matches the service's behavior; we'd rather fail at the
+    # header check than leak project information via 422 from the service.
+    flag = await session.get(Task, task_id)
+    if flag is None or flag.status == RecordStatus.DELETED:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Flag task id={task_id} not found",
+        )
+    assert_task_belongs_to_session(task_id, flag.project_id, session_project_id)
+
+    result = await resolve_flag(
+        flag_id=task_id,
+        action=payload.action,
+        adjustments=payload.adjustments,
+        actor=actor,
+        session=session,
+    )
+    return ResolveFlagResponse(**result)
 
 
 @router.post(

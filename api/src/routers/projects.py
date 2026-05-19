@@ -40,6 +40,8 @@ from src.models.task import Task
 from src.schemas.project import (
     KillProjectRequest,
     KillProjectResponse,
+    PauseProjectRequest,
+    PauseUnpauseResponse,
     ProjectCreate,
     ProjectGrantConsent,
     ProjectRead,
@@ -49,8 +51,10 @@ from src.schemas.project import (
     ProjectUpdate,
     ReviveProjectRequest,
     ReviveProjectResponse,
+    UnpauseProjectRequest,
 )
 from src.services.kill_switch import kill_project, revive_project
+from src.services.pause_switch import pause_project, unpause_project
 from src.services.project_scaffold import scaffold_project_folder
 from src.services.zero_config_scaffold import (
     scaffold_orchestration,
@@ -686,6 +690,76 @@ async def revive_project_endpoint(
         session=session,
     )
     return ReviveProjectResponse(**result)
+
+
+@router.post(
+    "/{project_id}/pause",
+    response_model=PauseUnpauseResponse,
+)
+async def pause_project_endpoint(
+    project_id: int,
+    payload: PauseProjectRequest,
+    x_actor: str | None = Header(default=None, alias="X-Actor"),
+    session: AsyncSession = Depends(get_session),
+) -> PauseUnpauseResponse:
+    """Soft-pause a project (Kanban #1211, AA3 D3).
+
+    Operator/system soft suspend. Drains recurring tasks (non-templates →
+    next_fire_at=NULL; templates → kill_frozen=true) but lets in-flight
+    work complete naturally and leaves open TODOs untouched (the resolve-
+    flag escape hatch is the mechanism for clearing them). Writes a
+    `projects_audit` row with action='pause' + the drain counts.
+
+    Status codes:
+    - 200 — pause applied (returns drain_summary + audit_id).
+    - 404 — project not found / soft-deleted.
+    - 409 — project is already paused OR project is currently killed
+            (mutex via app-layer check + DB CHECK ck_projects_kill_pause_mutex).
+    - 422 — `reason` missing / shorter than 10 chars.
+
+    `X-Actor` header (default 'operator') stamps `projects_audit.actor`,
+    truncated at 200 chars (mirrors the AA1 P1-4 precedent).
+    """
+    actor = (x_actor or "operator").strip()[:200] or "operator"
+    result = await pause_project(
+        project_id=project_id,
+        reason=payload.reason,
+        actor=actor,
+        session=session,
+    )
+    return PauseUnpauseResponse(**result)
+
+
+@router.post(
+    "/{project_id}/unpause",
+    response_model=PauseUnpauseResponse,
+)
+async def unpause_project_endpoint(
+    project_id: int,
+    payload: UnpauseProjectRequest,  # noqa: ARG001 — schema for OpenAPI + forward-compat
+    x_actor: str | None = Header(default=None, alias="X-Actor"),
+    session: AsyncSession = Depends(get_session),
+) -> PauseUnpauseResponse:
+    """Inverse of /pause — restore a paused project (Kanban #1211).
+
+    Clears `is_paused=false` (PRESERVING `paused_at` + `paused_reason` as
+    history per D4), recomputes `next_fire_at` for recurring tasks, and
+    clears every `kill_frozen=true` marker in the project.
+
+    Status codes:
+    - 200 — unpause applied.
+    - 404 — project not found / soft-deleted.
+    - 409 — project is NOT currently paused (idempotent guard).
+
+    `X-Actor` truncated at 200 chars (mirrors AA1 P1-4 precedent).
+    """
+    actor = (x_actor or "operator").strip()[:200] or "operator"
+    result = await unpause_project(
+        project_id=project_id,
+        actor=actor,
+        session=session,
+    )
+    return PauseUnpauseResponse(**result)
 
 
 @router.delete("/{project_id}", status_code=http_status.HTTP_204_NO_CONTENT)

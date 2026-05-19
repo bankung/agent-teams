@@ -162,8 +162,11 @@ class TaskKind:
 
 
 class TaskType:
-    """tasks.task_type — 'bug'/'feature'/'chore'/'docs'/'refactor' (#803).
-    Mirror of migration 0015 (intentionally duplicated).
+    """tasks.task_type — 'bug'/'feature'/'chore'/'docs'/'refactor'/'audit'.
+    Mirror of migrations 0015 (initial five) + 0040 (added 'audit' for AA3
+    governance audit tasks, Kanban #1211). Intentionally duplicated from
+    the migrations to keep the constants module the single import-time
+    source of truth for Pydantic Literals.
     """
 
     BUG = "bug"
@@ -171,8 +174,13 @@ class TaskType:
     CHORE = "chore"
     DOCS = "docs"
     REFACTOR = "refactor"
+    # Kanban #1211 (2026-05-19): AA3 governance audit. A task whose handler
+    # runs the project-auditor agent + writes audit_report. The PATCH-to-DONE
+    # hook in routers/tasks.py invokes `services/audit_flag.apply_flag_from_audit_report`
+    # when an 'audit' task transitions to process_status=5.
+    AUDIT = "audit"
 
-    ALL: tuple[str, ...] = (BUG, FEATURE, CHORE, DOCS, REFACTOR)
+    ALL: tuple[str, ...] = (BUG, FEATURE, CHORE, DOCS, REFACTOR, AUDIT)
 
 
 class TaskInteractionKind:

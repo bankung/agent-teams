@@ -355,6 +355,26 @@ class Task(Base):
         default=False,
     )
 
+    # Kanban #1211 (2026-05-19): AA3 soft-pause per-spawn override hatch.
+    # When the parent project is paused (`projects.is_paused=true`), POST
+    # /api/tasks is blocked with 423 — UNLESS the body carries
+    # `allow_during_pause=true` AND `allow_during_pause_reason` (>=10 chars).
+    # The bypass IS the audit signal: a `projects_audit` row with
+    # action='pause_override' is written so operators can review the
+    # override frequency / signal-quality of the threshold (D6 + AA5
+    # callout: "if used >X times/week per project, threshold is wrong").
+    # DB CHECK `ck_tasks_pause_reason_length` enforces the >=10-chars
+    # invariant; Pydantic TaskCreate fires the friendlier 422 first.
+    allow_during_pause: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+        default=False,
+    )
+    allow_during_pause_reason: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+
     # Kanban #960 (2026-05-17): periodic Health monitor sweep output.
     # Single-object latest-only JSONB (audit history flows via tasks_history
     # trigger — same precedent as audit_report #952). Element shape:
@@ -477,6 +497,17 @@ class Task(Base):
         CheckConstraint(
             "max_active_children IS NULL OR max_active_children > 0",
             name="ck_tasks_max_active_children_positive",
+        ),
+        # Kanban #1211 — AA3 per-spawn override: when allow_during_pause=true
+        # the reason must be present and >= 10 chars. Mirror of migration
+        # 0040's CHECK; defense-in-depth against raw-SQL drift (Pydantic
+        # TaskCreate also enforces; the DB CHECK catches direct INSERTs that
+        # bypass the API layer).
+        CheckConstraint(
+            "allow_during_pause = FALSE OR "
+            "(allow_during_pause_reason IS NOT NULL "
+            "AND length(allow_during_pause_reason) >= 10)",
+            name="ck_tasks_pause_reason_length",
         ),
         Index("ix_tasks_project_id", "project_id"),
         Index("ix_tasks_process_status", "process_status"),

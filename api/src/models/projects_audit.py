@@ -41,9 +41,23 @@ if TYPE_CHECKING:
     from src.models.project import Project
 
 
-# Vocabulary for projects_audit.action. Mirrors the CHECK in migration 0039.
-# Module constant so the Pydantic Literal in schemas/project.py stays in lockstep.
-PROJECT_AUDIT_ACTIONS: tuple[str, ...] = ("kill", "revive")
+# Vocabulary for projects_audit.action. Mirrors the CHECK in migrations
+# 0039 (kill/revive) + 0040 (pause/unpause/pause_override). Module constant
+# so the Pydantic Literal in schemas/project.py stays in lockstep.
+#
+# - kill / revive       : AA1 hard kill switch (Kanban #1209).
+# - pause / unpause     : AA3 soft-pause governance state (Kanban #1211).
+# - pause_override      : AA3 per-task escape hatch — a POST /api/tasks
+#                         against a paused project that succeeded via
+#                         allow_during_pause=true + reason. The bypass IS
+#                         the audit signal (D6 + AA5 threshold-tuning).
+PROJECT_AUDIT_ACTIONS: tuple[str, ...] = (
+    "kill",
+    "revive",
+    "pause",
+    "unpause",
+    "pause_override",
+)
 
 
 class ProjectsAudit(Base):
@@ -93,7 +107,7 @@ class ProjectsAudit(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "action IN ('kill', 'revive')",
+            "action IN ('kill', 'revive', 'pause', 'unpause', 'pause_override')",
             name="ck_projects_audit_action_valid",
         ),
         Index(
