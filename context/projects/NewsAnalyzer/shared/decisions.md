@@ -15,6 +15,84 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-19 — Phase 2.1 + 2.2 executed — Macro (#1246) + Settrade Price/TA (#1245) L1 sources landed
+
+**Scope:** shared (pipeline + backend)
+**Proposed by:** dev-sr-backend specialist (closing reports) + lead (verification + design-question capture)
+**Status:** 2/4 L1 sources DONE in one session. #1247 Foreign-flow + #1248 Calendar remain. Then #1259 per-ticker rollup → MVP.
+
+### What landed
+
+| Task | Commit | Result |
+|---|---|---|
+| [#1246](http://localhost:5431/tasks/1246) L1 Macro | `f393c51` | `macro_signals` table, daily Beat @ 17:30 ICT, 30 rows backfilled, 5 unit tests |
+| [#1245](http://localhost:5431/tasks/1245) L1 Settrade Price/TA | `6a7dfa2` | `price_ta_signals` table, daily Beat @ 17:00 ICT, 2793 rows backfilled (50 tickers × 57 dates), 11 unit tests |
+
+**Signal definitions locked:**
+
+- **Macro** (per date, market-level):
+  - `usd_thb_dir` — 5d USD/THB direction × magnitude (3%/5d → ±3 scale)
+  - `oil_dir` — 5d Brent direction × magnitude (8%/5d → ±3)
+  - `fed_rate_chg` — 30d Fed funds change (100bps/30d → ±3)
+  - `asia_breadth` — % of (Nikkei + Hang Seng + SET) above 20d MA → `(breadth - 0.5) * 6`
+- **Price/TA** (per ticker per date):
+  - `momentum_20d` — `(close[t] - close[t-20]) / close[t-20]`, scaled 10%/20d → ±3
+  - `dist_60d_high` — `(close - max(high[t-60..t])) / max(high[t-60..t])`, scaled −10%..0 → 0..+3
+  - `dist_20d_low` — `(close - min(low[t-20..t])) / min(low[t-20..t])`, scaled 0..+10% → 0..+3
+
+### Settrade-specific lessons (post-implementation)
+
+1. **SDK single-session contention** — `settrade-v2` v2.2.1 `Investor` SDK maintains ONE session per instance. Parallel `MarketData().get_candlestick()` calls collide (`U-102: UserSession unavailable / Status[Kicked]`). Locked default `max_concurrency=1` (sequential). 50 tickers / 25-67s wall-clock — comfortable for daily Beat. Parameterizable for future SDK release.
+2. **EOD bar publishing delay** — daily ingest at 17:00 ICT (post-close 16:30) writes `signal_date=today`, but underlying bars are `date_today=yesterday`. Settrade publishes EOD bars with delay. Current implementation stores `target_date` as `signal_date`; actual trading day available in `raw_data.date_today`. **Open design question for #1249 L2A:** which date to key on? Probably `raw_data.date_today` for consistency with macro `signal_date` (which IS the trading day). Specialist should reconcile when implementing #1249.
+3. **SET50 list snapshot is stale-able** — INTUCH was in our hardcoded list but delisted post-GULF merger (2023). Settrade returned "Symbol not found"; fetcher gracefully degraded. **Follow-up filed: [#1264](http://localhost:5431/tasks/1264)** quarterly SET50 refresh.
+
+### Watchlist scope reality
+
+- **SET50** (50 tickers, hardcoded for 2026Q1) — landed.
+- **News-tickers (past 30d)** — IMPLEMENTED but currently returns empty set because `news_events.companies` field isn't reliably populated with SET ticker symbols (legacy entity-extraction returns mixed Thai/English/casual names, not normalized tickers). **Watchlist degrades to SET50-only** for now. Long-term fix: tighten step-1 AI extraction to emit clean SET tickers in `companies` field (separate task, not blocking #1259 per-ticker rollup since SET50 covers ~95% of news-relevant tickers).
+
+### Daily Beat cadence (cumulative)
+
+```
+07:15 ICT — morning news fetch (pre-market)
+12:30 ICT — midday news fetch (intra-market)
+16:30 ICT — SET market close
+17:00 ICT — Settrade price/TA daily ingest (#1245) NEW
+17:30 ICT — macro daily ingest (#1246) NEW
+02:30 UTC ≈ 09:30 ICT — backfill nightly (default OFF, #924)
+```
+
+Total: 4 scheduled tasks/day + manual triggers.
+
+### Operator side-quests remaining
+
+- ✅ Settrade portal registration (DONE — operator confirmed creds in `.env.dev`)
+- 🟡 FRED API key (5 min, instant) — until then `fed_rate_chg` signal degrades to confidence=0, L2A aggregator drops it from weighted sum
+- ⚪ Watchlist quality (longer-term): Settrade SDK auth works; ~25s daily run; INTUCH stale-removal follow-up [#1264](http://localhost:5431/tasks/1264)
+
+### Stream A progress (visual)
+
+```
+✅ #1246 Macro                              DONE 2026-05-19 (commit f393c51)
+✅ #1245 Settrade Price/TA                  DONE 2026-05-19 (commit 6a7dfa2)
+🟡 #1247 Foreign-flow                       TODO (SET disclosure scrape; no auth)
+🟡 #1248 Calendar                           TODO (finnhub/alpha vantage free tier)
+
+       ↓ all 4 L1 done
+
+🔒 #1259 Per-ticker rollup (L2B)            BLOCKED ← #1248
+       ↓
+🎯 stock-pick MVP via JSON API
+```
+
+### Cross-references
+
+- New endpoints (FastAPI ↔ FastAPI internal, NOT in api-contracts.md scope which is FE-facing): `/api/macro-signals` + `/api/price-ta-signals` (POST upsert + GET single + GET history range)
+- [#1264](http://localhost:5431/tasks/1264) SET50 quarterly refresh — follow-up filed
+- L2A (#1249) implementer: read this entry for `signal_date` vs `raw_data.date_today` reconciliation guidance
+
+---
+
 ## 2026-05-19 (addendum) — 2-stream split + Settrade lock + per-ticker rollup gap-fill + API contract
 
 **Scope:** shared (architecture refinement post-lock; critical-path framing for "เลือกและแนะนำหุ้น")
