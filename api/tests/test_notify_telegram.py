@@ -91,12 +91,13 @@ async def test_send_telegram_happy_path_returns_ok_with_msg_id(monkeypatch) -> N
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("status_code", [400, 500])
 @pytest.mark.asyncio
-async def test_send_telegram_400_returns_ok_false_with_status_detail(monkeypatch) -> None:
+async def test_send_telegram_non_200_returns_ok_false(monkeypatch, status_code) -> None:
     monkeypatch.setenv(TELEGRAM_ENV_TOKEN, "test-token-abc")
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(400, text='{"ok": false, "description": "Bad Request: chat not found"}')
+        return httpx.Response(status_code, text=f"error body for {status_code}")
 
     client = _make_client(handler)
     try:
@@ -105,25 +106,8 @@ async def test_send_telegram_400_returns_ok_false_with_status_detail(monkeypatch
         await client.aclose()
 
     assert result["ok"] is False
-    assert "http_400" in result["detail"]
+    assert f"http_{status_code}" in result["detail"]
     assert result["telegram_msg_id"] is None
-
-
-@pytest.mark.asyncio
-async def test_send_telegram_500_returns_ok_false(monkeypatch) -> None:
-    monkeypatch.setenv(TELEGRAM_ENV_TOKEN, "test-token-abc")
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, text="Internal Server Error")
-
-    client = _make_client(handler)
-    try:
-        result = await send_telegram(_VALID_TARGET, {"x": "y"}, client=client)
-    finally:
-        await client.aclose()
-
-    assert result["ok"] is False
-    assert "http_500" in result["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -210,12 +194,12 @@ async def test_send_telegram_missing_chat_id_returns_ok_false(monkeypatch) -> No
 
 
 # ---------------------------------------------------------------------------
-# Pydantic-model target (not dict) accepted
+# Pydantic-model target via .model_dump() accepted
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_send_telegram_accepts_pydantic_target(monkeypatch) -> None:
+async def test_send_telegram_accepts_model_dump_target(monkeypatch) -> None:
     from src.schemas.notification import NotificationTarget
 
     monkeypatch.setenv(TELEGRAM_ENV_TOKEN, "test-token-abc")
@@ -227,10 +211,10 @@ async def test_send_telegram_accepts_pydantic_target(monkeypatch) -> None:
 
     client = _make_client(handler)
     try:
-        # Pass a Pydantic instance — accessor uses getattr() fallback.
+        # Callers with a Pydantic instance dump to dict first.
         target = NotificationTarget(
             kind="telegram", chat_id="789", priority=1, label="t"
-        )
+        ).model_dump()
         result = await send_telegram(target, {"x": "y"}, client=client)
     finally:
         await client.aclose()

@@ -63,21 +63,6 @@ _ADAPTERS = {
 }
 
 
-def _target_to_dict(target: Any) -> dict[str, Any]:
-    """Coerce a target (Pydantic instance OR plain dict from JSONB) to a dict.
-
-    JSONB column reads always surface as dict; explicit Pydantic instances
-    come in from test fixtures that pre-validate. Normalize to dict so the
-    rest of the pipeline (logging / audit serialization / adapter dispatch)
-    operates on a single shape.
-    """
-    if isinstance(target, dict):
-        return target
-    if hasattr(target, "model_dump"):
-        return target.model_dump()
-    raise TypeError(f"notification target must be dict or pydantic model; got {type(target).__name__}")
-
-
 def _resolve_targets(task: Task, project: Project) -> list[dict[str, Any]]:
     """Pick the effective target list for `task`.
 
@@ -101,32 +86,6 @@ def _resolve_targets(task: Task, project: Project) -> list[dict[str, Any]]:
     return cleaned
 
 
-def _fallback_path(project: Project, task_id: int, ts: datetime) -> Path:
-    """Compute the local-file fallback path per AC4 + #1185 path resolution.
-
-    Uses `projects.working_path` when set; otherwise falls back to the
-    legacy `agent-teams/context/projects/<name>/notifications/` layout (per
-    the working_path migration audit Kanban #941 — pre-#1185 projects still
-    work via the fallback).
-
-    Filename: `<task_id>-<ISO8601-no-colons>.txt` (Windows-safe; colons in
-    ISO8601 break NTFS).
-    """
-    iso_safe = ts.strftime("%Y%m%dT%H%M%SZ")
-    filename = f"{task_id}-{iso_safe}.txt"
-
-    if project.working_path:
-        base = Path(project.working_path) / "notifications"
-    else:
-        # Legacy fallback path — Kanban #1185 migration audit (#941) tracks
-        # the in-repo content; this branch keeps the router functional for
-        # working_path=NULL projects (currently agent-teams itself + legacy).
-        base = Path("context") / "projects" / project.name / "notifications"
-
-    base.mkdir(parents=True, exist_ok=True)
-    return base / filename
-
-
 def _write_local_fallback(
     project: Project,
     task_id: int,
@@ -146,7 +105,15 @@ def _write_local_fallback(
     the `tasks_history` JSONB.
     """
     try:
-        path = _fallback_path(project, task_id, ts)
+        # AC4 + #1185 path resolution: working_path when set, else legacy
+        # agent-teams/context/projects/<name>/notifications/ layout (#941).
+        # Filename uses %Y%m%dT%H%M%SZ — colons in ISO8601 break NTFS.
+        if project.working_path:
+            base = Path(project.working_path) / "notifications"
+        else:
+            base = Path("context") / "projects" / project.name / "notifications"
+        base.mkdir(parents=True, exist_ok=True)
+        path = base / f"{task_id}-{ts.strftime('%Y%m%dT%H%M%SZ')}.txt"
         header_lines = [
             f"# notification fallback (Kanban #1224)",
             f"# task_id: {task_id}",
@@ -171,35 +138,6 @@ def _write_local_fallback(
             "detail": f"local_fallback_write_error: {type(exc).__name__}: {exc}",
             "path": None,
         }
-
-
-async def _append_history_row(
-    session: AsyncSession,
-    *,
-    task_id: int,
-    snapshot: dict[str, Any],
-) -> None:
-    """Insert one tasks_history row with operation='N'. Caller is responsible
-    for the commit (we batch the attempt rows + return them together so a
-    single transaction covers the whole deliver() call).
-
-    snapshot shape (locked at v1):
-        {
-          actor: 'notification_router',
-          target: {kind, chat_id, label, priority}  | null for fallback,
-          ok: bool,
-          detail: str,
-          attempt_priority: int | null,
-          kind: str,
-          attempted_at: ISO8601,
-        }
-    """
-    row = TaskHistory(
-        task_id=task_id,
-        operation=NOTIFY_OP_CODE,
-        snapshot=snapshot,
-    )
-    session.add(row)
 
 
 async def deliver(
@@ -269,31 +207,26 @@ async def deliver(
     delivered_ok = False
 
     for tgt in kind_targets:
-        adapter = _ADAPTERS.get(tgt.get("kind"))
-        if adapter is None:
-            attempt = {
-                "target": tgt,
-                "ok": False,
-                "detail": f"no_adapter_for_kind: {tgt.get('kind')!r}",
-                "priority": tgt.get("priority"),
-            }
-        else:
-            result = await adapter(tgt, payload)
-            attempt = {
-                "target": tgt,
-                "ok": bool(result.get("ok")),
-                "detail": str(result.get("detail", "")),
-                "priority": tgt.get("priority"),
-            }
-            # Pass through adapter-specific extras (telegram_msg_id, etc.)
-            # for the caller / audit row.
-            for extra_key, extra_val in result.items():
-                if extra_key not in ("ok", "detail"):
-                    attempt[extra_key] = extra_val
+        # _ADAPTERS has an entry for every supported kind; KeyError here is
+        # louder than a silent ok=False if a new kind lands in the Literal
+        # without an adapter wired in.
+        adapter = _ADAPTERS[tgt["kind"]]
+        result = await adapter(tgt, payload)
+        attempt = {
+            "target": tgt,
+            "ok": bool(result.get("ok")),
+            "detail": str(result.get("detail", "")),
+            "priority": tgt.get("priority"),
+        }
+        # Pass through adapter-specific extras (telegram_msg_id, etc.)
+        # for the caller / audit row.
+        attempt.update({k: v for k, v in result.items() if k not in ("ok", "detail")})
         attempts.append(attempt)
-        await _append_history_row(
-            session,
+        # Audit row (snapshot shape locked v1: actor/target/ok/detail/
+        # attempt_priority/kind/attempted_at). Caller owns the commit below.
+        session.add(TaskHistory(
             task_id=task_id,
+            operation=NOTIFY_OP_CODE,
             snapshot={
                 "actor": NOTIFY_ACTOR,
                 "target": tgt,
@@ -303,7 +236,7 @@ async def deliver(
                 "kind": kind,
                 "attempted_at": now.isoformat(),
             },
-        )
+        ))
         if attempt["ok"]:
             delivered_ok = True
             break  # first success wins; do not try lower-priority targets.
@@ -332,9 +265,9 @@ async def deliver(
                 "path": fb.get("path"),
             }
         )
-        await _append_history_row(
-            session,
+        session.add(TaskHistory(
             task_id=task_id,
+            operation=NOTIFY_OP_CODE,
             snapshot={
                 "actor": NOTIFY_ACTOR,
                 "target": None,
@@ -346,7 +279,7 @@ async def deliver(
                 "path": fb.get("path"),
                 "attempted_at": now.isoformat(),
             },
-        )
+        ))
 
     await session.commit()
 

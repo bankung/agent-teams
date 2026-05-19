@@ -129,58 +129,38 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _BUNDLE_CACHE: dict[tuple[str, str | None], str] = {}
 
 
-def _read_or_empty(path: Path, what: str) -> str:
-    """Read a file's text content; return "" + WARN-log if missing.
-
-    Missing CLAUDE.md / team playbook / agent definition is non-fatal: the
-    bundle simply degrades to whatever IS present. Helps unit tests run in
-    a checkout that doesn't have all three files, and degrades gracefully
-    if a team name is unknown.
-    """
-    if not path.exists():
-        logger.warning(
-            "cache bundle: %s file missing at %s; skipping (bundle will be smaller)",
-            what,
-            path,
-        )
-        return ""
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError as exc:
-        logger.warning(
-            "cache bundle: failed to read %s at %s (%r); skipping",
-            what,
-            path,
-            exc,
-        )
-        return ""
-
-
 def _load_cacheable_bundle(team: str, agent_name: str | None) -> str:
     """Concatenate safety prelude + CLAUDE.md + team playbook + agent def.
 
     Result is intentionally LARGE (~10K tokens) — that's the design.
-    Cached after first build per (team, agent_name).
+    Cached after first build per (team, agent_name). Missing files degrade
+    gracefully with a WARN log so unit tests + unknown team names still work.
     """
     key = (team, agent_name)
     if key in _BUNDLE_CACHE:
         return _BUNDLE_CACHE[key]
 
+    def _read(path: Path, what: str) -> str:
+        try:
+            return path.read_text(encoding="utf-8")
+        except (OSError, FileNotFoundError) as exc:
+            logger.warning("cache bundle: skipping %s at %s (%r)", what, path, exc)
+            return ""
+
     parts: list[str] = [_load_safety_prelude()]
 
-    claude_md = _read_or_empty(_REPO_ROOT / "CLAUDE.md", "CLAUDE.md")
+    claude_md = _read(_REPO_ROOT / "CLAUDE.md", "CLAUDE.md")
     if claude_md:
         parts.append("\n\n---\n\n# Project rules (CLAUDE.md)\n\n" + claude_md)
 
-    team_playbook = _read_or_empty(
-        _REPO_ROOT / ".claude" / "teams" / f"{team}.md",
-        f"team playbook ({team})",
+    team_playbook = _read(
+        _REPO_ROOT / ".claude" / "teams" / f"{team}.md", f"team playbook ({team})"
     )
     if team_playbook:
         parts.append(f"\n\n---\n\n# Team playbook ({team})\n\n" + team_playbook)
 
     if agent_name:
-        agent_def = _read_or_empty(
+        agent_def = _read(
             _REPO_ROOT / ".claude" / "agents" / f"{agent_name}.md",
             f"agent definition ({agent_name})",
         )
@@ -234,12 +214,7 @@ def build_cached_system_content(
         list[dict] for anthropic (with cache_control on stable bundle),
         str for openai/ollama.
     """
-    try:
-        resolved_provider = (provider or resolve_provider()).lower()
-    except Exception:
-        # If provider resolution fails (unlikely in normal call paths), fall
-        # back to the string form — safe default that works on every provider.
-        resolved_provider = "openai"
+    resolved_provider = (provider or resolve_provider()).lower()
 
     bundle = _load_cacheable_bundle(team, agent_name)
 
@@ -262,21 +237,6 @@ def build_cached_system_content(
     # Non-anthropic: flat string. Backward compatible with existing
     # build_system_message callers (auditor, etc.).
     return bundle + "\n\n---\n\n" + role_brief
-
-
-def stable_bundle_for(team: str = "dev", agent_name: str | None = None) -> str:
-    """Public accessor for the stable bundle text — used by tests + benchmark
-    math. Returns whatever `_load_cacheable_bundle` produced for the
-    (team, agent_name) pair.
-    """
-    return _load_cacheable_bundle(team, agent_name)
-
-
-def reset_bundle_cache_for_tests() -> None:
-    """Clear the in-process bundle cache. Tests use this to force fresh
-    reads after monkeypatching `_REPO_ROOT` or the underlying files.
-    """
-    _BUNDLE_CACHE.clear()
 
 
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"

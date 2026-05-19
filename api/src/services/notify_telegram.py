@@ -1,24 +1,13 @@
 """Telegram bot adapter for the push-notification routing layer (Kanban #1224).
 
-Single-bot v1: one bot token configured via env (`TELEGRAM_BOT_TOKEN`), one
-adapter function. Multi-bot / per-target token rotation is deferred until
-concrete demand surfaces.
+Single-bot v1: one bot token via env `TELEGRAM_BOT_TOKEN`.
 
 Contract — `send_telegram(target, payload) -> {ok, detail, telegram_msg_id}`:
-- `ok=True` on HTTP 200 with `result.message_id` parsed from the response.
-- `ok=False` on any non-200 (token invalid, chat blocked the bot, network
-  error, timeout). `detail` carries a short human-readable explanation; the
-  router writes it into the `tasks_history` audit row + falls through to the
-  next priority target.
+- `ok=True` on HTTP 200 with parsed `result.message_id`.
+- `ok=False` on any failure (non-200, token invalid, chat blocked, network).
 
-NO exceptions raised — every failure path lands as `ok=False` so the router's
-fall-through loop stays linear (no try/except per adapter call). The only
-exception is `MissingTelegramToken`, raised at module load when an adapter
-call lands without `TELEGRAM_BOT_TOKEN` in env — that's a configuration
-problem, not a delivery failure, and should surface loud.
-
-httpx version pinned: 0.28.x (matches `requirements.txt`). Uses
-`httpx.AsyncClient` with explicit timeout (default 10s).
+Never raises — every failure lands as `ok=False` so the router's fall-through
+loop stays linear.
 """
 
 from __future__ import annotations
@@ -37,23 +26,6 @@ logger = logging.getLogger(__name__)
 TELEGRAM_API_BASE = "https://api.telegram.org"
 TELEGRAM_DEFAULT_TIMEOUT_SECONDS = 10.0
 TELEGRAM_ENV_TOKEN = "TELEGRAM_BOT_TOKEN"
-
-
-class MissingTelegramToken(RuntimeError):
-    """Raised when send_telegram is invoked without TELEGRAM_BOT_TOKEN in env.
-
-    Adapter callers (notification_router.deliver) handle this by skipping the
-    target + recording `ok=False detail='missing_telegram_token'` in the
-    audit row. The router does NOT re-raise — a misconfigured env should not
-    crash a delivery loop that may still find a downstream priority target
-    that works.
-    """
-
-
-def _build_url(token: str, method: str = "sendMessage") -> str:
-    """Compose the Telegram Bot API endpoint. Module-level so tests can
-    monkeypatch `TELEGRAM_API_BASE` cleanly without re-importing."""
-    return f"{TELEGRAM_API_BASE}/bot{token}/{method}"
 
 
 def _serialize_payload_for_text(payload: dict[str, Any]) -> str:
@@ -87,7 +59,7 @@ def _serialize_payload_for_text(payload: dict[str, Any]) -> str:
 
 
 async def send_telegram(
-    target: dict[str, Any] | Any,
+    target: dict[str, Any],
     payload: dict[str, Any],
     *,
     client: httpx.AsyncClient | None = None,
@@ -96,10 +68,10 @@ async def send_telegram(
     """Send `payload` to the Telegram chat identified by `target['chat_id']`.
 
     Args:
-        target: NotificationTarget dict (or Pydantic model) — `chat_id` is
-                the only required key; other keys are ignored. Accepting both
-                shapes lets the router pass either a validated Pydantic
-                instance or a raw dict from the JSONB column.
+        target: NotificationTarget dict — `chat_id` is the only required key;
+                other keys are ignored. JSONB column reads always surface as
+                dict; callers passing a Pydantic instance must `.model_dump()`
+                first.
         payload: structured delivery payload (e.g. {"title": "...", "body": "..."})
         client: optional httpx.AsyncClient — when provided, tests inject a
                 MockTransport-backed client. Production callers pass None and
@@ -112,13 +84,10 @@ async def send_telegram(
             detail           : str  — short human-readable status / error.
             telegram_msg_id  : int | None — Telegram's per-message id when ok.
 
-    Never raises (catches httpx.RequestError + JSON decode errors); the
-    `MissingTelegramToken` ValueError is the one explicit exit so callers can
-    fail-loud on misconfiguration.
+    Never raises — catches httpx.RequestError + JSON decode errors and
+    returns ok=False with detail.
     """
-    chat_id = (
-        target.get("chat_id") if isinstance(target, dict) else getattr(target, "chat_id", None)
-    )
+    chat_id = target.get("chat_id")
     if not chat_id:
         return {"ok": False, "detail": "missing_chat_id", "telegram_msg_id": None}
 
@@ -132,7 +101,7 @@ async def send_telegram(
             "telegram_msg_id": None,
         }
 
-    url = _build_url(token, "sendMessage")
+    url = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
     body = {
         "chat_id": str(chat_id),
         "text": _serialize_payload_for_text(payload),

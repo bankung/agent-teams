@@ -70,9 +70,9 @@ def _install_capture(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
 
     # Force a clean bundle build (other tests may have warmed the cache).
-    from llm import reset_bundle_cache_for_tests
+    from llm import _BUNDLE_CACHE
 
-    reset_bundle_cache_for_tests()
+    _BUNDLE_CACHE.clear()
 
     return captured
 
@@ -299,9 +299,9 @@ def test_non_anthropic_provider_returns_string_content(
 
     monkeypatch.setattr(nodes, "_fetch_tools_config", _fake_fetch)
 
-    from llm import reset_bundle_cache_for_tests
+    from llm import _BUNDLE_CACHE
 
-    reset_bundle_cache_for_tests()
+    _BUNDLE_CACHE.clear()
 
     _run({"task_id": 1, "brief": "x", "assigned_role": 2})
 

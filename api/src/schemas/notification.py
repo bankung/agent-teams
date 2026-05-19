@@ -35,24 +35,8 @@ NotificationKind = Literal["telegram"]
 class NotificationTarget(BaseModel):
     """One element in a `notification_targets` JSONB array (Kanban #1224).
 
-    Locked v1 shape:
-      - `kind`     : Literal — discriminator for the adapter dispatch table.
-                     'telegram' only in v1.
-      - `chat_id`  : str — adapter-specific addressee. For Telegram, this is
-                     the numeric chat id (kept as str for forward-compat with
-                     adapters that use non-numeric ids, e.g. Slack channel
-                     handles or Discord webhook fragments).
-      - `priority` : int >= 1 — resolution order. Lower number = tried first.
-                     Multiple targets MAY share a priority; resolution is
-                     stable list-order within ties (list-as-stored ordering).
-      - `label`    : str — free-form operator-facing tag ("operator-default",
-                     "weekend-backup", etc.). Surfaces in audit rows so
-                     reviewers can identify WHICH target attempt without
-                     decoding chat ids.
-
     `extra='forbid'` matches the kill/grant-consent deliberate-action posture
-    — a typo'd field (`labl` for `label`, `chatid` for `chat_id`) fails 422
-    instead of silently persisting under a garbage key.
+    — a typo'd field fails 422 instead of silently persisting under a garbage key.
     """
 
     model_config = ConfigDict(extra="forbid")

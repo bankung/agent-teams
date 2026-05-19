@@ -453,33 +453,25 @@ async def test_deliver_400_when_x_project_id_missing(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "bad_targets,label",
+    [
+        (
+            [{"kind": "telegram", "chat_id": "x", "priority": "not-a-number", "label": "x"}],
+            "bad_priority_type",
+        ),
+        (
+            [{"kind": "discord", "chat_id": "x", "priority": 1, "label": "x"}],
+            "unknown_kind",
+        ),
+    ],
+)
 @pytest.mark.asyncio
-async def test_post_project_with_malformed_notification_targets_fails_422(
-    client, scaffold_cleanup
+async def test_post_project_notification_targets_schema_rejected(
+    client, scaffold_cleanup, bad_targets, label
 ) -> None:
     """Pydantic boundary rejects malformed notification_targets at 422."""
     name = scaffold_cleanup(_unique_name("k1224"))
-    payload = _project_create_payload(
-        name,
-        notification_targets=[
-            {"kind": "telegram", "chat_id": "x", "priority": "not-a-number", "label": "x"},
-        ],
-    )
+    payload = _project_create_payload(name, notification_targets=bad_targets)
     resp = await client.post("/api/projects", json=payload)
-    assert resp.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_post_project_with_unknown_kind_fails_422(
-    client, scaffold_cleanup
-) -> None:
-    """v1 Literal rejects non-telegram kinds at 422."""
-    name = scaffold_cleanup(_unique_name("k1224"))
-    payload = _project_create_payload(
-        name,
-        notification_targets=[
-            {"kind": "discord", "chat_id": "x", "priority": 1, "label": "x"},
-        ],
-    )
-    resp = await client.post("/api/projects", json=payload)
-    assert resp.status_code == 422
+    assert resp.status_code == 422, f"{label}: {resp.text}"
