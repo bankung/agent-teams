@@ -15,6 +15,86 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-19 — Retest cycle (#1282, 2 rounds) — MAJOR bug found: news L1 silently dead in production
+
+**Scope:** shared (backend + pipeline)
+**Proposed by:** operator-requested 2-round retest via dev-tester + dev-backend pairs
+**Status:** The MVP that we declared "LIVE" at #1277 was actually shipping with `news_polarity = 0` and `news_severity = 0` for every ticker in live data — the news layer of the 5-signal Q-score was silently zeroed out. The 2-round retest caught it AND fixed it. Without this cycle, the entire stock-pick output today would have been driven by price/TA alone for an unknown duration (probably until the first operator review noticed PTT q_score was suspiciously news-insensitive).
+
+### Round 1 (commit `83d9a67` — 3 fixes)
+
+dev-tester audit found:
+- **MEDIUM perf** — Calendar N+2 pattern: aggregator's per-ticker loop fired `_MKT_` query once per ticker (50 redundant identical calls per run). Fixed: hoist `_MKT_` fetch above the loop. Verified: backend log `GET /api/calendar-events` count **dropped from ~100 to 51** per aggregation invocation (50 ticker-specific + 1 hoisted market-wide).
+- **LOW docs** — `BackendClient.upsert_calendar_events` docstring claimed plain `ON CONFLICT (event_type, event_date, ticker)`; backend actually uses `ON CONFLICT (event_type, event_date, COALESCE(ticker, '_MKT_'))`. Docstring corrected.
+- **LOW consistency** — 3 of 4 ingest task coroutines returned `{status: "ok", ...}`; rollup returned `{ok: True, ...}`. Standardized all 4 to `{ok: True|False, ...}`. Frontend scrape task wrappers explicitly LEFT on legacy `{status:}` shape because `frontend/app/scrape/page.tsx:73` consumes them — clean scope boundary.
+
+### Round 2 (commit `44db667` — 1 MAJOR fix)
+
+**B1 — MAJOR (root cause of silently-dead news L1):**
+
+`GET /events/recent` was declared `response_model=list[NewsEventOut]` (see `backend/app/routers/events.py:29`). `NewsEventOut` does NOT carry `event_analysis` or `event_summary` sub-objects — those live in `NewsEventDetail`.
+
+The pipeline aggregator (`ticker_rollup_aggregator.py:compute_news_aggregate`) calls `BackendClient.list_recent_events()` → `GET /events/recent` → receives `event_analysis: None` for every event → `_extract_sentiment()` returns `None` → `news_polarity = 0.0, news_severity = 0.0` UNCONDITIONALLY.
+
+**Why the test suite missed it:** `test_ticker_rollup_aggregator.py:46-66` mock returns `event_analysis={'sentiment_score':..., 'ai_confidence':...}` — the mock was MORE FAITHFUL than the actual endpoint. 26 unit tests all passed against an idealized mock while production was permanently broken.
+
+**Live evidence:** Round 2 seeded `NewsEvent id=293` + `EventSummary id=134` + `EventAnalysis id=134` (sentiment_score=80, ai_confidence=80, companies=["PTT"], event_date=2026-05-19). After running `run_ticker_rollup_aggregation`:
+- Pre-fix: `GET /tickers/PTT` showed `current.signals.L1.news_polarity = 0.0` AND `events[0].polarity = 4.0` — display layer was always correct (does its own JOIN); aggregator layer was permanently broken.
+- Post-fix: `news_polarity = 4.0`, `news_severity = 1.92`, `q_score 1.19 → 6.73`, `recommendation neutral → bullish`.
+
+**Fix:** `response_model=list[NewsEventOut]` → `list[NewsEventDetail]` at `events.py:29`. Added `.options(joinedload(NewsEvent.event_analysis), joinedload(NewsEvent.event_summary))` to prevent serialization-time N+1 (both relationships are `lazy="select"` by default). Added 2 backend contract tests in new `test_events_router.py` so the live shape can no longer drift from the aggregator's expectations.
+
+### Why this matters (architectural lesson)
+
+The polarity-scale fix in #1281 (Phase 2.4.8) addressed a downstream CORRECTNESS issue (×3 vs ×5 scale drift between display and rollup) — but the ROOT problem was upstream: the data feeding the rollup was already null. The #1281 fix made the display and rollup math agree, but both were operating on `0.0` for news_polarity. The retest caught this BECAUSE Round 2 explicitly seeded a known sentiment_score and verified end-to-end — the kind of integration test the unit-test mocks never exercise.
+
+**Mock-vs-live drift is a recognized failure pattern.** When a unit test mocks an HTTP endpoint, the mock's payload shape SHOULD be cross-referenced against the endpoint's `response_model`. A contract-anchor test (one test per endpoint that exercises the real route via TestClient + asserts the response keys) would have caught this on day one. Worth standardizing in `context/standards/fastapi/`.
+
+### Updated Stream A scoreboard (no structural change; signal quality changed)
+
+```
+✅ #1246 Macro · ✅ #1245 Settrade · 🟡 #1247 Foreign-flow · ✅ #1248 Calendar
+✅ #1259 Per-ticker rollup (L2B)            DONE
+✅ #1277 Public wrapper /api/tickers/*      DONE   🎯 MVP LIVE (and now actually correct)
+✅ #1281 Cleanup pass                       DONE
+✅ #1282 2-round retest cycle               DONE (caught B1 — news layer was silently dead)
+```
+
+### Seeded fixtures left in dev DB (for operator awareness)
+
+Round 2 seeded a permanent NewsEvent for PTT during the retest. Because there's no DELETE endpoint for events and raw SQL DML is human-only:
+- `NewsEvent id=293` — title `"[TEST] PTT capex announce"`, companies=["PTT"], event_date=2026-05-19T09:00:00+07:00
+- `EventSummary id=134` — short_summary same as title
+- `EventAnalysis id=134` — sentiment_score=80, ai_confidence=80
+
+These will surface as a real PTT bullish event in `GET /tickers/PTT` for the next 7 days (until the `/events/recent?days=7` window slides past). Operator can run psql cleanup if desired:
+```
+DELETE FROM event_analyses WHERE event_id = 293;
+DELETE FROM event_summaries WHERE event_id = 293;
+DELETE FROM news_events WHERE id = 293;
+```
+Or leave them as a permanent fixture demonstrating the news L1 layer is now alive.
+
+### Standards proposals (NOT auto-applied — for human MA)
+
+- `context/standards/fastapi/contract-anchor-tests.md` (new): every endpoint consumed by another service in the same project SHOULD have a contract-anchor test — a test that exercises the real route via TestClient + asserts the full response_model shape (top-level keys + nested object presence). This catches schema-drift between mocks and live. Cite this Round 2 #1282 B1 finding as the worked example: a unit test mock was MORE FAITHFUL than the live endpoint for 4+ hours of MVP "LIVE" before retest caught it.
+- (Carry forward from #1277/#1281:) `context/standards/fastapi/testing.md` for SQLite + JSONB→JSON test pattern.
+
+### Follow-ups NOT filed (deliberate decisions)
+
+- `published_at` UTC `Z` vs contract `+07:00` — cosmetic; semantic equivalence holds. Defer.
+- L2 contract anticipates `{sentiment_composite, macro_tailwind}` but live returns `{}` — intentional, populated when #1249 lands.
+- DELETE endpoint for ticker-rollups (Round 2 suggested as nice-to-have for safe live probing) — defer; raw SQL cleanup is acceptable for dev DB.
+- INTUCH stale watchlist — already tracked in [#1264](http://localhost:5431/tasks/1264) (SET50 quarterly refresh).
+
+### Cross-references
+
+- Round 1 fix commit: `83d9a67` on NewsAnalyzer main (push range `2039149..83d9a67`).
+- Round 2 fix commit: `44db667` on NewsAnalyzer main (push range `83d9a67..44db667`).
+- #1281 polarity-scale fix was structurally correct but operating on `0.0` upstream data — the architectural lesson catalogued above.
+
+---
+
 ## 2026-05-19 — Cleanup pass — polarity scale bug + 2 N+1s + over-engineering scrub (#1281)
 
 **Scope:** shared (backend + pipeline)
