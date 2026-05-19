@@ -10,6 +10,16 @@ import type {
   TaskKindValue,
 } from "./constants";
 
+// TaskTypeValue — mirror of api/src/schemas/task.TaskTypeLiteral.
+// Kanban #803 ('bug'/'feature'/'chore'/'docs'/'refactor') + #1211 AA3 ('audit').
+export type TaskTypeValue =
+  | "bug"
+  | "feature"
+  | "chore"
+  | "docs"
+  | "refactor"
+  | "audit";
+
 // Source — #778 curated reference; label/kind optional; non-http rendered as plain text
 export type Source = {
   url: string;
@@ -147,6 +157,11 @@ export type TaskRead = {
   assigned_role: TaskRoleValue | null;
   run_mode: TaskRunModeValue; // #483 — default "manual"
   task_kind: TaskKindValue; // #706 — default "human"
+  // #803 (2026-05-12) + #1211 AA3 (2026-05-19 — added "audit"). Backfilled to
+  // 'feature' on legacy rows by migration 0015's server_default. Always present
+  // on TaskRead from the BE; defensive optional on the FE for legacy serialized
+  // payloads that pre-date the addition.
+  task_type?: TaskTypeValue;
   is_template: boolean; // #706 — recurrence template flag
   is_pending: boolean; // #750 — paired with process_status=IN_PROGRESS to render the yellow "pending" marker
   recurrence_rule: string | null; // #706 — cron expression
@@ -168,6 +183,15 @@ export type TaskRead = {
   estimated_input_tokens: number | null;
   estimated_output_tokens: number | null;
   estimated_cost_usd: string | null;
+  // #952 — in-graph auditor outputs; structure value-tolerant (verdict /
+  // severity / recommendation / evidence keys when populated). Surfaces the
+  // raw blob so the Audit History expand-card can pretty-print it.
+  audit_report?: Record<string, unknown> | null;
+  // #1211 AA3 — per-task override hatch (paired). The pair is set on POST
+  // when the operator chose to file the task against a paused project; the
+  // FE reads them to render a "bypassed pause" indicator + the rationale.
+  allow_during_pause?: boolean;
+  allow_during_pause_reason?: string | null;
   created_at: string;
   updated_at: string;
   started_at: string | null;
@@ -467,6 +491,92 @@ export async function reviveProject(
   });
 }
 
+// pauseProject / unpauseProject — Kanban #1211 AA3 soft-pause (D3).
+// Mirror of api/src/routers/projects.py pause / unpause endpoints + the
+// PauseUnpauseResponse schema in api/src/schemas/project.py.
+//
+// Status contract:
+//   pause   200 → applied (returns drain_summary + audit_id)
+//           404 → project not found / soft-deleted
+//           409 → already paused OR currently killed (mutex)
+//           422 → reason missing / shorter than 10 chars
+//   unpause 200 → applied
+//           404 → not found / soft-deleted
+//           409 → NOT currently paused (idempotent guard)
+//
+// Shape is deliberately distinct from KillReviveResponse — pause carries the
+// `is_paused` + `paused_*` triad rather than the kill triad. The `X-Actor`
+// header stamps `projects_audit.actor`; backend defaults to "operator" when
+// absent (v1 leaves it null on the wire for single-operator dev mode).
+export type PauseUnpauseResponse = {
+  success: boolean;
+  project_id: number;
+  action: "pause" | "unpause" | "pause_override";
+  is_paused: boolean;
+  paused_at: string | null;
+  paused_reason: string | null;
+  drain_summary: Record<string, unknown>;
+  audit_id: number;
+};
+
+export type PauseProjectBody = { reason: string };
+// Unpause carries no body fields today; the type exists so a future
+// unpause-time field (e.g. `recompute_recurrence: bool`) can land without
+// breaking the wire contract.
+export type UnpauseProjectBody = Record<string, never>;
+
+export async function pauseProject(
+  projectId: number,
+  body: PauseProjectBody,
+  actor?: string,
+): Promise<PauseUnpauseResponse> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (actor && actor.trim().length > 0) headers["X-Actor"] = actor.trim();
+  return jsonFetch<PauseUnpauseResponse>(`/api/projects/${projectId}/pause`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+}
+
+export async function unpauseProject(
+  projectId: number,
+  actor?: string,
+): Promise<PauseUnpauseResponse> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (actor && actor.trim().length > 0) headers["X-Actor"] = actor.trim();
+  return jsonFetch<PauseUnpauseResponse>(`/api/projects/${projectId}/unpause`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({}),
+  });
+}
+
+// listProjectAuditTasks — convenience wrapper for the Audit History section
+// on the project detail page. The BE /api/tasks endpoint has no `task_type`
+// query param (single source of truth for that filter today is client-side),
+// so we fetch every task for the project (cap=500 matches the Board page's
+// initial-load cap) and filter to task_type='audit'. Sorted by completed_at
+// DESC so the freshest verdict is first; tasks without a completed_at fall
+// to the bottom (typically not-yet-DONE audit rows).
+//
+// If the volume ever grows past the 500-row cap, swap to a paginated fetch
+// or land a BE `task_type` filter param — both are forward-compat.
+export async function listProjectAuditTasks(
+  projectId: number,
+  limit = 500,
+): Promise<TaskRead[]> {
+  const all = await listTasks(projectId, { limit });
+  const audits = all.filter((t) => t.task_type === "audit");
+  audits.sort((a, b) => {
+    const aDone = a.completed_at ?? "";
+    const bDone = b.completed_at ?? "";
+    if (aDone === bDone) return b.id - a.id;
+    return aDone < bDone ? 1 : -1;
+  });
+  return audits;
+}
+
 type ListTasksOpts = {
   pending?: boolean;
   parent_task_id?: number;
@@ -513,6 +623,13 @@ export type TaskCreateBody = {
   priority?: TaskPriorityValue;
   assigned_role?: TaskRoleValue;
   blocked_by?: number;
+  // Kanban #1211 AA3 — per-task override hatch for paused projects. When BOTH
+  // are set on POST, the BE allows the task to land against an otherwise-paused
+  // project AND writes a `projects_audit` row with action='pause_override'.
+  // `allow_during_pause_reason` is min_length=10 on the BE; FE forms enforce
+  // the same gate before submit. Omitted on non-paused projects.
+  allow_during_pause?: boolean;
+  allow_during_pause_reason?: string;
 };
 
 export async function createTask(

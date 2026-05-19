@@ -8,6 +8,7 @@ import {
   HttpError,
   parseTaskText,
   type ParsedTaskProposal,
+  type ProjectRead,
   type TaskCreateBody,
 } from "@/lib/api";
 import {
@@ -83,7 +84,16 @@ type Props = {
   // #7 §A AC#3 — per-project role whitelist (project.config.enabled_roles).
   // null / undefined / empty array → show all roles (current behaviour).
   enabledRoles?: number[] | null;
+  // #1238 AA3 — same prop pair as NewTaskModal. The override checkbox + 423
+  // toast handling fires in the preview phase (where the actual createTask
+  // POST lands); the input/parse phase is BE-call-against-/ai-parse which
+  // is not gated by pause.
+  project?: ProjectRead;
+  onPushToast?: (text: string) => void;
 };
+
+// #1238 AA3 — mirror of NewTaskModal constant.
+const ALLOW_DURING_PAUSE_REASON_MIN_CHARS = 10;
 
 type ErrorKind =
   | "validation" // 422
@@ -97,8 +107,14 @@ type ParseError = {
   detail?: string;
 };
 
-export function AiTaskModal({ projectId, enabledRoles }: Props) {
+export function AiTaskModal({
+  projectId,
+  enabledRoles,
+  project,
+  onPushToast,
+}: Props) {
   const router = useRouter();
+  const isProjectPaused = project?.is_paused === true;
   // #7 §A AC#3 — narrow role dropdown to project.config.enabled_roles when set.
   // Unassigned sentinel is always retained.
   const visibleRoleOptions = useMemo(
@@ -122,6 +138,9 @@ export function AiTaskModal({ projectId, enabledRoles }: Props) {
   const [blockedBy, setBlockedBy] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  // #1238 AA3 — per-task pause override (only meaningful when isProjectPaused).
+  const [allowDuringPause, setAllowDuringPause] = useState(false);
+  const [allowDuringPauseReason, setAllowDuringPauseReason] = useState("");
 
   const textInputRef = useRef<HTMLTextAreaElement | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
@@ -149,6 +168,8 @@ export function AiTaskModal({ projectId, enabledRoles }: Props) {
     setPriority(TaskPriority.NORMAL);
     setRole("");
     setBlockedBy("");
+    setAllowDuringPause(false);
+    setAllowDuringPauseReason("");
     setCreateError(null);
   }
 
@@ -231,7 +252,14 @@ export function AiTaskModal({ projectId, enabledRoles }: Props) {
   const blockedByValid =
     blockedByNum === null ||
     (Number.isInteger(blockedByNum) && blockedByNum >= 1);
-  const canConfirm = !creating && titleValid && blockedByValid;
+  // #1238 AA3 — override-reason gate, same shape as NewTaskModal.
+  const trimmedOverrideReason = allowDuringPauseReason.trim();
+  const overrideReasonValid =
+    !isProjectPaused ||
+    !allowDuringPause ||
+    trimmedOverrideReason.length >= ALLOW_DURING_PAUSE_REASON_MIN_CHARS;
+  const canConfirm =
+    !creating && titleValid && blockedByValid && overrideReasonValid;
 
   async function onConfirm(e: React.FormEvent) {
     e.preventDefault();
@@ -252,6 +280,13 @@ export function AiTaskModal({ projectId, enabledRoles }: Props) {
       ...(description.trim() ? { description: description.trim() } : {}),
       ...(role !== "" ? { assigned_role: role } : {}),
       ...(blockedByNum !== null ? { blocked_by: blockedByNum } : {}),
+      // #1238 AA3 — same override-pair semantics as NewTaskModal.
+      ...(isProjectPaused && allowDuringPause
+        ? {
+            allow_during_pause: true,
+            allow_during_pause_reason: trimmedOverrideReason,
+          }
+        : {}),
     };
 
     try {
@@ -260,8 +295,19 @@ export function AiTaskModal({ projectId, enabledRoles }: Props) {
       setOpen(false);
       resetAll();
     } catch (err: unknown) {
-      if (err instanceof HttpError) setCreateError(err.message);
-      else
+      if (err instanceof HttpError) {
+        // #1238 AA3 — same 423 toast pattern as NewTaskModal.
+        if (err.status === 423 && isProjectPaused) {
+          const pausedReason =
+            (project?.paused_reason && project.paused_reason.trim()) ||
+            "(no reason recorded)";
+          const toastMsg = `Project paused: ${pausedReason}. Check "Allow this task during pause" to override.`;
+          if (onPushToast) onPushToast(toastMsg);
+          setCreateError(toastMsg);
+        } else {
+          setCreateError(err.message);
+        }
+      } else
         setCreateError(err instanceof Error ? err.message : "Create failed");
     } finally {
       setCreating(false);
@@ -550,6 +596,65 @@ export function AiTaskModal({ projectId, enabledRoles }: Props) {
                   data-ai-task-description
                 />
               </label>
+
+              {/* #1238 AA3 — paused-project override (preview phase only —
+                  this is where the actual createTask POST lands; the input
+                  phase calls /ai-parse which is not gated by pause). */}
+              {isProjectPaused && (
+                <div
+                  className="mt-3 rounded border border-amber-300 bg-amber-50 px-2 py-1.5 dark:border-amber-600 dark:bg-amber-950/40"
+                  data-ai-task-pause-override
+                >
+                  <label className="flex items-start gap-2 text-xs font-medium text-amber-900 dark:text-amber-200">
+                    <input
+                      type="checkbox"
+                      checked={allowDuringPause}
+                      onChange={(e) => {
+                        setAllowDuringPause(e.target.checked);
+                        if (createError !== null) setCreateError(null);
+                      }}
+                      disabled={creating}
+                      className="mt-0.5 h-4 w-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500 dark:border-amber-600 dark:bg-zinc-950"
+                      data-ai-task-pause-override-toggle
+                    />
+                    <span className="flex-1">
+                      Allow this task during pause{" "}
+                      <span className="font-normal opacity-80">
+                        (project is paused — POST will 423 without this)
+                      </span>
+                    </span>
+                  </label>
+                  {allowDuringPause && (
+                    <label className="mt-2 block text-xs font-medium text-amber-900 dark:text-amber-200">
+                      Reason{" "}
+                      <span className="font-normal opacity-80">
+                        (≥{ALLOW_DURING_PAUSE_REASON_MIN_CHARS} chars)
+                      </span>{" "}
+                      <span className="text-red-600 dark:text-red-400">*</span>
+                      <textarea
+                        value={allowDuringPauseReason}
+                        onChange={(e) => {
+                          setAllowDuringPauseReason(e.target.value);
+                          if (createError !== null) setCreateError(null);
+                        }}
+                        rows={2}
+                        placeholder="Why is this task required despite the pause? Captured into projects_audit (action='pause_override')."
+                        disabled={creating}
+                        aria-invalid={
+                          allowDuringPauseReason.length > 0 &&
+                          !overrideReasonValid
+                        }
+                        className="mt-1 block w-full rounded border border-amber-300 bg-white px-2 py-1 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-amber-500 focus:outline-none disabled:opacity-50 dark:border-amber-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500"
+                        data-ai-task-pause-override-reason
+                      />
+                      <span className="mt-0.5 block text-[10px] tabular-nums opacity-80">
+                        {trimmedOverrideReason.length}/
+                        {ALLOW_DURING_PAUSE_REASON_MIN_CHARS}
+                      </span>
+                    </label>
+                  )}
+                </div>
+              )}
 
               {createError !== null && (
                 <p

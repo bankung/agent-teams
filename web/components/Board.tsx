@@ -30,9 +30,12 @@ import { BoardColumn } from "@/components/BoardColumn";
 import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
 import { Icon } from "@/components/Icon";
 import { AiTaskModal } from "@/components/AiTaskModal";
+import { AuditHistorySection } from "@/components/AuditHistorySection";
 import { KilledBanner } from "@/components/KilledBanner";
 import { KillProjectModal } from "@/components/KillProjectModal";
 import { NewTaskModal } from "@/components/NewTaskModal";
+import { PausedBanner } from "@/components/PausedBanner";
+import { PauseProjectModal } from "@/components/PauseProjectModal";
 import { ProjectConsentBanner } from "@/components/ProjectConsentBanner";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { SourcesBadge } from "@/components/SourcesBadge";
@@ -104,6 +107,14 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
   // SSR-safe: initial state always 'board'; hydrated from localStorage in useEffect.
   const [view, setView] = useState<ViewMode>("board");
 
+  // #1238 AA3 — audit-task lane filter. Audit tasks are governance noise on
+  // the main Kanban (they're not operator-actionable from the board — the
+  // /review page resolves the resulting flag). Default OFF (filter them out);
+  // operator toggles ON to see the full audit trail inline. Session-scoped
+  // pref only — no localStorage persistence for v1 (keeps the toggle visible
+  // as a discoverable affordance every session).
+  const [showAudit, setShowAudit] = useState(false);
+
   useEffect(() => {
     const stored = localStorage.getItem(`kanban-view-${project.name}`);
     if (stored === "list" || stored === "board") setView(stored);
@@ -143,7 +154,31 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
-  const grouped = useMemo(() => groupByStatus(tasks), [tasks]);
+  // #1238 AA3 — audit-task tally is computed against the unfiltered list so
+  // the toggle chip can show "Show audit tasks (N)" even when the filter is
+  // active. AuditHistorySection consumes the full audit list separately (via
+  // listProjectAuditTasks on its own fetch path); the board-local count here
+  // only needs the in-memory tasks snapshot.
+  const auditTaskCount = useMemo(
+    () => tasks.filter((t) => t.task_type === "audit").length,
+    [tasks],
+  );
+  const auditTasks = useMemo(
+    () =>
+      [...tasks.filter((t) => t.task_type === "audit")].sort((a, b) => {
+        const aDone = a.completed_at ?? "";
+        const bDone = b.completed_at ?? "";
+        if (aDone === bDone) return b.id - a.id;
+        return aDone < bDone ? 1 : -1;
+      }),
+    [tasks],
+  );
+  const visibleTasks = useMemo(
+    () => (showAudit ? tasks : tasks.filter((t) => t.task_type !== "audit")),
+    [tasks, showAudit],
+  );
+
+  const grouped = useMemo(() => groupByStatus(visibleTasks), [visibleTasks]);
 
   const selectedTask = useMemo(
     () =>
@@ -272,8 +307,34 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
             ·
           </span>
           <span className="text-zinc-500 dark:text-zinc-400 tabular-nums">
-            {tasks.length} task{tasks.length === 1 ? "" : "s"}
+            {visibleTasks.length} task{visibleTasks.length === 1 ? "" : "s"}
           </span>
+          {auditTaskCount > 0 && (
+            <>
+              <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
+                ·
+              </span>
+              {/* #1238 AA3 — audit-task filter toggle. Default OFF; chip click
+                  flips the local pref. Hidden entirely when the project has
+                  no audit tasks at all so it doesn't add chrome for nothing. */}
+              <button
+                type="button"
+                onClick={() => setShowAudit((v) => !v)}
+                aria-pressed={showAudit}
+                className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide transition-colors min-h-[36px] sm:min-h-0 ${
+                  showAudit
+                    ? "border-amber-400 bg-amber-100 text-amber-900 dark:border-amber-600 dark:bg-amber-950/40 dark:text-amber-200"
+                    : "border-zinc-200 bg-transparent text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                }`}
+                data-audit-task-toggle
+              >
+                <span>{showAudit ? "Hide" : "Show"} audit tasks</span>
+                <span className="rounded bg-white/60 px-1 text-[10px] tabular-nums text-zinc-600 dark:bg-zinc-900/40 dark:text-zinc-300">
+                  {auditTaskCount}
+                </span>
+              </button>
+            </>
+          )}
           <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
             ·
           </span>
@@ -306,10 +367,14 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
             <AiTaskModal
               projectId={project.id}
               enabledRoles={readEnabledRoles(project.config)}
+              project={project}
+              onPushToast={pushToast}
             />
             <NewTaskModal
               projectId={project.id}
               enabledRoles={readEnabledRoles(project.config)}
+              project={project}
+              onPushToast={pushToast}
             />
             {/* #1209 AA1 D5 — kill is a header action; revive is surfaced inline
                 in KilledBanner (below) so the operator always finds it next to
@@ -317,19 +382,29 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
             {!project.is_killed && (
               <KillProjectModal project={project} mode="kill" />
             )}
+            {/* #1211 / #1238 AA3 — soft-pause button. Visible only when the
+                project is neither killed nor paused; kill takes precedence
+                (mutex CHECK at the DB) so pause is hidden once killed. The
+                unpause action lives inline in PausedBanner. */}
+            {!project.is_killed && !project.is_paused && (
+              <PauseProjectModal project={project} mode="pause" />
+            )}
             <ThemePicker />
           </span>
         </div>
         {/* #1209 AA1 D5 — red strip above the consent banner when killed.
             (Renders nothing when is_killed=false.) */}
         <KilledBanner project={project} />
+        {/* #1211 / #1238 AA3 — amber strip above the consent banner when paused.
+            (Renders nothing when is_paused=false.) */}
+        <PausedBanner project={project} />
         <ProjectConsentBanner
           project={project}
           hasHeadlessTask={hasHeadlessTask}
         />
       </header>
       {view === "list" ? (
-        <ListView tasks={tasks} onOpenDetail={onOpenDetail} />
+        <ListView tasks={visibleTasks} onOpenDetail={onOpenDetail} />
       ) : (
         <DndContext sensors={sensors} onDragEnd={onDragEnd}>
           {/* #954 — mobile: page scrolls (no overflow-hidden, no min-h-0); desktop restores the fixed-height bounded lanes at lg */}
@@ -351,6 +426,12 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
           </div>
         </DndContext>
       )}
+      {/* #1238 AA3 — Audit History archive below the lanes. Self-collapses;
+          shows "No audit history yet." when the project has no audit_task rows.
+          Sources from the in-memory tasks snapshot (no extra fetch — every
+          audit task is already in `tasks` via the initial /api/tasks limit=500
+          fetch + SSE refresh). */}
+      <AuditHistorySection auditTasks={auditTasks} />
       {selectedTask && (
         <TaskDetail
           task={selectedTask}

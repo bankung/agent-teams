@@ -3,7 +3,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { createTask, HttpError, type TaskCreateBody } from "@/lib/api";
+import {
+  createTask,
+  HttpError,
+  type ProjectRead,
+  type TaskCreateBody,
+} from "@/lib/api";
 import {
   TaskPriority,
   TaskRole,
@@ -66,9 +71,27 @@ type Props = {
   // #7 §A AC#3 — per-project role whitelist (project.config.enabled_roles).
   // null / undefined / empty array → show all roles (current behaviour).
   enabledRoles?: number[] | null;
+  // #1238 AA3 — full ProjectRead so the modal can read `is_paused` + show
+  // the override checkbox + render the 423 toast with paused_reason context.
+  // Optional for forward-compat with callers that don't carry it yet.
+  project?: ProjectRead;
+  // #1238 AA3 — Board exposes its toast push helper so 423 errors land in the
+  // ToastStack rather than as inline-only red text. Optional for the same
+  // forward-compat reason.
+  onPushToast?: (text: string) => void;
 };
 
-export function NewTaskModal({ projectId, enabledRoles }: Props) {
+// #1238 AA3 — minimum length for the per-task pause-override reason. Mirrors
+// the BE schema (api/src/schemas/task.py — Field(min_length=10)).
+const ALLOW_DURING_PAUSE_REASON_MIN_CHARS = 10;
+
+export function NewTaskModal({
+  projectId,
+  enabledRoles,
+  project,
+  onPushToast,
+}: Props) {
+  const isProjectPaused = project?.is_paused === true;
   // #7 §A AC#3 — narrow role dropdown to project.config.enabled_roles when set.
   // Unassigned sentinel is always retained.
   const visibleRoleOptions = useMemo(
@@ -89,6 +112,9 @@ export function NewTaskModal({ projectId, enabledRoles }: Props) {
   const [blockedBy, setBlockedBy] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // #1238 AA3 — per-task pause override (only meaningful when isProjectPaused).
+  const [allowDuringPause, setAllowDuringPause] = useState(false);
+  const [allowDuringPauseReason, setAllowDuringPauseReason] = useState("");
   const titleInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -115,6 +141,8 @@ export function NewTaskModal({ projectId, enabledRoles }: Props) {
     setPriority(TaskPriority.NORMAL);
     setRole("");
     setBlockedBy("");
+    setAllowDuringPause(false);
+    setAllowDuringPauseReason("");
     setError(null);
   }
 
@@ -126,7 +154,18 @@ export function NewTaskModal({ projectId, enabledRoles }: Props) {
   const blockedByValid =
     blockedByNum === null ||
     (Number.isInteger(blockedByNum) && blockedByNum >= 1);
-  const canSubmit = !submitting && titleValid && blockedByValid;
+  // #1238 AA3 — when the override is checked on a paused project, the reason
+  // textarea must satisfy the BE min_length=10 gate before submit is enabled.
+  // We DO NOT block submit when the override is unchecked — the user is
+  // allowed to attempt the POST without the override; the BE will return 423
+  // and we surface a toast prompting them to check the box.
+  const trimmedOverrideReason = allowDuringPauseReason.trim();
+  const overrideReasonValid =
+    !isProjectPaused ||
+    !allowDuringPause ||
+    trimmedOverrideReason.length >= ALLOW_DURING_PAUSE_REASON_MIN_CHARS;
+  const canSubmit =
+    !submitting && titleValid && blockedByValid && overrideReasonValid;
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -142,6 +181,16 @@ export function NewTaskModal({ projectId, enabledRoles }: Props) {
       ...(description.trim() ? { description: description.trim() } : {}),
       ...(role !== "" ? { assigned_role: role } : {}),
       ...(blockedByNum !== null ? { blocked_by: blockedByNum } : {}),
+      // #1238 AA3 — only attach the override pair when both (a) the project
+      // is paused and (b) the operator checked the box. The BE schema
+      // requires the reason to accompany allow_during_pause=true; the form
+      // guards that above so a paired POST never lands with a missing reason.
+      ...(isProjectPaused && allowDuringPause
+        ? {
+            allow_during_pause: true,
+            allow_during_pause_reason: trimmedOverrideReason,
+          }
+        : {}),
     };
 
     try {
@@ -151,7 +200,21 @@ export function NewTaskModal({ projectId, enabledRoles }: Props) {
       resetFields();
     } catch (err: unknown) {
       if (err instanceof HttpError) {
-        setError(err.message);
+        // #1238 AA3 — 423 = paused-project gate. Render a toast with the
+        // project's paused_reason + a hint about the override checkbox so
+        // the operator can react without re-reading the BE detail blob.
+        if (err.status === 423 && isProjectPaused) {
+          const pausedReason =
+            (project?.paused_reason && project.paused_reason.trim()) ||
+            "(no reason recorded)";
+          const toastMsg = `Project paused: ${pausedReason}. Check "Allow this task during pause" to override.`;
+          if (onPushToast) onPushToast(toastMsg);
+          // Keep the inline error too so the user sees something when there
+          // is no toast handler wired (older callers / future variants).
+          setError(toastMsg);
+        } else {
+          setError(err.message);
+        }
       } else {
         setError(err instanceof Error ? err.message : "Create failed");
       }
@@ -321,6 +384,67 @@ export function NewTaskModal({ projectId, enabledRoles }: Props) {
                 data-new-task-description
               />
             </label>
+
+            {/* #1238 AA3 — paused-project override. Only rendered when the
+                operator is filing a task against a currently-paused project;
+                hidden entirely otherwise so the form chrome stays minimal.
+                When checked, reveals a reason textarea (>=10 chars) that the
+                BE requires alongside allow_during_pause=true. */}
+            {isProjectPaused && (
+              <div
+                className="mt-3 rounded border border-amber-300 bg-amber-50 px-2 py-1.5 dark:border-amber-600 dark:bg-amber-950/40"
+                data-new-task-pause-override
+              >
+                <label className="flex items-start gap-2 text-xs font-medium text-amber-900 dark:text-amber-200">
+                  <input
+                    type="checkbox"
+                    checked={allowDuringPause}
+                    onChange={(e) => {
+                      setAllowDuringPause(e.target.checked);
+                      if (error !== null) setError(null);
+                    }}
+                    disabled={submitting}
+                    className="mt-0.5 h-4 w-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500 dark:border-amber-600 dark:bg-zinc-950"
+                    data-new-task-pause-override-toggle
+                  />
+                  <span className="flex-1">
+                    Allow this task during pause{" "}
+                    <span className="font-normal opacity-80">
+                      (project is paused — POST will 423 without this)
+                    </span>
+                  </span>
+                </label>
+                {allowDuringPause && (
+                  <label className="mt-2 block text-xs font-medium text-amber-900 dark:text-amber-200">
+                    Reason{" "}
+                    <span className="font-normal opacity-80">
+                      (≥{ALLOW_DURING_PAUSE_REASON_MIN_CHARS} chars)
+                    </span>{" "}
+                    <span className="text-red-600 dark:text-red-400">*</span>
+                    <textarea
+                      value={allowDuringPauseReason}
+                      onChange={(e) => {
+                        setAllowDuringPauseReason(e.target.value);
+                        if (error !== null) setError(null);
+                      }}
+                      rows={2}
+                      placeholder="Why is this task required despite the pause? Captured into projects_audit (action='pause_override')."
+                      disabled={submitting}
+                      aria-invalid={
+                        allowDuringPauseReason.length > 0 &&
+                        !overrideReasonValid
+                      }
+                      className="mt-1 block w-full rounded border border-amber-300 bg-white px-2 py-1 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-amber-500 focus:outline-none disabled:opacity-50 dark:border-amber-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500"
+                      data-new-task-pause-override-reason
+                    />
+                    <span className="mt-0.5 block text-[10px] tabular-nums opacity-80">
+                      {trimmedOverrideReason.length}/
+                      {ALLOW_DURING_PAUSE_REASON_MIN_CHARS}
+                    </span>
+                  </label>
+                )}
+              </div>
+            )}
 
             {error !== null && (
               <p
