@@ -15,6 +15,80 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-19 — Phase 2.4.5 executed — L2B per-ticker Q-score rollup (#1259) landed — MVP unlock at hand
+
+**Scope:** shared (pipeline + backend)
+**Proposed by:** dev-sr-backend specialist + lead verification
+**Status:** Per-ticker rollup is the GLUE layer turning event-centric L1 signals into ticker-centric Q-score recommendations. With this in place, the canonical persistence is complete; the public-facing operator MVP unlock ([#1277](http://localhost:5431/tasks/1277)) is the thin read-wrapper that surfaces this data through the locked API contract.
+
+### What landed (Kanban [#1259](http://localhost:5431/tasks/1259) — commit `4781099`)
+
+`ticker_daily_rollups` table; daily Beat @ 18:30 ICT (after #1248 Calendar 18:00 finishes ⇒ all 4 active L1 sources fresh); aggregator composes 5 L1 signal layers (`news_polarity`, `news_severity`, `price_alignment`, `foreign_flow_5d` [reserved for #1247], `earnings_proximity`); externalized weights in `rollup_weights.py` (CALIBRATION_VERSION='v0.1'); 11 unit tests (now 108 pipeline-suite total). 12 files, +1957 LOC.
+
+**Endpoints (canonical persistence — NOT operator-facing yet):** `POST /api/ticker-rollups` (bulk upsert), `GET /api/ticker-rollups` (flexible `date | date_from | date_to | ticker | limit | offset`). Default sort: `rollup_date DESC, ABS(q_score) DESC, ticker ASC`. Operator-facing contract endpoints (`/api/tickers/today`, `/api/tickers/{symbol}`) intentionally deferred to [#1277](http://localhost:5431/tasks/1277) — the wrapper layer joining rollup + events + price_context + outcomes.
+
+### Q-score formula (initial — v0.1 calibration)
+
+```
+q_score = clip(Σᵢ wᵢ × signalᵢ, -10, +10)
+
+  wᵢ from rollup_weights.INITIAL_WEIGHTS:
+    news_polarity:        1.0   (±5 from mean(sentiment_score)/100 × 5)
+    news_severity:        0.8   (±3 from |sentiment|×confidence proxy)
+    price_alignment:      1.0   (±3 from mean of PriceTaSignal 3 sub-scores)
+    foreign_flow_5d:      0.8   (signal=0 until #1247; weight slot reserved)
+    earnings_proximity:   0.6   (±3 from severity × linear time-decay over ±7d)
+```
+
+**Recommendation thresholds:** `bullish` if `q_score ≥ 2 AND confidence ≥ 0.4`; `bearish` if `q_score ≤ -2 AND confidence ≥ 0.4`; else `neutral`. **Confidence** = weighted avg of per-signal confidences over contributing (non-zero) signals.
+
+The weights file is the **calibration handle** — self-learning batch (#1251) overwrites it after operator vetoes weight deltas. Aggregator code stays untouched across calibration generations.
+
+### Smoke evidence
+
+- Backfill: 30d × 5 tickers (PTT, KBANK, ADVANC, DELTA, AOT) → exactly **150 rollup rows**, 0 errors, 3.9s wall-clock.
+- q_score live distribution: range `[-2.48, +2.97]`, 0 invariant violations (all rec values in {bullish, bearish, neutral}; all calibration_version='v0.1').
+- Sample DELTA 2026-05-19: `q_score=2.61 recommendation=bullish confidence=1.00 contributing_signals.L1.price_alignment=2.61` — pure price-momentum-driven bullish (no news events that day, no earnings proximate). Aggregator handles single-signal cases cleanly.
+- Pytest 108 passed; agent_teams DB stable at 47 rows across pre-pytest / post-pytest / post-smoke / post-push.
+
+### Design decisions captured (specialist surfaced, lead reviewed)
+
+1. **news_severity = `|sentiment/100| × confidence × 3` (magnitude proxy, not separate severity field).** EventAnalysis has no explicit "severity" column; deriving from polarity-magnitude × confidence is the cleanest L1-attributable severity signal. If we add an explicit `event_severity` column later, this formula re-targets without aggregator surgery (it's in the weights config and aggregator function only).
+2. **earnings_proximity is magnitude-only, not directional.** Calendar events carry severity 0-3 but no direction (earnings release severity is the same whether beat or miss is expected). The slot is a "tail-risk-and-opportunity magnitude" signal. Directional refinement (positive guidance vs negative) is future work, not MVP.
+3. **Confidence weights ONLY contributing (non-zero) signals.** Single-strong-signal tickers can reach `confidence=1.0`. This was deliberate (clean formula > coverage-floor) but if operator wants "minimum coverage" semantics (e.g. require ≥2 signals for confidence > 0.5), it's a single rollup_weights edit.
+4. **Asia/Bangkok local date for Celery "today" default.** Diverges from earlier L1 fetchers that used UTC `date.today()`. Reason: SET market day boundary matters for operator-facing reports more than UTC arithmetic. If we want to align L1 + L2B on the same date semantics, we'd unify on Asia/Bangkok (L1 fetchers retrofit) rather than UTC (regress L2B).
+5. **`top_event_ids` plural correction.** AC text used `top_events_ids[]`; implementation used `top_event_ids[]` per locked API contract. No semantic difference; field name aligned with contract for downstream consumer compatibility.
+
+### Updated Stream A scoreboard
+
+```
+✅ #1246 Macro                              DONE (commit f393c51)
+✅ #1245 Settrade Price/TA                  DONE (commit 6a7dfa2)
+🟡 #1247 Foreign-flow                       TODO (reserved slot; ABI clean — drop-in)
+✅ #1248 Calendar                           DONE (commit b0c1859)
+       ↓
+✅ #1259 Per-ticker rollup (L2B)            DONE (commit 4781099)
+       ↓
+🎯 #1277 Public wrapper /api/tickers/*      TODO (MVP unlock — operator-facing)
+       │
+       ├ #1249 L2A thematic aggregator      TODO (unblocked; sibling of #1259, market-level themes)
+       ├ #1250 L3 weather computation       BLOCKED ← #1249
+       └ #1251 Self-learning batch          BLOCKED ← #1250
+```
+
+### Follow-ups filed today
+
+- [#1277](http://localhost:5431/tasks/1277) Public wrapper `/api/tickers/today` + `/api/tickers/{symbol}` — **MVP unlock**, high priority. Wraps L2B rollup persistence in the locked Decision-Engine contract shape with joins to events / price_context / history / operator_action.
+- [#1278](http://localhost:5431/tasks/1278) Ops: `alembic upgrade head` for migrations 20260519_0001..0004 — pure verification, low priority. Dev DB has tables via `Base.metadata.create_all()` bootstrap; alembic head still trails. Decoupled from MVP path.
+
+### Cross-references
+
+- Closes Phase 2.4.5 from the 2026-05-19 architecture-lock addendum (gap-fill `L2B Per-ticker rollup` entry).
+- Unblocks [#1249](http://localhost:5431/tasks/1249) (L2A themes) — its sibling-dependency on #1248 is satisfied; flipped from BLOCKED(4) to TODO(1).
+- Open question parked for future calibration tuning: **single-signal confidence ceiling** (#1259 design point 3 — currently can hit 1.0 from one strong signal). Revisit after first self-learning batch (#1251) generates accuracy-vs-coverage data.
+
+---
+
 ## 2026-05-19 — Phase 2.4 executed — Calendar events (#1248) L1 source landed
 
 **Scope:** shared (pipeline + backend)
