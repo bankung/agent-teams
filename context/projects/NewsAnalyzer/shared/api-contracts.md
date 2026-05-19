@@ -68,9 +68,9 @@ All three endpoints require auth (JWT cookie). Datetime fields are ISO-8601 with
   "date": "2026-05-19",
   "weather": {
     "brightness": 72,
-    "wind": { "direction": "bull", "strength": 0.6 },
+    "wind": { "direction": "bull", "speed": 25 },
     "rain": 25,
-    "fog": 0.15,
+    "fog": 15,
     "storm_warning": {
       "active": false,
       "reason": null,
@@ -87,10 +87,10 @@ All three endpoints require auth (JWT cookie). Datetime fields are ISO-8601 with
 
 Field semantics:
 - `weather.brightness` — `0..100` bullish bias percentage (composite of L2.sentiment_composite + L2.macro_tailwind)
-- `weather.wind.direction` — `"bull"` | `"bear"` | `"flat"`
-- `weather.wind.strength` — `0..1` normalized magnitude
+- `weather.wind.direction` — `"bull"` | `"bear"` | `"flat"`. Frontend icon mapping: ⬆️ bull, ⬇️ bear, ➡️ flat
+- `weather.wind.speed` — `0..100` integer magnitude shown as numeric annotation next to the direction icon (e.g., `⬆️ 25`). Higher = stronger macro flow conviction
 - `weather.rain` — `0..100` downside-risk probability (composite of L2.risk_regime + L2.event_density)
-- `weather.fog` — `0..1` uncertainty (L2 disagreement × confidence-spread)
+- `weather.fog` — `0..100` uncertainty (L2 disagreement × confidence-spread). All four primary indicators (brightness, rain, wind.speed, fog) share the same 0..100 scale for operator-glance consistency
 - `weather.storm_warning.active` — `true` when L2.event_density spikes >3σ above rolling baseline OR L2.risk_regime shifts past threshold
 - `weather.storm_warning.reason` — human-readable rationale (e.g., `"BoT emergency rate cut"`) when `active=true`
 - `weather.storm_warning.event_id` — primary driver event when `active=true`
@@ -211,8 +211,28 @@ Default sort: `q_score` absolute-magnitude DESC (most-conviction first), tie-bre
     "distance_to_20d_low_pct": 8.2
   },
   "history": [
-    { "date": "2026-04-19", "q_score": 0.4 },
-    { "date": "2026-04-20", "q_score": 0.8 }
+    {
+      "date": "2026-04-19",
+      "q_score": 0.4,
+      "recommendation": "neutral",
+      "confidence": 0.55,
+      "event_count": 2,
+      "top_event_id": 87,
+      "close_price": 40.25,
+      "close_change_pct": 0.8,
+      "outcome": {
+        "direction_5d": "up",
+        "pct_5d": 2.1,
+        "direction_30d": "up",
+        "pct_30d": 5.8,
+        "direction_90d": "up",
+        "pct_90d": 12.3
+      },
+      "operator_action": {
+        "action": "act",
+        "note": null
+      }
+    }
   ],
   "operator_action": {
     "last_action": "act",
@@ -223,6 +243,18 @@ Default sort: `q_score` absolute-magnitude DESC (most-conviction first), tie-bre
 ```
 
 `operator_action` is `null` if operator has not acted on this ticker for the date. `events[]` is empty if no news events attached but ticker still has Q-score from price/macro/flow signals alone.
+
+**History rows — field semantics:**
+
+Each row in `history[]` covers one (ticker, date). Three logical groups per row:
+
+- **Signal trend** (what AI thought that day): `q_score`, `recommendation` (`bullish`/`bearish`/`neutral`), `confidence` (0..1), `event_count` (news events for this ticker that day), `top_event_id` (primary driver event id; `null` if no news that day)
+- **Outcome validation** (was AI right): `close_price`, `close_change_pct` (daily return %), `outcome` object with 3 horizons (5d / 30d / 90d). Each horizon = `direction_<N>d` (`up`/`down`/`flat`) + `pct_<N>d` (actual % move). Per-horizon fields are `null` until the date has been reached + 1 trading day buffer (so a row created today has all 3 horizons `null`; a row 6 days old has `direction_5d` populated but `30d`/`90d` still `null`)
+- **Operator action** (what user did that day): `action` (`act`/`pass`/`note`), `note` (free-text, nullable). The whole `operator_action` object is `null` if operator never reviewed this ticker on this date
+
+History rows ordered by date ascending (oldest first) so frontend sparkline plots left-to-right naturally. Default `history_days=30`; max `365`.
+
+**Outcome horizons** (5d / 30d / 90d) chosen 2026-05-19 to span swing → position-trade analysis windows. Same horizons feed the L2B/L3 self-learning calibration batch (#1251) — operator-action accuracy and AI Q-score accuracy are evaluated against these same checkpoints.
 
 **Errors:**
 - `401` — auth
