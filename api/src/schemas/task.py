@@ -527,6 +527,14 @@ class TaskCreate(BaseModel):
     # name → 422.  Pre-fill is override-safe: an explicit caller value
     # takes precedence over the template default.
     action_template_id: str | None = Field(default=None, min_length=1, max_length=64)
+    # Kanban #1004 (2026-05-20): optional auto-handoff template pointer.
+    # When non-null, a later PATCH that transitions process_status to DONE
+    # triggers the spawn hook in services/handoff_spawn.py — a child task
+    # derived from the named template lands in the same transaction.
+    # Existence + project-scope validated in the router (needs DB lookup).
+    # Loop guard (AC6): the CHILD's handoff_template_id is set to NULL by
+    # the spawn service so the chain terminates after one level.
+    handoff_template_id: int | None = Field(default=None, ge=1)
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=True)
@@ -881,6 +889,14 @@ class TaskUpdate(BaseModel):
     notification_targets: list[NotificationTarget] | None = Field(
         default=None, max_length=20
     )
+    # Kanban #1004 (2026-05-20): PATCH-able. Semantics:
+    #   - key absent      → leave unchanged (exclude_unset=True in router)
+    #   - explicit null   → clear (NULL — disables auto-handoff on next DONE-flip)
+    #   - non-null int    → point at a different template (router validates
+    #                       existence + project scope; same project as the
+    #                       task, OR global template (project_id IS NULL))
+    # Same posture as `blocked_by` — re-pointing IS supported in V1.
+    handoff_template_id: int | None = Field(default=None, ge=1)
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=False)
@@ -1153,6 +1169,12 @@ class TaskRead(BaseModel):
     # for legacy / hand-edited resilience — mirrors the project-level
     # ProjectRead.notification_targets shape.
     notification_targets: list[dict[str, Any]] | None = None
+    # Kanban #1004 (2026-05-20) — auto-handoff template pointer. Backfilled
+    # to NULL on existing rows by migration 0045's nullable=true. NULL = no
+    # auto-handoff configured; non-null = on the next DONE-flip the router
+    # spawns a child via services/handoff_spawn.py (the CHILD's value is
+    # always NULL — loop guard).
+    handoff_template_id: int | None = None
 
 
 class NextAutorunResponse(BaseModel):

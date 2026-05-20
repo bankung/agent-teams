@@ -24,6 +24,7 @@ from sqlalchemy.sql.elements import ClauseElement
 
 from src.constants import RecordStatus, TaskInteractionKind, TaskRunMode, TaskStatus, TaskType
 from src.db import get_or_404, get_session
+from src.models.handoff_template import HandoffTemplate
 from src.models.project import Project
 from src.models.session import SessionRun
 from src.models.task import Task
@@ -70,6 +71,7 @@ from src.services.session_project import (
     require_project_id_header,
 )
 from src.services.action_templates import get_template
+from src.services.handoff_spawn import spawn_child_from_handoff
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -947,6 +949,29 @@ async def create_task(
                 detail=f"blocked_by {payload.blocked_by} belongs to a different project",
             )
 
+    # Kanban #1004: handoff_template_id existence + project-scope validation.
+    # Mirrors the blocked_by posture above. A template's project_id must be
+    # NULL (global) OR equal to the task's project_id; cross-project pointers
+    # are rejected at 422. Soft-deleted templates (status=0) are rejected.
+    if payload.handoff_template_id is not None:
+        ht = await session.get(HandoffTemplate, payload.handoff_template_id)
+        if ht is None or ht.status == RecordStatus.DELETED:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"handoff_template_id {payload.handoff_template_id} "
+                    "does not exist or is deleted"
+                ),
+            )
+        if ht.project_id is not None and ht.project_id != payload.project_id:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"handoff_template_id {payload.handoff_template_id} "
+                    "belongs to a different project"
+                ),
+            )
+
     # Kanban #858 (2026-05-13): when interaction_kind IN ('question','decision'),
     # force task_kind='human' AND run_mode='manual' regardless of caller input.
     # Silent server-side coerce (Option A) — atomic so the HUMAN↔MANUAL
@@ -1452,6 +1477,31 @@ async def update_task(
                     detail=f"blocked_by chain exceeds maximum depth of {_BLOCKED_BY_MAX_CHAIN_DEPTH}",
                 )
 
+    # Kanban #1004: handoff_template_id PATCH validation. Same posture as
+    # blocked_by — existence + project-scope checks, plus the global-template
+    # exception (project_id IS NULL on the template). Setting to None is
+    # always allowed (clears the auto-handoff opt-in).
+    if "handoff_template_id" in updates:
+        new_handoff_template_id = updates["handoff_template_id"]
+        if new_handoff_template_id is not None:
+            ht = await session.get(HandoffTemplate, new_handoff_template_id)
+            if ht is None or ht.status == RecordStatus.DELETED:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"handoff_template_id {new_handoff_template_id} "
+                        "does not exist or is deleted"
+                    ),
+                )
+            if ht.project_id is not None and ht.project_id != task.project_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"handoff_template_id {new_handoff_template_id} "
+                        "belongs to a different project"
+                    ),
+                )
+
     # Kanban #772 resolved-final blocker-order constraint. Fires when EITHER
     # `sort_order` or `blocked_by` is in the PATCH body — the constraint
     # touches both columns and a change to either side can violate the rule
@@ -1744,6 +1794,46 @@ async def update_task(
     # Force `updated_at` to refresh — server_default only fires on INSERT.
     if changed:
         task.updated_at = func.now()
+
+    # Kanban #1004: auto-handoff spawn hook. When this PATCH transitions
+    # process_status from `!= 5` to `= 5` AND the task carries a non-null
+    # handoff_template_id, spawn a child task derived from that template in
+    # the SAME transaction. The parent flip + child INSERT commit together;
+    # a template-render failure (422) atomically rolls both back so the
+    # operator never sees a half-spawned state.
+    #
+    # We compute `_was_done_before` from the cached pre-PATCH process_status
+    # captured earlier (_resolved_ps_for_done is the post-PATCH value). The
+    # "transitioned to DONE" condition mirrors #944's cost-estimation gate
+    # so a re-PATCH of an already-DONE task does NOT re-spawn (idempotence).
+    #
+    # Reads `task.handoff_template_id` AFTER the setattr loop so a same-PATCH
+    # update to the field is honored (e.g. PATCH {handoff_template_id: T,
+    # process_status: 5} on a TODO row — sets the pointer AND triggers
+    # spawn in one call).
+    if (
+        _resolved_ps_for_done == TaskStatus.DONE
+        and task.process_status == TaskStatus.DONE  # setattr loop applied it
+        and task.handoff_template_id is not None
+    ):
+        # The parent row in `task` was just set to DONE in-memory. We need to
+        # know if this is a TRANSITION (re-PATCHing an already-DONE row must
+        # not re-spawn). `_resolved_ps_for_done` is the post-PATCH value
+        # (always DONE here); the actual pre-PATCH process_status lives on
+        # the row at session-load time — but SQLAlchemy has mutated the
+        # attribute, so we use the `process_status` key presence in
+        # `updates` as the signal: if process_status is in `updates`, the
+        # caller actually flipped it (the no-op skip above would have left
+        # it out otherwise → still a transition signal absent). When
+        # process_status is NOT in updates, the task was already DONE before
+        # this PATCH — skip the spawn.
+        if "process_status" in updates:
+            # spawn_child_from_handoff raises HTTPException(422) on
+            # template-render failure; the surrounding try/except below
+            # (commit IntegrityError handler) does NOT swallow HTTPException,
+            # so the 422 propagates up cleanly with the parent flip rolled
+            # back (we haven't commit'd yet).
+            await spawn_child_from_handoff(session, task)
 
     try:
         await session.commit()

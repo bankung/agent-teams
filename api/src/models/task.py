@@ -392,6 +392,20 @@ class Task(Base):
         JSONB, nullable=True
     )
 
+    # Kanban #1004 (2026-05-20): auto-handoff template pointer. When non-null,
+    # a PATCH that transitions process_status to DONE triggers the spawn hook
+    # in services/handoff_spawn.py — a child task derived from the named
+    # template lands in the same transaction. The CHILD's handoff_template_id
+    # is set to NULL by the spawn service (loop guard AC6). ON DELETE SET NULL
+    # mirrors blocked_by / spawned_from_task_id posture — defense-in-depth
+    # against a templates table delete that would otherwise cascade. App layer
+    # soft-deletes templates; hard-delete remains a human-only path.
+    handoff_template_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("handoff_templates.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

@@ -26,6 +26,7 @@ from src.middleware.rate_limit import limiter
 from src.middleware.request_size import request_size_middleware
 from src.routers import audit as audit_router
 from src.routers import events as events_router
+from src.routers import handoff_templates as handoff_templates_router
 from src.routers import notifications as notifications_router
 from src.routers import decisions as decisions_router
 from src.routers import templates as templates_router
@@ -302,6 +303,8 @@ def create_app() -> FastAPI:
     app.include_router(decisions_router.router, prefix="/api")
     # Kanban #1006 — action template library (GET /api/templates/actions).
     app.include_router(templates_router.router, prefix="/api")
+    # Kanban #1004 — handoff templates CRUD (auto-handoff on DONE-flip).
+    app.include_router(handoff_templates_router.router, prefix="/api")
 
     return app
 
