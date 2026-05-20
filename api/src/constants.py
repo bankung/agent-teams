@@ -95,7 +95,9 @@ class TaskRole:
       *  1..10  → dev team (.claude/teams/dev.md)
       * 11..20  → novel team (.claude/teams/novel.md)
       * 21..30  → seo team (.claude/teams/seo.md)
-      * 31+     → reserved for future team domains
+      * 31..40  → reserved (planned: sem team — Kanban #1269 sibling followup)
+      * 41..50  → data-analytics team (.claude/teams/data-analytics.md)
+      * 51+     → reserved for future team domains
 
     Each team's playbook owns the named codes inside its range. Unnamed codes
     inside an existing range (e.g. 6..10) are RESERVED for that team to claim
@@ -122,12 +124,21 @@ class TaskRole:
     SEO_REPORTING_ANALYST = 24
     # 25-30 reserved for future seo team roles
 
+    # 31-40 reserved for sem team (Kanban #1269 sibling followup)
+
+    # Data-analytics range (41..50) — Kanban #1271 AC7 (2026-05-20)
+    BI_ANALYST = 41
+    SQL_OPTIMIZER = 42
+    DASHBOARD_DESIGNER = 43
+    ANALYTICS_PLATFORM_INTEGRATOR = 44
+    # 45-50 reserved for future data-analytics team roles
+
     # Validator bounds — range, not membership. ALL stays as the union of
     # currently-named codes (used by callers that want to enumerate the
     # known roster, e.g. tests / docs); the wire-layer range gate lives in
     # the Pydantic validator on `assigned_role`.
     RANGE_MIN = 1
-    RANGE_MAX = 30
+    RANGE_MAX = 50
 
     ALL = (
         FRONTEND,
@@ -143,6 +154,10 @@ class TaskRole:
         TECHNICAL_SEO_SPECIALIST,
         CONTENT_SEO_OPTIMIZER,
         SEO_REPORTING_ANALYST,
+        BI_ANALYST,
+        SQL_OPTIMIZER,
+        DASHBOARD_DESIGNER,
+        ANALYTICS_PLATFORM_INTEGRATOR,
     )
 
 
