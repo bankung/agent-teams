@@ -60,7 +60,12 @@ class RecordStatus:
 
 
 class ProjectTeam:
-    """projects.team — 'dev'/'novel'/'general'/'content'. Mirror of migration 0038 (intentionally duplicated)."""
+    """projects.team — 'dev'/'novel'/'general'/'content'. Mirror of migration 0038 (intentionally duplicated).
+
+    'seo' is reserved for migration 0042 (#1266 drafted, NOT applied). When operator
+    applies 0042 with MIGRATION_TARGET=live, this class + schemas/project.py::TeamCode
+    must be re-extended atomically in the same commit.
+    """
 
     DEV = "dev"
     NOVEL = "novel"
@@ -89,7 +94,8 @@ class TaskRole:
     Range partition:
       *  1..10  → dev team (.claude/teams/dev.md)
       * 11..20  → novel team (.claude/teams/novel.md)
-      * 21+     → reserved for future team domains
+      * 21..30  → seo team (.claude/teams/seo.md)
+      * 31+     → reserved for future team domains
 
     Each team's playbook owns the named codes inside its range. Unnamed codes
     inside an existing range (e.g. 6..10) are RESERVED for that team to claim
@@ -109,12 +115,19 @@ class TaskRole:
     NOVEL_EDITOR = 12
     NOVEL_PROOFREADER = 13
 
+    # SEO range (21..30) — Kanban #1266 AC3 (2026-05-20)
+    SEO_STRATEGIST = 21
+    TECHNICAL_SEO_SPECIALIST = 22
+    CONTENT_SEO_OPTIMIZER = 23
+    SEO_REPORTING_ANALYST = 24
+    # 25-30 reserved for future seo team roles
+
     # Validator bounds — range, not membership. ALL stays as the union of
     # currently-named codes (used by callers that want to enumerate the
     # known roster, e.g. tests / docs); the wire-layer range gate lives in
     # the Pydantic validator on `assigned_role`.
     RANGE_MIN = 1
-    RANGE_MAX = 20
+    RANGE_MAX = 30
 
     ALL = (
         FRONTEND,
@@ -126,6 +139,10 @@ class TaskRole:
         NOVEL_WRITER,
         NOVEL_EDITOR,
         NOVEL_PROOFREADER,
+        SEO_STRATEGIST,
+        TECHNICAL_SEO_SPECIALIST,
+        CONTENT_SEO_OPTIMIZER,
+        SEO_REPORTING_ANALYST,
     )
 
 
