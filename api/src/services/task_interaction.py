@@ -109,6 +109,40 @@ def invalidate_last_answer(
     raise ValueError("no valid answer to invalidate")
 
 
+def validate_decision_payload(
+    question_payload: dict[str, Any] | None,
+) -> None:
+    """AC2 (Kanban #1007) — validate the `question_payload` of a decision task
+    before allowing it to be flipped to DONE.
+
+    Two invariants enforced:
+      1. `chosen_id` MUST be non-null.
+      2. `chosen_id` MUST match one of `options[].id` in the payload.
+
+    Raises ValueError on failure (callers convert to HTTPException 422).
+    This function is intentionally free of DB I/O so it can be reused by
+    both the PATCH-status path and the `/decide` endpoint.
+    """
+    if question_payload is None:
+        raise ValueError("decision task has no question_payload — cannot flip to DONE")
+
+    chosen_id = question_payload.get("chosen_id")
+    if not chosen_id:
+        raise ValueError(
+            "decision task requires chosen_id to be set before flipping to DONE"
+        )
+
+    options = question_payload.get("options") or []
+    option_ids = [
+        opt["id"] if isinstance(opt, dict) else getattr(opt, "id", None)
+        for opt in options
+    ]
+    if chosen_id not in option_ids:
+        raise ValueError(
+            f"chosen_id '{chosen_id}' does not match any option id in this decision task"
+        )
+
+
 async def auto_unblock_dependents(
     session: AsyncSession,
     question_task_id: int,

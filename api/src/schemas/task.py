@@ -209,12 +209,39 @@ class AnswerHistoryEntry(BaseModel):
     invalidated_reason: str | None = None
 
 
+# ---------------------------------------------------------------------------
+# Kanban #1007 — OptionItem: must precede QuestionPayload (used in options field)
+# ---------------------------------------------------------------------------
+
+
+class OptionItem(BaseModel):
+    """A single selectable option in a `DecisionPayload` (Kanban #1007, AC1).
+
+    `id` is the machine-stable identifier the `/decide` endpoint validates
+    against. `label` is the human-readable display text. `description` and
+    `hints` are optional advisory context shown on the UI option card (AC3,
+    out of scope for this slice — reserved for dev-sr-frontend follow-up).
+
+    `extra='forbid'` rejects unknown keys at 422 (parity with AcceptanceCriterion).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=128)
+    label: str = Field(min_length=1, max_length=200)
+    description: str | None = None
+    hints: list[str] | None = None
+
+
 class QuestionPayload(BaseModel):
     """Payload for `interaction_kind IN ('question', 'decision')` tasks
     (Kanban #830).
 
-    `question` is required (min_length=1). `options` is an optional list
-    of choice strings (used for 'decision' tasks — Option A / B / …).
+    `question` is required (min_length=1). `options` accepts either the
+    legacy `list[str]` shape (question tasks) OR the structured
+    `list[OptionItem]` shape (decision tasks — Kanban #1007 AC1). Both
+    forms coexist because `question_payload` is a single JSONB column and
+    backward compat requires the old string-option shape to remain valid.
     `answer_history` accumulates answers over time; append-only logic
     (Kanban #832) is NOT in this slice — PATCH semantics are full-replace
     (same as `acceptance_criteria`).
@@ -233,8 +260,84 @@ class QuestionPayload(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     question: str = Field(min_length=1)
-    options: list[str] | None = None
+    # Kanban #1007 (AC1 / AC6): options accepts string items (legacy question
+    # tasks) OR OptionItem-shaped dicts (decision tasks). The discriminator
+    # model_validator in TaskCreate / TaskUpdate enforces the stricter
+    # DecisionPayload contract when interaction_kind='decision'.
+    options: list[str | OptionItem] | None = None
     answer_history: list[AnswerHistoryEntry] = Field(default_factory=list)
+
+
+class DecisionPayload(BaseModel):
+    """Formal payload shape for `interaction_kind='decision'` tasks (Kanban #1007, AC1).
+
+    Extends the free-form `QuestionPayload` concept with typed option items
+    so that the `/decide` endpoint can validate `chosen_id` against the
+    canonical set. Fields:
+
+    - `options`      — required; at least one item; each item has `id`/`label`
+                       and optional `description`/`hints`.
+    - `chosen_id`    — populated by `POST /api/tasks/{id}/decide`; null until decided.
+    - `rationale`    — free-form justification captured by `/decide`; null until decided.
+    - `chosen_at`    — UTC datetime when the decision was recorded; null until decided.
+    - `chosen_by`    — who submitted the decision (defaults to 'user'); null until decided.
+
+    `answer_history` is inherited from QuestionPayload usage but not declared
+    here — the JSONB column is free-form; the Pydantic validator enforces the
+    minimum contract for decision-specific keys.
+
+    `extra='allow'` matches QuestionPayload — other keys (answer_history,
+    #1211 audit flag extras) pass through unchanged.
+
+    AC6 backward compat: this class is used ONLY when `interaction_kind='decision'`
+    is explicitly set. Existing tasks with other `question_payload` shapes are
+    validated only by QuestionPayload (free-form).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    options: list[OptionItem] = Field(min_length=1)
+    chosen_id: str | None = None
+    rationale: str | None = None
+    chosen_at: datetime | None = None
+    chosen_by: str | None = None
+
+
+class DecisionRequest(BaseModel):
+    """Request body for `POST /api/tasks/{id}/decide` (Kanban #1007, AC4).
+
+    The caller supplies `chosen_id` (required — must match one of
+    `question_payload.options[].id`) and an optional `rationale`. The
+    endpoint merges these into `question_payload` together with
+    server-stamped `chosen_at` and `chosen_by`.
+
+    `extra='forbid'` rejects unknown keys at 422.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    chosen_id: str = Field(min_length=1, max_length=128)
+    rationale: str | None = None
+    chosen_by: str = "user"
+
+
+class DecisionListItem(BaseModel):
+    """One row in `GET /api/decisions` response (Kanban #1007, AC5).
+
+    Flattens the relevant decision fields from `question_payload` alongside
+    the task-level fields the caller needs to surface past decisions. Ordered
+    by `chosen_at DESC`.
+    """
+
+    model_config = ConfigDict(from_attributes=False)
+
+    task_id: int
+    title: str
+    options: list[OptionItem]
+    chosen_id: str | None
+    rationale: str | None
+    chosen_at: datetime | None
+    chosen_by: str | None
 
 
 class TaskCreate(BaseModel):

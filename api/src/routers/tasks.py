@@ -30,7 +30,14 @@ from src.models.task import Task
 from src.models.transaction import Transaction
 from src.schemas.ai_task import ParseRequest, ParseResponse
 from src.schemas.project import ResolveFlagRequest, ResolveFlagResponse
-from src.schemas.task import NextAutorunResponse, TaskCreate, TaskRead, TaskReorder, TaskUpdate
+from src.schemas.task import (
+    DecisionRequest,
+    NextAutorunResponse,
+    TaskCreate,
+    TaskRead,
+    TaskReorder,
+    TaskUpdate,
+)
 from src.services.ai_task_parser import (
     AiCallFailed,
     AiCallTimeout,
@@ -50,6 +57,7 @@ from src.services.task_interaction import (
     append_answer,
     auto_unblock_dependents,
     invalidate_last_answer as _invalidate_last_answer,
+    validate_decision_payload,
 )
 from src.services.task_kind import (
     assert_run_mode_for_kind,
@@ -1536,6 +1544,21 @@ async def update_task(
         else task.process_status
     )
 
+    # Kanban #1007 (AC2): when a decision task is being flipped to DONE via PATCH,
+    # enforce that chosen_id is set and matches an option id. This mirrors the
+    # `/decide` endpoint's own validation so both paths share the invariant.
+    # Fires before the status-stamp side effects — a 422 here is a clean rejection.
+    if (
+        _resolved_ps_for_done == TaskStatus.DONE
+        and _resolved_interaction_kind_for_done == TaskInteractionKind.DECISION
+        and task.process_status != TaskStatus.DONE  # skip already-done idempotent case
+    ):
+        resolved_qp = updates.get("question_payload") or task.question_payload
+        try:
+            validate_decision_payload(resolved_qp)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     # Process-status-transition side effects — only stamp if not already set /
     # explicitly provided. We use the DB now() so the value matches the
     # audit-trigger snapshot.
@@ -1905,6 +1928,91 @@ async def fire_now(
             detail=_DETAIL_FIRE_NOW_MAX_CHILDREN_TEMPLATE.format(task_id=task_id),
         )
     return child
+
+
+@router.post(
+    "/{task_id}/decide",
+    response_model=TaskRead,
+    status_code=http_status.HTTP_200_OK,
+)
+async def decide_task(
+    task_id: int,
+    payload: DecisionRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+) -> Task:
+    """Kanban #1007 (AC4) — record a human decision on a decision task.
+
+    Atomically:
+      (a) Validates `chosen_id` against `question_payload.options[].id`.
+      (b) Merges `chosen_id`, `rationale`, `chosen_at=now()`, and `chosen_by`
+          into `question_payload`.
+      (c) Flips `process_status=5` (DONE) and stamps `completed_at`.
+      (d) Calls `auto_unblock_dependents` (same as the PATCH done-flip path).
+      (e) The existing `tasks_audit_trg` PG trigger captures the full row
+          snapshot automatically — no separate audit plumbing needed.
+
+    Error codes:
+      - 404 — task not found.
+      - 409 — task is already DONE.
+      - 422 — task is not `interaction_kind='decision'`, or `chosen_id` is
+              not in the option list.
+    """
+    task = await get_or_404(
+        session, Task, detail=f"Task id={task_id} not found", id=task_id
+    )
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+
+    # Guard: wrong interaction kind.
+    if task.interaction_kind != TaskInteractionKind.DECISION:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Task id={task_id} is not a decision task "
+                f"(interaction_kind='{task.interaction_kind}')"
+            ),
+        )
+
+    # Guard: already decided.
+    if task.process_status == TaskStatus.DONE:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task id={task_id} is already DONE",
+        )
+
+    # Validate chosen_id against the existing option list.
+    try:
+        validate_decision_payload({
+            **(task.question_payload or {}),
+            "chosen_id": payload.chosen_id,
+        })
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Merge decision fields into question_payload.
+    now_utc = datetime.now(timezone.utc)
+    updated_payload = {
+        **(task.question_payload or {}),
+        "chosen_id": payload.chosen_id,
+        "rationale": payload.rationale,
+        "chosen_at": now_utc.isoformat(),
+        "chosen_by": payload.chosen_by,
+    }
+    task.question_payload = updated_payload
+
+    # Flip to DONE + stamp timestamps.
+    task.process_status = TaskStatus.DONE
+    task.completed_at = func.now()
+    task.updated_at = func.now()
+
+    await session.commit()
+
+    # Auto-unblock any tasks blocked by this decision task (mirrors the PATCH path).
+    await auto_unblock_dependents(session, task_id)
+    await session.commit()
+
+    await session.refresh(task)
+    return task
 
 
 @router.delete("/{task_id}", status_code=http_status.HTTP_204_NO_CONTENT)
