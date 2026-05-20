@@ -418,7 +418,8 @@ async def test_budget_warn_push_fires_on_threshold(client, monkeypatch) -> None:
     monkeypatch.setattr(nr, "deliver", _mock_deliver)
 
     # Reset the de-dupe cache so this test run is not affected by others.
-    bg._reset_alert_cache_for_tests()
+    # (Direct module-state mutation — see feedback_test_surface_pollution.)
+    bg._ALERT_SENT.clear()
 
     from src.models.project import Project
     from sqlalchemy import select

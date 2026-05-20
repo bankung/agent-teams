@@ -61,11 +61,16 @@ ac_outline: []
 
 @pytest.fixture(autouse=True)
 def _reset_template_cache():
-    """Clear the loader cache before each test so env overrides take effect."""
-    from src.services.action_templates import reset_cache
-    reset_cache()
+    """Clear the loader cache before each test so env overrides take effect.
+
+    Mutates the module-private `_CACHE` directly per `feedback_test_surface_pollution`
+    memory — production code intentionally does NOT expose a public `reset_cache()`
+    helper; tests reach into the module's private state.
+    """
+    from src.services import action_templates
+    action_templates._CACHE = None
     yield
-    reset_cache()
+    action_templates._CACHE = None
 
 
 @pytest.fixture

@@ -83,10 +83,15 @@ async def _seed_today_spend(db_session, project_id: int, cost: Decimal) -> int:
 
 @pytest.fixture(autouse=True)
 def _clear_alert_cache():
-    """Reset module-level alert de-dupe cache between tests."""
-    budget_gate._reset_alert_cache_for_tests()
+    """Reset module-level alert de-dupe cache between tests.
+
+    Mutates the module-private `_ALERT_SENT` directly per
+    `feedback_test_surface_pollution` memory — production code intentionally
+    does NOT expose a public reset helper; tests reach into module state.
+    """
+    budget_gate._ALERT_SENT.clear()
     yield
-    budget_gate._reset_alert_cache_for_tests()
+    budget_gate._ALERT_SENT.clear()
 
 
 # ---------------------------------------------------------------------------

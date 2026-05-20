@@ -102,9 +102,16 @@ def _mark_alert_sent_today(project_id: int, today: date, event: str) -> None:
     _ALERT_SENT[(project_id, today, event)] = None
 
 
-def _reset_alert_cache_for_tests() -> None:
-    """Hook for the test suite to clear the cache between assertions."""
-    _ALERT_SENT.clear()
+# NOTE: tests that need to clear the alert-sent cache between assertions
+# mutate `_ALERT_SENT` directly:
+#
+#     from src.services import budget_gate
+#     budget_gate._ALERT_SENT.clear()
+#
+# Per `feedback_test_surface_pollution` memory, we deliberately do NOT expose
+# a `_reset_alert_cache_for_tests()` helper — that pattern widens the
+# production import surface for test-only convenience. Direct mutation of
+# the module-private `_ALERT_SENT` dict is the canonical access path.
 
 
 # ---------------------------------------------------------------------------

@@ -136,10 +136,14 @@ def get_template(name: str) -> ActionTemplateRead | None:
     return None
 
 
-def reset_cache() -> None:
-    """Clear the in-memory cache — forces a reload on the next call.
-
-    Used by tests that need to point the loader at a custom directory.
-    """
-    global _CACHE
-    _CACHE = None
+# NOTE: tests that need to reset the in-memory cache (e.g., to point the loader
+# at a custom directory via ACTION_TEMPLATES_DIR) mutate `_CACHE` directly:
+#
+#     import src.services.action_templates as action_templates
+#     action_templates._CACHE = None
+#
+# Per `feedback_test_surface_pollution` memory, we deliberately do NOT expose a
+# `reset_cache()` public function — that would widen the production import
+# surface for test-only convenience. Hot-reload of templates IS NOT a production
+# feature (V1 design — restart picks up YAML changes); when/if it becomes one,
+# add a properly-named `refresh()` with its own access controls.
