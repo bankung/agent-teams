@@ -52,6 +52,7 @@ from src.models.project import Project
 from src.models.task import Task, TaskHistory
 from src.services.notify_telegram import send_telegram
 from src.services.notify_web_push import send_web_push
+from src.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,42 @@ async def _resolve_push_subscription_targets(
     return targets
 
 
+def _resolve_fallback_base(project: Project, repo_root: Path) -> Path:
+    """Resolve the absolute fallback base directory for notification writes.
+
+    Returns ``repo_root / "context" / "projects" / project.name`` when:
+    - ``project.working_path`` is None, OR
+    - ``project.working_path`` is not absolute on the current platform (e.g. a
+      Windows-absolute path like ``C:\\Users\\...`` on a Linux container returns
+      ``False`` for ``Path.is_absolute()``), OR
+    - the resolved path does not exist as a directory (defensive — avoids
+      silently writing into a stale / unmounted working tree).
+
+    When the working_path is usable, returns it directly.
+
+    Logs a WARNING when falling back due to an unusable working_path so the
+    operator can correct the project row.
+    """
+    if project.working_path:
+        candidate = Path(project.working_path)
+        # On Linux, Windows-absolute paths (C:\...) are NOT absolute — they
+        # look like relative paths and resolve relative to CWD, creating deeply
+        # nested PUA-character directories. The is_absolute() + exists() guard
+        # catches both the Windows-path-on-Linux case and unmounted volumes.
+        if candidate.is_absolute() and candidate.exists():
+            return candidate
+        logger.warning(
+            "notification_router: project.working_path %r is not a usable "
+            "absolute path on this platform (is_absolute=%s, exists=%s); "
+            "falling back to repo_root base %r",
+            project.working_path,
+            candidate.is_absolute(),
+            candidate.exists(),
+            str(repo_root),
+        )
+    return repo_root / "context" / "projects" / project.name
+
+
 def _write_local_fallback(
     project: Project,
     task_id: int,
@@ -172,15 +209,23 @@ def _write_local_fallback(
     Header block carries audit metadata so an operator scanning the file by
     hand can identify which kind / when / why-not-pushed without consulting
     the `tasks_history` JSONB.
+
+    Path resolution delegates to ``_resolve_fallback_base`` which anchors all
+    writes at ``settings.repo_root`` when ``project.working_path`` is null or
+    is not a usable absolute path on the current platform (Kanban #1285 —
+    fixes the CWD-relative write bug that created nested directories under
+    ``/repo/api/`` instead of ``/repo/``).
     """
     try:
-        # AC4 + #1185 path resolution: working_path when set, else legacy
-        # agent-teams/context/projects/<name>/notifications/ layout (#941).
+        # Kanban #1285: always resolve through _resolve_fallback_base so the
+        # path is anchored at repo_root (an absolute Linux path) rather than
+        # CWD (/repo/api inside the container).  The old inline `Path("context")`
+        # was CWD-relative and produced /repo/api/context/... instead of
+        # /repo/context/... when working_path was null.
+        settings = get_settings()
+        repo_root = Path(settings.repo_root)
+        base = _resolve_fallback_base(project, repo_root) / "notifications"
         # Filename uses %Y%m%dT%H%M%SZ — colons in ISO8601 break NTFS.
-        if project.working_path:
-            base = Path(project.working_path) / "notifications"
-        else:
-            base = Path("context") / "projects" / project.name / "notifications"
         base.mkdir(parents=True, exist_ok=True)
         path = base / f"{task_id}-{ts.strftime('%Y%m%dT%H%M%SZ')}.txt"
         header_lines = [

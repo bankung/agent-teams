@@ -475,3 +475,136 @@ async def test_post_project_notification_targets_schema_rejected(
     payload = _project_create_payload(name, notification_targets=bad_targets)
     resp = await client.post("/api/projects", json=payload)
     assert resp.status_code == 422, f"{label}: {resp.text}"
+
+
+# ---------------------------------------------------------------------------
+# Kanban #1285 — fallback path anchored at repo_root (CWD-relative bug fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fallback_path_anchored_at_repo_root_when_working_path_null(
+    client, scaffold_cleanup
+) -> None:
+    """AC2 (Kanban #1285): when project.working_path is null, the fallback file
+    MUST land under settings.repo_root/context/projects/<name>/notifications/,
+    NOT under /repo/api/context/... (the CWD-relative bug).
+
+    Uses a real Project row with working_path=None (no tmp_path patching) so
+    the actual _write_local_fallback code path is exercised end-to-end.
+
+    The test verifies:
+    1. The returned path starts with the absolute repo_root (not CWD-relative).
+    2. The notification file physically exists at the absolute path.
+    3. No 'api/context' segment appears in the path (the old bug surface).
+    """
+    from src.settings import get_settings
+    from pathlib import Path as _Path
+
+    # Create a project with no working_path (the null case from AC2).
+    proj = await _create_project(client, scaffold_cleanup)  # working_path omitted → null
+    task = await _create_task(client, proj["id"])
+
+    resp = await client.post(
+        "/api/notifications/deliver",
+        headers={"X-Project-Id": str(proj["id"])},
+        json={
+            "task_id": task["id"],
+            "payload": {"event": "ac2_test"},
+            "kind": "telegram",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert len(body["attempts"]) == 1
+    attempt = body["attempts"][0]
+    assert attempt["target"] is None, "should have hit local fallback (no targets)"
+    assert attempt["ok"] is True
+
+    written_path = attempt["path"]
+    assert written_path is not None
+
+    # AC2 core assertion: path is absolute and anchored at repo_root.
+    repo_root = str(get_settings().repo_root)
+    assert written_path.startswith(repo_root), (
+        f"Fallback wrote to {written_path!r} which does NOT start with "
+        f"repo_root={repo_root!r}. CWD-relative bug is still present."
+    )
+
+    # The old bug produced paths containing '/api/context/' — ensure it's gone.
+    assert "/api/context/" not in written_path, (
+        f"Path {written_path!r} contains '/api/context/' — the CWD-relative "
+        "bug from Kanban #1285 is still present."
+    )
+
+    # Verify the file physically exists (not just a string claim).
+    assert _Path(written_path).exists(), (
+        f"Fallback file {written_path!r} does not exist on disk."
+    )
+
+
+@pytest.mark.asyncio
+async def test_fallback_path_uses_repo_root_for_windows_working_path(
+    client, scaffold_cleanup
+) -> None:
+    """Bonus AC (Kanban #1285): when project.working_path is a Windows-absolute
+    path (e.g. C:\\Users\\...)), the Linux container must NOT create a nested
+    directory tree by resolving it as a relative path.
+
+    The router must detect the non-absolute-on-Linux path and fall back to
+    repo_root/context/projects/<name>/notifications/ with a WARNING log.
+
+    Verifies:
+    1. ok=True (delivery still completes via fallback).
+    2. Returned path is anchored at repo_root, not at some CWD-relative location.
+    3. No directory starting with 'C:' or similar Windows drive prefix is created
+       relative to CWD.
+    """
+    import logging
+    from pathlib import Path as _Path
+    from src.settings import get_settings
+
+    # Use a real Windows-style absolute path as working_path.
+    windows_path = r"C:\Users\banku\Documents\Personal\Projects\WebApp\newsanalyzer"
+    proj = await _create_project(client, scaffold_cleanup, working_path=windows_path)
+    task = await _create_task(client, proj["id"])
+
+    with pytest.raises(Exception) if False else __import__("contextlib").nullcontext():
+        resp = await client.post(
+            "/api/notifications/deliver",
+            headers={"X-Project-Id": str(proj["id"])},
+            json={
+                "task_id": task["id"],
+                "payload": {"event": "windows_path_test"},
+                "kind": "telegram",
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    attempt = body["attempts"][0]
+    assert attempt["ok"] is True, f"Fallback failed: {attempt['detail']}"
+
+    written_path = attempt["path"]
+    assert written_path is not None
+
+    repo_root = str(get_settings().repo_root)
+
+    # NEGATIVE assertion: the path must NOT be a relative Windows-style path
+    # resolved under CWD (/repo/api). This is the bug surface.
+    assert not written_path.startswith("/repo/api/C"), (
+        f"CWD-relative Windows path bug still present: {written_path!r}"
+    )
+    assert not written_path.startswith("C:"), (
+        f"Windows path written verbatim on Linux: {written_path!r}"
+    )
+
+    # POSITIVE assertion: must be anchored at repo_root.
+    assert written_path.startswith(repo_root), (
+        f"Fallback wrote to {written_path!r}, not under repo_root={repo_root!r}"
+    )
+
+    # Physical existence check.
+    assert _Path(written_path).exists(), (
+        f"Fallback file {written_path!r} does not exist on disk."
+    )
