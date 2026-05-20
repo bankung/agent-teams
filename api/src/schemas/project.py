@@ -227,7 +227,13 @@ class ProjectCreate(BaseModel):
     tester/reviewer; novel=writer/editor). Unknown values reject with 422.
     """
 
-    name: str = Field(min_length=1, pattern=r"^[a-zA-Z0-9_-]{1,64}$")
+    # max_length=64 fires BEFORE the regex check in Pydantic v2 field
+    # validation order, so a 65-char name produces "String should have at most
+    # 64 characters" rather than the opaque "String should match pattern" that
+    # the regex alone would emit. The regex still enforces the character-class
+    # constraint; max_length makes the length constraint independently legible
+    # in the 422 error body. (Kanban #1300 smoke artifact, parent #1293)
+    name: str = Field(min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]{1,64}$")
     description: str | None = None
     paths: _Paths
     stack: _Stack = Field(default_factory=_Stack)
@@ -311,7 +317,10 @@ class ProjectUpdate(BaseModel):
     # can't flip it. `status` and any other unknown key drop on the floor.
     model_config = ConfigDict(extra="ignore")
 
-    name: str | None = Field(default=None, min_length=1, pattern=r"^[a-zA-Z0-9_-]{1,64}$")
+    # max_length=64 mirrors ProjectCreate.name — same length-first error
+    # message discipline (Kanban #1300 smoke artifact, parent #1293). The regex
+    # still covers the character-class constraint.
+    name: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]{1,64}$")
     description: str | None = None
 
     paths_web: str | None = None
