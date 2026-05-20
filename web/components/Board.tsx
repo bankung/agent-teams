@@ -20,6 +20,7 @@ import {
   patchTask,
   reorderTask,
   type ProjectRead,
+  type ProjectStatsEntry,
   type TaskRead,
 } from "@/lib/api";
 import { TaskStatus, type TaskStatusValue } from "@/lib/constants";
@@ -31,6 +32,7 @@ import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
 import { Icon } from "@/components/Icon";
 import { AiTaskModal } from "@/components/AiTaskModal";
 import { AuditHistorySection } from "@/components/AuditHistorySection";
+import { CostSummary } from "@/components/CostSummary";
 import { KilledBanner } from "@/components/KilledBanner";
 import { KillProjectModal } from "@/components/KillProjectModal";
 import { NewTaskModal } from "@/components/NewTaskModal";
@@ -48,6 +50,9 @@ type Props = {
   initialTasks: TaskRead[];
   hasHeadlessTask: boolean;
   project: ProjectRead;
+  // Kanban #1289 — per-project usage panel. 0 entries = project has no stats
+  // row yet; 1 entry = scoped stats from GET /api/projects/stats?project_id=<id>.
+  projectStats: ProjectStatsEntry[];
 };
 
 type Column = { statuses: TaskStatusValue[]; label: string; key: string };
@@ -97,7 +102,7 @@ function groupByStatus(tasks: TaskRead[]) {
 
 type ViewMode = "board" | "list";
 
-export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
+export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: Props) {
   const router = useRouter();
   const [tasks, setTasks] = useState<TaskRead[]>(initialTasks);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -452,6 +457,15 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
             <ThemePicker />
           </span>
         </div>
+        {/* Kanban #1289 — per-project usage panel. Collapsed by default on the
+            project board (dense page). storageKey scoped per project so each
+            project remembers its own expand state independently. */}
+        <CostSummary
+          stats={projectStats}
+          ariaLabel={`Usage for ${project.name}`}
+          defaultCollapsed={true}
+          storageKey={`project.${project.id}.panels.usage.expanded`}
+        />
         {/* #1209 AA1 D5 — red strip above the consent banner when killed.
             (Renders nothing when is_killed=false.) */}
         <KilledBanner project={project} />

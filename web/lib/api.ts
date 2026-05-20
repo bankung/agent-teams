@@ -324,8 +324,14 @@ export type ProjectStatsEntry = {
   cost_usage: ProjectStatsCostUsage;
 };
 
-export async function getProjectsStats(): Promise<ProjectStatsEntry[]> {
-  return jsonFetch<ProjectStatsEntry[]>(`/api/projects/stats`);
+export async function getProjectsStats(opts?: {
+  projectId?: number;
+}): Promise<ProjectStatsEntry[]> {
+  const url =
+    opts?.projectId != null
+      ? `/api/projects/stats?project_id=${opts.projectId}`
+      : `/api/projects/stats`;
+  return jsonFetch<ProjectStatsEntry[]>(url);
 }
 
 // #1082 — auditor cross-project daily rollup. BE pre-sorts (project_id ASC,

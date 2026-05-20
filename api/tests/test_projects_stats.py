@@ -18,6 +18,12 @@ Coverage (locked in the task spec):
 6. Shape contract — `counts` always carries the five string keys; the
    `run_mode_breakdown` always carries the three keys; no header required.
 
+Kanban #1289 — optional `project_id` query param (tests 12-15):
+12. Param absent → all active projects returned (regression).
+13. Param set to a real project id → exactly 1 entry with `id == project_id`.
+14. Param set to a non-existent id → returns `[]`.
+15. Param set to a soft-deleted project's id → returns `[]`.
+
 Notes on the seeded `agent-teams` project:
 The seed creates id=1 `agent-teams` with N tasks (varies by seed version).
 Tests don't try to pin those exact numbers — instead each test creates its
@@ -760,3 +766,74 @@ async def test_stats_cost_usage_cross_project_isolation(
         _session_fs_cleanup_inline(sid_b)
         await client.delete(f"/api/projects/{pid_a}")
         await client.delete(f"/api/projects/{pid_b}")
+
+
+# ---- 12-15. Kanban #1289 — optional ?project_id= filter --------------------
+
+
+@pytest.mark.asyncio
+async def test_stats_project_id_param_absent_returns_all(client) -> None:
+    """Regression: omitting ?project_id= still returns the full active list.
+    The seeded agent-teams project (id=1) must be present.
+    """
+    resp = await client.get("/api/projects/stats")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert isinstance(body, list)
+    # At minimum the seeded project must appear.
+    assert len(body) >= 1
+    ids = [e["id"] for e in body]
+    assert 1 in ids, f"agent-teams (id=1) missing from unfiltered stats: {ids}"
+
+
+@pytest.mark.asyncio
+async def test_stats_project_id_param_returns_single_entry(
+    client, scaffold_cleanup
+) -> None:
+    """?project_id=<real_id> returns exactly 1 entry whose `id` matches."""
+    project = await _make_project(client, scaffold_cleanup, slug="k1289-single")
+    project_id = project["id"]
+    try:
+        resp = await client.get(f"/api/projects/stats?project_id={project_id}")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert isinstance(body, list), body
+        assert len(body) == 1, f"expected 1 entry, got {len(body)}: {body}"
+        assert body[0]["id"] == project_id
+        assert body[0]["name"] == project["name"]
+    finally:
+        await client.delete(f"/api/projects/{project_id}")
+
+
+@pytest.mark.asyncio
+async def test_stats_project_id_param_nonexistent_returns_empty(client) -> None:
+    """?project_id=999999 (non-existent) returns [] — NOT 404."""
+    resp = await client.get("/api/projects/stats?project_id=999999")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body == [], f"expected [], got {body}"
+
+
+@pytest.mark.asyncio
+async def test_stats_project_id_param_soft_deleted_returns_empty(
+    client, scaffold_cleanup
+) -> None:
+    """?project_id=<soft-deleted-id> returns [] — existing ACTIVE filter applies."""
+    project = await _make_project(client, scaffold_cleanup, slug="k1289-softdel")
+    project_id = project["id"]
+
+    # Confirm it's present while active.
+    pre = await client.get(f"/api/projects/stats?project_id={project_id}")
+    assert pre.status_code == 200
+    assert len(pre.json()) == 1, "should appear before soft-delete"
+
+    # Soft-delete the project.
+    del_resp = await client.delete(f"/api/projects/{project_id}")
+    assert del_resp.status_code == 204, del_resp.text
+
+    # Now absent.
+    post = await client.get(f"/api/projects/stats?project_id={project_id}")
+    assert post.status_code == 200, post.text
+    assert post.json() == [], (
+        f"soft-deleted project id={project_id} must not appear in filtered stats"
+    )

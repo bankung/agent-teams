@@ -123,6 +123,15 @@ async def list_projects(
 
 @router.get("/stats", response_model=list[ProjectStatsEntry])
 async def list_projects_stats(
+    project_id: int | None = Query(
+        default=None,
+        description=(
+            "If set, restrict the result to this single project (active or not — "
+            "the existing `Project.status == ACTIVE` filter still applies, so a "
+            "soft-deleted project id returns `[]`). When unset, returns all active "
+            "projects (existing behavior unchanged)."
+        ),
+    ),
     session: AsyncSession = Depends(get_session),
 ) -> list[ProjectStatsEntry]:
     """Batched cross-project stats — powers the dashboard (Kanban #769).
@@ -132,6 +141,11 @@ async def list_projects_stats(
     per `tasks.process_status` 1..6, string keys), `run_mode_breakdown`
     (manual / auto_pickup / auto_headless), and `last_activity_at`
     (MAX(updated_at) of active tasks; None when project has zero active tasks).
+
+    Optional `project_id` query param (Kanban #1289): when provided, filters the
+    project list to that single id. Returns `[]` (NOT 404) when the id doesn't
+    exist or is soft-deleted — "filter returns empty when no rows match" semantics,
+    consistent with how `GET /api/projects?status=0` behaves.
 
     Cross-project read — takes NO `X-Project-Id` header (parity with `""`,
     `/active`, `/by-name/{name}`).
@@ -160,6 +174,10 @@ async def list_projects_stats(
         .where(Project.status == RecordStatus.ACTIVE)
         .order_by(Project.created_at.asc(), Project.id.asc())
     )
+    # Kanban #1289 — optional single-project filter. Applied AFTER the
+    # `status == ACTIVE` filter so soft-deleted ids yield [] (not a 404).
+    if project_id is not None:
+        projects_stmt = projects_stmt.where(Project.id == project_id)
     projects = list((await session.execute(projects_stmt)).scalars().all())
 
     # Query 2 — GROUP BY aggregate across active tasks of active projects (join keeps SQL stable when projects is empty)
@@ -178,6 +196,10 @@ async def list_projects_stats(
         )
         .group_by(Task.project_id, Task.process_status, Task.run_mode)
     )
+    # Kanban #1289 — mirror the project_id filter on Queries 2 and 3 so the
+    # stitch loop only sees rows for the projects that landed in `by_id`.
+    if project_id is not None:
+        agg_stmt = agg_stmt.where(Task.project_id == project_id)
     agg_rows = (await session.execute(agg_stmt)).all()
 
     # Query 3 (#871) — per-project cost/token aggregate via session_runs → sessions → projects (GROUP BY session.project_id; task_id is nullable ON DELETE SET NULL)
@@ -206,6 +228,9 @@ async def list_projects_stats(
         .where(Project.status == RecordStatus.ACTIVE)
         .group_by(SessionModel.project_id)
     )
+    # Kanban #1289 — filter cost query to the single project when set.
+    if project_id is not None:
+        cost_stmt = cost_stmt.where(SessionModel.project_id == project_id)
     cost_rows = (await session.execute(cost_stmt)).all()
 
     # Stitch: per-project all-zero buckets; fold agg_rows + cost_rows
@@ -227,7 +252,9 @@ async def list_projects_stats(
         for p in projects
     }
     for project_id, process_status, run_mode, n, max_updated_at in agg_rows:
-        bucket = by_id[project_id]
+        bucket = by_id.get(project_id)
+        if bucket is None:
+            continue
         bucket["counts"][str(process_status)] += n
         # run_mode is constrained by DB CHECK to TaskRunMode.ALL, but be
         # defensive — an unknown value would KeyError; route the unknown

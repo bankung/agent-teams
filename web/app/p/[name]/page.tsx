@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 
-import { getProjectByName, listTasks, HttpError } from "@/lib/api";
+import { getProjectByName, getProjectsStats, listTasks, HttpError } from "@/lib/api";
 import { TaskRunMode } from "@/lib/constants";
 import { Board } from "@/components/Board";
 
@@ -18,7 +18,12 @@ export default async function ProjectBoardPage({ params }: Props) {
     if (e instanceof HttpError && e.status === 404) notFound();
     throw e;
   }
-  const tasks = await listTasks(project.id, { limit: 500 });
+  // Kanban #1289 — fetch per-project stats in parallel with tasks.
+  // BE returns an array of length 0 or 1 when project_id is given.
+  const [tasks, projectStats] = await Promise.all([
+    listTasks(project.id, { limit: 500 }),
+    getProjectsStats({ projectId: project.id }),
+  ]);
   const hasHeadlessTask = tasks.some(
     (t) => t.run_mode === TaskRunMode.AUTO_HEADLESS,
   );
@@ -28,6 +33,7 @@ export default async function ProjectBoardPage({ params }: Props) {
       initialTasks={tasks}
       hasHeadlessTask={hasHeadlessTask}
       project={project}
+      projectStats={projectStats}
     />
   );
 }
