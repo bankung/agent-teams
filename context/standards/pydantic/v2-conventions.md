@@ -49,3 +49,41 @@
   - `"priority must be one of (1, 2, 3, 4), got <repr>"`
   - `"assigned_role must be NULL or one of (1, 2, 3, 4, 5), got <repr>"`
 - A wording change is a contract change: update tests, update `shared/api-contracts.md`, update the consumer (eventually the FE that parses `errors[].msg` for inline form errors). Don't change wording during refactors.
+
+## Discriminated JSONB payload shapes
+
+When a JSONB column carries multiple payload shapes discriminated by another column (e.g., `tasks.question_payload` shape depends on `tasks.interaction_kind`), put the discriminator validation in a `model_validator(mode="after")` on the **input schema** (TaskCreate / TaskUpdate), NOT in the JSONB model itself. The JSONB model accepts the broadest union; the model_validator tightens it per-discriminator-value at the API boundary.
+
+- **Why not in the JSONB model:** the JSONB model is also used for response serialization (`from_attributes=True`). If it rejects legacy shapes that exist in stored rows, a GET endpoint 500s before it can return the row. Read endpoints must stay tolerant.
+- **Why on the input schema:** writes are the ONLY place new payload shapes can land. Tightening here keeps backward-compat on reads + invariant enforcement on writes.
+
+Canonical example: `QuestionPayload.options` is `list[str | OptionItem] | None` (broad). `TaskCreate.model_validator(mode="after")` enforces — when `interaction_kind="decision"` — that the `options` list is non-empty AND every element is an `OptionItem` (not a bare string). Question tasks with the legacy `list[str]` shape still validate cleanly. See `api/src/schemas/task.py` (Kanban #1007, 2026-05-20).
+
+```python
+class QuestionPayload(BaseModel):
+    # Tolerant on read; broad union on options.
+    options: list[str | OptionItem] | None = None
+    ...
+
+class TaskCreate(BaseModel):
+    interaction_kind: InteractionKindLiteral | None = None
+    question_payload: QuestionPayload | None = None
+
+    @model_validator(mode="after")
+    def _validate_decision_payload(self):
+        if self.interaction_kind == "decision":
+            opts = self.question_payload and self.question_payload.options
+            if not opts or any(isinstance(o, str) for o in opts):
+                raise ValueError(
+                    "decision task requires question_payload.options as list[OptionItem] "
+                    "(typed dicts with id/label); got list[str] or empty"
+                )
+        return self
+```
+
+The same pattern applies to any "JSONB column carries shape A or B depending on discriminator column" surface — tasks.resume_context (discriminated by interaction_kind / spawn source / etc.), tasks.audit_report (discriminated by audit type), etc.
+
+## Cross-reference
+
+- Wire contract for the canonical example: `context/projects/agent-teams/shared/api-contracts.md` POST `/api/tasks` + POST `/api/tasks/{id}/decide` sections (Kanban #1007).
+- Sibling FE concern: TypeScript consumers of the same JSONB column type their local model as `Array<string | OptionItem> | null` (heterogeneous) and narrow defensively per consumption site. See `web/lib/api.ts::QuestionPayload`.
