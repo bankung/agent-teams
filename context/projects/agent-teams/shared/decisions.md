@@ -16,6 +16,45 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-20 — Compact + reward-hacking pass on dev-*.md agents — Kanban #1293 PILOT GATE
+**Scope:** agent prompts / methodology
+**Status:** PILOT LANDED — operator review required BEFORE batch (per AC11). Files in place: `.claude/agents/_dev-shared.md` (90L NEW) + `.claude/agents/dev-backend.md` (102L, was 98L → +4 net; +reward-hacking-self-check + boundary clause + migration-timing pointer, –raw-SQL boilerplate to shared). Standards draft staged at `_scratch/standards-draft-reward-hacking-patterns.md` (187L, 9 patterns A-I) for human promotion to `context/standards/general/reward-hacking-patterns.md`.
+
+**Decision (pending operator confirm at pilot gate):**
+
+1. **Shared-include pattern** (AC0): `.claude/agents/_dev-shared.md` carries the universal boilerplate every `dev-*` role inherits — standards/shared write prohibitions, raw-SQL DML 1-line pointer (no more 40-line duplication across 4 files), permission model, reply skeleton, Compact step skeleton, halt-and-ask, file-path discipline, Karpathy lane. Role files reference it via the line `Reads _dev-shared.md for the common substrate (Lead injects at spawn time).` near the top.
+
+2. **Model-tier table** (AC1) — explicit `model:` on every `dev-*.md` post-batch:
+   - `dev-sr-backend`, `dev-sr-frontend` → **opus** (design judgment; new surfaces, architecture)
+   - `dev-backend`, `dev-frontend`, `dev-devops`, `dev-reviewer`, `dev-security-reviewer`, `dev-spec-reviewer`, `dev-tester` → **sonnet** (routine implementation; modifications + reviews)
+   - `dev-documentor` → **haiku** (existing — read-heavy, write-light)
+   - `dev-analyst` → **opus** (existing — spec ambiguity expansion)
+
+3. **Test-writing boundary** (AC7) — default proposal adopted as-is by pilot:
+   > dev-backend writes 1-3 first-pass contract-smoke tests (happy path + status code + response shape). dev-tester writes the rigorous suite (edge / regression / e2e). Same clause copied to dev-sr-backend at batch.
+
+4. **Reward-hacking framework** (AC3, AC4, AC5, AC6, AC9):
+   - Producer self-check before DONE — 6-item checklist in `dev-backend` (will mirror to `dev-frontend` + 2 sr-* at batch).
+   - Reviewer audit — pattern-grep checklist into `dev-reviewer.md` multi-pass review at batch.
+   - Spec-reviewer "hackable AC" check into `dev-spec-reviewer.md` audit category (6) at batch.
+   - Tester anti-hackable-test sub-clause into `dev-tester.md` spurious-PASS at batch.
+   - Standards doc draft staged for operator promotion.
+
+5. **Boundary preservation** (AC8): pilot diff is reductive on boilerplate + additive on reward-hacking + boundary. Net LOC delta this pilot is +4 (98 → 102) for dev-backend because additions partly offset extractions; the ≥15% net reduction lands across the batch when the other 10 files extract their share to `_dev-shared.md`. Pre-batch snapshot of all 11 files captured at `_scratch/before-rewrite/`.
+
+**Reasoning:** Composer 2.5 launch coverage 2026-05-18 surfaced reward-hacking as an observed scaled risk (Cursor blog cited verbatim in the standards draft). Audit found zero mentions of reward-hacking / cheat / shortcut across all 11 dev-*.md prompts. Bundle the reward-hacking addition with the boilerplate compaction so quality-gain and maintenance-debt-reduction happen in one cohesive pass rather than fragmenting into 2 tasks that risk dropping rules between waves.
+
+**Operator decision points at pilot gate:**
+
+- (a) Is the `_dev-shared.md` extraction shape correct? Anything universal that should land there but didn't? Anything role-specific that landed there but shouldn't?
+- (b) Does `dev-backend.md` at 102L (4 over target band 75-95) read clean? Trim the migration-vs-ORM note inline OR collapse the boundary clause's second paragraph? OR accept as-is.
+- (c) Boundary clause (point 3): default proposal lands as-is — confirm or pick alternative ("dev-backend writes ALL backend tests, dev-tester only edge/e2e" or "dev-backend writes ZERO tests, dev-tester writes everything").
+- (d) Reward-hacking standards draft (187L, 9 patterns) — is the depth right for `context/standards/general/`? Trim to A-G+H+I = 9, or focus on the 5 most-likely?
+
+**Implications:** approved batch then proceeds to the other 10 dev-*.md files; dev-reviewer runs the AC9 side-by-side diff audit (every original hard rule + incident ref + workflow step appears in new file OR in `_dev-shared.md`); live smoke gate AC12 spawns post-batch dev-backend with a canned task to verify shared-include is actually read, self-check produces visible output, reply skeleton matches shared, boundary behavior matches choice (c). If operator rejects pilot shape, revise + redo pilot; do NOT batch.
+
+---
+
 ## 2026-05-19 — Fresh-install installer hardening — Kanban #1175 fix path
 **Scope:** devops / docs / shared
 
