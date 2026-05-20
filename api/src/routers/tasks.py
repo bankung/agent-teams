@@ -1820,6 +1820,32 @@ async def update_task(
     if changed:
         task.updated_at = func.now()
 
+    # =====================================================================
+    # POST-PATCH cross-resource side-effect hooks (4 sites below)
+    # ---------------------------------------------------------------------
+    # All 4 hooks below follow the codified pattern in
+    # `context/standards/fastapi/atomic-mutations.md` § "Post-PATCH
+    # cross-resource side effects":
+    #
+    #   (1) Kanban #1004 — handoff_template spawn (in-transaction, line ~1823)
+    #   (2) Kanban #832  — auto-unblock dependents       (line ~1895)
+    #   (3) Kanban #1211 — audit-flag pipeline           (line ~1905)
+    #   (4) Kanban #955.B — push-notification event hooks (line ~1958)
+    #
+    # Shared invariants per the standard:
+    # - Transition detection via "`field` in updates AND old != new" → gives
+    #   idempotent re-PATCH semantics for free.
+    # - In-transaction hooks (#1004) fire BEFORE session.commit() so atomic
+    #   rollback works; errors raise HTTPException, not swallow.
+    # - Post-commit hooks (#832, #1211, #955.B) fire AFTER the durable write
+    #   so any payload they ship reflects the persisted state.
+    #
+    # If you're adding a 5th hook here, pattern-match the shape exactly —
+    # don't invent a new style. If the pattern has structurally diverged
+    # at n>=6 sites, that's the point to extract a mini-framework (see the
+    # "Generalizes to" section of the standards doc).
+    # =====================================================================
+
     # Kanban #1004: auto-handoff spawn hook. When this PATCH transitions
     # process_status from `!= 5` to `= 5` AND the task carries a non-null
     # handoff_template_id, spawn a child task derived from that template in
