@@ -40,6 +40,7 @@ import { ProjectConsentBanner } from "@/components/ProjectConsentBanner";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { SourcesBadge } from "@/components/SourcesBadge";
 import { TaskDetail } from "@/components/TaskDetail";
+import { Switch } from "@/components/Switch";
 import { ThemePicker } from "@/components/ThemePicker";
 import { ToastStack, type ToastMessage } from "@/components/Toast";
 
@@ -114,6 +115,10 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
   // pref only — no localStorage persistence for v1 (keeps the toggle visible
   // as a discoverable affordance every session).
   const [showAudit, setShowAudit] = useState(false);
+
+  // #1288 — Switch-driven modal open state for project controls group.
+  const [terminateModalOpen, setTerminateModalOpen] = useState(false);
+  const [pauseModalOpen, setPauseModalOpen] = useState(false);
 
   useEffect(() => {
     const stored = localStorage.getItem(`kanban-view-${project.name}`);
@@ -362,33 +367,88 @@ export function Board({ initialTasks, hasHeadlessTask, project }: Props) {
               </button>
             ))}
           </span>
-          <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
-            {/* #7 §A AC#3 — per-project role whitelist; null/empty → all roles */}
-            <AiTaskModal
-              projectId={project.id}
-              enabledRoles={readEnabledRoles(project.config)}
-              project={project}
-              onPushToast={pushToast}
-            />
-            <NewTaskModal
-              projectId={project.id}
-              enabledRoles={readEnabledRoles(project.config)}
-              project={project}
-              onPushToast={pushToast}
-            />
-            {/* #1209 AA1 D5 — kill is a header action; revive is surfaced inline
-                in KilledBanner (below) so the operator always finds it next to
-                the kill context. Visible only when not currently killed. */}
-            {!project.is_killed && (
-              <KillProjectModal project={project} mode="kill" />
-            )}
-            {/* #1211 / #1238 AA3 — soft-pause button. Visible only when the
-                project is neither killed nor paused; kill takes precedence
-                (mutex CHECK at the DB) so pause is hidden once killed. The
-                unpause action lives inline in PausedBanner. */}
-            {!project.is_killed && !project.is_paused && (
-              <PauseProjectModal project={project} mode="pause" />
-            )}
+          {/* #1288 — header right cluster: two visually distinct groups
+              (Task actions | Project controls) + standalone ThemePicker. */}
+          <span className="ml-auto flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+
+            {/* ── Group A: Task actions ─────────────────────────────────── */}
+            <div
+              className="flex items-center gap-1 rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
+              aria-label="Task actions"
+            >
+              <span className="mr-1 text-[9px] font-semibold uppercase tracking-widest text-zinc-400 dark:text-zinc-500 select-none">
+                Tasks
+              </span>
+              {/* #7 §A AC#3 — per-project role whitelist; null/empty → all roles */}
+              <AiTaskModal
+                projectId={project.id}
+                enabledRoles={readEnabledRoles(project.config)}
+                project={project}
+                onPushToast={pushToast}
+              />
+              <NewTaskModal
+                projectId={project.id}
+                enabledRoles={readEnabledRoles(project.config)}
+                project={project}
+                onPushToast={pushToast}
+              />
+            </div>
+
+            {/* ── Divider ───────────────────────────────────────────────── */}
+            <span aria-hidden className="h-5 w-px bg-zinc-200 dark:bg-zinc-700" />
+
+            {/* ── Group B: Project controls ─────────────────────────────── */}
+            <div
+              className="flex items-center gap-1 rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
+              aria-label="Project controls"
+            >
+              <span className="mr-1 text-[9px] font-semibold uppercase tracking-widest text-zinc-400 dark:text-zinc-500 select-none">
+                Project
+              </span>
+              {/* #1288 — pause Switch. ON = live, OFF = paused.
+                  Switch click → opens PauseProjectModal (existing flow).
+                  Hidden when project is already terminated (mutex). */}
+              {!project.is_killed && (
+                <>
+                  <Switch
+                    label="Pause"
+                    checked={project.is_paused ?? false}
+                    colorOn="amber"
+                    onClick={() => setPauseModalOpen(true)}
+                    aria-label={project.is_paused ? "Project paused — click to unpause" : "Pause project"}
+                  />
+                  <PauseProjectModal
+                    project={project}
+                    mode={project.is_paused ? "unpause" : "pause"}
+                    externalOpen={pauseModalOpen}
+                    onExternalClose={() => setPauseModalOpen(false)}
+                  />
+                </>
+              )}
+              {/* #1288 — terminate Switch. ON = live, OFF = terminated.
+                  Switch click → opens KillProjectModal (existing flow).
+                  Visible only when not currently terminated; revive lives
+                  inline in KilledBanner. */}
+              {!project.is_killed && (
+                <>
+                  <Switch
+                    label="Terminate"
+                    checked={false}
+                    colorOn="red"
+                    onClick={() => setTerminateModalOpen(true)}
+                    aria-label="Terminate project"
+                  />
+                  <KillProjectModal
+                    project={project}
+                    mode="kill"
+                    externalOpen={terminateModalOpen}
+                    onExternalClose={() => setTerminateModalOpen(false)}
+                  />
+                </>
+              )}
+            </div>
+
+            {/* ── ThemePicker — user preference, outside both groups ────── */}
             <ThemePicker />
           </span>
         </div>

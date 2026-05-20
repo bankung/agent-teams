@@ -58,7 +58,7 @@ export function KilledBanner({ project }: Props) {
     >
       <div className="min-w-0 flex-1">
         <span className="font-medium">
-          ⚠ Project killed {ago}
+          ⚠ Project terminated {ago}
           {project.killed_at && (
             <span className="ml-1 font-mono text-[10px] opacity-70">
               ({project.killed_at.slice(0, 19).replace("T", " ")})

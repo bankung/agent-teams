@@ -34,13 +34,18 @@ const REASON_MIN_CHARS = 10;
 type Props = {
   project: ProjectRead;
   mode: "kill" | "revive";
-  // Render-mode for the trigger. The Board renders the Kill trigger inline
-  // in the project header (compact button); the KilledBanner renders the
-  // Revive trigger as a banner-inline button. Both modes accept either
+  // Render-mode for the trigger. The Board renders the Terminate trigger
+  // inline in the project header (Switch component); the KilledBanner renders
+  // the Revive trigger as a banner-inline button. Both modes accept either
   // visual via a custom render function — when omitted, falls back to a
-  // sensible default (red "Kill project" / green "Revive project").
+  // sensible default (red "Terminate project" / green "Revive project").
   triggerLabel?: string;
   triggerClassName?: string;
+  // Kanban #1288 — optional external open control for Switch-driven triggers.
+  // When provided, the component renders no internal trigger button and
+  // delegates open state to the caller instead.
+  externalOpen?: boolean;
+  onExternalClose?: () => void;
 };
 
 export function KillProjectModal({
@@ -48,9 +53,12 @@ export function KillProjectModal({
   mode,
   triggerLabel,
   triggerClassName,
+  externalOpen,
+  onExternalClose,
 }: Props) {
   const router = useRouter();
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = externalOpen !== undefined ? externalOpen : internalOpen;
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -65,6 +73,22 @@ export function KillProjectModal({
 
   const firstInputRef = useRef<HTMLInputElement | null>(null);
 
+  function openModal() {
+    if (externalOpen !== undefined) return; // caller controls open
+    setInternalOpen(true);
+  }
+
+  function closeModal() {
+    if (submitting) return;
+    setInternalOpen(false);
+    onExternalClose?.();
+    setTypedName("");
+    setReason("");
+    setForceMode(false);
+    setForceConfirmStage(false);
+    setError(null);
+  }
+
   useEffect(() => {
     if (!open) return;
     requestAnimationFrame(() => firstInputRef.current?.focus());
@@ -75,16 +99,6 @@ export function KillProjectModal({
     return () => document.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, submitting]);
-
-  function closeModal() {
-    if (submitting) return;
-    setOpen(false);
-    setTypedName("");
-    setReason("");
-    setForceMode(false);
-    setForceConfirmStage(false);
-    setError(null);
-  }
 
   // Reset force-confirm stage whenever the user toggles the checkbox so a
   // sneaky path of (check → click → uncheck → submit) can't skip the
@@ -100,15 +114,15 @@ export function KillProjectModal({
   const canSubmitKill = !submitting && nameMatches && reasonValid;
   const canSubmitRevive = !submitting;
 
-  // Submit label adapts: revive = "Revive project"; kill non-force = "Kill
-  // project"; kill force pre-confirm = "Kill project"; kill force after first
-  // click = "Confirm force-kill".
+  // Submit label adapts: revive = "Revive project"; terminate non-force =
+  // "Terminate project"; terminate force pre-confirm = "Terminate project";
+  // terminate force after first click = "Confirm force-terminate".
   const submitLabel = (() => {
     if (mode === "revive") return submitting ? "Reviving…" : "Revive project";
     if (forceMode && forceConfirmStage) {
-      return submitting ? "Killing…" : "Confirm force-kill";
+      return submitting ? "Terminating…" : "Confirm force-terminate";
     }
-    return submitting ? "Killing…" : "Kill project";
+    return submitting ? "Terminating…" : "Terminate project";
   })();
 
   async function onSubmit(e: React.FormEvent) {
@@ -135,7 +149,8 @@ export function KillProjectModal({
       router.refresh();
       // Close after successful refresh; reset state in closeModal() too
       // but call directly since closeModal short-circuits when submitting.
-      setOpen(false);
+      setInternalOpen(false);
+      onExternalClose?.();
       setTypedName("");
       setReason("");
       setForceMode(false);
@@ -151,11 +166,11 @@ export function KillProjectModal({
     }
   }
 
-  // Trigger button visuals — kill = red, revive = green. The caller can
+  // Trigger button visuals — terminate = red, revive = green. The caller can
   // override className / label for placement-specific tweaks (e.g.
   // KilledBanner renders revive inline in the banner with a lighter style).
   const defaultTriggerLabel =
-    mode === "kill" ? "Kill project" : "Revive project";
+    mode === "kill" ? "Terminate project" : "Revive project";
   const defaultTriggerClass =
     mode === "kill"
       ? "inline-flex items-center rounded border border-red-600 bg-red-600 px-3 py-2 text-xs font-medium uppercase tracking-wide text-white hover:bg-red-700 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-red-500 dark:bg-red-500 dark:hover:bg-red-600"
@@ -163,14 +178,16 @@ export function KillProjectModal({
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className={triggerClassName ?? defaultTriggerClass}
-        data-kill-project-trigger={mode}
-      >
-        {triggerLabel ?? defaultTriggerLabel}
-      </button>
+      {externalOpen === undefined && (
+        <button
+          type="button"
+          onClick={openModal}
+          className={triggerClassName ?? defaultTriggerClass}
+          data-kill-project-trigger={mode}
+        >
+          {triggerLabel ?? defaultTriggerLabel}
+        </button>
+      )}
       {open && (
         <div
           role="dialog"
@@ -191,7 +208,7 @@ export function KillProjectModal({
               id="kill-project-title"
               className="text-sm font-semibold uppercase tracking-wide text-zinc-900 dark:text-zinc-100"
             >
-              {mode === "kill" ? "Kill project" : "Revive project"} ·{" "}
+              {mode === "kill" ? "Terminate project" : "Revive project"} ·{" "}
               <span className="font-mono normal-case">{project.name}</span>
               {mode === "kill" ? "?" : "?"}
             </h2>
@@ -251,7 +268,7 @@ export function KillProjectModal({
                       if (error !== null) setError(null);
                     }}
                     rows={3}
-                    placeholder="Why are we killing this project? Captured into the audit row."
+                    placeholder="Why are we terminating this project? Captured into the audit row."
                     disabled={submitting}
                     aria-invalid={reason.length > 0 && !reasonValid}
                     className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
@@ -285,7 +302,7 @@ export function KillProjectModal({
                     ⚠ {FORCE_NOTICE}
                     {forceConfirmStage && (
                       <span className="mt-1 block font-medium">
-                        Click again to confirm force-kill.
+                        Click again to confirm force-terminate.
                       </span>
                     )}
                   </p>

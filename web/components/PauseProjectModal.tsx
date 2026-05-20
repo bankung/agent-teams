@@ -37,6 +37,9 @@ type Props = {
   mode: "pause" | "unpause";
   triggerLabel?: string;
   triggerClassName?: string;
+  // Kanban #1288 — optional external open control for Switch-driven triggers.
+  externalOpen?: boolean;
+  onExternalClose?: () => void;
 };
 
 export function PauseProjectModal({
@@ -44,9 +47,12 @@ export function PauseProjectModal({
   mode,
   triggerLabel,
   triggerClassName,
+  externalOpen,
+  onExternalClose,
 }: Props) {
   const router = useRouter();
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = externalOpen !== undefined ? externalOpen : internalOpen;
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -72,9 +78,15 @@ export function PauseProjectModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, submitting, mode]);
 
+  function openModal() {
+    if (externalOpen !== undefined) return; // caller controls open
+    setInternalOpen(true);
+  }
+
   function closeModal() {
     if (submitting) return;
-    setOpen(false);
+    setInternalOpen(false);
+    onExternalClose?.();
     setReason("");
     setError(null);
   }
@@ -97,7 +109,8 @@ export function PauseProjectModal({
         await unpauseProject(project.id);
       }
       router.refresh();
-      setOpen(false);
+      setInternalOpen(false);
+      onExternalClose?.();
       setReason("");
     } catch (err: unknown) {
       if (err instanceof HttpError) {
@@ -122,14 +135,16 @@ export function PauseProjectModal({
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className={triggerClassName ?? defaultTriggerClass}
-        data-pause-project-trigger={mode}
-      >
-        {triggerLabel ?? defaultTriggerLabel}
-      </button>
+      {externalOpen === undefined && (
+        <button
+          type="button"
+          onClick={openModal}
+          className={triggerClassName ?? defaultTriggerClass}
+          data-pause-project-trigger={mode}
+        >
+          {triggerLabel ?? defaultTriggerLabel}
+        </button>
+      )}
       {open && (
         <div
           role="dialog"
