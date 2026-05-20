@@ -291,6 +291,13 @@ export async function getProjectByName(name: string): Promise<ProjectRead> {
   );
 }
 
+// getProjectById — GET /api/projects/{id}. Used by the focus page (#1001) to
+// resolve a task's project_id → name for the "Open full" deep-link target.
+// 404 / non-2xx surface as HttpError (caller discriminates).
+export async function getProjectById(id: number): Promise<ProjectRead> {
+  return jsonFetch<ProjectRead>(`/api/projects/${id}`);
+}
+
 // #407 — status=1 filter; no X-Project-Id header (project endpoint)
 type ListProjectsOpts = { status?: 0 | 1 };
 
@@ -692,6 +699,8 @@ export async function parseTaskText(
 }
 
 // PATCH /api/tasks/{id} — partial update; blocked_by explicit null clears (#771); run_mode #860; status_change_reason #854
+// halt_reason added 2026-05-20 by Kanban #1001 — Halt quick-action sets ps=4 + halt_reason in one PATCH.
+//   PATCH semantics (per #785): key-absent = unchanged; explicit `null` = clear/unhalt; non-empty string = halt.
 export type TaskPatch = Partial<
   Pick<TaskRead, "process_status" | "priority" | "title" | "blocked_by" | "sort_order" | "run_mode">
 > & {
@@ -700,6 +709,7 @@ export type TaskPatch = Partial<
   invalidate_last_answer?: boolean | null;
   invalidated_reason?: string | null;
   status_change_reason?: string | null;
+  halt_reason?: string | null;
 };
 
 export async function patchTask(
@@ -782,6 +792,47 @@ export async function cancelTask(
   return patchTask(projectId, taskId, {
     process_status: 6 as TaskStatusValue,
     status_change_reason: reason,
+  });
+}
+
+// OptionItem — mirror of api/src/schemas/task.py:OptionItem (Kanban #1007).
+// Structured decision option carried inside `question_payload.options` when
+// `interaction_kind='decision'`. `id` is the machine-stable identifier the
+// /decide endpoint validates against; `label` is the human-readable text.
+export type OptionItem = {
+  id: string;
+  label: string;
+  description?: string | null;
+  hints?: string[] | null;
+};
+
+// decideTask — POST /api/tasks/{id}/decide (Kanban #1007 BE). Used by the
+// focus page (#1001) for decision tasks: records the chosen option, merges
+// `chosen_id`/`rationale`/`chosen_at`/`chosen_by` into question_payload, and
+// flips the task to ps=5 (DONE) atomically.
+//
+// Errors (per shared/api-contracts.md):
+//   404 — task not found
+//   409 — task already DONE
+//   422 — not a decision task / chosen_id not in option list
+export type DecideTaskBody = {
+  chosen_id: string;
+  rationale?: string | null;
+  chosen_by?: string;
+};
+
+export async function decideTask(
+  projectId: number,
+  taskId: number,
+  body: DecideTaskBody,
+): Promise<TaskRead> {
+  return jsonFetch<TaskRead>(`/api/tasks/${taskId}/decide`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Project-Id": String(projectId),
+    },
+    body: JSON.stringify(body),
   });
 }
 
