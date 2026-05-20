@@ -76,6 +76,15 @@ services:
       HEALTH_MONITOR_DISABLED: ${HEALTH_MONITOR_DISABLED:-}
       HEALTH_MONITOR_INTERVAL_MINUTES: ${HEALTH_MONITOR_INTERVAL_MINUTES:-15}
       HEALTH_MONITOR_API_BASE: ${HEALTH_MONITOR_API_BASE:-http://localhost:8456}
+      # Kanban #955.A — Web Push (VAPID) keys for the notify_web_push.py adapter.
+      # Operator generates a fresh keypair ONCE via api/scripts/generate_vapid_keys.py
+      # and pastes the output into .env (NEVER commit the private key). Default
+      # empty so an unconfigured deployment surfaces `missing_env_VAPID_*` from
+      # the adapter and the router falls through cleanly (same posture as
+      # TELEGRAM_BOT_TOKEN). Subject is `mailto:...` or `https://...` (RFC 8292).
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:bankung99@gmail.com}
       # pytest_runner role password (Kanban #1109 — L4 prevention layer for
       # the 2026-05-17 dev-DB-wipe incident). Used by the alembic migration
       # 0034_pytest_runner_role to create the role with the matching password,

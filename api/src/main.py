@@ -29,6 +29,7 @@ from src.routers import events as events_router
 from src.routers import handoff_templates as handoff_templates_router
 from src.routers import notifications as notifications_router
 from src.routers import decisions as decisions_router
+from src.routers import push as push_router
 from src.routers import templates as templates_router
 from src.routers import pl as pl_router
 from src.routers import projects as projects_router
@@ -305,6 +306,8 @@ def create_app() -> FastAPI:
     app.include_router(templates_router.router, prefix="/api")
     # Kanban #1004 — handoff templates CRUD (auto-handoff on DONE-flip).
     app.include_router(handoff_templates_router.router, prefix="/api")
+    # Kanban #955.A — Web Push subscription CRUD (browser PushManager endpoints).
+    app.include_router(push_router.router, prefix="/api")
 
     return app
 

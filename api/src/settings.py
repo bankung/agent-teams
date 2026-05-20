@@ -47,6 +47,19 @@ class Settings(BaseSettings):
         alias="CORS_ALLOW_ORIGINS",
     )
 
+    # Kanban #955.A — Web Push (VAPID) keys for the notify_web_push.py adapter.
+    # Operator generates a fresh keypair ONCE via api/scripts/generate_vapid_keys.py
+    # and pastes the output into .env. The private key MUST NOT be committed.
+    # Subject is `mailto:...` or `https://...` per RFC 8292 (default in
+    # .env.example is `mailto:bankung99@gmail.com`).
+    #
+    # Defaults are empty so an unconfigured deployment surfaces the
+    # `missing_env_VAPID_*` adapter detail (router falls through cleanly) — same
+    # posture as TELEGRAM_BOT_TOKEN gating.
+    vapid_public_key: str = Field(default="", alias="VAPID_PUBLIC_KEY")
+    vapid_private_key: str = Field(default="", alias="VAPID_PRIVATE_KEY")
+    vapid_subject: str = Field(default="", alias="VAPID_SUBJECT")
+
     @field_validator("cors_allow_origins", mode="before")
     @classmethod
     def _split_csv_origins(cls, v: object) -> object:

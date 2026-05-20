@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.project import Project
 from src.models.task import Task, TaskHistory
 from src.services.notify_telegram import send_telegram
+from src.services.notify_web_push import send_web_push
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +59,10 @@ NOTIFY_ACTOR = "notification_router"  # captured in snapshot, NOT a separate col
 #   async def adapter(target: dict, payload: dict) -> dict[str, Any]
 # where the returned dict carries at minimum `{ok: bool, detail: str}`.
 # Discord / Slack adapters land here as separate keys when implemented.
+# `web_push` registered by Kanban #955.A — slice 955.A backend foundation.
 _ADAPTERS = {
     "telegram": send_telegram,
+    "web_push": send_web_push,
 }
 
 

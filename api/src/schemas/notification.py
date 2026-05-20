@@ -26,10 +26,10 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
-# Vocabulary for NotificationTarget.kind. v1 = Telegram only; widen as
-# adapters land. Keep in lockstep with the adapter dispatch table in
-# `src/services/notification_router.py`.
-NotificationKind = Literal["telegram"]
+# Vocabulary for NotificationTarget.kind. v1 shipped Telegram only; Kanban
+# #955.A added Web Push as a second adapter. Keep in lockstep with the
+# adapter dispatch table in `src/services/notification_router.py::_ADAPTERS`.
+NotificationKind = Literal["telegram", "web_push"]
 
 
 class NotificationTarget(BaseModel):

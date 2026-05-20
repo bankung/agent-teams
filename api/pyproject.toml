@@ -33,6 +33,9 @@ dependencies = [
     # In-memory storage (default) is fine for single-instance docker-compose dev;
     # production-scale would swap to a Redis backend via slowapi config.
     "slowapi>=0.1.9,<1.0",
+    # Kanban #955.A — Web Push adapter (notify_web_push.py). Pure-Python wrapper
+    # around the Web Push protocol (RFC 8030 + 8291 + 8292). No native deps.
+    "pywebpush>=1.14,<3.0",
 ]
 
 [project.optional-dependencies]
