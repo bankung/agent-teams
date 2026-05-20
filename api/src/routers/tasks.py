@@ -31,6 +31,7 @@ from src.models.transaction import Transaction
 from src.schemas.ai_task import ParseRequest, ParseResponse
 from src.schemas.project import ResolveFlagRequest, ResolveFlagResponse
 from src.schemas.task import (
+    AcceptanceCriterion,
     DecisionRequest,
     NextAutorunResponse,
     TaskCreate,
@@ -68,6 +69,7 @@ from src.services.session_project import (
     assert_task_belongs_to_session,
     require_project_id_header,
 )
+from src.services.action_templates import get_template
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -800,6 +802,23 @@ async def create_task(
     # #695 — header is canonical project; body project_id is defense-in-depth (must match)
     assert_body_matches_session(payload.project_id, session_project_id)
 
+    # Kanban #1006 (2026-05-20): action template pre-fill.
+    # Look up the named template BEFORE any DB I/O — unknown name → 422.
+    # Apply default values only for fields the caller did NOT explicitly supply
+    # (detected via model_fields_set).  acceptance_criteria merging is handled
+    # AFTER payload_dict construction further below.
+    _action_template = None
+    if payload.action_template_id is not None:
+        _action_template = get_template(payload.action_template_id)
+        if _action_template is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"action_template_id {payload.action_template_id!r} not found; "
+                    "check GET /api/templates/actions for available templates"
+                ),
+            )
+
     # Kanban #1209 (AA1 hard kill switch): refuse new task POSTs against a
     # killed project. 423 Locked (per AC#4) distinguishes "project state
     # blocks this action" from 409 (resource conflict on kill/revive) and
@@ -1044,16 +1063,77 @@ async def create_task(
     # the gate-evaluation block above.
     payload_dict.pop("budget_override_authorized_by", None)
     payload_dict.pop("budget_override_reason", None)
+    # Kanban #1006 (2026-05-20): action_template_id is request-only metadata —
+    # not a Task column.  Strip it so SQLAlchemy doesn't see it.
+    payload_dict.pop("action_template_id", None)
+
+    # Kanban #1006 (AC4 + AC6): apply template pre-fill if a template was resolved.
+    if _action_template is not None:
+        # task_kind: applied AFTER the coerce assignment below (step marked ①)
+        # because coerce_task_kind_for_interaction runs before payload_dict and
+        # its result is written to payload_dict["task_kind"] at step ①; we
+        # must hook in there to avoid being overwritten.
+
+        # task_type — no coerce path touches this; apply now.
+        if "task_type" not in payload.model_fields_set:
+            payload_dict["task_type"] = _action_template.default_task_type
+        # priority — no coerce path touches this; apply now.
+        if "priority" not in payload.model_fields_set:
+            payload_dict["priority"] = _action_template.default_priority
+
+        # AC4 acceptance_criteria: template ac_outline items as AcceptanceCriterion.
+        # Build the template-derived entries (status='pending').
+        template_ac = [
+            AcceptanceCriterion(text=text).model_dump(mode="json")
+            for text in _action_template.ac_outline
+        ]
+        if "acceptance_criteria" not in payload.model_fields_set or payload.acceptance_criteria is None:
+            # Caller omitted acceptance_criteria → use template list as-is.
+            payload_dict["acceptance_criteria"] = template_ac if template_ac else None
+        else:
+            # Caller supplied acceptance_criteria → MERGE: template first, then caller.
+            caller_ac = [
+                c.model_dump(mode="json") for c in payload.acceptance_criteria
+            ]
+            payload_dict["acceptance_criteria"] = template_ac + caller_ac
+
+        # AC6: record template provenance in resume_context so history doesn't
+        # change retroactively when the YAML is updated.
+        existing_rc: dict = payload_dict.get("resume_context") or {}
+        existing_rc["action_template"] = {
+            "id": _action_template.name,
+            "version": _action_template.version,
+        }
+        payload_dict["resume_context"] = existing_rc
     # #858 — persist post-coerce values (no-op when interaction_kind='work')
     payload_dict["task_kind"] = coerced_task_kind
     payload_dict["run_mode"] = coerced_run_mode
+    # Kanban #1006 step ①: apply template task_kind default AFTER the coerce
+    # assignment so we don't stomp on the coerce.  Only fires when:
+    #   (a) a template was resolved, AND
+    #   (b) the caller did NOT explicitly supply task_kind (model_fields_set),
+    #       AND
+    #   (c) the interaction_kind coerce did not change the value (i.e. the
+    #       coerce was a no-op — coerced_task_kind equals payload.task_kind
+    #       which is the Pydantic default 'ai').  We check (b) which covers (c):
+    #       if the caller didn't supply task_kind and the coerce also didn't
+    #       force it, we can apply the template default.
+    if _action_template is not None and "task_kind" not in payload.model_fields_set:
+        # If coerce_task_kind_for_interaction forced 'human' (question/decision),
+        # keep that — the coerce is a higher-level invariant than the template.
+        if coerced_task_kind == payload.task_kind:
+            # coerce was a no-op; safe to apply template default
+            payload_dict["task_kind"] = _action_template.default_task_kind
     # L14: stamp the flag iff the scanner matched. A clean POST leaves the
     # column at its DB DEFAULT (false). Note we do NOT raise here — the tag
     # is non-blocking by design; the operator may legitimately FILE
     # destructive work, only auto-headless is gated.
     if moderation_matches:
         payload_dict["requires_human_review"] = True
-    if payload_dict.get("acceptance_criteria") is not None:
+    # #801 pattern — serialize AcceptanceCriterion objects to JSON-safe dicts.
+    # Skip when _action_template is set: the pre-fill block above already built
+    # the correct serialized list (template entries + optional caller entries).
+    if _action_template is None and payload_dict.get("acceptance_criteria") is not None:
         payload_dict["acceptance_criteria"] = [
             c.model_dump(mode="json") for c in payload.acceptance_criteria
         ]
@@ -1064,7 +1144,10 @@ async def create_task(
     # same #801 pattern
     if payload_dict.get("question_payload") is not None:
         payload_dict["question_payload"] = payload.question_payload.model_dump(mode="json")
-    if payload_dict.get("resume_context") is not None:
+    # #801 pattern — when _action_template is set, resume_context was already
+    # merged and set by the pre-fill block above; only re-serialize from
+    # payload when there is no template (original path).
+    if _action_template is None and payload_dict.get("resume_context") is not None:
         payload_dict["resume_context"] = payload.model_dump(mode="json")["resume_context"]
 
     task = Task(**payload_dict)

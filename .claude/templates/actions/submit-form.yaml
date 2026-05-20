@@ -1,0 +1,20 @@
+name: submit-form
+version: "1.0.0"
+description: >
+  Fill in and submit a web form or portal page, then confirm the submission
+  was received (confirmation number, email, or redirect page).
+default_task_type: chore
+default_task_kind: human
+default_priority: 2
+ac_outline:
+  - "All required fields filled correctly before submission"
+  - "Submission completes without validation errors"
+  - "Confirmation receipt or redirect page captured (screenshot or reference ID)"
+  - "Confirmation email / notification received (if expected)"
+hints:
+  - "Double-check mandatory fields before hitting Submit"
+  - "Save or screenshot the confirmation reference number immediately"
+  - "If the form has a draft/save feature, save first before final submit"
+suggested_attachments:
+  - "Form URL"
+  - "Confirmation screenshot or reference number"

@@ -1,0 +1,21 @@
+name: reply-message
+version: "1.0.0"
+description: >
+  Draft and send a reply to an email, Slack, Discord, or other messaging
+  thread, ensuring the response addresses all outstanding points.
+default_task_type: chore
+default_task_kind: human
+default_priority: 2
+ac_outline:
+  - "All questions or action items from the original message are addressed"
+  - "Tone is appropriate for the channel and relationship"
+  - "No sensitive information sent to unintended recipients (check CC/BCC)"
+  - "Reply sent from the correct account / identity"
+  - "Thread marked as resolved or follow-up task filed if further action needed"
+hints:
+  - "Re-read the full thread before replying — context may have changed"
+  - "For high-stakes replies, draft first and review before sending"
+  - "If the reply requires an attachment, include it before hitting Send"
+suggested_attachments:
+  - "Original message link or thread URL"
+  - "Draft reply (if pre-drafted)"

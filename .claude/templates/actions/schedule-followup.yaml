@@ -1,0 +1,21 @@
+name: schedule-followup
+version: "1.0.0"
+description: >
+  Schedule a calendar follow-up meeting or reminder with a contact, and
+  confirm it has been accepted or queued.
+default_task_type: chore
+default_task_kind: human
+default_priority: 3
+ac_outline:
+  - "Meeting / reminder created in the correct calendar with the right participants"
+  - "Date, time, and timezone confirmed with the contact (invite accepted or acknowledged)"
+  - "Agenda or purpose note included in the calendar entry"
+  - "Any pre-meeting materials linked or noted in the invite"
+hints:
+  - "Check the contact's timezone before proposing a time"
+  - "Set a personal reminder 24 hours before the meeting"
+  - "Include a video / call link if the meeting is remote"
+suggested_attachments:
+  - "Contact name / email"
+  - "Proposed date and time"
+  - "Agenda doc or notes link"

@@ -1,0 +1,22 @@
+name: approve-pr
+version: "1.0.0"
+description: >
+  Review a pull request's diff, verify it meets the spec, confirm CI passes,
+  and merge it to the target branch without conflicts.
+default_task_type: chore
+default_task_kind: human
+default_priority: 2
+ac_outline:
+  - "PR diff reviewed against the acceptance criteria / spec"
+  - "No unintended side-effects or scope creep in the changed files"
+  - "All required CI checks pass (lint, tests, type-check)"
+  - "Merge to target branch completes without rebase conflicts"
+  - "Linked issue / Kanban task updated (closed or linked)"
+hints:
+  - "Skim the diff for new env vars, secrets, or hard-coded values"
+  - "Check dependency additions for license compatibility"
+  - "Re-read the AC of the originating Kanban task before approving"
+suggested_attachments:
+  - "PR URL"
+  - "Spec doc / AC source"
+  - "CI run link"

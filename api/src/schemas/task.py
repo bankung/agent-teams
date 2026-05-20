@@ -520,6 +520,13 @@ class TaskCreate(BaseModel):
     budget_override_reason: str | None = Field(
         default=None, min_length=10, max_length=1_000
     )
+    # Kanban #1006 (2026-05-20): optional starter template reference.
+    # When set, the router looks up the named template via
+    # src.services.action_templates and applies pre-fill semantics for
+    # task_kind, task_type, priority, and acceptance_criteria.  Unknown
+    # name → 422.  Pre-fill is override-safe: an explicit caller value
+    # takes precedence over the template default.
+    action_template_id: str | None = Field(default=None, min_length=1, max_length=64)
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=True)

@@ -1,0 +1,22 @@
+name: review-draft
+version: "1.0.0"
+description: >
+  Review a written draft (document, blog post, announcement, spec) for
+  accuracy, tone, and completeness before it is published or sent.
+default_task_type: chore
+default_task_kind: human
+default_priority: 2
+ac_outline:
+  - "Content is factually accurate and consistent with source material"
+  - "Tone and register match the target audience and channel"
+  - "No spelling, grammar, or formatting errors"
+  - "All required sections present and not empty"
+  - "Reviewer sign-off recorded (comment, approval, or email)"
+hints:
+  - "Read the brief / guidelines for the target channel before reviewing"
+  - "Check every link / reference still resolves correctly"
+  - "Flag ambiguous claims for the author to clarify — don't silently rewrite"
+suggested_attachments:
+  - "Draft document URL or file"
+  - "Style guide / brand voice reference"
+  - "Target publish date"

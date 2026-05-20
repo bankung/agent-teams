@@ -28,6 +28,7 @@ from src.routers import audit as audit_router
 from src.routers import events as events_router
 from src.routers import notifications as notifications_router
 from src.routers import decisions as decisions_router
+from src.routers import templates as templates_router
 from src.routers import pl as pl_router
 from src.routers import projects as projects_router
 from src.routers import scaffold as scaffold_router
@@ -299,6 +300,8 @@ def create_app() -> FastAPI:
     app.include_router(notifications_router.router, prefix="/api")
     # Kanban #1007 — retro decisions feed (GET /api/decisions).
     app.include_router(decisions_router.router, prefix="/api")
+    # Kanban #1006 — action template library (GET /api/templates/actions).
+    app.include_router(templates_router.router, prefix="/api")
 
     return app
 
