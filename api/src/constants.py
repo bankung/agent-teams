@@ -95,7 +95,7 @@ class TaskRole:
       *  1..10  → dev team (.claude/teams/dev.md)
       * 11..20  → novel team (.claude/teams/novel.md)
       * 21..30  → seo team (.claude/teams/seo.md)
-      * 31..40  → reserved (planned: sem team — Kanban #1269 sibling followup)
+      * 31..40  → sem team (.claude/teams/sem.md)
       * 41..50  → data-analytics team (.claude/teams/data-analytics.md)
       * 51+     → reserved for future team domains
 
@@ -124,7 +124,12 @@ class TaskRole:
     SEO_REPORTING_ANALYST = 24
     # 25-30 reserved for future seo team roles
 
-    # 31-40 reserved for sem team (Kanban #1269 sibling followup)
+    # SEM range (31..40) — Kanban #1269 AC8 (2026-05-20)
+    SEM_CAMPAIGN_LEAD = 31
+    GOOGLE_ADS_SPECIALIST = 32
+    META_ADS_SPECIALIST = 33
+    PLATFORM_ADS_COORDINATOR = 34
+    # 35-40 reserved for future sem team roles
 
     # Data-analytics range (41..50) — Kanban #1271 AC7 (2026-05-20)
     BI_ANALYST = 41
@@ -154,6 +159,10 @@ class TaskRole:
         TECHNICAL_SEO_SPECIALIST,
         CONTENT_SEO_OPTIMIZER,
         SEO_REPORTING_ANALYST,
+        SEM_CAMPAIGN_LEAD,
+        GOOGLE_ADS_SPECIALIST,
+        META_ADS_SPECIALIST,
+        PLATFORM_ADS_COORDINATOR,
         BI_ANALYST,
         SQL_OPTIMIZER,
         DASHBOARD_DESIGNER,
