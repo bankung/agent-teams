@@ -28,7 +28,7 @@ Template:
    - `dev-sr-backend`, `dev-sr-frontend` → **opus** (design judgment; new surfaces, architecture)
    - `dev-backend`, `dev-frontend`, `dev-devops`, `dev-reviewer`, `dev-security-reviewer`, `dev-spec-reviewer`, `dev-tester` → **sonnet** (routine implementation; modifications + reviews)
    - `dev-documentor` → **haiku** (existing — read-heavy, write-light)
-   - `dev-analyst` → **opus** (existing — spec ambiguity expansion)
+   - `dev-analyst` → **sonnet** (per existing baseline — spec ambiguity expansion is structured, not design-heavy)
 
 3. **Test-writing boundary** (AC7) — default proposal adopted as-is by pilot:
    > dev-backend writes 1-3 first-pass contract-smoke tests (happy path + status code + response shape). dev-tester writes the rigorous suite (edge / regression / e2e). Same clause copied to dev-sr-backend at batch.
