@@ -224,17 +224,6 @@ async def _maybe_fire_threshold_alert(
     if _alert_already_sent_today(project_id, today, event):
         return
 
-    # Skip when the project has no telegram targets — local-file fallback
-    # would still fire from notification_router but the de-dupe key would
-    # then suppress subsequent legitimate operator-facing pages. Operators
-    # can configure project.notification_targets = [] to disable entirely.
-    targets = project.notification_targets or []
-    if not any(t.get("kind") == "telegram" for t in targets if isinstance(t, dict)):
-        # Mark sent anyway so we don't recompute the empty-targets check on
-        # every spawn through the day; reset via process restart.
-        _mark_alert_sent_today(project_id, today, event)
-        return
-
     payload = {
         "event": event,
         "project_id": project_id,
@@ -276,14 +265,45 @@ async def _maybe_fire_threshold_alert(
             _mark_alert_sent_today(project_id, today, event)
             return
 
-        # deliver() commits its own audit rows; we don't await its result for
-        # the 429 path but we DO await here (caller is a service func, not the
-        # HTTP handler — the router-side fire-and-forget happens at the call
-        # site if needed). Wrap in try/except so a Telegram outage never
-        # blocks the gate decision.
-        await deliver(
-            task_id=anchor_id, payload=payload, kind="telegram", session=db
+        # Kanban #955.B: build the web_push payload shape (D4 locked). The
+        # budget alert uses a project-scoped URL since there is no single task.
+        push_payload = {
+            "title": f"Budget alert: {project.name}",
+            "body": (
+                f"{event}: {result.pct_used}% used "
+                f"(${result.used_today_usd} of ${result.cap_daily_usd} daily cap)"
+            ),
+            "url": f"/projects/{project_id}",
+        }
+
+        # Telegram path — only fire when explicit telegram targets are configured
+        # (original AC5 behaviour). Skip when no telegram targets: the de-dupe key
+        # would then suppress subsequent push-only alerts for the day.
+        targets = project.notification_targets or []
+        has_telegram = any(
+            t.get("kind") == "telegram"
+            for t in targets
+            if isinstance(t, dict)
         )
+
+        if has_telegram:
+            # deliver() commits its own audit rows; wrap in try/except so a
+            # Telegram outage never blocks the gate decision.
+            await deliver(
+                task_id=anchor_id, payload=payload, kind="telegram", session=db
+            )
+
+        # Web push path (Kanban #955.B) — fire independently of telegram.
+        # Uses event_kind="budget_warn" to filter push_subscriptions.kinds_enabled.
+        # deliver() is a no-op when no push subscriptions are active or enabled.
+        await deliver(
+            task_id=anchor_id,
+            payload=push_payload,
+            kind="web_push",
+            event_kind="budget_warn",
+            session=db,
+        )
+
         _mark_alert_sent_today(project_id, today, event)
     except Exception:  # pragma: no cover - defensive, real failures logged
         logger.exception(

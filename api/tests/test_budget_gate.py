@@ -269,7 +269,10 @@ async def test_threshold_alert_fires_at_80pct(
 
     calls: list[dict] = []
 
-    async def _fake_deliver(*, task_id, payload, kind, session):
+    # Kanban #955.B: deliver() now accepts event_kind kwarg (web_push path).
+    # The budget gate fires deliver() twice: once for telegram, once for
+    # web_push. Accept **kwargs so the stub tolerates both call shapes.
+    async def _fake_deliver(*, task_id, payload, kind, session, **kwargs):
         calls.append({"task_id": task_id, "payload": payload, "kind": kind})
         return {"task_id": task_id, "attempts": []}
 
@@ -279,9 +282,11 @@ async def test_threshold_alert_fires_at_80pct(
 
     bc = await check_budget(db_session, pid, None)
     assert bc.pct_used == Decimal("80.0000")
-    assert len(calls) == 1, f"expected 1 notification, got {len(calls)}"
-    assert calls[0]["payload"]["event"] == "budget_threshold_80"
-    assert calls[0]["payload"]["project_id"] == pid
+    # #955.B: two calls — telegram (has_telegram=True) + web_push (event_kind=budget_warn).
+    telegram_calls = [c for c in calls if c["kind"] == "telegram"]
+    assert len(telegram_calls) == 1, f"expected 1 telegram notification, got {telegram_calls}"
+    assert telegram_calls[0]["payload"]["event"] == "budget_threshold_80"
+    assert telegram_calls[0]["payload"]["project_id"] == pid
 
 
 @pytest.mark.asyncio
@@ -306,10 +311,15 @@ async def test_threshold_alert_dedupes_per_project_per_day(
     )
     await _seed_today_spend(db_session, pid, Decimal("8.5000"))
 
-    calls: list[dict] = []
+    telegram_events: list[str] = []
 
-    async def _fake_deliver(*, task_id, payload, kind, session):
-        calls.append(payload["event"])
+    # Kanban #955.B: deliver() now accepts event_kind kwarg (web_push path).
+    # Capture only telegram calls to test the de-dupe invariant on the
+    # operator-facing channel; web_push calls are also de-duped by the same
+    # gate but are not this test's concern.
+    async def _fake_deliver(*, task_id, payload, kind, session, **kwargs):
+        if kind == "telegram":
+            telegram_events.append(payload["event"])
         return {"task_id": task_id, "attempts": []}
 
     monkeypatch.setattr(
@@ -318,8 +328,10 @@ async def test_threshold_alert_dedupes_per_project_per_day(
 
     await check_budget(db_session, pid, None)
     await check_budget(db_session, pid, None)
-    # Both checks cross 80%, but de-dupe should suppress the second.
-    assert calls == ["budget_threshold_80"], f"expected single alert, got {calls}"
+    # Both checks cross 80%, but de-dupe should suppress the second telegram alert.
+    assert telegram_events == ["budget_threshold_80"], (
+        f"expected single telegram alert, got {telegram_events}"
+    )
 
 
 # ---------------------------------------------------------------------------

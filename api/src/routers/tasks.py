@@ -1264,6 +1264,12 @@ async def update_task(
     # Kanban #695: cross-check the session-bound project against the row.
     assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
 
+    # Kanban #955.B: capture pre-PATCH state for push-notification transition
+    # detection. Must be captured before any mutation so the "was X before this
+    # PATCH" check in the post-commit hooks is accurate.
+    _pre_patch_process_status = task.process_status
+    _pre_patch_interaction_kind = task.interaction_kind
+
     updates = payload.model_dump(exclude_unset=True)
 
     # same #801 pattern (explicit-null PATCH skips re-dumping)
@@ -1677,6 +1683,24 @@ async def update_task(
         else task.process_status
     )
 
+    # Kanban #955.B: capture notification payload values before the setattr
+    # loop. After session.commit() the ORM object is expired (async sessions
+    # lazy-load on attribute access → MissingGreenlet). We derive the final
+    # values here using the same "updates wins over row" pattern as #832.
+    _notify_task_title = (
+        updates.get("title") if "title" in updates else task.title
+    )
+    _notify_status_change_reason = (
+        updates.get("status_change_reason")
+        if "status_change_reason" in updates
+        else task.status_change_reason
+    )
+    _notify_question_payload = (
+        updates.get("question_payload")
+        if "question_payload" in updates
+        else task.question_payload
+    )
+
     # Kanban #1007 (AC2): when a decision task is being flipped to DONE via PATCH,
     # enforce that chosen_id is set and matches an option id. This mirrors the
     # `/decide` endpoint's own validation so both paths share the invariant.
@@ -1929,6 +1953,95 @@ async def update_task(
                 "audit-task DONE flip stands but flag pipeline rolled back",
                 task_id,
             )
+
+    # Kanban #955.B: push-notification event hooks. Fire AFTER all PATCH commits
+    # so the mutation is durable before any delivery attempt. Three transitions:
+    #
+    #   (1) HITL needed — interaction_kind transitions from 'work'/'None' →
+    #       'question' or 'decision'. Does NOT fire on reverse transition.
+    #   (2) Task done  — process_status transitions to 5 (DONE).
+    #   (3) Task failed — process_status transitions to 6 (CANCELLED/FAIL).
+    #
+    # Pattern: "field in updates AND old value differs from new value" — same
+    # idempotent-re-PATCH guard used by #1007, #1211, #1004.
+    #
+    # deliver() is fire-and-await but adapter failures return {ok:False, detail}
+    # and do NOT raise — a push delivery failure never crashes the PATCH.
+    # When no push subscriptions match, deliver() is a no-op (empty target list).
+    try:
+        from src.services.notification_router import deliver as _push_deliver
+
+        # HITL-needed hook — fires when interaction_kind transitions from
+        # 'work' (or NULL) → 'question' or 'decision'. Uses pre-captured
+        # values (_pre_patch_interaction_kind, _notify_*) since the ORM
+        # object is expired after commit (async-session lazy-load guard).
+        if (
+            "interaction_kind" in updates
+            and _resolved_interaction_kind_for_done in (
+                TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION
+            )
+            and _pre_patch_interaction_kind not in (
+                TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION
+            )
+        ):
+            _hitl_qp = _notify_question_payload or {}
+            _hitl_body = (
+                _hitl_qp.get("question") if isinstance(_hitl_qp, dict) else None
+            ) or _notify_task_title
+            await _push_deliver(
+                task_id=task_id,
+                payload={
+                    "title": f"HITL needed: {_notify_task_title}",
+                    "body": str(_hitl_body),
+                    "url": f"/tasks/{task_id}",
+                },
+                kind="web_push",
+                event_kind="hitl_needed",
+                session=session,
+            )
+
+        # Task done hook — fires when process_status transitions to 5.
+        elif (
+            "process_status" in updates
+            and _resolved_ps_for_done == TaskStatus.DONE
+            and _pre_patch_process_status != TaskStatus.DONE
+        ):
+            _done_reason = _notify_status_change_reason or "Completed"
+            await _push_deliver(
+                task_id=task_id,
+                payload={
+                    "title": f"Task done: {_notify_task_title}",
+                    "body": str(_done_reason),
+                    "url": f"/tasks/{task_id}",
+                },
+                kind="web_push",
+                event_kind="task_done",
+                session=session,
+            )
+
+        # Task failed hook — fires when process_status transitions to 6.
+        elif (
+            "process_status" in updates
+            and _resolved_ps_for_done == TaskStatus.CANCELLED
+            and _pre_patch_process_status != TaskStatus.CANCELLED
+        ):
+            _fail_reason = _notify_status_change_reason or "Failed"
+            await _push_deliver(
+                task_id=task_id,
+                payload={
+                    "title": f"Task failed: {_notify_task_title}",
+                    "body": str(_fail_reason),
+                    "url": f"/tasks/{task_id}",
+                },
+                kind="web_push",
+                event_kind="task_failed",
+                session=session,
+            )
+    except Exception:  # noqa: BLE001 — defensive: push hook failure never crashes PATCH
+        logger.exception(
+            "955.B push hook failed on task_id=%d; PATCH stands",
+            task_id,
+        )
 
     await session.refresh(task)
     return task

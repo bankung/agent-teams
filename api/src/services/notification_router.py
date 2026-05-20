@@ -25,6 +25,16 @@ landed in migration 0041.
 Anti-pattern callout (AP1 from #1220): platform-kind is metadata ON a
 notification target, NEVER part of a session key. agent-teams sessions are
 bound to `project_id` only.
+
+Kanban #955.B — event_kind concept:
+  `event_kind` is a new parameter (str) that controls per-push-subscription
+  filtering via `kinds_enabled`. It is distinct from `kind` (the adapter
+  type — telegram / web_push). Callers supply both:
+    - `kind`: which adapter to use for EXPLICIT NotificationTarget rows.
+    - `event_kind`: which push_subscriptions.kinds_enabled key to check when
+      synthesizing web_push targets from the push_subscriptions table.
+  When `event_kind` is None the push-subscription resolver is skipped
+  (backwards-compatible for existing callers that pre-date #955.B).
 """
 
 from __future__ import annotations
@@ -33,7 +43,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,6 +54,9 @@ from src.services.notify_telegram import send_telegram
 from src.services.notify_web_push import send_web_push
 
 logger = logging.getLogger(__name__)
+
+# Valid event_kind values — mirrors PushSubscription.kinds_enabled keys.
+EventKind = Literal["hitl_needed", "task_done", "task_failed", "budget_warn"]
 
 
 # Module constants — exposed for tests + monkeypatch.
@@ -87,6 +100,59 @@ def _resolve_targets(task: Task, project: Project) -> list[dict[str, Any]]:
     cleaned = [t for t in raw if isinstance(t, dict) and "priority" in t]
     cleaned.sort(key=lambda t: t["priority"])
     return cleaned
+
+
+async def _resolve_push_subscription_targets(
+    session: AsyncSession,
+    project_id: int,
+    event_kind: str,
+) -> list[dict[str, Any]]:
+    """Synthesize web_push NotificationTarget-shaped dicts from push_subscriptions.
+
+    Kanban #955.B — called by deliver() when event_kind is set. Returns rows
+    WHERE (project_id IS NULL OR project_id = task.project_id) AND status=1
+    AND kinds_enabled->>event_kind = 'true', sorted by id ASC (deterministic
+    priority assignment: each row gets priority=100 baseline).
+
+    Returns a list of dicts in the same shape as NotificationTarget so the
+    deliver() adapter dispatch loop can treat them uniformly:
+      {"kind": "web_push", "chat_id": str(sub.id), "priority": 100, "label": ...}
+
+    A missing event_kind key in kinds_enabled is treated as False (permissive
+    default: only fire when explicitly enabled). This handles hand-edited JSONB
+    rows gracefully.
+    """
+    from src.models.push_subscription import PushSubscription
+    from src.constants import RecordStatus
+
+    stmt = (
+        select(PushSubscription)
+        .where(
+            PushSubscription.status == RecordStatus.ACTIVE,
+        )
+        .order_by(PushSubscription.id.asc())
+    )
+    result = await session.execute(stmt)
+    subs = result.scalars().all()
+
+    targets: list[dict[str, Any]] = []
+    for sub in subs:
+        # Project scoping: NULL means all-projects; specific project_id must match.
+        if sub.project_id is not None and sub.project_id != project_id:
+            continue
+        # kinds_enabled filter — treat missing key as False.
+        kinds = sub.kinds_enabled or {}
+        if not kinds.get(event_kind, False):
+            continue
+        targets.append(
+            {
+                "kind": "web_push",
+                "chat_id": str(sub.id),
+                "priority": 100,
+                "label": f"push:{sub.id}",
+            }
+        )
+    return targets
 
 
 def _write_local_fallback(
@@ -149,17 +215,26 @@ async def deliver(
     payload: dict[str, Any],
     kind: str,
     session: AsyncSession,
+    event_kind: str | None = None,
 ) -> dict[str, Any]:
     """Resolve the target list + attempt delivery in priority order.
 
     Args:
-        task_id: tasks.id — used to look up the task + its project.
-        payload: structured delivery payload, passed through to adapters.
-        kind:    NotificationTarget.kind filter — only targets matching this
-                 kind are attempted (allows the caller to scope a delivery
-                 to one channel even when multiple kinds exist).
-        session: AsyncSession scoped to the caller; this function adds
-                 audit rows + commits once on exit.
+        task_id:    tasks.id — used to look up the task + its project.
+        payload:    structured delivery payload, passed through to adapters.
+        kind:       NotificationTarget.kind filter — only targets matching this
+                    kind are attempted (allows the caller to scope a delivery
+                    to one channel even when multiple kinds exist).
+        session:    AsyncSession scoped to the caller; this function adds
+                    audit rows + commits once on exit.
+        event_kind: Optional EventKind str (Kanban #955.B). When set, the
+                    resolver additionally walks `push_subscriptions` and
+                    appends web_push targets for active subscriptions that
+                    have kinds_enabled[event_kind]=true and match the task's
+                    project_id (or project_id IS NULL for all-projects subs).
+                    Appended AFTER the explicit NotificationTarget rows so
+                    they're tried last in the priority chain. When None, the
+                    push-subscription resolver is skipped (backwards-compat).
 
     Returns:
         {
@@ -205,6 +280,17 @@ async def deliver(
     # Filter to the requested kind so a caller asking for "telegram" doesn't
     # accidentally fire a future "discord" target.
     kind_targets = [t for t in targets if t.get("kind") == kind]
+
+    # Kanban #955.B — append push_subscription-derived web_push targets.
+    # These are tried AFTER the explicit NotificationTarget rows (appended to
+    # the end of kind_targets). Guard: only append when kind=="web_push" so a
+    # "telegram" deliver() call never accidentally fires web_push adapters.
+    # The event_kind None path (all pre-955.B callers) skips this block entirely.
+    if event_kind is not None and kind == "web_push":
+        push_targets = await _resolve_push_subscription_targets(
+            session, task.project_id, event_kind
+        )
+        kind_targets.extend(push_targets)
 
     attempts: list[dict[str, Any]] = []
     delivered_ok = False

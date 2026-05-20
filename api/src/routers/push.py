@@ -36,6 +36,7 @@ from src.schemas.push_subscription import (
     KindsEnabled,
     PushSubscribeRequest,
     PushSubscriptionRead,
+    PushSubscriptionUpdate,
 )
 
 router = APIRouter(prefix="/push", tags=["push"])
@@ -181,6 +182,71 @@ async def unsubscribe_push(
         await session.commit()
 
     return Response(status_code=http_status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/push/subscribe/{id} — partial update (Kanban #955.B)
+# ---------------------------------------------------------------------------
+
+
+@router.patch(
+    "/subscribe/{subscription_id}",
+    response_model=PushSubscriptionRead,
+    status_code=http_status.HTTP_200_OK,
+)
+async def update_push_subscription(
+    subscription_id: int,
+    payload: PushSubscriptionUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> PushSubscription:
+    """Partially update a push subscription.
+
+    Typical use: the FE settings UI toggles individual `kinds_enabled` flags
+    (e.g. turn off task_done push notifications for this browser). The caller
+    sends only the fields it wants to change; omitted fields are unchanged
+    (`exclude_unset=True` PATCH semantics).
+
+    Returns the full updated row on 200. Returns 404 when the subscription_id
+    was never created (soft-deleted rows are still patchable — the FE may want
+    to re-enable a previously-deleted subscription's flags before re-subscribing
+    via POST).
+
+    Errors:
+      - 404 — subscription_id not found at all.
+      - 422 — Pydantic validation (invalid KindsEnabled shape, etc.).
+    """
+    sub = await get_or_404(
+        session,
+        PushSubscription,
+        detail=f"PushSubscription id={subscription_id} not found",
+        id=subscription_id,
+    )
+
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        # No-op PATCH — return the current row unchanged (mirrors tasks PATCH
+        # no-op behaviour: no write, no updated_at bump, 200 with current data).
+        await session.refresh(sub)
+        return sub
+
+    # Apply updates. `kinds_enabled` is a KindsEnabled instance when supplied;
+    # dump to plain dict for the JSONB column (parity with the POST handler).
+    if "kinds_enabled" in updates and payload.kinds_enabled is not None:
+        updates["kinds_enabled"] = payload.kinds_enabled.model_dump()
+
+    for field, value in updates.items():
+        setattr(sub, field, value)
+
+    sub.updated_at = func.now()
+
+    try:
+        await session.commit()
+    except Exception:  # pragma: no cover — only FK violation is realistic
+        await session.rollback()
+        raise
+
+    await session.refresh(sub)
+    return sub
 
 
 # ---------------------------------------------------------------------------

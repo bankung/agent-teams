@@ -105,3 +105,30 @@ class PushSubscriptionRead(BaseModel):
     status: int
     created_at: datetime
     updated_at: datetime
+
+
+class PushSubscriptionUpdate(BaseModel):
+    """Request body for PATCH /api/push/subscribe/{id} (Kanban #955.B).
+
+    Allows the FE settings UI to toggle individual `kinds_enabled` flags
+    without resupplying the full subscription. `exclude_unset=True` PATCH
+    semantics: only the supplied fields are written; omitted fields are
+    unchanged.
+
+    `extra='forbid'` — typo'd keys 422 (parity with PushSubscribeRequest).
+
+    Updatable fields:
+      - `kinds_enabled`: full replacement of the 4-flag dict. The FE sends
+        the complete KindsEnabled object (not a merge-patch) to avoid partial
+        shape mismatches — the API boundary re-validates the shape via the
+        `KindsEnabled` nested model.
+      - `project_id`: allows reassigning or clearing (None) the subscription's
+        project scope. Optional update path; FE settings UI may expose it.
+      - `user_agent`: free-text label update.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kinds_enabled: KindsEnabled | None = None
+    project_id: int | None = None
+    user_agent: str | None = Field(default=None, max_length=512)
