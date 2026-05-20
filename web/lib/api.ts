@@ -908,6 +908,121 @@ export type AuditFlagWithProject = {
   project: ProjectRead;
 };
 
+// ============================================================================
+// Kanban #955 — Web Push subscription CRUD (slice 955.C consumer of slice
+// 955.A's /api/push/* endpoints).
+// ============================================================================
+
+// PushKindsEnabled — per-subscription toggle dict. Mirror of
+// api/src/schemas/push_subscription.py:KindsEnabled. extra='forbid' on the
+// BE — typo'd keys 422; keep the FE shape in lockstep with the 4 locked keys.
+export type PushKindsEnabled = {
+  hitl_needed: boolean;
+  task_done: boolean;
+  task_failed: boolean;
+  budget_warn: boolean;
+};
+
+// PushSubscribeBody — POST /api/push/subscribe body. Matches
+// api/src/schemas/push_subscription.py:PushSubscribeRequest.
+export type PushSubscribeBody = {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+  project_id?: number | null;
+  user_agent?: string | null;
+  kinds_enabled?: PushKindsEnabled | null;
+};
+
+// PushSubscriptionRead — server row shape returned by POST + GET endpoints.
+// status: 1=active, 0=soft-deleted (RecordStatus enum in api/src/constants.py).
+export type PushSubscriptionRead = {
+  id: number;
+  project_id: number | null;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  kinds_enabled: PushKindsEnabled;
+  user_agent: string | null;
+  status: number;
+  created_at: string;
+  updated_at: string;
+};
+
+// Slice 955.B PATCH endpoint — kinds_enabled-only update. Slice B is in
+// flight in parallel; this helper assumes the PATCH body shape will be
+// `{ kinds_enabled: PushKindsEnabled }`. If slice B lands with a different
+// shape, this helper is the single point of change on the FE.
+export type PushSubscriptionPatchBody = {
+  kinds_enabled?: PushKindsEnabled;
+};
+
+// All push helpers under a single namespace so callers read `pushApi.subscribe(...)`
+// rather than polluting the top-level export surface with 4 more names. The
+// individual functions are not exported separately — callers go through
+// `push` (re-exported as `pushApi` in web/lib/push.ts where needed).
+export const push = {
+  async subscribe(body: PushSubscribeBody): Promise<PushSubscriptionRead> {
+    return jsonFetch<PushSubscriptionRead>(`/api/push/subscribe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  },
+
+  async unsubscribe(subscriptionId: number): Promise<void> {
+    // DELETE returns 204 (no body) on success — jsonFetch parses JSON which
+    // would explode on an empty 204 body; call fetch directly here.
+    const url = `${apiBaseUrl()}/api/push/subscribe/${subscriptionId}`;
+    const response = await fetch(url, {
+      method: "DELETE",
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok && response.status !== 204) {
+      const body = (await response.json().catch(() => ({}))) as {
+        detail?: unknown;
+      };
+      const message =
+        formatDetail(body.detail) ?? `${response.status} ${response.statusText}`;
+      throw new HttpError(response.status, body.detail, message);
+    }
+  },
+
+  // PATCH the kinds_enabled JSONB column for an existing subscription.
+  // Endpoint shipped by slice 955.B (in-flight in parallel) at
+  // PATCH /api/push/subscribe/{id}. Until slice B lands the call will 404 /
+  // 405; the FE wraps the response error in HttpError as usual.
+  async patchKinds(
+    subscriptionId: number,
+    body: PushSubscriptionPatchBody,
+  ): Promise<PushSubscriptionRead> {
+    return jsonFetch<PushSubscriptionRead>(
+      `/api/push/subscribe/${subscriptionId}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+  },
+
+  // List subscriptions. Default filter is active-only (slice A); pass
+  // `include_deleted: true` for the debug surface. `project_id` filter
+  // returns rows matching the id OR rows with project_id IS NULL (the
+  // all-projects subscriptions).
+  async list(
+    opts: { include_deleted?: boolean; project_id?: number } = {},
+  ): Promise<PushSubscriptionRead[]> {
+    const qs = new URLSearchParams();
+    if (opts.include_deleted) qs.set("include_deleted", "true");
+    if (opts.project_id != null) qs.set("project_id", String(opts.project_id));
+    const path = qs.toString()
+      ? `/api/push/subscriptions?${qs}`
+      : `/api/push/subscriptions`;
+    return jsonFetch<PushSubscriptionRead[]>(path);
+  },
+};
+
 // listAuditFlags — cross-project aggregation for the AA4 /review page.
 //
 // Implementation: the existing /api/tasks endpoint is single-project-scoped

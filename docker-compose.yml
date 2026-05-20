@@ -136,6 +136,13 @@ services:
       # which only works on Windows / macOS Docker Desktop (gateway routing) —
       # breaks on Linux compose where container localhost != host. (Kanban #704)
       INTERNAL_API_URL: ${INTERNAL_API_URL:-http://api:8456}
+      # Kanban #955.C — VAPID public key for Web Push (mirrors the api service's
+      # VAPID_PUBLIC_KEY). Inlined into the browser bundle as NEXT_PUBLIC_* so
+      # web/lib/push.ts can call PushManager.subscribe({ applicationServerKey }).
+      # Public half is safe to ship to the browser; the PRIVATE half stays in
+      # the api service only. Empty default = Push subscribe surfaces a clear
+      # "missing VAPID key" message in the settings UI.
+      NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
     ports:
       - "${WEB_PORT:-5431}:5431"
     volumes:
