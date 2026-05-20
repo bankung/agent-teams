@@ -79,6 +79,8 @@ def test_constants_align_with_general_md() -> None:
     range (11..20). The standards doc currently documents only the dev
     range — its "Kanban schema codes (assigned_role)" section is flagged
     stale for human refresh. RANGE_MIN/RANGE_MAX is the wire contract.
+    Kanban #1266/#1269/#1271 (2026-05-20): RANGE_MAX bumped 20 → 50 to
+    admit SEO (21-24), SEM (31-34), and data-analytics (41-44) codes.
     """
     from src.constants import TaskPriority, TaskRole, TaskStatus
 
@@ -86,9 +88,16 @@ def test_constants_align_with_general_md() -> None:
     assert TaskPriority.ALL == (1, 2, 3, 4)
     # Kanban #7 Section B (2026-05-16): SECURITY_REVIEWER=6 claimed from
     # the dev-reserved 6..10 partition.
-    assert TaskRole.ALL == (1, 2, 3, 4, 5, 6, 11, 12, 13)
+    # Kanban #1266/#1269/#1271 (2026-05-20): SEO/SEM/data-analytics codes added.
+    assert TaskRole.ALL == (
+        1, 2, 3, 4, 5, 6,       # dev range (1..10)
+        11, 12, 13,              # novel range (11..20)
+        21, 22, 23, 24,          # seo range (21..30)
+        31, 32, 33, 34,          # sem range (31..40)
+        41, 42, 43, 44,          # data-analytics range (41..50)
+    )
     assert TaskRole.RANGE_MIN == 1
-    assert TaskRole.RANGE_MAX == 20
+    assert TaskRole.RANGE_MAX == 50
 
 
 @pytest.mark.asyncio

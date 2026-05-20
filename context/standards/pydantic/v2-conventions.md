@@ -47,8 +47,9 @@
   - `"status must be one of (1, 2, 3, 4, 5), got <repr>"`
   - `"status is required"`
   - `"priority must be one of (1, 2, 3, 4), got <repr>"`
-  - `"assigned_role must be NULL or one of (1, 2, 3, 4, 5), got <repr>"`
+  - `"assigned_role must be NULL or in range 1..<RANGE_MAX>, got <repr>"` (Kanban #926 — moved from explicit enum to range; `<RANGE_MAX>` tracks `TaskRole.RANGE_MAX`)
 - A wording change is a contract change: update tests, update `shared/api-contracts.md`, update the consumer (eventually the FE that parses `errors[].msg` for inline form errors). Don't change wording during refactors.
+- **Track wording against the live constant, not a hardcoded literal.** Tests that pin `"in range 1..50"` will drift the moment `TaskRole.RANGE_MAX` is bumped to 60. Prefer `f"in range 1..{TaskRole.RANGE_MAX}"` so the literal updates atomically with the constant. Kanban #1355 (2026-05-20) cleaned a sibling drift across `test_validators.py` + `test_in_clause.py` + `test_smoke.py` after #1266/#1269/#1271 bumped the range from 20 to 50.
 
 ## Discriminated JSONB payload shapes
 

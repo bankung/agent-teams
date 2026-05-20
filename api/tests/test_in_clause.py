@@ -29,16 +29,17 @@ def test_in_clause_priority_canonical() -> None:
 
 
 def test_in_clause_role_canonical() -> None:
-    # Kanban #926 (2026-05-15): TaskRole.ALL widened to include novel codes
-    # (11/12/13). Note: this IN-clause is no longer referenced by any active
-    # CHECK constraint — the DB CHECK on tasks.assigned_role was dropped
-    # 2026-05-08 by migration 0002. The helper is exercised here only to
-    # guarantee its render stays stable; the migration files carry their
-    # own historical snapshots of _TASK_ROLE_ALL per the "Helper duplication
-    # between app and migration" pattern (standards/general.md).
+    # Kanban #926 (2026-05-15): TaskRole.ALL widened to include novel codes (11/12/13).
+    # Kanban #1266/#1269/#1271 (2026-05-20): further widened to include SEO codes
+    # (21-24), SEM codes (31-34), data-analytics codes (41-44).
+    # Note: this IN-clause is no longer referenced by any active CHECK constraint —
+    # the DB CHECK on tasks.assigned_role was dropped 2026-05-08 by migration 0002.
+    # The helper is exercised here only to guarantee its render stays stable; the
+    # migration files carry their own historical snapshots of _TASK_ROLE_ALL per the
+    # "Helper duplication between app and migration" pattern (standards/general.md).
     assert (
         in_clause("assigned_role", TaskRole.ALL)
-        == "assigned_role IN (1, 2, 3, 4, 5, 6, 11, 12, 13)"
+        == "assigned_role IN (1, 2, 3, 4, 5, 6, 11, 12, 13, 21, 22, 23, 24, 31, 32, 33, 34, 41, 42, 43, 44)"
     )
 
 
@@ -53,9 +54,11 @@ def test_in_clause_uses_comma_space_separator() -> None:
 
 
 def test_in_clause_text_canonical_team_values() -> None:
+    # Kanban #1266/#1269/#1271 (2026-05-20): ProjectTeam.ALL expanded to include
+    # 'content', 'seo', 'data-analytics', 'sem' alongside original dev/novel/general.
     assert (
         in_clause_text("team", ProjectTeam.ALL)
-        == "team IN ('dev', 'novel', 'general')"
+        == "team IN ('dev', 'novel', 'general', 'content', 'seo', 'data-analytics', 'sem')"
     )
 
 
