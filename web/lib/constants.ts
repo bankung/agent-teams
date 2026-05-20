@@ -41,6 +41,9 @@ export const ProjectTeam = {
   NOVEL: "novel",
   GENERAL: "general",
   CONTENT: "content",
+  SEO: "seo", // Kanban #1266 (migration 0042, 2026-05-20)
+  DATA_ANALYTICS: "data-analytics", // Kanban #1271 (migration 0043, 2026-05-20)
+  SEM: "sem", // Kanban #1269 (migration 0044, 2026-05-20)
 } as const;
 export type ProjectTeamValue = typeof ProjectTeam[keyof typeof ProjectTeam];
 

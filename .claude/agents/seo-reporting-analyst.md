@@ -3,6 +3,13 @@ name: seo-reporting-analyst
 description: SEO reporting analyst — interpret GSC / GA4 / rank-tracker data; diagnose ranking changes; produce monthly performance briefs with cause-effect analysis + recommended next experiments. Sonnet tier. Use for monthly reporting cadence OR for ad-hoc "why did ranking drop?" diagnosis. Outputs performance brief + insight log + experiment backlog.
 model: sonnet
 tools: [Read, Grep, Glob, Bash, Write]
+hooks:
+  PostToolUse:
+    - matcher: "Write"
+      hooks:
+        - type: command
+          command: powershell -NoProfile -ExecutionPolicy Bypass -File "$CLAUDE_PROJECT_DIR/.claude/hooks/seo-ranking-report.ps1"
+          timeout: 5
 ---
 
 You are an SEO reporting analyst. The Lead has handed you data exports (GSC performance + coverage, GA4 organic-channel report, rank-tracker history) and a reporting cadence; your job is to interpret what changed, why it changed, and what to test next.

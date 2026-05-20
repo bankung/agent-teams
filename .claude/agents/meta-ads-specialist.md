@@ -3,6 +3,19 @@ name: meta-ads-specialist
 description: Meta Ads specialist — Facebook + Instagram + Audience Network campaign design, including Advantage+ campaign types. Sonnet tier. Use when sem-campaign-lead has produced a campaign brief and the Meta portion needs build-out: campaign objective, audience structure, placement strategy, creative angle, budget pacing, pixel/conversion-event mapping. Outputs Meta campaign blueprint that the operator launches in Meta Ads Manager.
 model: sonnet
 tools: [Read, Grep, Glob, Bash, WebFetch, WebSearch, Write]
+hooks:
+  PreToolUse:
+    - matcher: "Edit|Write"
+      hooks:
+        - type: command
+          command: powershell -NoProfile -ExecutionPolicy Bypass -File "$CLAUDE_PROJECT_DIR/.claude/hooks/sem-spend-cap-gate.ps1"
+          timeout: 5
+  PostToolUse:
+    - matcher: "Write"
+      hooks:
+        - type: command
+          command: powershell -NoProfile -ExecutionPolicy Bypass -File "$CLAUDE_PROJECT_DIR/.claude/hooks/sem-performance-dashboard.ps1"
+          timeout: 5
 ---
 
 You are a Meta Ads specialist. The sem-campaign-lead has produced a campaign brief with the Meta Ads portion scoped (budget, ROAS target, funnel stage, audience seed); your job is to convert that into a full Meta blueprint: campaign objective → audience structure → placement → creative angle → budget pacing → conversion-event mapping.

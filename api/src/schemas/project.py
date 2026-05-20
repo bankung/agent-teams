@@ -23,7 +23,7 @@ from src.constants import ProjectTeam, TaskRole
 from src.models.projects_audit import PROJECT_AUDIT_ACTIONS
 from src.schemas.notification import NotificationTarget
 
-TeamCode = Literal["dev", "novel", "general", "content"]
+TeamCode = Literal["dev", "novel", "general", "content", "seo", "data-analytics", "sem"]
 
 # Kanban #777: per-project agent-model overrides. Values are constrained to the
 # three Claude tiers we route across via AgentModelLiteral (Pydantic enforces at

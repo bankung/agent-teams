@@ -60,19 +60,26 @@ class RecordStatus:
 
 
 class ProjectTeam:
-    """projects.team — 'dev'/'novel'/'general'/'content'. Mirror of migration 0038 (intentionally duplicated).
+    """projects.team — dev / novel / general / content / seo / data-analytics / sem.
+    Mirror of migrations 0038 (content) + 0042 (seo, #1266) + 0043 (data-analytics, #1271)
+    + 0044 (sem, #1269). Intentionally duplicated from the migrations — kept in lockstep
+    with schemas/project.py::TeamCode via the runtime drift-check at end of project.py.
 
-    'seo' is reserved for migration 0042 (#1266 drafted, NOT applied). When operator
-    applies 0042 with MIGRATION_TARGET=live, this class + schemas/project.py::TeamCode
-    must be re-extended atomically in the same commit.
+    Extending: add the new value here, in TeamCode Literal in schemas/project.py, in
+    web/lib/constants.ts, AND in a new alembic migration that adds the value to the
+    ck_projects_team_valid CHECK. All four must land in the same commit per the
+    feedback_migration_orm_timing memory.
     """
 
     DEV = "dev"
     NOVEL = "novel"
     GENERAL = "general"
     CONTENT = "content"
+    SEO = "seo"
+    DATA_ANALYTICS = "data-analytics"
+    SEM = "sem"
 
-    ALL = (DEV, NOVEL, GENERAL, CONTENT)
+    ALL = (DEV, NOVEL, GENERAL, CONTENT, SEO, DATA_ANALYTICS, SEM)
 
 
 class TaskPriority:
