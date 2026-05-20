@@ -7,6 +7,7 @@ import {
   createTask,
   HttpError,
   parseTaskText,
+  type ActionTemplateRead,
   type ParsedTaskProposal,
   type ProjectRead,
   type TaskCreateBody,
@@ -19,6 +20,8 @@ import {
   type TaskRoleValue,
 } from "@/lib/constants";
 import { filterRoleOptions } from "@/lib/enabledRoles";
+import { ActionTemplatePicker } from "./ActionTemplatePicker";
+import { HandoffTemplatePicker } from "./HandoffTemplatePicker";
 import { Icon } from "./Icon";
 
 // Trigger button + dialog for the AI-task flow (Kanban #857).
@@ -141,6 +144,11 @@ export function AiTaskModal({
   // #1238 AA3 — per-task pause override (only meaningful when isProjectPaused).
   const [allowDuringPause, setAllowDuringPause] = useState(false);
   const [allowDuringPauseReason, setAllowDuringPauseReason] = useState("");
+  // #1340 / #1343 — template state shared across input + preview phases.
+  // Operators may pick a template before or after parsing; either path lands
+  // it on the eventual POST /api/tasks body.
+  const [actionTemplateId, setActionTemplateId] = useState<string | null>(null);
+  const [handoffTemplateId, setHandoffTemplateId] = useState<number | null>(null);
 
   const textInputRef = useRef<HTMLTextAreaElement | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
@@ -170,7 +178,34 @@ export function AiTaskModal({
     setBlockedBy("");
     setAllowDuringPause(false);
     setAllowDuringPauseReason("");
+    setActionTemplateId(null);
+    setHandoffTemplateId(null);
     setCreateError(null);
+  }
+
+  // #1340 — same seed-form-fields-from-template behavior as NewTaskModal.
+  // task_type pulled from template (AiTaskModal has a task_type select that
+  // NewTaskModal lacks; we honor template.default_task_type here).
+  function onPickActionTemplate(template: ActionTemplateRead | null) {
+    if (template === null) {
+      setActionTemplateId(null);
+      return;
+    }
+    setActionTemplateId(template.id);
+    setPriority(template.default_priority);
+    // Narrow template's task_type to the subset our select supports
+    // (the picker doesn't expose 'audit' in this modal — that flow is
+    // governance-spawn only). Skip the assign if the value is out of range.
+    if (
+      template.default_task_type === "bug" ||
+      template.default_task_type === "feature" ||
+      template.default_task_type === "chore" ||
+      template.default_task_type === "docs" ||
+      template.default_task_type === "refactor"
+    ) {
+      setTaskType(template.default_task_type);
+    }
+    if (createError !== null) setCreateError(null);
   }
 
   function closeModal() {
@@ -287,6 +322,13 @@ export function AiTaskModal({
             allow_during_pause_reason: trimmedOverrideReason,
           }
         : {}),
+      // #1340 / #1343 — same template wire-fields as NewTaskModal.
+      ...(actionTemplateId !== null
+        ? { action_template_id: actionTemplateId }
+        : {}),
+      ...(handoffTemplateId !== null
+        ? { handoff_template_id: handoffTemplateId }
+        : {}),
     };
 
     try {
@@ -361,6 +403,15 @@ export function AiTaskModal({
                 Describe a task in plain language. The AI proposes fields; you
                 review + edit before confirming.
               </p>
+
+              {/* #1340 — action template chip row. Hidden when no templates
+                  exist. Picking a chip here will also re-render the same chip
+                  as selected on the preview phase. */}
+              <ActionTemplatePicker
+                selectedId={actionTemplateId}
+                onSelect={onPickActionTemplate}
+                disabled={parsing}
+              />
 
               <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
                 Prompt{" "}
@@ -472,6 +523,14 @@ export function AiTaskModal({
                 <Icon name="ai-agent" size={12} />
                 <span>Parsed by AI — edit as needed</span>
               </p>
+
+              {/* #1340 — chip row also surfaced on preview so the operator
+                  can pick / clear a template after editing the AI output. */}
+              <ActionTemplatePicker
+                selectedId={actionTemplateId}
+                onSelect={onPickActionTemplate}
+                disabled={creating}
+              />
 
               <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
                 Title <span className="text-red-600 dark:text-red-400">*</span>
@@ -596,6 +655,19 @@ export function AiTaskModal({
                   data-ai-task-description
                 />
               </label>
+
+              {/* #1343 — handoff template picker (preview phase only — same
+                  rationale as the pause-override block; the POST that
+                  persists handoff_template_id only fires in this phase). */}
+              <HandoffTemplatePicker
+                projectId={projectId}
+                selectedId={handoffTemplateId}
+                onSelect={(id) => {
+                  setHandoffTemplateId(id);
+                  if (createError !== null) setCreateError(null);
+                }}
+                disabled={creating}
+              />
 
               {/* #1238 AA3 — paused-project override (preview phase only —
                   this is where the actual createTask POST lands; the input

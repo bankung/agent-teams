@@ -16,6 +16,10 @@ import { Icon } from "./Icon";
 type Props = {
   task: TaskRead;
   onOpenDetail?: (task: TaskRead) => void;
+  // #1001 follow-up (2026-05-20) — `?task=<id>` deep-link highlight. When
+  // true, the card paints with a 2-second ring-pulse keyframe (defined in
+  // globals.css) so the operator's eye lands on the matched card.
+  highlighted?: boolean;
 };
 
 const PRIORITY_LABEL: Record<number, string> = {
@@ -50,7 +54,7 @@ const ROLE_CLASS: Record<number, string> = {
   [TaskRole.SECURITY_REVIEWER]: "text-rose-700 bg-rose-50 dark:text-rose-300 dark:bg-rose-900/30",
 };
 
-export function TaskCard({ task, onOpenDetail }: Props) {
+export function TaskCard({ task, onOpenDetail, highlighted = false }: Props) {
   const isAi = task.task_kind === "ai";
   const isPending = task.is_pending && task.process_status === TaskStatus.IN_PROGRESS;
   const inProgress = task.process_status === TaskStatus.IN_PROGRESS;
@@ -70,6 +74,10 @@ export function TaskCard({ task, onOpenDetail }: Props) {
     : "bg-white hover:bg-zinc-50 hover:border-zinc-300 dark:bg-zinc-900 dark:hover:bg-zinc-800/50 dark:hover:border-zinc-700";
   const baseCard = `rounded-md border border-zinc-200 dark:border-zinc-800 ${cardBg} p-2.5 transition-colors`;
   const cursor = draggable ? " cursor-grab active:cursor-grabbing" : " cursor-not-allowed";
+  // #1001 follow-up — deep-link ring-pulse. Class defined in globals.css
+  // (animation-deep-link-pulse — 2s, ring-violet-500). Append after base so
+  // the keyframe ring overrides the static border-zinc.
+  const highlightClass = highlighted ? " animate-deep-link-pulse" : "";
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -87,12 +95,14 @@ export function TaskCard({ task, onOpenDetail }: Props) {
       aria-label={`Task ${task.id}: ${task.title}`}
       data-run-mode={task.run_mode}
       data-task-id={task.id}
+      data-task-card-id={task.id}
       data-task-kind={task.task_kind}
       data-is-template={task.is_template}
       data-draggable={draggable}
       data-card-pending={isPending}
+      data-deep-link-highlighted={highlighted ? "true" : undefined}
       data-blocked-by={task.blocked_by ?? undefined}
-      className={baseCard + cursor}
+      className={baseCard + cursor + highlightClass}
     >
       <div className="flex items-start justify-between gap-2">
         <span className="font-mono text-[11px] text-zinc-400 dark:text-zinc-500">#{task.id}</span>

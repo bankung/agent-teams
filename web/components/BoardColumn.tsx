@@ -21,9 +21,13 @@ type Props = {
   // free), but `data-lane-sortable` on the section lets probes + Board.onDragEnd
   // confirm this is the lane the FE reorders through `POST /api/tasks/{id}/reorder`.
   sortable?: boolean;
+  // #1001 follow-up (2026-05-20) — when a deep-link `?task=<id>` matches a
+  // card in this column, the Board passes the id down so the card renders
+  // a 2-second ring-pulse highlight. null = no highlight.
+  highlightedTaskId?: number | null;
 };
 
-export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, sortable = false }: Props) {
+export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, sortable = false, highlightedTaskId = null }: Props) {
   const { isOver, setNodeRef } = useDroppable({ id: columnId });
   const taskIds = tasks.map((t) => t.id);
   const dropHighlight = isOver ? " ring-2 ring-blue-400/50" : "";
@@ -56,7 +60,12 @@ export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, so
             <p className="px-1 py-4 text-center text-xs text-zinc-400 dark:text-zinc-500">—</p>
           ) : (
             tasks.map((task) => (
-              <TaskCard key={task.id} task={task} onOpenDetail={onOpenDetail} />
+              <TaskCard
+                key={task.id}
+                task={task}
+                onOpenDetail={onOpenDetail}
+                highlighted={highlightedTaskId === task.id}
+              />
             ))
           )}
         </div>

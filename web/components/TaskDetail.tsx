@@ -14,9 +14,11 @@ import {
 } from "@/lib/api";
 import { TaskKind, TaskRunMode, TaskStatus } from "@/lib/constants";
 import { computeBlockedByExclusionSet } from "@/lib/cycleExclusion";
+import { DecisionInteractionView } from "./DecisionInteractionView";
 import { PendingBadge } from "./PendingBadge";
 import { RunModeBadge } from "./RunModeBadge";
 import { TaskKindBadge } from "./TaskKindBadge";
+import { TaskMuteToggle } from "./TaskMuteToggle";
 import { TaskToolCalls } from "./TaskToolCalls";
 
 type Props = {
@@ -270,6 +272,19 @@ export function TaskDetail({
                 </button>
               </div>
             )}
+            {/* #1349 — per-task HITL nudge toggle. Visible on non-terminal
+                tasks (terminal tasks no longer fire nudges anyway, so the
+                toggle would be cosmetic). Optimistic flip + revert on error. */}
+            {!isTerminal && (
+              <div className="mt-2" data-task-mute-control>
+                <TaskMuteToggle
+                  task={task}
+                  projectId={projectId}
+                  onPatch={onPatch}
+                  onError={onError}
+                />
+              </div>
+            )}
             {/* #854 — Cancel: hidden on terminal states */}
             {!isTerminal && (
               <div className="mt-2" data-cancel-task-control>
@@ -344,8 +359,20 @@ export function TaskDetail({
             </Section>
           )}
 
-          {/* #834 — question/decision section; hidden for work tasks */}
-          {task.interaction_kind !== "work" && (
+          {/* #834 / #1335 — question/decision section; hidden for work tasks.
+              Decision tasks (interaction_kind='decision') render the
+              full OptionCard variant from DecisionInteractionView; question
+              tasks (free-text answers / legacy string-options) render the
+              original QuestionInteractionSection chip variant. */}
+          {task.interaction_kind === "decision" && (
+            <DecisionInteractionView
+              task={task}
+              projectId={projectId}
+              onPatch={onPatch}
+              onError={onError}
+            />
+          )}
+          {task.interaction_kind === "question" && (
             <QuestionInteractionSection
               task={task}
               projectId={projectId}
@@ -607,22 +634,28 @@ function QuestionInteractionSection({
           <p className="rounded bg-green-50 px-3 py-2 text-sm font-medium text-green-700 dark:bg-green-900/30 dark:text-green-300">
             {sectionLabel} resolved
           </p>
-        ) : payload?.options != null ? (
+        ) : payload?.options != null && payload.options.length > 0 ? (
           // Options mode — buttons; clicking one immediately submits.
           // #954 — 44px min tap target on mobile for option chips
+          // #1335 — `options` is heterogeneous (string | OptionItem). For
+          // question tasks (this code path) the legacy shape is `string[]`;
+          // narrow defensively so a stray OptionItem dict renders its label.
           <div className="flex flex-wrap gap-2" data-question-options>
-            {payload.options.map((opt) => (
+            {payload.options.map((opt, idx) => {
+              const label = typeof opt === "string" ? opt : opt.label;
+              return (
               <button
-                key={opt}
+                key={`${label}-${idx}`}
                 type="button"
                 disabled={submittingAnswer}
-                onClick={() => handleSubmitAnswer(opt)}
-                data-question-option={opt}
+                onClick={() => handleSubmitAnswer(label)}
+                data-question-option={label}
                 className="min-h-[44px] rounded border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-medium text-violet-800 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-800 dark:bg-violet-900/30 dark:text-violet-200 dark:hover:bg-violet-900/50"
               >
-                {opt}
+                {label}
               </button>
-            ))}
+              );
+            })}
           </div>
         ) : (
           // Free-text mode — textarea + explicit submit button.

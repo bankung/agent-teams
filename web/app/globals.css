@@ -1,3 +1,29 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Kanban #1001 follow-up (2026-05-20) — deep-link ring-pulse keyframe.
+   Applied to a TaskCard / ListView row when the Board mounts with a
+   `?task=<id>` query param that matches the row. Two-second violet ring
+   that fades out; pairs with a smooth scrollIntoView so the operator's
+   eye lands on the matched card. Single-shot (no `infinite`); the
+   highlighted state in Board.tsx clears after 2.2s so the keyframe runs
+   exactly once even if the operator re-opens the same URL.
+*/
+@layer utilities {
+  @keyframes deep-link-pulse {
+    0% {
+      box-shadow: 0 0 0 0 rgb(139 92 246 / 0.0);
+    }
+    20% {
+      box-shadow: 0 0 0 4px rgb(139 92 246 / 0.6);
+    }
+    100% {
+      box-shadow: 0 0 0 0 rgb(139 92 246 / 0);
+    }
+  }
+
+  .animate-deep-link-pulse {
+    animation: deep-link-pulse 2s ease-out 1;
+  }
+}

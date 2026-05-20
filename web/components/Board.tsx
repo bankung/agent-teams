@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { ListView } from "@/components/ListView";
 import {
@@ -105,9 +105,18 @@ type ViewMode = "board" | "list";
 
 export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: Props) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [tasks, setTasks] = useState<TaskRead[]>(initialTasks);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
+  // #1001 follow-up (2026-05-20) — `?task=<id>` deep-link state. Set when
+  // a freshly-loaded board has a matching task id; cleared after the scroll
+  // + highlight settles via router.replace (so a manual F5 doesn't re-fire).
+  const [highlightedTaskId, setHighlightedTaskId] = useState<number | null>(null);
+  // De-duplicate the deep-link effect within a single mount — Strict mode +
+  // hot reload would otherwise re-fire it and re-scroll mid-edit.
+  const deepLinkHandledRef = useRef(false);
   const toastIdRef = useRef(1);
 
   // View toggle — default 'board'; persisted per-project in localStorage.
@@ -130,6 +139,62 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
     const stored = localStorage.getItem(`kanban-view-${project.name}`);
     if (stored === "list" || stored === "board") setView(stored);
   }, [project.name]);
+
+  // #1001 follow-up (2026-05-20) — `?task=<id>` deep-link handler.
+  //
+  // On mount (or first ready `tasks` snapshot), read the URL search param.
+  // If `task` parses to an int AND a matching card is in the loaded list:
+  //   1. setHighlightedTaskId — triggers the ring-pulse class on the card.
+  //   2. scrollIntoView (smooth, center) — pulls the card into view.
+  //   3. router.replace — strip the query param so a manual F5 doesn't
+  //      re-fire the highlight (the operator probably scrolled away by then).
+  //   4. setTimeout(2200) — clear the highlight state so the pulse animation
+  //      ends cleanly (it's a 2s keyframe; the +200ms buffer lets the last
+  //      frame paint).
+  // If task id doesn't exist in the loaded list, render an inline toast.
+  // Effect re-runs only when searchParams changes — internal task list
+  // updates (SSE) don't re-trigger the scroll.
+  useEffect(() => {
+    if (deepLinkHandledRef.current) return;
+    const raw = searchParams?.get("task");
+    if (!raw) return;
+    const parsed = Number(raw);
+    if (!Number.isInteger(parsed) || parsed < 1) return;
+
+    deepLinkHandledRef.current = true;
+    const match = tasks.find((t) => t.id === parsed);
+    if (!match) {
+      pushToast(`Task #${parsed} not found in this project`);
+      // Strip the query param so the toast doesn't re-fire on re-render.
+      router.replace(pathname);
+      return;
+    }
+
+    setHighlightedTaskId(parsed);
+
+    // Defer the scroll one tick so React commits the card render first.
+    // requestAnimationFrame is friendlier than setTimeout(0) for paint sync.
+    if (typeof window !== "undefined") {
+      requestAnimationFrame(() => {
+        const card = document.querySelector<HTMLElement>(
+          `[data-task-card-id="${parsed}"]`,
+        );
+        if (card) {
+          card.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      });
+    }
+
+    // Clear the highlight after the 2s pulse animation finishes.
+    const clearAt = setTimeout(() => setHighlightedTaskId(null), 2200);
+    // Strip the query param now — by the time the operator interacts again
+    // a stale param would confusingly re-pulse. Pathname keeps the URL clean.
+    router.replace(pathname);
+    return () => clearTimeout(clearAt);
+    // tasks intentionally in deps so the lookup runs once initialTasks is
+    // ready; the handledRef guard ensures one-shot per mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, tasks]);
 
   function handleViewChange(v: ViewMode) {
     setView(v);
@@ -299,6 +364,16 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
             className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
           >
             Dashboard
+          </Link>
+          <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
+            ·
+          </span>
+          {/* #1349 — per-project settings (nudge threshold + future knobs). */}
+          <Link
+            href={`/p/${encodeURIComponent(project.name)}/settings`}
+            className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
+          >
+            Settings
           </Link>
           <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
             ·
@@ -480,7 +555,11 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
         />
       </header>
       {view === "list" ? (
-        <ListView tasks={visibleTasks} onOpenDetail={onOpenDetail} />
+        <ListView
+          tasks={visibleTasks}
+          onOpenDetail={onOpenDetail}
+          highlightedTaskId={highlightedTaskId}
+        />
       ) : (
         <DndContext sensors={sensors} onDragEnd={onDragEnd}>
           {/* #954 — mobile: page scrolls (no overflow-hidden, no min-h-0); desktop restores the fixed-height bounded lanes at lg */}
@@ -497,6 +576,7 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
                 tasks={col.statuses.flatMap((s) => grouped.get(s) ?? [])}
                 onOpenDetail={onOpenDetail}
                 sortable={col.statuses.includes(TaskStatus.TODO)}
+                highlightedTaskId={highlightedTaskId}
               />
             ))}
           </div>

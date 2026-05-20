@@ -267,7 +267,9 @@ export function TaskFocusView({ task: initialTask, project, actionHint }: Props)
     return structured;
   }, [task, isTerminal]);
 
-  const openFullHref = `/p/${encodeURIComponent(project.name)}`;
+  // #1001 follow-up — once the ?task=<id> deep-link landed on Board (#1349
+  // batch), the "Open full" button targets the matching task card directly.
+  const openFullHref = `/p/${encodeURIComponent(project.name)}?task=${task.id}`;
 
   return (
     <>

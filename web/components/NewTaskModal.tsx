@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   createTask,
   HttpError,
+  type ActionTemplateRead,
   type ProjectRead,
   type TaskCreateBody,
 } from "@/lib/api";
@@ -18,6 +19,8 @@ import {
   type TaskStatusValue,
 } from "@/lib/constants";
 import { filterRoleOptions } from "@/lib/enabledRoles";
+import { ActionTemplatePicker } from "./ActionTemplatePicker";
+import { HandoffTemplatePicker } from "./HandoffTemplatePicker";
 import { Icon } from "./Icon";
 
 // Trigger button + dialog for POST /api/tasks (Kanban #855 FE).
@@ -115,6 +118,14 @@ export function NewTaskModal({
   // #1238 AA3 — per-task pause override (only meaningful when isProjectPaused).
   const [allowDuringPause, setAllowDuringPause] = useState(false);
   const [allowDuringPauseReason, setAllowDuringPauseReason] = useState("");
+  // #1340 — action template chip selection. When set, server pre-fills
+  // task_kind / task_type / priority / acceptance_criteria from the template.
+  // The chip-row picker also seeds local form state so the visible defaults
+  // match what the BE will persist (the operator can still edit before submit).
+  const [actionTemplateId, setActionTemplateId] = useState<string | null>(null);
+  // #1343 — handoff template pointer. Persisted on the task row; BE spawns
+  // the child on the DONE-flip (services/handoff_spawn.py).
+  const [handoffTemplateId, setHandoffTemplateId] = useState<number | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -143,7 +154,24 @@ export function NewTaskModal({
     setBlockedBy("");
     setAllowDuringPause(false);
     setAllowDuringPauseReason("");
+    setActionTemplateId(null);
+    setHandoffTemplateId(null);
     setError(null);
+  }
+
+  // #1340 — when an action template is picked, seed local form fields from
+  // its defaults so the visible form matches what the BE will persist. The
+  // user can still edit any field before submit; caller-explicit values win
+  // server-side too (the BE only applies template defaults to fields the
+  // caller did not explicitly set in the same POST body).
+  function onPickActionTemplate(template: ActionTemplateRead | null) {
+    if (template === null) {
+      setActionTemplateId(null);
+      return;
+    }
+    setActionTemplateId(template.id);
+    setPriority(template.default_priority);
+    if (error !== null) setError(null);
   }
 
   // Title is required by the backend (min_length=1). The disabled-submit guard
@@ -190,6 +218,15 @@ export function NewTaskModal({
             allow_during_pause: true,
             allow_during_pause_reason: trimmedOverrideReason,
           }
+        : {}),
+      // #1340 — server pre-fills task_kind / task_type / acceptance_criteria
+      // from the named template (caller-explicit values above still win).
+      ...(actionTemplateId !== null
+        ? { action_template_id: actionTemplateId }
+        : {}),
+      // #1343 — persisted on row; BE spawns child on DONE-flip.
+      ...(handoffTemplateId !== null
+        ? { handoff_template_id: handoffTemplateId }
         : {}),
     };
 
@@ -261,6 +298,14 @@ export function NewTaskModal({
               Files a new row in <span className="font-mono">tasks</span>. New
               card appears in the chosen lane.
             </p>
+
+            {/* #1340 — action template chip row. Self-hides when no templates
+                exist (empty GET /api/templates/actions response). */}
+            <ActionTemplatePicker
+              selectedId={actionTemplateId}
+              onSelect={onPickActionTemplate}
+              disabled={submitting}
+            />
 
             <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
               Title <span className="text-red-600 dark:text-red-400">*</span>
@@ -384,6 +429,19 @@ export function NewTaskModal({
                 data-new-task-description
               />
             </label>
+
+            {/* #1343 — handoff template picker. Self-hides when no templates
+                exist (empty GET response). On DONE-flip BE atomically spawns
+                the child task per the chosen template (#1004 spawn hook). */}
+            <HandoffTemplatePicker
+              projectId={projectId}
+              selectedId={handoffTemplateId}
+              onSelect={(id) => {
+                setHandoffTemplateId(id);
+                if (error !== null) setError(null);
+              }}
+              disabled={submitting}
+            />
 
             {/* #1238 AA3 — paused-project override. Only rendered when the
                 operator is filing a task against a currently-paused project;

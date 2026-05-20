@@ -84,6 +84,11 @@ export type ProjectRead = {
   approval_policies?: Record<string, unknown> | null;
   hitl_timeout_hours?: number | null;
   audit_enabled?: boolean;
+  // Kanban #1011 (2026-05-20) — per-project HITL aging nudge threshold.
+  // NULL or 0 = nudges disabled; positive int = fire after N hours.
+  // Backfilled to 24 by migration 0047. Optional on the FE type for
+  // defensive resilience against pre-migration serialized payloads.
+  hitl_nudge_threshold_hours?: number | null;
 };
 
 // AcceptanceCriterion — one entry in TaskRead.acceptance_criteria (#797).
@@ -115,10 +120,24 @@ export type AnswerHistoryEntry = {
 // tasks (approval prompts, design Option A/B questions) carry only the base
 // triad (question/options/answer_history); only AA3-spawned flag rows set
 // `is_audit_flag=true` and the AA3 fields.
+//
+// `options` is heterogeneous on the wire (BE schema is `list[str | OptionItem]
+// | None` per api/src/schemas/task.py): question tasks carry plain `string[]`
+// (free-form approval / Option A/B prompts); decision tasks carry typed
+// `OptionItem[]` dicts (Kanban #1007, structured `/decide` validation). The
+// FE narrows per-option at the render site (string vs object).
+// Kanban #1007 / #1335 (2026-05-20) — added `chosen_id` / `rationale` /
+// `chosen_at` / `chosen_by` written by POST /api/tasks/{id}/decide. Null
+// until decided; set together atomically on decide.
 export type QuestionPayload = {
   question: string;
-  options: string[] | null;
+  options: Array<string | OptionItem> | null;
   answer_history: AnswerHistoryEntry[];
+  // Kanban #1007 / #1335 — decision-result fields. Null until /decide fires.
+  chosen_id?: string | null;
+  rationale?: string | null;
+  chosen_at?: string | null;
+  chosen_by?: string | null;
   // ---- AA3 audit-flag fields (services/audit_flag.py:_new_flag_payload) ----
   is_audit_flag?: boolean;
   breach_streak_days?: number;
@@ -192,6 +211,19 @@ export type TaskRead = {
   // FE reads them to render a "bypassed pause" indicator + the rationale.
   allow_during_pause?: boolean;
   allow_during_pause_reason?: string | null;
+  // Kanban #1004 (2026-05-20) — auto-handoff template pointer. NULL = no
+  // auto-handoff configured; non-null = on the next DONE-flip the BE spawns
+  // a child task via services/handoff_spawn.py. The CHILD's value is always
+  // NULL (loop guard enforced server-side). Optional on FE for defensive
+  // resilience against pre-migration serialized payloads.
+  handoff_template_id?: number | null;
+  // Kanban #1011 (2026-05-20) — HITL aging nudge dedup + per-task toggle.
+  //   `last_nudge_at`: timestamp of last fired nudge; null = never nudged.
+  //   `nudge_disabled`: per-task off switch; default false (nudges enabled
+  //                     per the project threshold). Operator flips true to
+  //                     silence a noisy task.
+  last_nudge_at?: string | null;
+  nudge_disabled?: boolean;
   created_at: string;
   updated_at: string;
   started_at: string | null;
@@ -418,6 +450,11 @@ export type ProjectUpdateBody = {
   working_path?: string | null;
   working_repo?: string | null;
   sources?: Source[];
+  // Kanban #1011 (2026-05-20) — per-project HITL aging nudge threshold.
+  // Semantics: key-absent → unchanged; explicit `null` → CLEAR to NULL
+  // (= nudges disabled); explicit int → set threshold (0 is accepted but
+  // app-layer treats it identical to NULL = disabled).
+  hitl_nudge_threshold_hours?: number | null;
 };
 
 export async function updateProject(
@@ -643,6 +680,18 @@ export type TaskCreateBody = {
   // the same gate before submit. Omitted on non-paused projects.
   allow_during_pause?: boolean;
   allow_during_pause_reason?: string;
+  // Kanban #1006 (2026-05-20) — pre-fill task fields from a named action
+  // template. Server reads `action_template_id` (the template's `name` /
+  // `id`), looks it up in the in-memory cache, and pre-fills task_kind,
+  // task_type, priority, and acceptance_criteria. Caller-explicit values in
+  // the same body win over the template. Field is request-only metadata —
+  // does NOT round-trip on TaskRead. 400 on unknown template id.
+  action_template_id?: string;
+  // Kanban #1004 (2026-05-20) — store a handoff-template pointer on the
+  // task. The BE persists this on the row; the DONE-flip hook reads it and
+  // spawns the child task. The CHILD's value is always NULL (loop guard).
+  // 400 on unknown template id; 400 on project-scope mismatch.
+  handoff_template_id?: number;
 };
 
 export async function createTask(
@@ -710,6 +759,14 @@ export type TaskPatch = Partial<
   invalidated_reason?: string | null;
   status_change_reason?: string | null;
   halt_reason?: string | null;
+  // Kanban #1011 (2026-05-20) — per-task nudge on/off toggle. Key-absent
+  // leaves unchanged; explicit true silences; explicit false re-enables.
+  // The BE column is NOT NULL DEFAULT false; explicit `null` would 400.
+  nudge_disabled?: boolean;
+  // Kanban #1004 (2026-05-20) — re-point or clear the handoff template
+  // pointer. Key-absent leaves unchanged; explicit `null` clears; positive
+  // int re-points (BE validates existence + project scope).
+  handoff_template_id?: number | null;
 };
 
 export async function patchTask(
@@ -1116,3 +1173,109 @@ export async function listAuditFlags(): Promise<AuditFlagWithProject[]> {
   );
   return perProject.flat();
 }
+
+// ============================================================================
+// Kanban #1011 (2026-05-20) — POST /api/tasks/{id}/snooze.
+// ============================================================================
+
+// SnoozeTaskBody — server schema (api/src/schemas/task.py SnoozeRequest):
+// extra='forbid', hours=int default 4, ge=1, le=168. 422 on out-of-range.
+export type SnoozeTaskBody = { hours?: number };
+
+export async function snoozeTask(
+  projectId: number,
+  taskId: number,
+  body: SnoozeTaskBody = {},
+): Promise<TaskRead> {
+  return jsonFetch<TaskRead>(`/api/tasks/${taskId}/snooze`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Project-Id": String(projectId),
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+// ============================================================================
+// Kanban #1006 (2026-05-20) — GET /api/templates/actions (action templates).
+// ============================================================================
+
+// ActionTemplateRead — mirror of api/src/schemas/action_template.py.
+// `id` is the template name (also used as POST /api/tasks
+// `action_template_id`). Always returns a list; empty list = no templates
+// loaded (the YAML directory was empty or all files failed to parse).
+export type ActionTemplateRead = {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  default_task_type:
+    | "bug"
+    | "feature"
+    | "chore"
+    | "docs"
+    | "refactor"
+    | "audit";
+  default_task_kind: "ai" | "human";
+  default_priority: TaskPriorityValue;
+  ac_outline: string[];
+  hints: string[];
+  suggested_attachments: string[];
+};
+
+// templates — namespace for the read-only template surfaces. Today only
+// `actions`; if a later slice adds question / decision templates, they slot
+// in here.
+export const templates = {
+  actions: {
+    async list(): Promise<ActionTemplateRead[]> {
+      // Endpoint is global — no X-Project-Id required (Kanban #1006).
+      return jsonFetch<ActionTemplateRead[]>(`/api/templates/actions`);
+    },
+  },
+};
+
+// ============================================================================
+// Kanban #1004 (2026-05-20) — GET /api/handoff-templates (handoff templates).
+// ============================================================================
+
+// HandoffTemplateRead — mirror of api/src/schemas/handoff_template.py.
+// `project_id IS NULL` → global (cross-project) template; otherwise scoped
+// to that project. The FE list call passes the current project id; BE
+// returns globals + that-project's rows.
+export type HandoffTemplateRead = {
+  id: number;
+  name: string;
+  description: string | null;
+  title_pattern: string;
+  task_kind: "ai" | "human";
+  task_type:
+    | "bug"
+    | "feature"
+    | "chore"
+    | "docs"
+    | "refactor"
+    | "audit";
+  default_priority: TaskPriorityValue;
+  default_assigned_role: number | null;
+  ac_outline: string[];
+  carry_context_to_comment: boolean;
+  project_id: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+// handoffTemplates — namespace for handoff-template CRUD. v1 surfaces only
+// the list helper used by HandoffTemplatePicker. CRUD beyond list is filed
+// as a follow-up (per-project settings page).
+export const handoffTemplates = {
+  async list(opts: { projectId?: number } = {}): Promise<HandoffTemplateRead[]> {
+    const qs = new URLSearchParams();
+    if (opts.projectId != null) qs.set("project_id", String(opts.projectId));
+    const path = qs.toString()
+      ? `/api/handoff-templates?${qs}`
+      : `/api/handoff-templates`;
+    return jsonFetch<HandoffTemplateRead[]>(path);
+  },
+};

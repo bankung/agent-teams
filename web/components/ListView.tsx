@@ -10,6 +10,11 @@ import { TaskKindBadge } from "@/components/TaskKindBadge";
 type Props = {
   tasks: TaskRead[];
   onOpenDetail: (task: TaskRead) => void;
+  // #1001 follow-up (2026-05-20) — `?task=<id>` deep-link highlight.
+  // ListView paints the matching row with the same ring-pulse keyframe as
+  // the board's TaskCard so the operator's eye lands on the right row in
+  // both view modes.
+  highlightedTaskId?: number | null;
 };
 
 const STATUS_LABEL: Record<number, string> = {
@@ -149,7 +154,7 @@ function compareTasks(a: TaskRead, b: TaskRead, key: SortKey, dir: SortDir): num
   return dir === "asc" ? cmp : -cmp;
 }
 
-export function ListView({ tasks, onOpenDetail }: Props) {
+export function ListView({ tasks, onOpenDetail, highlightedTaskId = null }: Props) {
   const [selectedStatuses, setSelectedStatuses] = useState<Set<number>>(new Set());
   const [selectedPriority, setSelectedPriority] = useState(0);
   const [selectedKind, setSelectedKind] = useState("");
@@ -303,13 +308,17 @@ export function ListView({ tasks, onOpenDetail }: Props) {
             </tr>
           </thead>
           <tbody>
-            {sorted.map((task) => (
+            {sorted.map((task) => {
+              const isHighlighted = highlightedTaskId === task.id;
+              return (
               <tr
                 key={task.id}
                 onClick={() => onOpenDetail(task)}
                 tabIndex={0}
                 onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenDetail(task); } }}
-                className="cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800 border-b border-zinc-100 dark:border-zinc-800/60 last:border-b-0 transition-colors"
+                data-task-card-id={task.id}
+                data-deep-link-highlighted={isHighlighted ? "true" : undefined}
+                className={`cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800 border-b border-zinc-100 dark:border-zinc-800/60 last:border-b-0 transition-colors${isHighlighted ? " animate-deep-link-pulse" : ""}`}
               >
                 {/* #id */}
                 <td className="py-2 px-3 align-middle text-right font-mono text-xs text-zinc-400 dark:text-zinc-500 whitespace-nowrap">
@@ -354,7 +363,8 @@ export function ListView({ tasks, onOpenDetail }: Props) {
                   {task.updated_at.slice(0, 10)}
                 </td>
               </tr>
-            ))}
+              );
+            })}
             {sorted.length === 0 && (
               <tr>
                 <td
