@@ -33,6 +33,7 @@ import { Icon } from "@/components/Icon";
 import { AiTaskModal } from "@/components/AiTaskModal";
 import { AuditHistorySection } from "@/components/AuditHistorySection";
 import { CostSummary } from "@/components/CostSummary";
+import { FlagBellBadge } from "@/components/FlagBellBadge";
 import { KilledBanner } from "@/components/KilledBanner";
 import { KillProjectModal } from "@/components/KillProjectModal";
 import { NewTaskModal } from "@/components/NewTaskModal";
@@ -453,6 +454,9 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
               )}
             </div>
 
+            {/* ── FlagBellBadge — review notification, outside both groups ─ */}
+            <FlagBellBadge />
+
             {/* ── ThemePicker — user preference, outside both groups ────── */}
             <ThemePicker />
           </span>
@@ -463,8 +467,6 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
         <CostSummary
           stats={projectStats}
           ariaLabel={`Usage for ${project.name}`}
-          defaultCollapsed={true}
-          storageKey={`project.${project.id}.panels.usage.expanded`}
         />
         {/* #1209 AA1 D5 — red strip above the consent banner when killed.
             (Renders nothing when is_killed=false.) */}

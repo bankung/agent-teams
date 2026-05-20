@@ -12,6 +12,7 @@ import {
 } from "@/lib/api";
 import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
 import { ConnectionStateBadge } from "./ConnectionStateBadge";
+import { FlagBellBadge } from "./FlagBellBadge";
 import { MassActionBar } from "./MassActionBar";
 import { ProjectFlagCard } from "./ProjectFlagCard";
 import { ThemePicker } from "./ThemePicker";
@@ -212,6 +213,7 @@ export function ReviewClient({ initialFlags }: Props) {
             state={connectionState}
             lastEventAt={lastEventAt}
           />
+          <FlagBellBadge />
           <ThemePicker />
         </span>
       </header>

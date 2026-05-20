@@ -6,16 +6,15 @@ import { useCallback, useEffect, useState } from "react";
 import { listAuditFlags } from "@/lib/api";
 import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
 
-// Kanban #1212 AA4 (D5) — header notification surface. Small bell icon with a
-// red-dot + count badge when AA3 audit flags are open across any project.
+// Kanban #1212 (D5) / #1330 — header notification surface. Small bell icon
+// with a red-dot + count badge when #1211 audit flags are open across any project.
 // Click navigates to /review.
 //
 // Polling cadence: 60s baseline + SSE-driven invalidation. SSE catches the
 // common case (resolve from another tab / mass action elsewhere) within a
 // second; the 60s poll catches the API-restart / connection-lost edge.
-// Single fixed-positioned element so it doesn't depend on a header
-// component being present on every route — embed once in app/layout.tsx
-// and it shows on every page.
+// Embedded as a flex-child in each route's header right-cluster (#1330 —
+// replaced the prior single fixed-positioned layout.tsx embed).
 
 const POLL_MS = 60_000;
 
@@ -57,9 +56,9 @@ export function FlagBellBadge() {
       aria-label={label}
       data-flag-bell-badge
       data-flag-count={count ?? 0}
-      className="fixed right-3 top-3 z-40 inline-flex h-9 w-9 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-700 shadow-sm transition-colors hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
+      className="relative inline-flex items-center justify-center rounded border border-zinc-200 bg-white px-1.5 py-1 text-zinc-600 transition-colors hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
     >
-      <span aria-hidden className="text-lg leading-none">
+      <span aria-hidden className="text-sm leading-none">
         🔔
       </span>
       {hasFlags && (

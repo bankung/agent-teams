@@ -15,6 +15,7 @@ import { BudgetBar, pickBudgetDisplay } from "@/components/BudgetBar";
 import { CostSummary } from "@/components/CostSummary";
 import { DashboardRefresher } from "@/components/DashboardRefresher";
 import { EditProjectModal } from "@/components/EditProjectModal";
+import { FlagBellBadge } from "@/components/FlagBellBadge";
 import { NewProjectModal } from "@/components/NewProjectModal";
 import { ReviewSummaryWidget } from "@/components/ReviewSummaryWidget";
 import { ThemePicker } from "@/components/ThemePicker";
@@ -381,6 +382,7 @@ export default async function DashboardPage() {
           <DashboardRefresher />
           <AuditorVisibilityToggle />
           <NewProjectModal />
+          <FlagBellBadge />
           <ThemePicker />
         </span>
       </header>
