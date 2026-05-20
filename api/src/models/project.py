@@ -189,6 +189,18 @@ class Project(Base):
         nullable=True,
     )
 
+    # Kanban #1011 (2026-05-20): per-project HITL aging nudge threshold.
+    # NULL or 0 = nudge disabled for this project. Non-zero positive int =
+    # threshold in hours. Migration 0047 backfills existing rows to 24 via
+    # server_default so projects get nudges by default (operator may PATCH to
+    # null to disable). Pydantic ProjectUpdate enforces `ge=0` (422 boundary);
+    # DB CHECK `ck_projects_hitl_nudge_threshold_nonneg` is defense-in-depth.
+    # Sibling of hitl_timeout_hours — same NULL-as-disabled convention.
+    hitl_nudge_threshold_hours: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
     # Kanban #960 (2026-05-17): per-project Health monitor tuning knobs.
     # JSONB element shape (validated at the API boundary):
     # {enabled, stale_hours, max_retry_cycles, token_burn_threshold_per_hour,
@@ -377,6 +389,14 @@ class Project(Base):
         CheckConstraint(
             "NOT (is_killed AND is_paused)",
             name="ck_projects_kill_pause_mutex",
+        ),
+        # Kanban #1011 (2026-05-20): HITL nudge threshold must be >= 0 when
+        # set (NULL = disabled). Mirror of migration 0047's CHECK — defense-
+        # in-depth against raw-SQL drift. Pydantic ProjectUpdate ge=0 is the
+        # first wall.
+        CheckConstraint(
+            "hitl_nudge_threshold_hours IS NULL OR hitl_nudge_threshold_hours >= 0",
+            name="ck_projects_hitl_nudge_threshold_nonneg",
         ),
     )
 

@@ -35,6 +35,7 @@ from src.schemas.task import (
     AcceptanceCriterion,
     DecisionRequest,
     NextAutorunResponse,
+    SnoozeRequest,
     TaskCreate,
     TaskRead,
     TaskReorder,
@@ -2297,6 +2298,47 @@ async def decide_task(
     await auto_unblock_dependents(session, task_id)
     await session.commit()
 
+    await session.refresh(task)
+    return task
+
+
+@router.post(
+    "/{task_id}/snooze",
+    response_model=TaskRead,
+    status_code=http_status.HTTP_200_OK,
+)
+async def snooze_task(
+    task_id: int,
+    payload: SnoozeRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+) -> Task:
+    """Kanban #1011 (AC5): snooze the HITL aging nudge for a task.
+
+    Sets `last_nudge_at = now() + (hours - 24) * interval '1 hour'` so that
+    the next eligible nudge (last_nudge_at + 24h) fires exactly `hours` from
+    now.  Example: hours=4 → next eligible nudge is 4h from now.
+
+    Request body: `{hours: int}` — default 4, range 1..168 (max 1 week).
+
+    Returns the updated TaskRead.  404 on missing task_id.
+    422 on hours out of range (Pydantic Field validation).
+    """
+    task = await get_or_404(
+        session, Task, detail=f"Task id={task_id} not found", id=task_id
+    )
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+
+    # Compute the shifted last_nudge_at: now() + (hours - 24) hours.
+    # When hours=24, last_nudge_at = now() → next eligible = 24h from now.
+    # When hours=4, last_nudge_at = now()-20h → next eligible = 4h from now.
+    # When hours=168 (1 week), last_nudge_at = now()+144h → next eligible = 168h from now.
+    now = datetime.now(timezone.utc)
+    shift = timedelta(hours=payload.hours - 24)
+    task.last_nudge_at = now + shift
+    task.updated_at = func.now()
+
+    await session.commit()
     await session.refresh(task)
     return task
 

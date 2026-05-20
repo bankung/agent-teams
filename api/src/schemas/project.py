@@ -447,6 +447,15 @@ class ProjectUpdate(BaseModel):
         default=None, max_length=20
     )
 
+    # Kanban #1011 (2026-05-20): per-project HITL aging nudge threshold.
+    # PATCH semantics — key-absent leaves unchanged (exclude_unset); explicit
+    # `null` CLEARS to NULL (= disabled); explicit int sets the threshold.
+    # `ge=0` rejects negative values at 422; DB CHECK
+    # `ck_projects_hitl_nudge_threshold_nonneg` is defense-in-depth.
+    # Value of 0 is accepted (app layer treats 0 identical to NULL = disabled).
+    # Sibling of `hitl_timeout_hours` — same NULL-as-disabled convention.
+    hitl_nudge_threshold_hours: int | None = Field(default=None, ge=0)
+
     @field_validator("currency_default")
     @classmethod
     def _normalize_currency_default(cls, v: str | None) -> str | None:
@@ -608,6 +617,13 @@ class ProjectRead(BaseModel):
     # Writes still go through the strict `NotificationTarget` validator on
     # POST/PATCH.
     notification_targets: list[dict[str, Any]] | None = None
+
+    # Kanban #1011 (2026-05-20) — per-project HITL aging nudge threshold.
+    # NULL = nudges disabled. 0 = nudges disabled (same semantics as NULL).
+    # Non-zero positive int = threshold in hours before a HITL task gets
+    # nudged. Migration 0047 backfills existing rows to 24 (server_default).
+    # Sibling of `hitl_timeout_hours`.
+    hitl_nudge_threshold_hours: int | None = None
 
     @field_validator("sources", mode="before")
     @classmethod

@@ -425,6 +425,28 @@ class Task(Base):
         nullable=True,
     )
 
+    # Kanban #1011 (2026-05-20): HITL aging nudge cron dedup column.
+    # The cron sets this to now() after every nudge attempt (success or
+    # failure — see AC4 lockdown "ALWAYS UPDATE last_nudge_at"). The query
+    # predicate "last_nudge_at IS NULL OR last_nudge_at < now() - interval
+    # '24 hours'" prevents re-nudging within 24h. NULL = never nudged.
+    last_nudge_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    # Kanban #1011 (2026-05-20): per-task nudge on/off toggle. Set true by
+    # operator (PATCH /api/tasks/{id} nudge_disabled=true) to silence nudges
+    # for one specific task even when the project default would otherwise fire.
+    # NOT NULL DEFAULT false so existing rows backfill cleanly via migration
+    # 0047 (PG 16 metadata-only ADD COLUMN).
+    nudge_disabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+        default=False,
+    )
+
     project: Mapped["Project"] = relationship("Project", back_populates="tasks")
 
     # Self-referential adjacency-list (SQLAlchemy "Adjacency List" pattern).

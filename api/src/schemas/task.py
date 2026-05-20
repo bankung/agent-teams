@@ -898,6 +898,16 @@ class TaskUpdate(BaseModel):
     # Same posture as `blocked_by` — re-pointing IS supported in V1.
     handoff_template_id: int | None = Field(default=None, ge=1)
 
+    # Kanban #1011 (2026-05-20): per-task nudge on/off toggle. PATCH-able.
+    # Semantics:
+    #   - key absent      → leave unchanged (exclude_unset=True in router)
+    #   - explicit true   → silence nudges for this task
+    #   - explicit false  → re-enable nudges (if previously silenced)
+    # No explicit-null validator — the column is NOT NULL DEFAULT false;
+    # explicit null on PATCH would hit the NOT NULL constraint and 400 (same
+    # posture as is_pending, requires_human_review).
+    nudge_disabled: bool | None = None
+
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=False)
     )
@@ -1176,6 +1186,17 @@ class TaskRead(BaseModel):
     # always NULL — loop guard).
     handoff_template_id: int | None = None
 
+    # Kanban #1011 (2026-05-20) — HITL aging nudge dedup + per-task toggle.
+    # `last_nudge_at`: the timestamp of the last nudge fired for this task.
+    #   NULL = never nudged. The cron sets it after every fire (regardless of
+    #   delivery outcome). Backfilled to NULL on existing rows by migration 0047.
+    # `nudge_disabled`: per-task nudge on/off toggle. Default false (nudges
+    #   enabled per the project threshold). Operator sets true to silence a
+    #   specific task. Backfilled to false on existing rows by migration 0047's
+    #   NOT NULL DEFAULT false.
+    last_nudge_at: datetime | None = None
+    nudge_disabled: bool = False
+
 
 class NextAutorunResponse(BaseModel):
     """Response for GET /api/tasks/next-autorun (Kanban #833).
@@ -1233,6 +1254,26 @@ class TaskReorder(BaseModel):
                 "before_id and after_id cannot reference the same task"
             )
         return self
+
+
+class SnoozeRequest(BaseModel):
+    """Request body for POST /api/tasks/{id}/snooze (Kanban #1011, AC5).
+
+    `hours` sets how long until the next eligible nudge.  Default 4h.
+    Validation: 1..168 (1 hour to 1 week max).
+
+    The snooze math: `last_nudge_at = now() + (<hours> - 24) * interval`
+    so the next eligible time (last_nudge_at + 24h) equals exactly
+    `now() + <hours>`.  Example: hours=4 → last_nudge_at = now()-20h, next
+    eligible = now()+4h.
+
+    `extra='forbid'` rejects unknown keys at 422 (parity with other action
+    request bodies in this module).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    hours: int = Field(default=4, ge=1, le=168)
 
 
 # Sanity: the Literal stays in lockstep with src.constants.TaskRunMode.ALL.

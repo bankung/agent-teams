@@ -210,6 +210,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         logger.info("health monitor disabled via HEALTH_MONITOR_DISABLED")
 
+    # Kanban #1011 (2026-05-20) — HITL aging nudge job.
+    # Registered into the SAME scheduler instance (no parallel scheduler).
+    # Interval defaults to 30 min; override via HITL_NUDGE_INTERVAL_MINUTES env.
+    from src.services.hitl_nudge import schedule_nudge_job
+    schedule_nudge_job(scheduler)
+
     scheduler.start()
     _scheduler = scheduler
     logger.info(

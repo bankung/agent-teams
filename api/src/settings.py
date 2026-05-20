@@ -60,6 +60,17 @@ class Settings(BaseSettings):
     vapid_private_key: str = Field(default="", alias="VAPID_PRIVATE_KEY")
     vapid_subject: str = Field(default="", alias="VAPID_SUBJECT")
 
+    # Kanban #1011 (2026-05-20): HITL aging nudge cron cadence.
+    # How frequently the nudge scanner runs in minutes. Default 30.
+    # Range 5..240 — below 5 is too aggressive; above 240 (4h) defeats the
+    # sub-hour nudge precision. Validated via Field(ge=5, le=240).
+    hitl_nudge_interval_minutes: int = Field(
+        default=30,
+        ge=5,
+        le=240,
+        alias="HITL_NUDGE_INTERVAL_MINUTES",
+    )
+
     @field_validator("cors_allow_origins", mode="before")
     @classmethod
     def _split_csv_origins(cls, v: object) -> object:
