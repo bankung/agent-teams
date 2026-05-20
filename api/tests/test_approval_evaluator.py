@@ -517,3 +517,39 @@ def test_no_match_still_returns_require_attention_with_none_rule_name() -> None:
     assert action == "require_attention"
     assert default_answer is None
     assert rule_name is None  # distinct from explicit-match case
+
+
+# ---------------------------------------------------------------------------
+# Coexistence regression guard — Kanban #1279 (Pattern 5 hook + worker share
+# the same JSONB column with disjoint matcher vocabularies). See
+# context/projects/agent-teams/shared/decisions-approval-policies-schema.md.
+# ---------------------------------------------------------------------------
+
+
+def test_pattern5_keys_unknown_to_worker_fall_to_require_attention() -> None:
+    """Rules authored for Layer B (Pattern 5 hook) MUST fail defensively at
+    the worker layer — no auto-approve, no crash, falls to require_attention.
+
+    Pins the disjoint-namespace coexistence contract: hook keys
+    (`tool_name` / `target_url_pattern` / `content_predicate`) are unknown to
+    the worker's `_match_predicate`, so every predicate fails → rule skipped
+    → default `require_attention`. If a future predicate-vocab expansion
+    accidentally adds one of these keys to Layer A, this test breaks and
+    forces the author to read the schema decisions doc.
+    """
+    policies = {"rules": [
+        {
+            "name": "deny linkedin posts (hook-layer rule)",
+            "match": {
+                "tool_name": "mcp__Claude_in_Chrome__navigate",
+                "target_url_pattern": r"linkedin\.com",
+                "content_predicate": "publish",
+            },
+            "action": "auto_deny",
+        }
+    ]}
+    qp = {"question": "Post 'New role announcement' to LinkedIn?"}
+    action, default_answer, rule_name = evaluate_policy(qp, policies)
+    assert action == "require_attention"
+    assert default_answer is None
+    assert rule_name is None  # no rule matched (all predicates unknown to worker)
