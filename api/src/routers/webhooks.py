@@ -181,7 +181,14 @@ async def _write_use_audit(
     session: AsyncSession,
     credential_id: int,
 ) -> None:
-    """Append an audit row recording a successful webhook verification."""
+    """Stage an audit row for a successful webhook verification.
+
+    IMPORTANT — no session.commit() here. This function only stages rows into
+    the current transaction. The caller is responsible for the single final
+    commit AFTER both this and _insert_or_dedupe have staged their writes.
+    This guarantees that the audit row and the transaction row are either both
+    committed or both rolled back (atomic write — Kanban #1377).
+    """
     session.add(
         CredentialAccessLog(
             credential_id=credential_id,
@@ -198,7 +205,6 @@ async def _write_use_audit(
         # last_accessed_at is server-side now() at commit time. SQLAlchemy
         # accepts a datetime.now(timezone.utc) here (TIMESTAMPTZ column).
         cred.last_accessed_at = datetime.now(timezone.utc)
-    await session.commit()
 
 
 async def _insert_or_dedupe(
@@ -232,12 +238,19 @@ async def _insert_or_dedupe(
     )
     session.add(txn)
     try:
-        await session.commit()
+        # flush() sends the INSERT to the DB within the current transaction,
+        # which is sufficient to surface the partial-unique-index violation.
+        # We do NOT commit here — the caller issues the single final commit
+        # after _write_use_audit has also staged its rows (Kanban #1377 atomic
+        # write: audit row + transaction row commit together or roll back together).
+        await session.flush()
     except IntegrityError as exc:
         await session.rollback()
         orig_text = str(exc.orig)
         if "ux_transactions_project_source_ref" in orig_text:
             # Dedup path — fetch the existing row and return its id.
+            # The session is clean after rollback; the caller will still stage
+            # and commit the audit row for this successful (deduplicated) delivery.
             stmt = (
                 select(Transaction)
                 .where(Transaction.project_id == project_id)
@@ -258,7 +271,7 @@ async def _insert_or_dedupe(
             status_code=400,
             detail=f"Transaction write violates a database constraint: {orig_text[:200]}",
         ) from exc
-    await session.refresh(txn)
+    # flush() populates txn.id via PostgreSQL RETURNING — no refresh needed.
     return txn, False
 
 
@@ -338,6 +351,11 @@ async def stripe_webhook(
     cred = await _load_active_secret_credential(
         session, project_id, WEBHOOK_SECRET_NAMES["stripe"]
     )
+    # Capture scalar id before any session operation that might expire `cred`
+    # (e.g. rollback inside _insert_or_dedupe on the dedup path). Accessing
+    # `cred.id` on an expired mapped object inside an async context triggers
+    # SQLAlchemy's MissingGreenlet error (Kanban #1377).
+    cred_id = cred.id
 
     # Raw bytes BEFORE JSON parse — the signature is over the literal payload
     # the provider sent, NOT a re-serialized form.
@@ -352,7 +370,7 @@ async def stripe_webhook(
         verify_stripe_signature(payload_bytes, stripe_signature or "", secret)
     except WebhookSignatureError as exc:
         # Audit denial with the internal reason (NOT returned on the wire).
-        await _write_denial_audit(session, cred.id, exc.detail)
+        await _write_denial_audit(session, cred_id, exc.detail)
         raise HTTPException(
             status_code=401, detail=_DETAIL_INVALID_SIGNATURE
         ) from exc
@@ -369,11 +387,6 @@ async def stripe_webhook(
     event_id = body.get("id")
     data = body.get("data") or {}
     obj = data.get("object") or {}
-
-    # Audit the successful signature verification BEFORE the transaction work,
-    # so the trail exists even if a downstream insert fails. (Two separate
-    # commits is fine — the audit row stands on its own.)
-    await _write_use_audit(session, cred.id)
 
     if event_type == "payment_intent.succeeded":
         amount = int(obj.get("amount", 0))
@@ -393,6 +406,12 @@ async def stripe_webhook(
             occurred_at=occurred_at,
             notes=f"Stripe event {event_id} type=payment_intent.succeeded pi={obj.get('id')}",
         )
+        # Audit + transaction insert committed atomically (Kanban #1377).
+        # _insert_or_dedupe staged the Transaction (or rolled back on dedup and
+        # returned the existing row); _write_use_audit stages the audit row and
+        # counter bumps. The single commit here is the only commit in this path.
+        await _write_use_audit(session, cred_id)
+        await session.commit()
         return {
             "received": True,
             "transaction_id": txn.id,
@@ -417,6 +436,9 @@ async def stripe_webhook(
             occurred_at=occurred_at,
             notes=f"Stripe event {event_id} type=charge.refunded charge={obj.get('id')}",
         )
+        # Audit + transaction insert committed atomically (Kanban #1377).
+        await _write_use_audit(session, cred_id)
+        await session.commit()
         return {
             "received": True,
             "transaction_id": txn.id,
@@ -424,6 +446,8 @@ async def stripe_webhook(
         }
 
     # Unhandled event type — 200 + ignored flag (Stripe stops retrying).
+    # No transaction insert; no audit needed (signature was valid but event is
+    # out of scope for this project).
     return _ignored_event_response(str(event_type))
 
 
@@ -458,6 +482,10 @@ async def paypal_webhook(
     cred = await _load_active_secret_credential(
         session, project_id, WEBHOOK_SECRET_NAMES["paypal"]
     )
+    # Capture scalar id before any session operation that might expire `cred`
+    # (e.g. rollback inside _insert_or_dedupe on the dedup path). Mirrors the
+    # same guard in the Stripe handler (Kanban #1377).
+    cred_id = cred.id
 
     payload_bytes = await request.body()
     secret = credentials_crypto.decrypt(cred.ciphertext)
@@ -465,7 +493,7 @@ async def paypal_webhook(
     try:
         verify_paypal_shared_secret(paypal_shared_secret, secret)
     except WebhookSignatureError as exc:
-        await _write_denial_audit(session, cred.id, exc.detail)
+        await _write_denial_audit(session, cred_id, exc.detail)
         raise HTTPException(
             status_code=401, detail=_DETAIL_INVALID_SIGNATURE
         ) from exc
@@ -481,8 +509,6 @@ async def paypal_webhook(
     event_id = body.get("id")
     resource = body.get("resource") or {}
     amount_obj = resource.get("amount") or {}
-
-    await _write_use_audit(session, cred.id)
 
     if event_type in ("PAYMENT.SALE.COMPLETED", "PAYMENT.SALE.REFUNDED"):
         # PayPal uses both `currency` and `currency_code` in different event
@@ -520,10 +546,16 @@ async def paypal_webhook(
             occurred_at=occurred_at,
             notes=f"PayPal event {event_id} type={event_type} sale={resource.get('id')}",
         )
+        # Audit + transaction insert committed atomically (Kanban #1377).
+        await _write_use_audit(session, cred_id)
+        await session.commit()
         return {
             "received": True,
             "transaction_id": txn.id,
             "deduplicated": dedup,
         }
 
+    # Unhandled event type — 200 + ignored flag (PayPal stops retrying).
+    # No transaction insert; no audit needed (signature was valid but event is
+    # out of scope for this project).
     return _ignored_event_response(str(event_type))

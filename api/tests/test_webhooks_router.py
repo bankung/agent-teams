@@ -629,6 +629,75 @@ async def test_paypal_webhook_to_soft_deleted_project_returns_404(
 
 
 @pytest.mark.asyncio
+async def test_stripe_webhook_audit_not_written_when_insert_fails(
+    client, scaffold_cleanup
+):
+    """Atomicity lock (Kanban #1377): if the transaction insert fails, the
+    audit row must NOT be persisted.
+
+    NEGATIVE (locked invariant): no CredentialAccessLog row with action='use'
+    and accessed_by='system:webhook' exists for the credential after a 400.
+    POSITIVE: the response is 400 (the constraint error surfaced, not swallowed).
+
+    Mechanism: monkeypatch _insert_or_dedupe to raise HTTPException(400) so we
+    simulate a constraint violation that propagates to the caller. With the
+    atomic fix the audit row has not yet been staged when this exception fires,
+    so the session rolls back with nothing to undo for the audit.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    pid = await _make_project(client, scaffold_cleanup, "wh-stripe-atomic")
+    cred_id = await _seed_secret(
+        client, pid,
+        name="stripe_webhook_secret",
+        value=WEBHOOK_SENTINEL_SECRET_99887,
+    )
+
+    payload = _build_stripe_payment_intent_event(
+        event_id="evt_atomic_test_1", amount=1000, currency="usd"
+    )
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    sig = _stripe_sign(payload, WEBHOOK_SENTINEL_SECRET_99887, now_ts)
+
+    # Patch _insert_or_dedupe to simulate a non-dedup constraint failure.
+    from fastapi import HTTPException as _HTTPException
+
+    with patch(
+        "src.routers.webhooks._insert_or_dedupe",
+        new_callable=AsyncMock,
+        side_effect=_HTTPException(
+            status_code=400,
+            detail="Transaction write violates a database constraint: simulated_fk_error",
+        ),
+    ):
+        resp = await client.post(
+            f"/api/webhooks/stripe/{pid}",
+            content=payload,
+            headers={"Stripe-Signature": f"t={now_ts},v1={sig}"},
+        )
+
+    # POSITIVE: error surfaces.
+    assert resp.status_code == 400, resp.text
+
+    # NEGATIVE: no use-audit row written (audit + transaction must be atomic).
+    async with SessionLocal() as s:
+        rows = (
+            await s.execute(
+                select(CredentialAccessLog).where(
+                    CredentialAccessLog.credential_id == cred_id
+                )
+            )
+        ).scalars().all()
+    use_audits = [
+        r for r in rows
+        if r.accessed_by == "system:webhook" and r.action == "use"
+    ]
+    assert len(use_audits) == 0, (
+        f"audit row was written despite insert failure — atomicity violated: {use_audits}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_pl_endpoint_reflects_webhook_inserted_revenue(
     client, scaffold_cleanup
 ):
