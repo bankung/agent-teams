@@ -114,7 +114,35 @@ if ! docker compose exec -T -e SEED_TARGET=production api python -m scripts.seed
   exit 4
 fi
 
-# ---- 5. URL + help ----------------------------------------------------------
+# ---- 5. Claude Code plan → tier preset -------------------------------------
+# Non-interactive safe: if stdin is not a TTY (CI / --non-interactive / piped),
+# or if the NON_INTERACTIVE env var is set, skip the prompt and default to max.
+TIER_CHOICE="max"
+if [ -z "${NON_INTERACTIVE:-}" ] && [ -t 0 ]; then
+  printf '\n'
+  printf 'Claude Code plan? [m]ax / [p]ro  (default: max, Enter to skip): '
+  read -r _plan_input || _plan_input=""
+  case "${_plan_input}" in
+    p|P|pro|Pro|PRO) TIER_CHOICE="l2" ;;
+    *)               TIER_CHOICE="max" ;;
+  esac
+else
+  log "Non-interactive mode — defaulting to TIER MAX."
+fi
+
+if [ "$TIER_CHOICE" = "l2" ]; then
+  log "Pro plan selected — applying TIER L2 preset..."
+  if [ -f "$REPO_ROOT/bin/agent-teams-tier-set.sh" ]; then
+    bash "$REPO_ROOT/bin/agent-teams-tier-set.sh" l2
+  else
+    warn "bin/agent-teams-tier-set.sh not found — skipping tier apply. Run it manually."
+  fi
+  log "TIER L2 active. Restart your Claude Code session to pick up new model defaults."
+else
+  log "TIER MAX active (operator default — no agent file changes)."
+fi
+
+# ---- 6. URL + help ----------------------------------------------------------
 cat <<EOF
 
 ================================================================================
@@ -122,12 +150,14 @@ agent-teams is ready.
 
   Kanban UI : ${PROJECT_URL}
   API base  : http://localhost:${API_PORT}
+  Tier      : ${TIER_CHOICE}
 
 Helpful commands:
   Stop      : docker compose down
   Restart   : docker compose up -d            (or rerun ./bin/install.sh)
   Reset DB  : ./bin/reset.sh                  (or 'docker compose down -v')
   Tail logs : docker compose logs -f api web
+  Tier swap : bin/agent-teams-tier-set.sh max|l2
 
 EOF
 

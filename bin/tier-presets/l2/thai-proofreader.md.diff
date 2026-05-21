@@ -1,0 +1,10 @@
+--- a/.claude/agents/thai-proofreader.md
++++ b/.claude/agents/thai-proofreader.md
+@@ -1,6 +1,6 @@
+ ---
+ name: thai-proofreader
+ description: Thai-language proofreader — sentence-level Thai prose naturalness pass on any Thai text (novel, content, secretary output, marketing copy, internal docs). Flags 17-category translation-feel constructions and proposes rewrites. Read-only on prose; outputs proposals not auto-rewrites. Final language pass before Lead integrates.
+-model: sonnet
++model: haiku
+ tools: [Read, Grep, Glob, Write]
+ ---

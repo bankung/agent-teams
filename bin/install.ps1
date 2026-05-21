@@ -162,7 +162,35 @@ if ($seedExit -ne 0) {
     exit 4
 }
 
-# ---- 5. URL + help ----------------------------------------------------------
+# ---- 5. Claude Code plan → tier preset -------------------------------------
+# Non-interactive safe: if NON_INTERACTIVE env var is set, or if running
+# without a host UI (e.g. CI / redirected stdin), default to max silently.
+$TierChoice = 'max'
+$isInteractive = [Environment]::UserInteractive -and (-not $env:NON_INTERACTIVE)
+if ($isInteractive) {
+    Write-Host ""
+    $planInput = Read-Host "Claude Code plan? [m]ax / [p]ro  (default: max, Enter to skip)"
+    if ($planInput -match '^(p|pro)$') {
+        $TierChoice = 'l2'
+    }
+} else {
+    Write-Log "Non-interactive mode — defaulting to TIER MAX."
+}
+
+if ($TierChoice -eq 'l2') {
+    Write-Log "Pro plan selected — applying TIER L2 preset..."
+    $tierScript = Join-Path $RepoRoot 'bin\agent-teams-tier-set.ps1'
+    if (Test-Path $tierScript) {
+        & $tierScript l2
+    } else {
+        Write-Warn "bin\agent-teams-tier-set.ps1 not found — skipping tier apply. Run it manually."
+    }
+    Write-Log "TIER L2 active. Restart your Claude Code session to pick up new model defaults."
+} else {
+    Write-Log "TIER MAX active (operator default — no agent file changes)."
+}
+
+# ---- 6. URL + help ----------------------------------------------------------
 $help = @"
 
 ================================================================================
@@ -170,12 +198,14 @@ agent-teams is ready.
 
   Kanban UI : $ProjectUrl
   API base  : http://localhost:$ApiPort
+  Tier      : $TierChoice
 
 Helpful commands:
   Stop      : docker compose down
   Restart   : docker compose up -d            (or rerun .\bin\install.ps1)
   Reset DB  : .\bin\reset.ps1                 (or 'docker compose down -v')
   Tail logs : docker compose logs -f api web
+  Tier swap : .\bin\agent-teams-tier-set.ps1 max|l2
 
 "@
 Write-Host $help

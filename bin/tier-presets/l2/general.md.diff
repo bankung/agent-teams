@@ -1,0 +1,8 @@
+--- a/.claude/agents/general.md
++++ b/.claude/agents/general.md
+@@ -1,4 +1,5 @@
+ ---
+ name: general
+ description: General-purpose fallback agent. Use when no domain-specific agent (dev-backend, dev-frontend, dev-devops, dev-tester, dev-reviewer, dev-documentor, general-researcher, novel-writer, novel-editor) clearly fits — e.g., cross-stack tasks, exploratory work, one-off scripts, unfamiliar territory, or mixed-domain refactors where Lead can't predict the right specialist.
++model: sonnet
+ ---

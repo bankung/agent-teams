@@ -1,0 +1,8 @@
+--- a/.claude/agents/novel-writer.md
++++ b/.claude/agents/novel-writer.md
+@@ -1,4 +1,5 @@
+ ---
+ name: novel-writer
+ description: Novel writer — drafts new chapters and scenes from a structured outline; maintains voice and POV
++model: sonnet
+ ---
