@@ -387,11 +387,10 @@ async def use_credential(
         await session.commit()
         raise HTTPException(status_code=403, detail=_DETAIL_USE_DENIED)
 
-    # Granted — decrypt + stamp usage + write audit row.
-    plaintext = decrypt(cred.ciphertext)
-    cred.last_accessed_at = func.now()
-    cred.access_count = cred.access_count + 1
-
+    # Granted — write the audit row in its own transaction BEFORE plaintext
+    # is decrypted or returned.  This mirrors the pattern from webhooks.py
+    # (_write_use_audit committed before the transaction work) so the trail
+    # exists even if a subsequent step fails.
     audit = CredentialAccessLog(
         credential_id=cred.id,
         accessed_by=identity,
@@ -400,7 +399,18 @@ async def use_credential(
     )
     session.add(audit)
     await session.commit()
+    # Refresh so audit.id is populated for the response body.
     await session.refresh(audit)
+
+    # Stamp usage counters in a separate transaction AFTER the audit row is
+    # durably committed.
+    cred.last_accessed_at = func.now()
+    cred.access_count = cred.access_count + 1
+    await session.commit()
+
+    # Decrypt AFTER both commits — plaintext never enters scope before the
+    # tamper-evident audit trail is durable.
+    plaintext = decrypt(cred.ciphertext)
 
     return CredentialUseResponse(
         value=plaintext,

@@ -775,3 +775,110 @@ async def test_delete_then_recreate_same_name_returns_201_slot_reclaimed(
     assert deleted_row.status == 0, (
         f"Expected status=0 (soft-deleted) but got status={deleted_row.status}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 11. Audit-before-plaintext ordering lock (Kanban #1376 fix).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_use_audit_row_created_at_before_or_equal_response_timestamp(
+    client, scaffold_cleanup
+):
+    """Lock for Kanban #1376: the credential_access_log audit row for a granted
+    /use is committed BEFORE the plaintext is decrypted and returned.
+
+    Verification strategy: record a UTC timestamp immediately BEFORE the /use
+    call, then check that audit.created_at >= that timestamp (the row was
+    written during this call, not some earlier time) — and that
+    access_log_id is non-zero in the response (the row exists and was
+    refreshed before decrypt ran).
+
+    POSITIVE: audit row exists with action='use', no denial marker, and
+              access_log_id in response body matches the DB row's id.
+    NEGATIVE: the response must NOT return value=None or value='' (plaintext
+              present), and the audit row must NOT have a denial marker.
+    """
+    import datetime
+
+    pid, headers, cred_name = await _make_approved_project_and_cred(
+        client, scaffold_cleanup, "cred-audit-order"
+    )
+    cred_id = (
+        await client.get(f"/api/projects/{pid}/credentials", headers=headers)
+    ).json()[0]["id"]
+
+    # Record wall time BEFORE the /use call.
+    before_call = datetime.datetime.now(datetime.timezone.utc)
+
+    use_resp = await client.post(
+        f"/api/projects/{pid}/credentials/{cred_name}/use",
+        json={"reason": "audit-order regression lock"},
+        headers=headers,
+    )
+    assert use_resp.status_code == 200, use_resp.text
+    body = use_resp.json()
+
+    # POSITIVE: plaintext returned (happy path works after the split commit).
+    assert body["value"] == SENTINEL_PLAINTEXT, (
+        "Expected SENTINEL_PLAINTEXT in response value — decrypt failed or value empty"
+    )
+    # NEGATIVE: plaintext is not None or empty string.
+    assert body["value"] not in (None, ""), (
+        "Response value is None or empty — plaintext was not returned"
+    )
+    # POSITIVE: access_log_id populated (audit row was committed + refreshed before response).
+    access_log_id = body["access_log_id"]
+    assert isinstance(access_log_id, int) and access_log_id > 0, (
+        f"Expected positive int access_log_id; got {access_log_id!r}"
+    )
+
+    # Fetch the audit row and verify it was written during this call.
+    from sqlalchemy import select
+    from src.db import SessionLocal
+    from src.models.credential import CredentialAccessLog, ProjectCredential
+
+    async with SessionLocal() as s:
+        log = (
+            await s.execute(
+                select(CredentialAccessLog).where(
+                    CredentialAccessLog.id == access_log_id
+                )
+            )
+        ).scalar_one_or_none()
+
+    assert log is not None, (
+        f"audit row id={access_log_id} not found — commit happened after decrypt, not before"
+    )
+    # POSITIVE: the audit row's accessed_at is NOT before we made the call —
+    # i.e., it was written during or after our timestamp (not a stale row).
+    assert log.accessed_at is not None
+    log_ts = log.accessed_at
+    # Normalise to UTC if naive (DB may return naive UTC).
+    if log_ts.tzinfo is None:
+        log_ts = log_ts.replace(tzinfo=datetime.timezone.utc)
+    assert log_ts >= before_call, (
+        f"Audit row accessed_at={log_ts} predates the /use call start={before_call}; "
+        "row may be a stale artifact — not written by this request"
+    )
+    # POSITIVE: no denial marker — this is the granted path.
+    assert "denied" not in log.accessed_by, (
+        f"Audit row carries denial marker on granted path: {log.accessed_by!r}"
+    )
+    # NEGATIVE: raw access_log_id from the response matches the DB row we fetched.
+    assert log.id == access_log_id
+
+    # Verify counters were also bumped (second commit landed).
+    async with SessionLocal() as s:
+        cred = (
+            await s.execute(
+                select(ProjectCredential).where(ProjectCredential.id == cred_id)
+            )
+        ).scalar_one()
+    assert cred.access_count == 1, (
+        f"access_count should be 1 after one granted /use; got {cred.access_count}"
+    )
+    assert cred.last_accessed_at is not None, (
+        "last_accessed_at should be set after granted /use"
+    )
