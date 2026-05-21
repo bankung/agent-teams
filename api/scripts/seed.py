@@ -75,7 +75,9 @@ def _demo_project_kwargs() -> dict:
         # working_path = None on purpose — uses default scaffold path.
         # paths_web/api/db are NOT NULL columns but have no min-length CHECK;
         # empty strings are intentional for this sample project that has no
-        # real on-disk stack.
+        # real on-disk stack. Confirmed safe by 2026_05_04_2130_initial_schema.py,
+        # which defines these columns as sa.Text() without any length constraint.
+        # If a future migration adds a CHECK (length > 0), update these values.
         "paths_web": "",
         "paths_api": "",
         "paths_db": "",
