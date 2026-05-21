@@ -23,6 +23,7 @@ import { FlagBellBadge } from "@/components/FlagBellBadge";
 import { NewProjectModal } from "@/components/NewProjectModal";
 import { PnlDashboardSection } from "@/components/PnlDashboardSection";
 import { ReviewSummaryWidget } from "@/components/ReviewSummaryWidget";
+import { FINANCE_PANELS_ENABLED } from "@/lib/featureFlags";
 import { ThemePicker } from "@/components/ThemePicker";
 
 // Cross-project dashboard — aggregate-first layout (Kanban #869, 2026-05-13).
@@ -429,8 +430,9 @@ export default async function DashboardPage() {
           {/* Kanban #1329 (M6 FE) — cross-project P&L rollup. Operator-level
               view of revenue / expenses / net per project in the chosen
               window. Sits BELOW CostSummary (cost side first, P&L side after)
-              and ABOVE the per-project navigation grid. */}
-          <PnlDashboardSection />
+              and ABOVE the per-project navigation grid.
+              Gated by NEXT_PUBLIC_FINANCE_PANELS_ENABLED (Kanban #1392). */}
+          {FINANCE_PANELS_ENABLED && <PnlDashboardSection />}
 
           {/* Kanban #945 — cross-project active-tasks list. Operator-level
               view of tasks in {in-progress, review, blocked} across every

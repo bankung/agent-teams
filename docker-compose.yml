@@ -149,6 +149,8 @@ services:
       # the api service only. Empty default = Push subscribe surfaces a clear
       # "missing VAPID key" message in the settings UI.
       NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      # Kanban #1392 — operator-opt-in personal-use feature; default off for pilot installs.
+      NEXT_PUBLIC_FINANCE_PANELS_ENABLED: ${NEXT_PUBLIC_FINANCE_PANELS_ENABLED:-false}
     ports:
       - "${WEB_PORT:-5431}:5431"
     volumes:

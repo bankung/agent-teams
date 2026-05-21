@@ -35,6 +35,7 @@ import { AuditHistorySection } from "@/components/AuditHistorySection";
 import { CostSummary } from "@/components/CostSummary";
 import { FlagBellBadge } from "@/components/FlagBellBadge";
 import { PnlSummaryCard } from "@/components/PnlSummaryCard";
+import { FINANCE_PANELS_ENABLED } from "@/lib/featureFlags";
 import { KilledBanner } from "@/components/KilledBanner";
 import { KillProjectModal } from "@/components/KillProjectModal";
 import { NewTaskModal } from "@/components/NewTaskModal";
@@ -537,19 +538,26 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
             <ThemePicker />
           </span>
         </div>
-        {/* Kanban #1289 — per-project usage panel. Collapsed by default on the
-            project board (dense page). storageKey scoped per project so each
-            project remembers its own expand state independently. */}
-        <CostSummary
-          stats={projectStats}
-          ariaLabel={`Usage for ${project.name}`}
-        />
-        {/* Kanban #1329 (M6 FE) — per-project P&L card. Sources
-            /api/projects/{id}/pl; period selector + localStorage default. */}
-        <PnlSummaryCard
-          projectId={project.id}
-          projectName={project.name}
-        />
+        {/* Kanban #1392 — Usage + P&L side-by-side on md+; stacked on sm.
+            P&L panel gated by NEXT_PUBLIC_FINANCE_PANELS_ENABLED flag;
+            when off, Usage renders full-width (no grid wrapper). */}
+        <div className={FINANCE_PANELS_ENABLED ? "grid grid-cols-1 md:grid-cols-2 gap-3" : ""}>
+          {/* Kanban #1289 — per-project usage panel. Collapsed by default on the
+              project board (dense page). storageKey scoped per project so each
+              project remembers its own expand state independently. */}
+          <CostSummary
+            stats={projectStats}
+            ariaLabel={`Usage for ${project.name}`}
+          />
+          {/* Kanban #1329 (M6 FE) — per-project P&L card. Sources
+              /api/projects/{id}/pl; period selector + localStorage default. */}
+          {FINANCE_PANELS_ENABLED && (
+            <PnlSummaryCard
+              projectId={project.id}
+              projectName={project.name}
+            />
+          )}
+        </div>
         {/* #1209 AA1 D5 — red strip above the consent banner when killed.
             (Renders nothing when is_killed=false.) */}
         <KilledBanner project={project} />
