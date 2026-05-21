@@ -701,3 +701,69 @@ async def test_post_email_malformed_vault_secret_returns_401_not_500(
     assert len(encoding_error_rows) >= 1, (
         "expected a denial audit row with reason 'secret_encoding_error'"
     )
+
+
+# ===========================================================================
+# Attachment allowlist guard (Kanban #1379)
+# ===========================================================================
+
+
+def test_resolve_attachment_base_under_allowed_base_uses_working_path(
+    tmp_path, monkeypatch
+):
+    """POSITIVE: working_path under an allowed base resolves to working_path/data/ingest.
+
+    Arrange a tmpdir as both the working_path and the allowed base so the
+    guard passes, then verify resolve_attachment_base returns the expected
+    sub-path — NOT the fallback.
+    """
+    from src.services.email_ingest import resolve_attachment_base
+
+    allowed_dir = tmp_path / "projects" / "myproject"
+    allowed_dir.mkdir(parents=True)
+
+    monkeypatch.setenv(
+        "EMAIL_INGEST_ATTACHMENT_ALLOWED_BASES", str(allowed_dir.parent)
+    )
+
+    project = type("P", (), {"working_path": str(allowed_dir)})()
+    repo_root = tmp_path / "repo"
+
+    result = resolve_attachment_base(project, repo_root)
+
+    assert result == allowed_dir / "data" / "ingest"
+
+
+def test_resolve_attachment_base_outside_allowlist_falls_back_to_runtime(
+    tmp_path, monkeypatch
+):
+    """NEGATIVE: working_path outside the allowlist falls back to repo_root/_runtime.
+
+    Use /etc as the (malicious) working_path on Linux; on Windows use a
+    temp dir that is NOT in the allowlist.  Either way the resolved base
+    must NOT be under the injected path.
+    """
+    from src.services.email_ingest import resolve_attachment_base
+
+    # Build a directory that exists but is NOT in the allowlist.
+    hostile_dir = tmp_path / "hostile"
+    hostile_dir.mkdir()
+
+    # The allowlist contains only a different tmpdir — hostile_dir is excluded.
+    safe_base = tmp_path / "safe"
+    safe_base.mkdir()
+    monkeypatch.setenv("EMAIL_INGEST_ATTACHMENT_ALLOWED_BASES", str(safe_base))
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    project = type("P", (), {"working_path": str(hostile_dir)})()
+
+    result = resolve_attachment_base(project, repo_root)
+
+    # NEGATIVE: result must NOT be under hostile_dir
+    assert not result.is_relative_to(hostile_dir), (
+        f"guard failed: {result} is under hostile {hostile_dir}"
+    )
+    # POSITIVE: result is under the safe repo_root/_runtime fallback
+    assert result == repo_root / "_runtime" / "email_attachments"

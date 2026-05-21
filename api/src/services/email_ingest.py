@@ -29,6 +29,7 @@ Implementation notes:
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -65,6 +66,31 @@ _DETAIL_PROJECT_NOT_FOUND = (
     "target project not found — set EMAIL_INGEST_DEFAULT_PROJECT or include "
     "'inbox+<projectname>@' in the 'to' field"
 )
+
+# Env var name for the comma-separated list of absolute paths that are
+# permitted as attachment write roots (Kanban #1379).  When unset the
+# allowlist is derived from ``repo_root / "_runtime"`` at call time.
+_ALLOWED_BASES_ENV: str = "EMAIL_INGEST_ATTACHMENT_ALLOWED_BASES"
+
+
+def _attachment_allowed_bases(repo_root: Path) -> list[Path]:
+    """Return the list of allowed attachment write base directories.
+
+    If ``EMAIL_INGEST_ATTACHMENT_ALLOWED_BASES`` is set it must be a
+    comma-separated list of absolute paths; each entry is resolved to
+    remove symlinks before comparison.  The ``<repo_root>/_runtime``
+    default is always appended so the built-in fallback path is always
+    permitted regardless of operator config.
+    """
+    raw = os.environ.get(_ALLOWED_BASES_ENV, "")
+    bases: list[Path] = []
+    for part in raw.split(","):
+        stripped = part.strip()
+        if stripped:
+            bases.append(Path(stripped).resolve())
+    # The built-in fallback is unconditionally permitted.
+    bases.append((repo_root / "_runtime").resolve())
+    return bases
 
 
 def parse_project_tag(to_address: str | None) -> str | None:
@@ -195,7 +221,19 @@ def resolve_attachment_base(
     if project.working_path:
         candidate = Path(project.working_path)
         if candidate.is_absolute() and candidate.exists():
-            return candidate / "data" / "ingest"
+            resolved = candidate.resolve()
+            allowed = _attachment_allowed_bases(repo_root)
+            if any(resolved == b or resolved.is_relative_to(b) for b in allowed):
+                return candidate / "data" / "ingest"
+            logger.warning(
+                "email_ingest: project.working_path %r resolves to %r which "
+                "is outside the attachment allowlist %r; falling back to "
+                "repo_root/_runtime/email_attachments",
+                project.working_path,
+                str(resolved),
+                [str(b) for b in allowed],
+            )
+            return repo_root / "_runtime" / "email_attachments"
         logger.warning(
             "email_ingest: project.working_path %r is not usable on this "
             "platform (is_absolute=%s, exists=%s); falling back to "
