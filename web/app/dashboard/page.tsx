@@ -432,20 +432,33 @@ export default async function DashboardPage() {
               window. Sits BELOW CostSummary (cost side first, P&L side after)
               and ABOVE the per-project navigation grid.
               Gated by NEXT_PUBLIC_FINANCE_PANELS_ENABLED (Kanban #1392). */}
-          {FINANCE_PANELS_ENABLED && <PnlDashboardSection />}
+          {FINANCE_PANELS_ENABLED && (
+            <PnlDashboardSection
+              defaultCollapsed={false}
+              storageKey="dashboard.panels.pnl.expanded"
+            />
+          )}
 
           {/* Kanban #945 — cross-project active-tasks list. Operator-level
               view of tasks in {in-progress, review, blocked} across every
               active project. Refreshes via DashboardRefresher's SSE-driven
               router.refresh() (server-component fetch above). Sits BELOW
               PnlDashboardSection and ABOVE the per-project nav grid. */}
-          <CrossProjectActiveTasksList data={activeTasks} />
+          <CrossProjectActiveTasksList
+            data={activeTasks}
+            defaultCollapsed={false}
+            storageKey="dashboard.panels.active-tasks.expanded"
+          />
 
           {/* Auditor activity (Kanban #1082 + #1291). Cross-project 7-day verdict
               rollup; hidden entirely when the API returns [] OR when the user
               toggles the panel off (AuditorVisibilityToggle in the header).
               Client visibility managed by AuditorActivityPanel (localStorage). */}
-          <AuditorActivityPanel rollup={auditRollup} />
+          <AuditorActivityPanel
+            rollup={auditRollup}
+            defaultCollapsed={false}
+            storageKey="dashboard.panels.auditor.expanded"
+          />
 
           {/* Per-project compact grid (SECONDARY). The aggregate section above
               is the primary view; cards here are a navigation index into the

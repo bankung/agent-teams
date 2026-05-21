@@ -1,12 +1,13 @@
+"use client";
+
 // CrossProjectActiveTasksList — Kanban #945. Cross-project list of tasks
 // with process_status in {IN_PROGRESS (2), REVIEW (3), BLOCKED (4)} across
 // every active project. Powers the "what's actively going on" section on
 // the operator dashboard.
 //
-// Server Component by design: the dashboard page fetches the data on the
-// server and passes it in. SSE-driven live refresh is inherited from the
-// existing `DashboardRefresher` (it calls `router.refresh()` on any task
-// row change, which re-renders this section with fresh data).
+// Converted to "use client" (Kanban #1408) to support the collapse/expand
+// chevron toggle. Data still comes in as a prop — no fetch logic changes.
+// SSE-driven live refresh still works via DashboardRefresher router.refresh().
 //
 // Render shape — rows pre-sorted by (project_name ASC, updated_at DESC) on
 // the server; the component groups adjacent same-project rows under a
@@ -18,17 +19,80 @@
 //
 // Out of scope (v1): status filter chips, collapse-by-project toggle,
 // per-task drawer. Tracked separately if/when needed.
-//
-// Parallel-safety note: this file is owned by the #945 dev-sr-frontend
-// spawn. Sibling spawns must not edit it during the same parallel batch.
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 
 import {
   type DashboardActiveTaskRow,
   type DashboardActiveTasks,
 } from "@/lib/api";
 import { formatRelative } from "@/lib/time";
+
+// ----- Icons -----------------------------------------------------------------
+
+function ChevronDownIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <polyline points="4 6 8 10 12 6" />
+    </svg>
+  );
+}
+
+function ChevronRightIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <polyline points="6 4 10 8 6 12" />
+    </svg>
+  );
+}
+
+// ----- Collapse helpers ------------------------------------------------------
+
+function readExpanded(key: string, defaultCollapsed: boolean): boolean {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return !defaultCollapsed;
+    return JSON.parse(raw) !== false;
+  } catch {
+    return !defaultCollapsed;
+  }
+}
+
+function writeExpanded(key: string, next: boolean): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(next));
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key,
+        newValue: JSON.stringify(next),
+        storageArea: localStorage,
+      }),
+    );
+  } catch {
+    // localStorage blocked — silently ignore.
+  }
+}
 
 // ----- Visual labels --------------------------------------------------------
 
@@ -219,10 +283,43 @@ function TaskRow({ row }: { row: DashboardActiveTaskRow }) {
 
 type Props = {
   data: DashboardActiveTasks;
+  defaultCollapsed?: boolean;
+  storageKey?: string;
 };
 
-export function CrossProjectActiveTasksList({ data }: Props) {
+export function CrossProjectActiveTasksList({
+  data,
+  defaultCollapsed = false,
+  storageKey,
+}: Props) {
   const groups = groupByProject(data.rows);
+
+  const collapsible = storageKey != null;
+
+  // Default expanded=true so SSR + first paint avoid hydration mismatch.
+  // useEffect corrects from localStorage after hydration.
+  const [expanded, setExpanded] = useState(!defaultCollapsed);
+
+  useEffect(() => {
+    if (!collapsible || !storageKey) return;
+    setExpanded(readExpanded(storageKey, defaultCollapsed));
+
+    function onStorage(e: StorageEvent) {
+      if (e.key !== storageKey) return;
+      setExpanded(
+        e.newValue !== null ? JSON.parse(e.newValue) !== false : !defaultCollapsed,
+      );
+    }
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [collapsible, storageKey, defaultCollapsed]);
+
+  function toggle() {
+    if (!collapsible || !storageKey) return;
+    const next = !expanded;
+    setExpanded(next);
+    writeExpanded(storageKey, next);
+  }
 
   return (
     <section
@@ -231,9 +328,21 @@ export function CrossProjectActiveTasksList({ data }: Props) {
       className="mb-5 rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900"
     >
       <div className="mb-3 flex flex-wrap items-baseline gap-2">
-        <h2 className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-          Active tasks across all projects
-        </h2>
+        {collapsible ? (
+          <button
+            type="button"
+            onClick={toggle}
+            aria-expanded={expanded}
+            className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+          >
+            {expanded ? <ChevronDownIcon /> : <ChevronRightIcon />}
+            Active tasks across all projects
+          </button>
+        ) : (
+          <h2 className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+            Active tasks across all projects
+          </h2>
+        )}
         <span
           className="text-[11px] text-zinc-500 dark:text-zinc-400 tabular-nums"
           aria-label={`${data.total_count} task${data.total_count === 1 ? "" : "s"}`}
@@ -248,44 +357,48 @@ export function CrossProjectActiveTasksList({ data }: Props) {
         </span>
       </div>
 
-      {data.total_count === 0 ? (
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
-          No tasks in progress, review, or blocked across active projects.
-        </p>
-      ) : (
-        <div className="flex flex-col gap-3">
-          {groups.map((group) => (
-            <div
-              key={group.project_id}
-              data-active-tasks-group
-              data-project-id={group.project_id}
-              className="flex flex-col rounded border border-zinc-100 dark:border-zinc-800"
-            >
-              <header className="flex items-center gap-2 border-b border-zinc-100 bg-zinc-50/60 px-3 py-1.5 dark:border-zinc-800 dark:bg-zinc-950/40">
-                <Link
-                  href={`/p/${group.project_name}`}
-                  className="truncate text-xs font-semibold text-zinc-900 hover:underline dark:text-zinc-100"
+      {expanded && (
+        <>
+          {data.total_count === 0 ? (
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">
+              No tasks in progress, review, or blocked across active projects.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {groups.map((group) => (
+                <div
+                  key={group.project_id}
+                  data-active-tasks-group
+                  data-project-id={group.project_id}
+                  className="flex flex-col rounded border border-zinc-100 dark:border-zinc-800"
                 >
-                  {group.project_name}
-                </Link>
-                <span className="inline-flex shrink-0 items-center rounded bg-zinc-100 px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
-                  {group.team}
-                </span>
-                <span
-                  className="ml-auto text-[11px] text-zinc-500 dark:text-zinc-400 tabular-nums"
-                  title={`${group.rows.length} active task${group.rows.length === 1 ? "" : "s"} on this project`}
-                >
-                  {group.rows.length}
-                </span>
-              </header>
-              <ul role="list">
-                {group.rows.map((row) => (
-                  <TaskRow key={row.task_id} row={row} />
-                ))}
-              </ul>
+                  <header className="flex items-center gap-2 border-b border-zinc-100 bg-zinc-50/60 px-3 py-1.5 dark:border-zinc-800 dark:bg-zinc-950/40">
+                    <Link
+                      href={`/p/${group.project_name}`}
+                      className="truncate text-xs font-semibold text-zinc-900 hover:underline dark:text-zinc-100"
+                    >
+                      {group.project_name}
+                    </Link>
+                    <span className="inline-flex shrink-0 items-center rounded bg-zinc-100 px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
+                      {group.team}
+                    </span>
+                    <span
+                      className="ml-auto text-[11px] text-zinc-500 dark:text-zinc-400 tabular-nums"
+                      title={`${group.rows.length} active task${group.rows.length === 1 ? "" : "s"} on this project`}
+                    >
+                      {group.rows.length}
+                    </span>
+                  </header>
+                  <ul role="list">
+                    {group.rows.map((row) => (
+                      <TaskRow key={row.task_id} row={row} />
+                    ))}
+                  </ul>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          )}
+        </>
       )}
     </section>
   );
