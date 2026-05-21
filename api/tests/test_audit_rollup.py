@@ -59,11 +59,66 @@ async def empty_db():
 
     yield
 
-    # Teardown — re-seed for sibling test modules.
-    from src.db import engine as _engine
+    # Teardown — purge test rows, reset sequences, re-seed for sibling modules.
+    #
+    # Kanban #1391 — sequence reset before re-seed.
+    #
+    # Problem: each test in this file calls _make_project() / _make_task()
+    # which consume PG sequence values (e.g. projects_id_seq → 8 after 7
+    # inserts). The setup (above) deletes only the rows present at the time
+    # it runs — rows created by the test itself are NOT cleaned up before
+    # teardown. Therefore:
+    #
+    #   1. Teardown must DELETE all rows in the same FK order as setup to
+    #      leave the DB fully empty before reseeding.
+    #   2. Sequence reset must happen AFTER the full purge and be committed
+    #      in its own transaction — otherwise the next nextval() may collide
+    #      with rows that haven't been removed yet.
+    #   3. tasks_history is populated by a PG trigger (AFTER UPDATE/DELETE
+    #      on tasks). Resetting tasks_history_id_seq to 1 causes a PK
+    #      collision on the NEXT test's setup delete(Task) call because
+    #      tasks_history rows from THIS test's UPDATE calls still exist at
+    #      that point (they haven't been deleted yet by the next setup).
+    #      tasks_history_id_seq is therefore intentionally NOT reset — no
+    #      downstream test cares about tasks_history.id values.
+    #
+    # Sequence names follow PG convention: {tablename}_id_seq.
+    # Confirmed via information_schema.sequences on the live agent_teams DB
+    # (same schema as agent_teams_test — identical alembic upgrade path).
+    from sqlalchemy import text as _text
+
     from scripts.seed import _seed
+    from src.db import SessionLocal as _SessionLocal
+    from src.db import engine as _engine
 
     await _engine.dispose()
+
+    # Step 1: full purge (same FK order as setup) to remove test-created rows.
+    async with _SessionLocal() as _s:
+        assert_test_db_or_die(_s)
+        await _s.execute(delete(SessionCompact))
+        await _s.execute(delete(SessionRun))
+        await _s.execute(delete(SessionModel))
+        await _s.execute(delete(Task))
+        await _s.execute(delete(TaskHistory))
+        await _s.execute(delete(Project))
+        await _s.commit()
+
+    # Step 2: reset sequences to 1 — DB is now empty so no PK collision risk.
+    # tasks_history_id_seq excluded (see note above).
+    _SEQUENCES_TO_RESET = [
+        "projects_id_seq",
+        "tasks_id_seq",
+        "sessions_id_seq",
+        "session_runs_id_seq",
+        "session_compacts_id_seq",
+    ]
+    async with _SessionLocal() as _s:
+        for _seq in _SEQUENCES_TO_RESET:
+            await _s.execute(_text(f"ALTER SEQUENCE {_seq} RESTART WITH 1"))
+        await _s.commit()
+
+    # Step 3: reseed — agent-teams now lands at project.id=1, tasks at 1..N.
     await _seed()
     await _engine.dispose()
 
