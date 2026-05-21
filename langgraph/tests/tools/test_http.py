@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 
 import httpx
 import pytest
@@ -33,12 +34,21 @@ from tools.http import (
 from tools.http._common import POST_BODY_CAP_BYTES
 from tools.registry import ToolRegistry
 
+# Skip any test that reads from GLOBAL_REGISTRY for http tools — when
+# LANGGRAPH_LLM_PROVIDER=ollama the HTTP tools are intentionally not
+# registered (feature-flagged OFF; see tools/http/__init__.py).
+_SKIP_ON_OLLAMA = pytest.mark.skipif(
+    os.environ.get("LANGGRAPH_LLM_PROVIDER", "").strip().lower() == "ollama",
+    reason="http_get / http_post not registered when LANGGRAPH_LLM_PROVIDER=ollama",
+)
+
 
 # ----------------------------------------------------------------------
 # Happy paths
 # ----------------------------------------------------------------------
 
 
+@_SKIP_ON_OLLAMA
 @respx.mock
 async def test_http_get_happy_path():
     """GET against an allowlisted host → success=True + response body in output."""
@@ -58,6 +68,7 @@ async def test_http_get_happy_path():
     assert route.called
 
 
+@_SKIP_ON_OLLAMA
 @respx.mock
 async def test_http_post_happy_path():
     """POST against an allowlisted host → success=True + response body in output."""
@@ -86,6 +97,7 @@ async def test_http_post_happy_path():
 # ----------------------------------------------------------------------
 
 
+@_SKIP_ON_OLLAMA
 @respx.mock
 async def test_host_not_in_allowlist_halts():
     """GET against an unlisted host → success=False, error_code='host_not_allowed'.
@@ -105,6 +117,7 @@ async def test_host_not_in_allowlist_halts():
     assert not route.called, "Tool issued a real call against an unlisted host."
 
 
+@_SKIP_ON_OLLAMA
 async def test_empty_allowlist_halts():
     """Empty allowlist = fail-closed; both verbs halt."""
     get_tool = GLOBAL_REGISTRY.get("http_get")
@@ -120,6 +133,7 @@ async def test_empty_allowlist_halts():
     assert post_res.success is False and post_res.error_code == "host_not_allowed"
 
 
+@_SKIP_ON_OLLAMA
 @respx.mock
 async def test_wildcard_allowlist_with_warning(caplog: pytest.LogCaptureFixture):
     """allowlist=['*'] → success=True, retry_safe=False, WARNING log captured."""
@@ -196,6 +210,7 @@ def test_tool_classes_remain_importable_under_ollama():
 # ----------------------------------------------------------------------
 
 
+@_SKIP_ON_OLLAMA
 @respx.mock
 async def test_oversize_body_rejected():
     """POST body > 256KB → error_code='body_too_large'; httpx never called."""
@@ -215,6 +230,7 @@ async def test_oversize_body_rejected():
     assert not route.called
 
 
+@_SKIP_ON_OLLAMA
 @respx.mock
 async def test_body_exactly_at_cap_is_allowed():
     """Exactly 256KB (cap) should still go through — bound is `>` not `>=`."""
@@ -235,6 +251,7 @@ async def test_body_exactly_at_cap_is_allowed():
 # ----------------------------------------------------------------------
 
 
+@_SKIP_ON_OLLAMA
 @respx.mock
 async def test_non_2xx_returns_http_error():
     """500 response → error_code='http_non_2xx' with status code + body excerpt."""
@@ -252,6 +269,7 @@ async def test_non_2xx_returns_http_error():
     assert "internal server explosion" in (result.error_msg or "")
 
 
+@_SKIP_ON_OLLAMA
 @respx.mock
 async def test_non_2xx_post_returns_http_error():
     respx.post("https://api.allowed.com/fail").mock(
@@ -273,6 +291,7 @@ async def test_non_2xx_post_returns_http_error():
 # ----------------------------------------------------------------------
 
 
+@_SKIP_ON_OLLAMA
 @respx.mock
 async def test_timeout_enforced():
     """Mock raises httpx.TimeoutException → error_code='timeout', duration_ms set."""
@@ -292,6 +311,7 @@ async def test_timeout_enforced():
     assert result.duration_ms >= 0
 
 
+@_SKIP_ON_OLLAMA
 @respx.mock
 async def test_post_timeout_enforced():
     respx.post("https://api.allowed.com/slow").mock(
@@ -312,6 +332,7 @@ async def test_post_timeout_enforced():
 # ----------------------------------------------------------------------
 
 
+@_SKIP_ON_OLLAMA
 @respx.mock
 async def test_dry_run_returns_envelope_without_sending():
     """dry_run=True → success=True, envelope in output, httpx NOT called."""
@@ -356,6 +377,7 @@ async def test_dry_run_returns_envelope_without_sending():
 # ----------------------------------------------------------------------
 
 
+@_SKIP_ON_OLLAMA
 def test_tier_is_network():
     assert GLOBAL_REGISTRY.get("http_get").tier.value == "network"
     assert GLOBAL_REGISTRY.get("http_post").tier.value == "network"
@@ -382,6 +404,7 @@ def test_timeout_s_bounded():
     assert has_ge, f"timeout_s missing ge=1; metadata={metadata}"
 
 
+@_SKIP_ON_OLLAMA
 async def test_invalid_url_no_host_halts():
     """A URL string with no parseable host → host_not_allowed (fail-closed)."""
     tool = GLOBAL_REGISTRY.get("http_get")
