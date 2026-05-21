@@ -51,6 +51,45 @@ EMAIL_SENTINEL_SECRET_12345 = "EMAIL-SENTINEL-SECRET-12345"
 
 
 @pytest.fixture(autouse=True)
+async def _email_ingest_credential_clean():
+    """Ensure the ``email_ingest_shared_secret`` credential in project 1 is
+    absent at the start of every test in this file.
+
+    Sibling tests within this file (and across files — credentials_router
+    tests, M4a smokes) create this credential and the session-scoped test
+    DB retains it. Without this fixture, test_post_email_no_secret_...
+    fails when run after any test that seeded the credential. See Q2
+    finding in the 2026-05-21 review.
+
+    Implementation note: we use SessionLocal directly (same pattern as
+    _count_denial_audits_for_credential) rather than the API's soft-delete
+    endpoint because the project_credentials unique index spans soft-deleted
+    rows — a soft-delete via DELETE /api/.../credentials/{name} would block
+    _seed_email_secret from re-creating the row in the same test session.
+    Hard-deleting the row here keeps the DB clean across tests without
+    poisoning the name slot.
+    """
+    from sqlalchemy import delete as sa_delete
+    from src.models.credential import ProjectCredential
+
+    async def _hard_delete_credential() -> None:
+        async with SessionLocal() as s:
+            await s.execute(
+                sa_delete(ProjectCredential).where(
+                    ProjectCredential.project_id == 1,
+                    ProjectCredential.name == "email_ingest_shared_secret",
+                )
+            )
+            await s.commit()
+
+    await _hard_delete_credential()
+    yield
+    # Symmetric cleanup after the test so the next test file sees a clean
+    # precondition (no dangling credential from this file's seeding tests).
+    await _hard_delete_credential()
+
+
+@pytest.fixture(autouse=True)
 def _credentials_master_key(monkeypatch):
     """Mint a fresh Fernet master key per test + clear the crypto cache.
 
