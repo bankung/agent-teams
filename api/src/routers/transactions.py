@@ -21,7 +21,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.constants import RecordStatus
 from src.db import get_or_404, get_session
+from src.models.project import Project
 from src.models.transaction import Transaction
 from src.schemas.transaction import (
     TransactionCreate,
@@ -44,6 +46,31 @@ router = APIRouter(prefix="/transactions", tags=["transactions"])
 # INVISIBLE to this session (parity with the soft-delete "invisible" model).
 # Locked by source-text-lock test in test_transactions.py.
 _DETAIL_TRANSACTION_NOT_FOUND_TEMPLATE = "Transaction id={txn_id} not found"
+
+# Wire detail for project-not-found / soft-deleted project. Locked by
+# test_transactions_inactive_project_guard in test_transactions.py.
+_DETAIL_PROJECT_NOT_FOUND = "project not found or inactive"
+
+
+async def _resolve_project_or_404(
+    session: AsyncSession,
+    project_id: int,
+) -> Project:
+    """Look up the project. 404 if missing OR soft-deleted (status != ACTIVE).
+
+    Mirrors webhooks.py::_resolve_project_or_404 (Kanban #1374 S1). Added in
+    #1403 M2 — soft-deleted projects must not silently serve or accept
+    transaction rows.
+    """
+    stmt = (
+        select(Project)
+        .where(Project.id == project_id)
+        .where(Project.status == RecordStatus.ACTIVE)
+    )
+    project = (await session.execute(stmt)).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail=_DETAIL_PROJECT_NOT_FOUND)
+    return project
 
 
 @router.get("", response_model=list[TransactionRead])
@@ -79,6 +106,7 @@ async def list_transactions(
     Sort: `occurred_at DESC` (newest first — matches the ledger UI). The
     `(project_id, occurred_at DESC)` index covers this directly.
     """
+    await _resolve_project_or_404(session, session_project_id)
     stmt = select(Transaction).where(Transaction.project_id == session_project_id)
     if kind is not None:
         stmt = stmt.where(Transaction.kind == kind)
@@ -108,6 +136,8 @@ async def create_transaction(
     """
     # Header-body cross-check — mirrors POST /api/tasks (Kanban #695).
     assert_body_matches_session(payload.project_id, session_project_id)
+    # Project-active guard — 404 if soft-deleted (Kanban #1403 M2).
+    await _resolve_project_or_404(session, session_project_id)
 
     txn = Transaction(
         project_id=payload.project_id,
@@ -156,6 +186,8 @@ async def update_transaction(
     as 404 (parity with soft-delete "invisible" semantics). Locked detail
     string pinned by source-text-lock test.
     """
+    # Project-active guard — 404 if soft-deleted (Kanban #1403 M2).
+    await _resolve_project_or_404(session, session_project_id)
     txn = await get_or_404(
         session,
         Transaction,

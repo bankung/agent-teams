@@ -485,3 +485,77 @@ def test_transaction_not_found_detail_template_pinned_in_router_source():
         f"Kanban #953 not-found detail template drifted in routers/transactions.py — "
         f"expected {pinned!r}"
     )
+
+
+# =============================================================================
+# 7. Project-active guard (Kanban #1403 M2)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_get_transactions_on_soft_deleted_project_returns_404(
+    client, scaffold_cleanup
+):
+    """GET /api/transactions with X-Project-Id pointing at a soft-deleted
+    project must return 404, not 200. Guard added in Kanban #1403 M2.
+    """
+    project_id = await _make_fresh_project(client, scaffold_cleanup, "txn-guard-get")
+    headers = {"X-Project-Id": str(project_id)}
+
+    # Soft-delete the project.
+    del_resp = await client.delete(f"/api/projects/{project_id}")
+    assert del_resp.status_code == 200, del_resp.text
+
+    resp = await client.get("/api/transactions", headers=headers)
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["detail"] == "project not found or inactive"
+
+
+@pytest.mark.asyncio
+async def test_post_transaction_on_soft_deleted_project_returns_404(
+    client, scaffold_cleanup
+):
+    """POST /api/transactions against a soft-deleted project must return 404.
+    Guard added in Kanban #1403 M2.
+    """
+    project_id = await _make_fresh_project(client, scaffold_cleanup, "txn-guard-post")
+    headers = {"X-Project-Id": str(project_id)}
+
+    # Soft-delete the project.
+    del_resp = await client.delete(f"/api/projects/{project_id}")
+    assert del_resp.status_code == 200, del_resp.text
+
+    resp = await client.post(
+        "/api/transactions",
+        json=_txn_payload(project_id, kind="revenue"),
+        headers=headers,
+    )
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["detail"] == "project not found or inactive"
+
+
+@pytest.mark.asyncio
+async def test_get_transactions_on_active_project_still_returns_200(
+    client, scaffold_cleanup
+):
+    """Regression: the project-active guard must not break the happy path.
+    GET /api/transactions on an ACTIVE project returns 200 + correct rows.
+    Kanban #1403 M2.
+    """
+    project_id = await _make_fresh_project(client, scaffold_cleanup, "txn-guard-ok")
+    headers = {"X-Project-Id": str(project_id)}
+
+    # Create one transaction.
+    create_resp = await client.post(
+        "/api/transactions",
+        json=_txn_payload(project_id, amount_minor=555, kind="cost"),
+        headers=headers,
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    txn_id = create_resp.json()["id"]
+
+    # List should still work and return the row.
+    resp = await client.get("/api/transactions", headers=headers)
+    assert resp.status_code == 200, resp.text
+    ids = {t["id"] for t in resp.json()}
+    assert txn_id in ids
