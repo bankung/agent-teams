@@ -332,7 +332,7 @@ async def _setup_test_database():
 
 @pytest.fixture(autouse=True)
 def _reset_rate_limiter_per_test():
-    """Reset slowapi's in-memory rate-limit counter between tests.
+    """Reset BOTH in-memory rate-limit counters between tests.
 
     Kanban #1124 (L19 prevention) — POST /api/projects is limited to
     `5/minute` per IP. Under ASGITransport every test "client" appears as
@@ -340,14 +340,25 @@ def _reset_rate_limiter_per_test():
     session and any subsequent test that POSTs more than 5 projects from
     a fresh limiter perspective sees an unexpected 429.
 
-    Reset via slowapi.Limiter.reset() which clears all buckets in the
-    in-memory MovingWindowStorage. No-op when slowapi isn't yet installed
-    (defensive guard for import-time failures during initial migration).
+    Kanban #1328 (M4b) — same shape for the per-(project_id, tag) webhook
+    ingest counter (``src/services/webhook_rate_limit.py``). The 60/min cap
+    is much higher than the projects cap, but tests that exercise the cap
+    explicitly (61 rapid POSTs) MUST start each test from a clean slate.
+
+    Reset via slowapi.Limiter.reset() + the dedicated reset() helper on the
+    webhook module. No-op when imports fail (defensive guard for partial
+    migrations).
     """
     try:
         from src.middleware.rate_limit import limiter
 
         limiter.reset()
+    except Exception:
+        pass
+    try:
+        from src.services.webhook_rate_limit import reset as _reset_webhook_rl
+
+        _reset_webhook_rl()
     except Exception:
         pass
     yield

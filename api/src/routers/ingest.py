@@ -1,8 +1,19 @@
-"""Email-to-task ingest webhook (Kanban #1327 M4a).
+"""Inbound webhook ingest endpoints — email (#1327 M4a) + generic (#1328 M4b).
 
-Single endpoint:
+Endpoints:
 
-  POST /api/ingest/email
+  POST /api/ingest/email                          (M4a — Mailgun-shape email)
+  POST /api/ingest/webhook/{project_id}/{tag}     (M4b — generic JSON webhook)
+
+The M4b generic webhook complements M4a: external sources (Calendly, GitHub
+Issues, contact forms, Typeform, etc.) POST arbitrary JSON to the per-project
+endpoint with an ``X-Webhook-Secret`` header. Auth is the same M3-vault
+shared-secret pattern; the credential name follows ``webhook_<tag>`` so each
+external source gets its own rotatable secret. The body is run through a
+named template (Mustache-flat) → a Task is created in the path-named project.
+Tags with no registered template land in a default-fallback template that
+dumps the full payload into the description, so operators always get a
+usable task even pre-configuration.
 
 The operator does NOT run a mail server. The flow is:
 
@@ -52,7 +63,7 @@ import os
 from datetime import datetime, timezone
 from typing import Annotated, Final
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -66,12 +77,25 @@ from src.constants import (
 from src.db import get_session
 from src.models.credential import CredentialAccessLog, ProjectCredential
 from src.models.task import Task
+from src.models.project import Project
 from src.schemas.email_ingest import EmailIngestRequest, EmailIngestResponse
 from src.services import credentials_crypto
 from src.services.email_ingest import (
     extract_body,
     resolve_attachment_path,
     resolve_target_project,
+)
+from src.services.webhook_rate_limit import (
+    RateLimitError,
+    check_and_consume as rate_limit_check_and_consume,
+)
+from src.services.webhook_templates import (
+    DEFAULT_FALLBACK_TEMPLATE,
+    MissingTemplateField,
+    WebhookTemplate,
+    get_template as get_webhook_template,
+    pretty_dump_for_fallback,
+    substitute as substitute_template,
 )
 from src.settings import get_settings
 
@@ -380,3 +404,287 @@ async def ingest_email(
         project_id=project.id,
         attachment_count=attachment_count,
     )
+
+
+# ===========================================================================
+# Kanban #1328 (M4b) — generic webhook-to-task ingest
+# ===========================================================================
+#
+# POST /api/ingest/webhook/{project_id}/{tag}
+#
+# Auth:  X-Webhook-Secret header compared (constant-time) against the M3-vault
+#        credential named ``webhook_<tag>`` scoped to the path's project_id.
+# Body:  Arbitrary JSON. Passed verbatim to template substitution.
+# Resp:  200 + {received, task_id, project_id, template_used, tag}
+# Errors: 401 (no credential / bad secret), 404 (project not found),
+#         422 (template references a missing field in the payload),
+#         429 (per-(project, tag) rate cap hit).
+#
+# The template registry is in-code (``services/webhook_templates.py``) for v1;
+# X.5 will swap it for a DB-backed loader without changing this router.
+
+
+# Per-source webhook credential names follow this prefix — e.g. tag='calendly'
+# means the operator stored the shared secret as `webhook_calendly`.
+WEBHOOK_CREDENTIAL_NAME_PREFIX: Final[str] = "webhook_"
+
+# Source-text-locked detail strings. Pinned by tests.
+_DETAIL_WEBHOOK_SECRET_NOT_CONFIGURED_TEMPLATE: Final[str] = (
+    "webhook secret not configured for this project — store via "
+    "POST /api/projects/{project_id}/credentials with name='webhook_{tag}' "
+    "and kind='webhook_secret'"
+)
+_DETAIL_WEBHOOK_BAD_SIGNATURE: Final[str] = "invalid signature"
+_DETAIL_WEBHOOK_MISSING_FIELD_TEMPLATE: Final[str] = (
+    "missing required template field: {field_path}"
+)
+_DETAIL_WEBHOOK_PROJECT_NOT_FOUND_TEMPLATE: Final[str] = (
+    "Project id={project_id} not found"
+)
+
+
+async def _load_webhook_secret(
+    session: AsyncSession, project_id: int, tag: str
+) -> tuple[ProjectCredential, str]:
+    """Look up the per-source webhook secret + decrypt.
+
+    Returns the (credential_row, plaintext_secret) tuple. Raises 401 with the
+    operator-actionable hint when the credential row is absent (or soft-deleted).
+    No audit row is written here — there's nothing to log against (no credential
+    id).
+    """
+    name = f"{WEBHOOK_CREDENTIAL_NAME_PREFIX}{tag}"
+    stmt = (
+        select(ProjectCredential)
+        .where(ProjectCredential.project_id == project_id)
+        .where(ProjectCredential.name == name)
+        .where(ProjectCredential.status == RecordStatus.ACTIVE)
+    )
+    cred = (await session.execute(stmt)).scalar_one_or_none()
+    if cred is None:
+        raise HTTPException(
+            status_code=401,
+            detail=_DETAIL_WEBHOOK_SECRET_NOT_CONFIGURED_TEMPLATE.format(
+                project_id=project_id, tag=tag,
+            ),
+        )
+    secret = credentials_crypto.decrypt(cred.ciphertext)
+    return cred, secret
+
+
+async def _audit_webhook_use(
+    session: AsyncSession, credential_id: int, *, ok: bool, reason: str | None
+) -> None:
+    """Append a CredentialAccessLog row for a webhook verification outcome.
+
+    ``ok=True``  → ``accessed_by='system:webhook_ingest'`` + bumps counter.
+    ``ok=False`` → ``accessed_by='system:webhook_ingest (denied=<reason>)'``
+                  + no counter bump (denial audit row stands on its own).
+    """
+    if ok:
+        accessed_by = "system:webhook_ingest"
+    else:
+        accessed_by = f"system:webhook_ingest (denied={reason or 'unknown'})"
+    session.add(
+        CredentialAccessLog(
+            credential_id=credential_id,
+            accessed_by=accessed_by,
+            action="use",
+        )
+    )
+    if ok:
+        cred = await session.get(ProjectCredential, credential_id)
+        if cred is not None:
+            cred.access_count = cred.access_count + 1
+            cred.last_accessed_at = datetime.now(timezone.utc)
+    await session.commit()
+
+
+async def _resolve_webhook_project(
+    session: AsyncSession, project_id: int
+) -> Project:
+    """Fetch the project row by id or 404 with a stable detail string.
+
+    Soft-deleted projects (status=0) are treated as not found — webhook
+    deliveries to a killed project must NOT silently land in a hidden row.
+    """
+    stmt = (
+        select(Project)
+        .where(Project.id == project_id)
+        .where(Project.status == RecordStatus.ACTIVE)
+    )
+    project = (await session.execute(stmt)).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(
+            status_code=404,
+            detail=_DETAIL_WEBHOOK_PROJECT_NOT_FOUND_TEMPLATE.format(
+                project_id=project_id,
+            ),
+        )
+    return project
+
+
+def _render_template(
+    template: WebhookTemplate, tag: str, payload: dict
+) -> tuple[str, str]:
+    """Run the template's title + description strings through substitute().
+
+    For the default-fallback template, inject ``__tag`` + ``__pretty_payload``
+    into the substitution context BEFORE running substitute() so the fallback
+    placeholders resolve. Returns (title, description). Raises
+    ``MissingTemplateField`` (with the offending path) on any unresolvable
+    placeholder — the caller maps that to a 422.
+    """
+    ctx = dict(payload)
+    # Reserve the underscore-prefixed names for fallback hooks. The real
+    # webhook payloads from Calendly/GitHub/etc never use ``__tag``/
+    # ``__pretty_payload`` as a top-level key, so this is collision-free.
+    ctx["__tag"] = tag
+    ctx["__pretty_payload"] = pretty_dump_for_fallback(payload)
+    title = substitute_template(template.title_template, ctx)
+    description = substitute_template(template.description_template, ctx)
+    return title, description
+
+
+@router.post(
+    "/webhook/{project_id}/{tag}",
+    status_code=200,
+)
+async def ingest_webhook(
+    project_id: Annotated[int, Path(ge=1)],
+    tag: Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_\-]+$")],
+    payload: Annotated[dict, Body()],
+    x_webhook_secret: Annotated[
+        str | None, Header(alias="X-Webhook-Secret")
+    ] = None,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Authenticate + template-substitute + create-a-task for one inbound webhook.
+
+    Returns 200 with ``{received, task_id, project_id, template_used, tag}`` on
+    success.
+
+    Errors:
+      - 401 (``"invalid signature"``) — header missing or mismatched. Audit
+        row written with the denial reason.
+      - 401 (``webhook secret not configured for this project ...``) — vault
+        credential absent. No audit row (nothing to log against).
+      - 404 — ``project_id`` does not exist (or has been soft-deleted).
+      - 422 — A template placeholder references a missing field in the body.
+        Detail names the exact dot-path so operator can fix the mapping.
+      - 429 — Per-(project_id, tag) rate cap exceeded (60/min hard, v1).
+    """
+    # ----- 1. Resolve project (404 if missing) ----------------------------
+    # 404-first ordering is intentional: a missing-credential 401 against a
+    # nonexistent project would leak project existence via the 401-vs-404
+    # distinction. We resolve the project before EITHER credential lookup
+    # or rate-limit consumption so unknown-project requests never advance
+    # past this check.
+    project = await _resolve_webhook_project(session, project_id)
+
+    # ----- 2. Rate-limit (per (project_id, tag), 60/min hard) -------------
+    # The rate limit runs BEFORE the auth check by design: a flood of
+    # unauthenticated requests would still consume credential-decrypt work
+    # per request if we authed first. Eating the rate-limit early bounds the
+    # work the endpoint does for any attacker. The tradeoff: a legitimate
+    # client whose secret is correct can still be rate-limited (visible).
+    try:
+        rate_limit_check_and_consume(project_id, tag)
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+
+    # ----- 3. Authenticate via M3-vault webhook_<tag> secret --------------
+    cred, secret = await _load_webhook_secret(session, project_id, tag)
+    provided = (x_webhook_secret or "").encode("utf-8")
+    expected = secret.encode("utf-8")
+    if not hmac.compare_digest(provided, expected):
+        await _audit_webhook_use(
+            session, cred.id, ok=False, reason="signature_mismatch",
+        )
+        raise HTTPException(
+            status_code=401, detail=_DETAIL_WEBHOOK_BAD_SIGNATURE,
+        )
+    await _audit_webhook_use(session, cred.id, ok=True, reason=None)
+
+    # ----- 4. Look up template (or default-fallback) ----------------------
+    template = get_webhook_template(tag)
+    if template is None:
+        template = DEFAULT_FALLBACK_TEMPLATE
+        template_used = "default-fallback"
+    else:
+        template_used = tag
+
+    # ----- 5. Substitute placeholders -------------------------------------
+    try:
+        title, description = _render_template(template, tag, payload)
+    except MissingTemplateField as exc:
+        # 422 with the specific dot-path — operator-debuggable.
+        raise HTTPException(
+            status_code=422,
+            detail=_DETAIL_WEBHOOK_MISSING_FIELD_TEMPLATE.format(
+                field_path=exc.field_path,
+            ),
+        ) from exc
+
+    # Title cap matches the email-ingest convention (200 chars). The Task
+    # column is TEXT (uncapped) — the cap is for UI legibility.
+    title = title[:200] if title else f"(webhook {tag})"
+
+    # ----- 6. Coerce template-declared task fields (defensive) ------------
+    # The in-code registry is the source of truth but we still defend against
+    # a future X.5 DB-backed row carrying an unknown task_kind/task_type /
+    # out-of-range priority. The DB CHECK would refuse the INSERT anyway;
+    # coercing here gives the operator a usable task with a clear log line
+    # instead of a 500.
+    task_kind = template.task_kind
+    if task_kind not in TaskKind.ALL:
+        logger.warning(
+            "webhook_ingest: template %r has invalid task_kind=%r — coercing to 'human'",
+            template_used, task_kind,
+        )
+        task_kind = TaskKind.HUMAN
+
+    task_type = template.task_type
+    if task_type not in TaskType.ALL:
+        logger.warning(
+            "webhook_ingest: template %r has invalid task_type=%r — coercing to 'feature'",
+            template_used, task_type,
+        )
+        task_type = TaskType.FEATURE
+
+    task_priority = template.priority
+    if task_priority not in TaskPriority.ALL:
+        logger.warning(
+            "webhook_ingest: template %r has invalid priority=%r — coercing to NORMAL",
+            template_used, task_priority,
+        )
+        task_priority = TaskPriority.NORMAL
+
+    # ----- 7. Create the task --------------------------------------------
+    task = Task(
+        project_id=project.id,
+        title=title,
+        description=description,
+        process_status=TaskStatus.TODO,
+        priority=task_priority,
+        task_kind=task_kind,
+        task_type=task_type,
+        # No assigned_role; operator triages.
+    )
+    session.add(task)
+    await session.commit()
+    await session.refresh(task)
+
+    logger.info(
+        "webhook_ingest: created task #%d in project #%d (%s) "
+        "tag=%r template=%r",
+        task.id, project.id, project.name, tag, template_used,
+    )
+
+    return {
+        "received": True,
+        "task_id": task.id,
+        "project_id": project.id,
+        "template_used": template_used,
+        "tag": tag,
+    }
