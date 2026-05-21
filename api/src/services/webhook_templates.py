@@ -82,14 +82,18 @@ TEMPLATE_REGISTRY: Final[dict[str, WebhookTemplate]] = {
     # Calendly's webhook (Account Settings → Webhooks) to this endpoint with
     # tag=calendly + the matching shared secret in the M3 vault under
     # ``webhook_calendly``.
+    #
+    # Payload shape: Calendly v2 webhook (https://developer.calendly.com/api-docs/docs/getting-started-with-webhooks).
+    # Invitee data lives under ``payload.invitee``; event type under
+    # ``payload.event_type``; event timing under ``payload.event``.
     "calendly": WebhookTemplate(
-        title_template="Booking: {{payload.name}} — {{payload.event_type}}",
+        title_template="Booking: {{payload.invitee.name}} — {{payload.event_type.name}}",
         description_template=(
             "New booking via Calendly:\n"
-            "  Name:       {{payload.name}}\n"
-            "  Email:      {{payload.email}}\n"
-            "  Event type: {{payload.event_type}}\n"
-            "  Start time: {{payload.start_time}}\n\n"
+            "  Name:       {{payload.invitee.name}}\n"
+            "  Email:      {{payload.invitee.email}}\n"
+            "  Event type: {{payload.event_type.name}}\n"
+            "  Start time: {{payload.event.start_time}}\n\n"
             "Prepare brief; send confirmation by 24h before."
         ),
         task_kind="human",

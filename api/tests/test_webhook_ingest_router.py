@@ -164,13 +164,26 @@ async def test_webhook_good_secret_with_calendly_template_creates_task_with_subs
     """Calendly template: title + description carry substituted fields."""
     await _seed_webhook_secret(client, tag="calendly")
 
+    # Real Calendly v2 webhook shape: invitee data under payload.invitee,
+    # event type label under payload.event_type.name, timing under payload.event.
     payload = {
+        "event": "invitee.created",
         "payload": {
-            "name": "Alex Customer",
-            "email": "alex@example.com",
-            "event_type": "Intro chat (30m)",
-            "start_time": "2026-06-01T10:00:00Z",
-        }
+            "event_type": {
+                "uuid": "ET-abc123",
+                "name": "Intro chat (30m)",
+            },
+            "invitee": {
+                "name": "Alex Customer",
+                "email": "alex@example.com",
+                "uuid": "INV-xyz789",
+            },
+            "event": {
+                "start_time": "2026-06-01T10:00:00Z",
+                "end_time": "2026-06-01T10:30:00Z",
+                "uuid": "EVT-def456",
+            },
+        },
     }
     resp = await client.post(
         "/api/ingest/webhook/1/calendly",
@@ -279,16 +292,18 @@ async def test_webhook_good_secret_unknown_tag_uses_default_fallback_dumps_paylo
 
 @pytest.mark.asyncio
 async def test_webhook_template_missing_field_returns_422_with_field_path(client):
-    """Template references {{payload.name}} but body omits it → 422 with path."""
+    """Template references {{payload.invitee.name}} but invitee block absent → 422 with path."""
     await _seed_webhook_secret(client, tag="calendly")
 
-    # Omit `payload.name` — the calendly title template needs it.
+    # Omit the ``invitee`` sub-object entirely — the calendly title template
+    # requires ``payload.invitee.name`` (Calendly v2 nested shape).
     payload = {
+        "event": "invitee.created",
         "payload": {
-            "email": "x@example.com",
-            "event_type": "chat",
-            "start_time": "2026-06-01T10:00:00Z",
-        }
+            "event_type": {"uuid": "ET-abc", "name": "chat"},
+            "event": {"start_time": "2026-06-01T10:00:00Z", "end_time": "2026-06-01T10:30:00Z"},
+            # "invitee" key intentionally absent
+        },
     }
     resp = await client.post(
         "/api/ingest/webhook/1/calendly",
@@ -298,7 +313,7 @@ async def test_webhook_template_missing_field_returns_422_with_field_path(client
     assert resp.status_code == 422, resp.text
     detail = resp.json()["detail"]
     assert "missing required template field" in detail
-    assert "payload.name" in detail
+    assert "payload.invitee.name" in detail
 
 
 @pytest.mark.asyncio
@@ -309,7 +324,14 @@ async def test_webhook_unknown_project_id_returns_404(client):
 
     resp = await client.post(
         "/api/ingest/webhook/999999/calendly",
-        json={"payload": {"name": "x", "email": "y", "event_type": "z", "start_time": "t"}},
+        json={
+            "event": "invitee.created",
+            "payload": {
+                "event_type": {"uuid": "ET-x", "name": "z"},
+                "invitee": {"name": "x", "email": "y", "uuid": "INV-x"},
+                "event": {"start_time": "t", "end_time": "t", "uuid": "EVT-x"},
+            },
+        },
         headers={"X-Webhook-Secret": WH_SENTINEL_SECRET_77889},
     )
     assert resp.status_code == 404, resp.text
@@ -332,12 +354,12 @@ async def test_webhook_rate_limit_60_per_minute_returns_429(client):
     await _seed_webhook_secret(client, tag=tag)
 
     payload = {
+        "event": "invitee.created",
         "payload": {
-            "name": "Burst Customer",
-            "email": "burst@example.com",
-            "event_type": "rate-test",
-            "start_time": "2026-06-01T10:00:00Z",
-        }
+            "event_type": {"uuid": "ET-rate", "name": "rate-test"},
+            "invitee": {"name": "Burst Customer", "email": "burst@example.com", "uuid": "INV-rate"},
+            "event": {"start_time": "2026-06-01T10:00:00Z", "end_time": "2026-06-01T10:30:00Z", "uuid": "EVT-rate"},
+        },
     }
     headers = {"X-Webhook-Secret": WH_SENTINEL_SECRET_77889}
 
@@ -370,10 +392,12 @@ async def test_webhook_rate_limit_resets_between_project_tag_pairs(client):
         await _seed_webhook_secret(client, tag=tag_b)
 
         payload_a = {
+            "event": "invitee.created",
             "payload": {
-                "name": "A", "email": "a@x.com",
-                "event_type": "e", "start_time": "t",
-            }
+                "event_type": {"uuid": "ET-a", "name": "e"},
+                "invitee": {"name": "A", "email": "a@x.com", "uuid": "INV-a"},
+                "event": {"start_time": "t", "end_time": "t", "uuid": "EVT-a"},
+            },
         }
         payload_b = {
             "issue": {
@@ -421,6 +445,103 @@ def test_substitute_dot_path_extraction_handles_nested_dicts():
     with pytest.raises(MissingTemplateField) as exc:
         substitute("hello {{a.b.c.d}}", {"a": {"b": {"c": "alice"}}})
     assert exc.value.field_path == "a.b.c.d"
+
+
+# ===========================================================================
+# Calendly v2 nested-shape contract (Kanban #1404)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_calendly_v2_nested_payload_extracts_correct_fields(client):
+    """Calendly v2 shape (nested invitee/event_type/event) → correct task fields.
+
+    POSITIVE: title uses payload.invitee.name + payload.event_type.name;
+              description uses payload.invitee.email + payload.event.start_time.
+    NEGATIVE: the old flat field names (payload.name / payload.email) are NOT
+              present as keys in the request body — confirming the template
+              works from the nested form, not a flat shim.
+    """
+    await _seed_webhook_secret(client, tag="calendly")
+
+    nested_payload = {
+        "event": "invitee.created",
+        "payload": {
+            "event_type": {"uuid": "ET-nested1", "name": "Deep Dive (60m)"},
+            "invitee": {
+                "name": "Nested User",
+                "email": "nested@example.com",
+                "uuid": "INV-nested1",
+            },
+            "event": {
+                "start_time": "2026-07-01T14:00:00Z",
+                "end_time": "2026-07-01T15:00:00Z",
+                "uuid": "EVT-nested1",
+            },
+        },
+    }
+
+    # NEGATIVE guard: flat keys must NOT exist at payload root.
+    assert "name" not in nested_payload["payload"]
+    assert "email" not in nested_payload["payload"]
+    assert "start_time" not in nested_payload["payload"]
+
+    resp = await client.post(
+        "/api/ingest/webhook/1/calendly",
+        json=nested_payload,
+        headers={"X-Webhook-Secret": WH_SENTINEL_SECRET_77889},
+    )
+    assert resp.status_code == 200, resp.text
+    task_id = resp.json()["task_id"]
+
+    get_resp = await client.get(f"/api/tasks/{task_id}", headers={"X-Project-Id": "1"})
+    assert get_resp.status_code == 200, get_resp.text
+    task = get_resp.json()
+
+    # POSITIVE: nested fields land in title + description.
+    assert task["title"] == "Booking: Nested User — Deep Dive (60m)"
+    assert "nested@example.com" in task["description"]
+    assert "2026-07-01T14:00:00Z" in task["description"]
+
+
+@pytest.mark.asyncio
+async def test_calendly_missing_invitee_block_returns_422(client):
+    """Calendly payload without invitee sub-object → 422, field path in detail.
+
+    POSITIVE: HTTP 422, detail names the missing nested path.
+    NEGATIVE: HTTP 200 must NOT be returned (old flat shape would silently pass).
+    """
+    await _seed_webhook_secret(client, tag="calendly")
+
+    payload_no_invitee = {
+        "event": "invitee.created",
+        "payload": {
+            "event_type": {"uuid": "ET-ni", "name": "Quick Call"},
+            # invitee block absent — simulates a real Calendly delivery that
+            # unexpectedly omits the invitee object (e.g. a cancellation variant).
+            "event": {
+                "start_time": "2026-07-02T09:00:00Z",
+                "end_time": "2026-07-02T09:30:00Z",
+                "uuid": "EVT-ni",
+            },
+        },
+    }
+
+    resp = await client.post(
+        "/api/ingest/webhook/1/calendly",
+        json=payload_no_invitee,
+        headers={"X-Webhook-Secret": WH_SENTINEL_SECRET_77889},
+    )
+
+    # NEGATIVE: must not succeed.
+    assert resp.status_code != 200, (
+        f"expected 422 for missing invitee, got 200: {resp.text}"
+    )
+    # POSITIVE: 422 with the failing nested path.
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert "missing required template field" in detail
+    assert "payload.invitee" in detail
 
 
 # ===========================================================================
