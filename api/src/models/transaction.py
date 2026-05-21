@@ -143,6 +143,19 @@ class Transaction(Base):
             "task_id",
             postgresql_where=text("task_id IS NOT NULL"),
         ),
+        # Partial UNIQUE — idempotency key for external webhook deliveries.
+        # Added by migration 0049_transaction_source_unique (Kanban #1325 M2).
+        # Only enforces uniqueness on rows that carry a `source_ref` (the
+        # external event id); manual entries with source_ref=NULL are
+        # unconstrained. The webhook router uses this index to dedup retries.
+        Index(
+            "ux_transactions_project_source_ref",
+            "project_id",
+            "source",
+            "source_ref",
+            unique=True,
+            postgresql_where=text("source_ref IS NOT NULL"),
+        ),
     )
 
     def __repr__(self) -> str:  # pragma: no cover

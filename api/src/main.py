@@ -40,6 +40,7 @@ from src.routers import tasks as tasks_router
 from src.routers import tool_calls as tool_calls_router
 from src.routers import transactions as transactions_router
 from src.routers import user_actions as user_actions_router
+from src.routers import webhooks as webhooks_router
 from src.services.row_changed_listener import start_listener, stop_listener
 from src.settings import get_settings
 
@@ -325,6 +326,8 @@ def create_app() -> FastAPI:
     app.include_router(push_router.router, prefix="/api")
     # Kanban #1326 (M3) — credentials vault (per-project, Fernet-encrypted).
     app.include_router(credentials_router.router, prefix="/api")
+    # Kanban #1325 (M2) — external payment-webhook ingest (Stripe + PayPal).
+    app.include_router(webhooks_router.router, prefix="/api")
 
     return app
 
