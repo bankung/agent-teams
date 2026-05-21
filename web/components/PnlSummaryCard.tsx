@@ -32,149 +32,15 @@ import {
   getProjectPl,
   HttpError,
   PL_PERIODS,
-  type PLPeriodLiteral,
   type PLSummary,
 } from "@/lib/api";
 import { formatMoney, formatSignedPercent, parseMoney } from "@/lib/money";
-
-// ----- Range presets ----------------------------------------------------------
-
-type RangeKey =
-  | "last_30d"
-  | "this_month"
-  | "last_month"
-  | "this_quarter"
-  | "all_time"
-  | "custom";
-
-type RangeOption = {
-  key: RangeKey;
-  label: string;
-  // null since means "no lower bound"; ditto for until.
-  build: () => {
-    period: PLPeriodLiteral;
-    since: string | null;
-    until: string | null;
-  };
-  disabled?: boolean;
-};
-
-// Start-of-current-month UTC as an ISO datetime string (BE accepts ISO 8601).
-function startOfMonthUtc(d: Date): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 0, 0, 0, 0));
-}
-
-function startOfQuarterUtc(d: Date): Date {
-  const qStartMonth = Math.floor(d.getUTCMonth() / 3) * 3;
-  return new Date(Date.UTC(d.getUTCFullYear(), qStartMonth, 1, 0, 0, 0, 0));
-}
-
-function daysAgoUtc(d: Date, days: number): Date {
-  const out = new Date(d.getTime());
-  out.setUTCDate(out.getUTCDate() - days);
-  return out;
-}
-
-function RANGE_OPTIONS(now: Date): RangeOption[] {
-  return [
-    {
-      key: "last_30d",
-      label: "Last 30 days",
-      build: () => ({
-        period: "daily",
-        since: daysAgoUtc(now, 30).toISOString(),
-        until: null,
-      }),
-    },
-    {
-      key: "this_month",
-      label: "This month",
-      build: () => ({
-        period: "monthly",
-        since: startOfMonthUtc(now).toISOString(),
-        until: null,
-      }),
-    },
-    {
-      key: "last_month",
-      label: "Last month",
-      build: () => {
-        const thisStart = startOfMonthUtc(now);
-        const lastStart = new Date(
-          Date.UTC(
-            thisStart.getUTCFullYear(),
-            thisStart.getUTCMonth() - 1,
-            1,
-            0,
-            0,
-            0,
-            0,
-          ),
-        );
-        return {
-          period: "monthly",
-          since: lastStart.toISOString(),
-          until: thisStart.toISOString(),
-        };
-      },
-    },
-    {
-      key: "this_quarter",
-      label: "This quarter",
-      build: () => ({
-        period: "quarterly",
-        since: startOfQuarterUtc(now).toISOString(),
-        until: null,
-      }),
-    },
-    {
-      key: "all_time",
-      label: "All time",
-      build: () => ({
-        period: "yearly",
-        since: null,
-        until: null,
-      }),
-    },
-    {
-      key: "custom",
-      label: "Custom range (coming soon)",
-      build: () => ({ period: "monthly", since: null, until: null }),
-      disabled: true,
-    },
-  ];
-}
-
-const STORAGE_KEY = "pnl_period_default";
-
-function readStoredRange(): RangeKey | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    if (
-      raw === "last_30d" ||
-      raw === "this_month" ||
-      raw === "last_month" ||
-      raw === "this_quarter" ||
-      raw === "all_time"
-    ) {
-      return raw;
-    }
-  } catch {
-    /* localStorage blocked */
-  }
-  return null;
-}
-
-function writeStoredRange(next: RangeKey): void {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(STORAGE_KEY, next);
-  } catch {
-    /* localStorage blocked */
-  }
-}
+import {
+  RANGE_OPTIONS,
+  readStoredRange,
+  writeStoredRange,
+  type RangeKey,
+} from "@/lib/plRangePresets";
 
 // ----- Component -------------------------------------------------------------
 
@@ -200,9 +66,10 @@ export function PnlSummaryCard({
   // (if any) — same pattern as CostSummary's expand-state persistence.
   const [rangeKey, setRangeKey] = useState<RangeKey>("last_30d");
   const [state, setState] = useState<LoadState>({ kind: "idle" });
-  // Pin "now" once per mount so RANGE_OPTIONS doesn't drift mid-render.
+  // Pin "now" once per mount so range builds don't drift mid-render.
   const nowRef = useRef<Date>(new Date());
-  const options = useMemo(() => RANGE_OPTIONS(nowRef.current), []);
+  // RANGE_OPTIONS is a stable readonly array; memoize the reference only.
+  const options = useMemo(() => RANGE_OPTIONS, []);
   // Promotes "last fetched in-flight" → renderable; lets us ignore stale
   // responses if the user flips the dropdown faster than the BE responds.
   const reqIdRef = useRef(0);
@@ -217,7 +84,7 @@ export function PnlSummaryCard({
   useEffect(() => {
     const opt = options.find((o) => o.key === rangeKey);
     if (!opt || opt.disabled) return;
-    const { period, since, until } = opt.build();
+    const { period, since, until } = opt.build(nowRef.current);
     const myReq = ++reqIdRef.current;
     setState({ kind: "loading" });
     getProjectPl(projectId, {
