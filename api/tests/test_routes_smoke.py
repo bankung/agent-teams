@@ -4260,28 +4260,32 @@ async def test_patch_cancel_records_reason_in_tasks_history(client) -> None:
         )
         assert second.status_code == 200, second.text
 
-        # Read tasks_history rows for this task_id. Trigger writes OLD state;
-        # the SECOND history row (most-recent id) snapshots the row state
-        # AFTER the cancel PATCH but BEFORE the title PATCH — so the snapshot
-        # carries process_status=6 + the reason.
+        # Read tasks_history rows for this task_id. Filter to operation='U'
+        # (DB trigger rows only) — operation='N' rows are notification_router
+        # delivery-audit entries inserted directly by the service and do NOT
+        # snapshot the task-column state (Kanban #1224 / #955 side-effect).
+        # The trigger writes OLD state; the SECOND 'U' row (most-recent id)
+        # snapshots the row state AFTER the cancel PATCH but BEFORE the title
+        # PATCH — so the snapshot carries process_status=6 + the reason.
         async with SessionLocal() as s:
             rows = (
                 await s.execute(
                     select(TaskHistory)
                     .where(TaskHistory.task_id == task_id)
+                    .where(TaskHistory.operation == "U")
                     .order_by(TaskHistory.id.desc())
                 )
             ).scalars().all()
         assert len(rows) >= 2, (
-            f"expected >=2 tasks_history rows after two PATCHes; got {len(rows)}"
+            f"expected >=2 trigger-'U' tasks_history rows after two PATCHes; got {len(rows)}"
         )
         snap_post_cancel = rows[0].snapshot  # OLD state at the title PATCH = post-cancel state
         assert snap_post_cancel.get("process_status") == 6, snap_post_cancel
         assert snap_post_cancel.get("status_change_reason") == reason, snap_post_cancel
-        # And the earliest history row snapshots the pre-cancel state — has
+        # And the earliest 'U' history row snapshots the pre-cancel state — has
         # the new column key but a NULL value (column existed pre-PATCH but
         # the row had no reason yet).
-        snap_pre_cancel = rows[1].snapshot
+        snap_pre_cancel = rows[-1].snapshot
         assert "status_change_reason" in snap_pre_cancel, snap_pre_cancel
         assert snap_pre_cancel["status_change_reason"] is None, snap_pre_cancel
     finally:
