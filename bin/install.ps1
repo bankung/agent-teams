@@ -190,22 +190,20 @@ if ($TierChoice -eq 'l2') {
     Write-Log "TIER MAX active (operator default — no agent file changes)."
 }
 
-# ---- 6. URL + help ----------------------------------------------------------
+# ---- 6. Next steps + friendly banner ----------------------------------------
 $help = @"
 
-================================================================================
-agent-teams is ready.
+=========================================================================
+✓ agent-teams is installed and running.
 
-  Kanban UI : $ProjectUrl
-  API base  : http://localhost:$ApiPort
-  Tier      : $TierChoice
+Next steps:
+  1. Open http://localhost:5431 in your browser.
+  2. Click the 'demo-tour' project. Try a task. (5 min walkthrough.)
+  3. Read QUICKSTART.md (at the repo root) for the full intro.
 
-Helpful commands:
-  Stop      : docker compose down
-  Restart   : docker compose up -d            (or rerun .\bin\install.ps1)
-  Reset DB  : .\bin\reset.ps1                 (or 'docker compose down -v')
-  Tail logs : docker compose logs -f api web
-  Tier swap : .\bin\agent-teams-tier-set.ps1 max|l2
+Need help? See README.md or run `.\bin\agent-teams-tier-set.ps1 --help`
+to switch Claude Code Pro/Max tier presets.
+=========================================================================
 
 "@
 Write-Host $help

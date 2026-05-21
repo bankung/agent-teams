@@ -142,22 +142,20 @@ else
   log "TIER MAX active (operator default — no agent file changes)."
 fi
 
-# ---- 6. URL + help ----------------------------------------------------------
-cat <<EOF
+# ---- 6. Next steps + friendly banner ----------------------------------------
+cat <<'EOF'
 
-================================================================================
-agent-teams is ready.
+=========================================================================
+✓ agent-teams is installed and running.
 
-  Kanban UI : ${PROJECT_URL}
-  API base  : http://localhost:${API_PORT}
-  Tier      : ${TIER_CHOICE}
+Next steps:
+  1. Open http://localhost:5431 in your browser.
+  2. Click the 'demo-tour' project. Try a task. (5 min walkthrough.)
+  3. Read QUICKSTART.md (at the repo root) for the full intro.
 
-Helpful commands:
-  Stop      : docker compose down
-  Restart   : docker compose up -d            (or rerun ./bin/install.sh)
-  Reset DB  : ./bin/reset.sh                  (or 'docker compose down -v')
-  Tail logs : docker compose logs -f api web
-  Tier swap : bin/agent-teams-tier-set.sh max|l2
+Need help? See README.md or run `bin/agent-teams-tier-set.sh --help`
+to switch Claude Code Pro/Max tier presets.
+=========================================================================
 
 EOF
 
