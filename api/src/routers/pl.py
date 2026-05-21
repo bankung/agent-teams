@@ -1,15 +1,13 @@
-"""HTTP routes for the per-project P&L summary + accountant export (Kanban #953).
+"""HTTP routes for P&L: per-project summary + cross-project rollup.
 
-Mounted at `/api/projects/{project_id}/...` so the resource hierarchy mirrors
-the per-project scoping. Both endpoints require X-Project-Id == {project_id}
-in the path (cross-project access surfaces as 404 — parity with the
-transactions PATCH semantics).
+Per-project endpoints (Kanban #953):
+  Mounted at `/api/projects/{project_id}/...`; require X-Project-Id == path id.
+  - GET /api/projects/{project_id}/pl     — JSON PLSummary
+  - GET /api/projects/{project_id}/export — CSV or JSON ledger dump
 
-Two endpoints:
-  - GET /api/projects/{project_id}/pl     — JSON PLSummary (see schemas/pl.py)
-  - GET /api/projects/{project_id}/export — CSV or JSON ledger dump for the
-                                            accountant. Content-Disposition
-                                            attachment + filename.
+Cross-project endpoint (Kanban #1329):
+  Mounted at `/api/pnl` (operator-level, no X-Project-Id required).
+  - GET /api/pnl — PLCrossProject rollup across all active projects
 """
 
 from __future__ import annotations
@@ -18,6 +16,7 @@ import csv
 import io
 import logging
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -28,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db import get_or_404, get_session
 from src.models.project import Project
 from src.models.transaction import Transaction
-from src.schemas.pl import PLPeriodLiteral, PLSummary
+from src.schemas.pl import PLCrossProject, PLCrossProjectRow, PLPeriodLiteral, PLSummary
 from src.schemas.transaction import TransactionRead
 from src.services.pl_calculator import compute_pl
 from src.services.session_project import require_project_id_header
@@ -36,6 +35,15 @@ from src.services.session_project import require_project_id_header
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["projects-finance"])
+
+# Operator-level (cross-project) router — no X-Project-Id header requirement.
+# Mounted separately at /api/pnl (see main.py include_router call).
+# Conscious choice: this endpoint scans every project the operator has access
+# to (effectively all projects with status=1). It is intentionally NOT nested
+# under /api/projects/{id} to signal that it is NOT per-project-scoped, and it
+# does NOT enforce the X-Project-Id session-scoping used by the per-project
+# endpoints. See Kanban #1329 for the design rationale.
+pnl_router = APIRouter(prefix="/pnl", tags=["operator-finance"])
 
 
 # Default since-window per period (when the caller omits `since`). Picks a
@@ -237,3 +245,112 @@ async def export_project_transactions(
             ),
         },
     )
+
+
+# =============================================================================
+# Cross-project P&L rollup (Kanban #1329)
+# =============================================================================
+
+
+@pnl_router.get("", response_model=PLCrossProject)
+async def get_cross_project_pl(
+    period: PLPeriodLiteral = Query(default="monthly"),
+    since: datetime | None = Query(default=None),
+    until: datetime | None = Query(default=None),
+    include_killed: bool = Query(default=False),
+    session: AsyncSession = Depends(get_session),
+) -> PLCrossProject:
+    """Cross-project P&L rollup — one row per project, no bucket breakdown.
+
+    Operator-level endpoint: does NOT require X-Project-Id header. This is a
+    conscious choice — the endpoint scans every project in scope (all
+    status=1 projects by default). Binding to a specific project header would
+    contradict the cross-project intent. See Kanban #1329 for design rationale.
+
+    Default window mirrors per-project /pl defaults (daily=30d, monthly=365d,
+    etc.). `since > until` → 422.
+
+    `include_killed=true` extends the scan to soft-deleted projects (status=0)
+    — useful for forensic queries (e.g. last 30 days of a killed project).
+    Default false keeps the happy-path view clean.
+
+    Amounts are MAJOR units; NO FX conversion is performed. When a project has
+    transactions in more than one currency, `mixed_currency=True` and the
+    top-level totals reflect the first currency only. `grand_total_net_first_
+    currency_only` is null whenever projects span multiple `currency_default`
+    values or any row has `mixed_currency=True`.
+    """
+    try:
+        since, until = _resolve_window(period, since, until)
+
+        # Candidate projects — active only by default; include_killed adds
+        # soft-deleted rows (status=0). Ordered by name for deterministic JSON.
+        if include_killed:
+            proj_stmt = select(Project).order_by(Project.name.asc())
+        else:
+            proj_stmt = select(Project).where(Project.status == 1).order_by(Project.name.asc())
+
+        projects = list((await session.execute(proj_stmt)).scalars().all())
+
+        # N+1 acceptable at current project counts; refactor when projects > ~100
+        # (kanban followup — reshape to single SQL GROUP BY project_id, kind,
+        # currency, period_label + aggregation).
+        rows: list[PLCrossProjectRow] = []
+        for p in projects:
+            txn_stmt = (
+                select(Transaction)
+                .where(Transaction.project_id == p.id)
+                .where(Transaction.occurred_at >= since)
+                .where(Transaction.occurred_at < until)
+                .order_by(Transaction.occurred_at.asc())
+            )
+            txns = list((await session.execute(txn_stmt)).scalars().all())
+            summary = compute_pl(
+                txns, period, project_currency_default=(p.currency_default or "USD")
+            )
+            # Detect mixed currency: compute_pl returns one bucket per
+            # (currency, period-label) pair; distinct currencies = the currency
+            # dimension of that set.
+            distinct_currencies = {b.currency for b in summary.buckets}
+            rows.append(
+                PLCrossProjectRow(
+                    project_id=p.id,
+                    project_name=p.name,
+                    team=p.team,
+                    currency_default=(p.currency_default or "USD"),
+                    period=period,
+                    revenue=summary.revenue,
+                    cost=summary.cost,
+                    expense=summary.expense,
+                    refund=summary.refund,
+                    transfer=summary.transfer,
+                    net=summary.net,
+                    transaction_count=summary.transaction_count,
+                    mixed_currency=len(distinct_currencies) > 1,
+                    bucket_count=len(summary.buckets),
+                )
+            )
+
+        # Grand total only when every row shares the same currency_default AND
+        # no row has mixed_currency (cross-currency sums are meaningless without FX).
+        grand_total: Decimal | None = None
+        if rows:
+            currencies = {r.currency_default for r in rows}
+            any_mixed = any(r.mixed_currency for r in rows)
+            if len(currencies) == 1 and not any_mixed:
+                grand_total = sum((r.net for r in rows), start=Decimal("0.0000"))
+
+        return PLCrossProject(
+            period=period,
+            since=since,
+            until=until,
+            rows=rows,
+            total_projects=len(rows),
+            grand_total_net_first_currency_only=grand_total,
+        )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("get_cross_project_pl: unexpected error")
+        raise HTTPException(status_code=500, detail="Internal server error")

@@ -9,7 +9,7 @@ because the FE renders them and the accountant reads them. The minor →
 major conversion happens server-side in the calculator using
 `MINOR_DIVISOR_BY_CURRENCY`.
 
-Multi-currency policy (MVP): NO FX conversion. If a project has txns in
+Multi-currency policy: NO FX conversion. If a project has txns in
 multiple currencies, each currency lands in its own bucket. The top-level
 `currency` field reflects the FIRST currency observed (or the project's
 `currency_default` when the result is empty); `buckets` carries the
@@ -18,10 +18,19 @@ per-(currency, period) breakdown.
 `buckets` carries one entry per (currency, period-label) pair. Net per
 bucket is `revenue - refund - cost - expense` (transfer is neutral —
 it represents money moving between accounts, not P&L impact).
+
+Cross-project rollup (Kanban #1329):
+  - `PLCrossProjectRow` — one row per project; top-level totals mirror
+    PLSummary first-currency semantics.
+  - `PLCrossProject` — wrapper returned by `GET /api/pnl`.
+  - `grand_total_net_first_currency_only` is non-null only when every row
+    shares the same `currency_default` AND no row has `mixed_currency=True`.
+    Otherwise the FE should render per-row breakdowns instead.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -84,3 +93,59 @@ class PLSummary(BaseModel):
     net: Decimal
     transaction_count: int
     buckets: list[PLBucket]
+
+
+class PLCrossProjectRow(BaseModel):
+    """One row in the cross-project P&L rollup (Kanban #1329).
+
+    Amounts reflect the project's `currency_default` (first-currency semantics
+    from PLSummary — NO FX conversion). When `mixed_currency=True` the
+    displayed totals are first-currency-only; the FE should show a badge so
+    the operator knows to click through for per-currency detail.
+
+    `bucket_count` is the total number of (currency, period-label) buckets
+    compute_pl produced — signals richness of per-project detail available via
+    the existing `GET /api/projects/{id}/pl` endpoint.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: int
+    project_name: str
+    team: str
+    currency_default: str
+    period: PLPeriodLiteral
+    revenue: Decimal
+    cost: Decimal
+    expense: Decimal
+    refund: Decimal
+    transfer: Decimal
+    net: Decimal
+    transaction_count: int
+    mixed_currency: bool
+    bucket_count: int
+
+
+class PLCrossProject(BaseModel):
+    """Cross-project P&L rollup response for `GET /api/pnl` (Kanban #1329).
+
+    `rows` contains one entry per scanned project (status=1 by default;
+    include_killed=true also returns soft-deleted projects).
+
+    `grand_total_net_first_currency_only` is non-null ONLY when every row
+    shares the same `currency_default` AND no row reports `mixed_currency=True`.
+    Otherwise null — the FE should render per-row breakdowns rather than a
+    misleading aggregate.
+
+    Amounts are MAJOR units; no FX conversion is performed anywhere in this
+    endpoint.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    period: PLPeriodLiteral
+    since: datetime
+    until: datetime
+    rows: list[PLCrossProjectRow]
+    total_projects: int
+    grand_total_net_first_currency_only: Decimal | None

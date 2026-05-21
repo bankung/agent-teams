@@ -33,6 +33,7 @@ from src.routers import decisions as decisions_router
 from src.routers import push as push_router
 from src.routers import templates as templates_router
 from src.routers import pl as pl_router
+from src.routers.pl import pnl_router
 from src.routers import projects as projects_router
 from src.routers import scaffold as scaffold_router
 from src.routers import sessions as sessions_router
@@ -310,6 +311,8 @@ def create_app() -> FastAPI:
     # Kanban #953 — per-project financial separation (transactions ledger + P&L).
     app.include_router(transactions_router.router, prefix="/api")
     app.include_router(pl_router.router, prefix="/api")
+    # Kanban #1329 — cross-project P&L rollup (operator-level, no X-Project-Id).
+    app.include_router(pnl_router, prefix="/api")
     # Kanban #1010 — cross-project next-action recommender (USER-scoped, no
     # X-Project-Id header). Powers digest section 5 / mobile home tile / inbox
     # empty-state hint.
