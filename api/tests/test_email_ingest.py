@@ -629,3 +629,75 @@ async def test_post_email_recomputes_attachment_size_doesnt_trust_payload_field(
     _attachment_disk_cleanup(on_disk)
     assert on_disk.exists()
     assert on_disk.read_bytes() == raw_payload
+
+
+# ===========================================================================
+# Encoding-error guard (Kanban #1378)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_post_email_malformed_vault_secret_returns_401_not_500(
+    client, monkeypatch
+):
+    """A vault secret containing lone-surrogate chars triggers UnicodeEncodeError
+    on .encode('utf-8').  The router must return 401 + a denial audit row — NOT
+    a 500 that leaks internal exception text.
+
+    POSITIVE: response status is 401 with the static "invalid signature" body.
+    NEGATIVE:
+      - response status is NOT 500 (no internal exception leak).
+      - response body does NOT contain any Python exception text (UnicodeEncodeError).
+      - A denial audit row IS written for the credential so the corrupt entry is
+        detectable in the audit trail.
+
+    Strategy: monkeypatch ``credentials_crypto.decrypt`` (at the module level
+    the router imports from) to return a string containing a lone surrogate
+    (\\ud800).  Python's str can hold surrogates; .encode('utf-8') raises
+    UnicodeEncodeError on them in the default 'strict' mode.  This is the
+    exact failure mode a mis-stored binary vault entry would trigger.
+    """
+    cred_id = await _seed_email_secret(client)
+
+    # Patch decrypt at the module the router uses so the credential is "found"
+    # but returns a string that cannot be UTF-8 encoded.
+    from src.routers import ingest as ingest_module
+
+    monkeypatch.setattr(
+        ingest_module.credentials_crypto,
+        "decrypt",
+        lambda _ciphertext: "\ud800\ud801",  # lone surrogates — not encodable
+    )
+
+    resp = await client.post(
+        "/api/ingest/email",
+        json=_build_email_payload(),
+        headers={"X-Email-Ingest-Secret": "some-header-value"},
+    )
+
+    # NEGATIVE: must not be 500.
+    assert resp.status_code != 500, (
+        f"router leaked internal exception: {resp.text[:200]}"
+    )
+    # POSITIVE: 401 with the static detail (no oracle for caller).
+    assert resp.status_code == 401, resp.text
+    assert resp.json() == {"detail": "invalid signature"}
+    # NEGATIVE: no exception class name in the response body.
+    assert "UnicodeEncodeError" not in resp.text
+    assert "UnicodeDecodeError" not in resp.text
+
+    # Denial audit row MUST be written (with reason "secret_encoding_error").
+    async with SessionLocal() as s:
+        rows = (
+            await s.execute(
+                select(CredentialAccessLog).where(
+                    CredentialAccessLog.credential_id == cred_id
+                )
+            )
+        ).scalars().all()
+    encoding_error_rows = [
+        r for r in rows if "secret_encoding_error" in r.accessed_by
+    ]
+    assert len(encoding_error_rows) >= 1, (
+        "expected a denial audit row with reason 'secret_encoding_error'"
+    )

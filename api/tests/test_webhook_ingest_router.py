@@ -421,3 +421,76 @@ def test_substitute_dot_path_extraction_handles_nested_dicts():
     with pytest.raises(MissingTemplateField) as exc:
         substitute("hello {{a.b.c.d}}", {"a": {"b": {"c": "alice"}}})
     assert exc.value.field_path == "a.b.c.d"
+
+
+# ===========================================================================
+# Encoding-error guard (Kanban #1378)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_webhook_malformed_vault_secret_returns_401_not_500(
+    client, monkeypatch
+):
+    """A vault secret containing lone-surrogate chars triggers UnicodeEncodeError
+    on .encode('utf-8').  The router must return 401 + a denial audit row — NOT
+    a 500 that leaks internal exception text.
+
+    POSITIVE: response status is 401 with the static "invalid signature" body.
+    NEGATIVE:
+      - response status is NOT 500 (no internal exception leak).
+      - response body does NOT contain any Python exception text (UnicodeEncodeError).
+      - A denial audit row IS written for the credential so the corrupt entry is
+        detectable in the audit trail.
+
+    Strategy: monkeypatch ``credentials_crypto.decrypt`` (at the module level
+    the router imports from) to return a string containing a lone surrogate
+    (\\ud800).  Python's str can hold surrogates; .encode('utf-8') raises
+    UnicodeEncodeError on them in the default 'strict' mode.  This is the
+    exact failure mode a mis-stored binary vault entry would trigger.
+    """
+    tag = f"enc-err-{uuid.uuid4().hex[:8]}"
+    cred_id = await _seed_webhook_secret(client, tag=tag)
+
+    # Patch decrypt at the module the router uses so the credential is "found"
+    # but returns a string that cannot be UTF-8 encoded.
+    from src.routers import ingest as ingest_module
+
+    monkeypatch.setattr(
+        ingest_module.credentials_crypto,
+        "decrypt",
+        lambda _ciphertext: "\ud800\ud801",  # lone surrogates — not encodable
+    )
+
+    resp = await client.post(
+        f"/api/ingest/webhook/1/{tag}",
+        json={"any": "payload"},
+        headers={"X-Webhook-Secret": "some-header-value"},
+    )
+
+    # NEGATIVE: must not be 500.
+    assert resp.status_code != 500, (
+        f"router leaked internal exception: {resp.text[:200]}"
+    )
+    # POSITIVE: 401 with the static detail (no oracle for caller).
+    assert resp.status_code == 401, resp.text
+    assert resp.json() == {"detail": "invalid signature"}
+    # NEGATIVE: no exception class name in the response body.
+    assert "UnicodeEncodeError" not in resp.text
+    assert "UnicodeDecodeError" not in resp.text
+
+    # Denial audit row MUST be written (with reason "secret_encoding_error").
+    async with SessionLocal() as s:
+        rows = (
+            await s.execute(
+                select(CredentialAccessLog).where(
+                    CredentialAccessLog.credential_id == cred_id
+                )
+            )
+        ).scalars().all()
+    encoding_error_rows = [
+        r for r in rows if "secret_encoding_error" in r.accessed_by
+    ]
+    assert len(encoding_error_rows) >= 1, (
+        "expected a denial audit row with reason 'secret_encoding_error'"
+    )

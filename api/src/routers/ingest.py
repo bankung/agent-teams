@@ -284,9 +284,22 @@ async def ingest_email(
     cred, secret = await _load_secret(session)
 
     # hmac.compare_digest is constant-time on the byte representation.
-    provided = (x_email_ingest_secret or "").encode("utf-8")
-    expected = secret.encode("utf-8")
-    if not hmac.compare_digest(provided, expected):
+    # Guard: a malformed vault entry (non-UTF-8 surrogate chars, etc.) or a
+    # mis-encoded header value can cause .encode("utf-8") / .decode("utf-8")
+    # to raise Unicode*Error.  Treat any encoding failure as a signature
+    # mismatch — returning 401 rather than leaking a 500.  Reason string
+    # "secret_encoding_error" is intentionally more specific than
+    # "signature_mismatch" so the audit log can distinguish a corrupt vault
+    # entry from a genuine bad-secret attempt without leaking anything to the
+    # HTTP caller (both map to the same static "invalid signature" detail).
+    try:
+        provided = (x_email_ingest_secret or "").encode("utf-8")
+        expected = secret.encode("utf-8")
+        sig_ok = hmac.compare_digest(provided, expected)
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        await _audit_use(session, cred.id, ok=False, reason="secret_encoding_error")
+        raise HTTPException(status_code=401, detail=_DETAIL_BAD_SIGNATURE)
+    if not sig_ok:
         await _audit_use(session, cred.id, ok=False, reason="signature_mismatch")
         raise HTTPException(status_code=401, detail=_DETAIL_BAD_SIGNATURE)
     await _audit_use(session, cred.id, ok=True, reason=None)
@@ -595,9 +608,21 @@ async def ingest_webhook(
 
     # ----- 3. Authenticate via M3-vault webhook_<tag> secret --------------
     cred, secret = await _load_webhook_secret(session, project_id, tag)
-    provided = (x_webhook_secret or "").encode("utf-8")
-    expected = secret.encode("utf-8")
-    if not hmac.compare_digest(provided, expected):
+    # Guard: encoding failure on a malformed vault entry or mis-encoded header
+    # must not surface as a 500.  See the matching comment in ingest_email for
+    # the rationale; same audit-reason semantics apply here.
+    try:
+        provided = (x_webhook_secret or "").encode("utf-8")
+        expected = secret.encode("utf-8")
+        sig_ok = hmac.compare_digest(provided, expected)
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        await _audit_webhook_use(
+            session, cred.id, ok=False, reason="secret_encoding_error",
+        )
+        raise HTTPException(
+            status_code=401, detail=_DETAIL_WEBHOOK_BAD_SIGNATURE,
+        )
+    if not sig_ok:
         await _audit_webhook_use(
             session, cred.id, ok=False, reason="signature_mismatch",
         )
