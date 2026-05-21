@@ -1175,6 +1175,127 @@ export async function listAuditFlags(): Promise<AuditFlagWithProject[]> {
 }
 
 // ============================================================================
+// Kanban #1329 (M6 FE) — P&L surfaces.
+//
+// Two endpoints; same Decimal-as-string convention as cost_usage / budget caps.
+//   1. GET /api/projects/{id}/pl — per-project; X-Project-Id REQUIRED.
+//   2. GET /api/pnl              — cross-project rollup; NO X-Project-Id.
+//
+// Period buckets mirror the BE's `PLPeriodLiteral` (api/src/schemas/pl.py);
+// keep PL_PERIODS in lockstep with that enum.
+// ============================================================================
+
+export const PL_PERIODS = [
+  "daily",
+  "weekly",
+  "monthly",
+  "quarterly",
+  "yearly",
+] as const;
+export type PLPeriodLiteral = (typeof PL_PERIODS)[number];
+
+// PLBucket — one bucket within a per-project PLSummary. `label` is the
+// human-readable bucket key (e.g. "2026-05", "2026-W21", "2026-Q2"); FE
+// renders it as-is. All Decimal amounts as strings.
+export type PLBucket = {
+  label: string;
+  currency: string;
+  revenue: string;
+  cost: string;
+  expense: string;
+  refund: string;
+  transfer: string;
+  net: string;
+  transaction_count: number;
+};
+
+// PLSummary — response of /api/projects/{id}/pl.
+// `currency` = first-currency-observed in the window (uppercase). FE detects
+// mixed-currency by inspecting buckets[*].currency cardinality.
+export type PLSummary = {
+  period: PLPeriodLiteral;
+  currency: string;
+  revenue: string;
+  cost: string;
+  expense: string;
+  refund: string;
+  transfer: string;
+  net: string;
+  transaction_count: number;
+  buckets: PLBucket[];
+};
+
+// PLCrossProjectRow — one row in the cross-project rollup. `mixed_currency`
+// = the project had transactions in 2+ currencies inside the window; the
+// totals on this row are first-currency-observed-only (the BE could not
+// safely add across currencies).
+export type PLCrossProjectRow = {
+  project_id: number;
+  project_name: string;
+  team: string;
+  currency_default: string;
+  period: PLPeriodLiteral;
+  revenue: string;
+  cost: string;
+  expense: string;
+  refund: string;
+  transfer: string;
+  net: string;
+  transaction_count: number;
+  mixed_currency: boolean;
+  bucket_count: number;
+};
+
+// PLCrossProject — response of /api/pnl.
+// `grand_total_net_first_currency_only` is null when projects span multiple
+// currencies (BE refuses to add across them); FE shows the per-row table
+// instead of a single chip in that case.
+export type PLCrossProject = {
+  period: PLPeriodLiteral;
+  since: string;
+  until: string;
+  rows: PLCrossProjectRow[];
+  total_projects: number;
+  grand_total_net_first_currency_only: string | null;
+};
+
+// getProjectPl — per-project P&L summary. X-Project-Id header is required
+// (gates per Kanban #695); helper passes it transparently.
+export async function getProjectPl(
+  projectId: number,
+  opts: { period?: PLPeriodLiteral; since?: string; until?: string } = {},
+): Promise<PLSummary> {
+  const qs = new URLSearchParams();
+  if (opts.period) qs.set("period", opts.period);
+  if (opts.since) qs.set("since", opts.since);
+  if (opts.until) qs.set("until", opts.until);
+  const path = `/api/projects/${projectId}/pl${qs.toString() ? "?" + qs : ""}`;
+  return jsonFetch<PLSummary>(path, {
+    headers: { "X-Project-Id": String(projectId) },
+  });
+}
+
+// getCrossProjectPl — operator-level cross-project rollup. NO X-Project-Id
+// header (the endpoint spans projects by design). `include_killed` defaults
+// to false on the BE; pass true to include projects in is_killed=true state.
+export async function getCrossProjectPl(
+  opts: {
+    period?: PLPeriodLiteral;
+    since?: string;
+    until?: string;
+    include_killed?: boolean;
+  } = {},
+): Promise<PLCrossProject> {
+  const qs = new URLSearchParams();
+  if (opts.period) qs.set("period", opts.period);
+  if (opts.since) qs.set("since", opts.since);
+  if (opts.until) qs.set("until", opts.until);
+  if (opts.include_killed) qs.set("include_killed", "true");
+  const path = `/api/pnl${qs.toString() ? "?" + qs : ""}`;
+  return jsonFetch<PLCrossProject>(path);
+}
+
+// ============================================================================
 // Kanban #1011 (2026-05-20) — POST /api/tasks/{id}/snooze.
 // ============================================================================
 

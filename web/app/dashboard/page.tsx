@@ -17,6 +17,7 @@ import { DashboardRefresher } from "@/components/DashboardRefresher";
 import { EditProjectModal } from "@/components/EditProjectModal";
 import { FlagBellBadge } from "@/components/FlagBellBadge";
 import { NewProjectModal } from "@/components/NewProjectModal";
+import { PnlDashboardSection } from "@/components/PnlDashboardSection";
 import { ReviewSummaryWidget } from "@/components/ReviewSummaryWidget";
 import { ThemePicker } from "@/components/ThemePicker";
 
@@ -406,6 +407,12 @@ export default async function DashboardPage() {
             stats={stats}
             ariaLabel="Portfolio-wide token and cost usage"
           />
+
+          {/* Kanban #1329 (M6 FE) — cross-project P&L rollup. Operator-level
+              view of revenue / expenses / net per project in the chosen
+              window. Sits BELOW CostSummary (cost side first, P&L side after)
+              and ABOVE the per-project navigation grid. */}
+          <PnlDashboardSection />
 
           {/* Auditor activity (Kanban #1082 + #1291). Cross-project 7-day verdict
               rollup; hidden entirely when the API returns [] OR when the user

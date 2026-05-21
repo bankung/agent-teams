@@ -34,6 +34,7 @@ import { AiTaskModal } from "@/components/AiTaskModal";
 import { AuditHistorySection } from "@/components/AuditHistorySection";
 import { CostSummary } from "@/components/CostSummary";
 import { FlagBellBadge } from "@/components/FlagBellBadge";
+import { PnlSummaryCard } from "@/components/PnlSummaryCard";
 import { KilledBanner } from "@/components/KilledBanner";
 import { KillProjectModal } from "@/components/KillProjectModal";
 import { NewTaskModal } from "@/components/NewTaskModal";
@@ -542,6 +543,12 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
         <CostSummary
           stats={projectStats}
           ariaLabel={`Usage for ${project.name}`}
+        />
+        {/* Kanban #1329 (M6 FE) — per-project P&L card. Sources
+            /api/projects/{id}/pl; period selector + localStorage default. */}
+        <PnlSummaryCard
+          projectId={project.id}
+          projectName={project.name}
         />
         {/* #1209 AA1 D5 — red strip above the consent banner when killed.
             (Renders nothing when is_killed=false.) */}
