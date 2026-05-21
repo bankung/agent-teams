@@ -41,7 +41,11 @@ param(
     [Parameter(Position=0)]
     [string]$Tier = '',
 
-    [switch]$DryRun
+    [switch]$DryRun,
+
+    # Skip the dirty-file prompt and discard uncommitted .claude/agents/ edits
+    # without asking.  Required in non-interactive (CI / hook) environments.
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -59,12 +63,43 @@ if ($Tier -eq 'pro') {
     $Tier = 'l2'
 }
 
+# Guard-AgentsDirty — checks for uncommitted .claude/agents/ edits before a
+# destructive git checkout.  Exits 1 if the user declines (or if non-interactive
+# without -Force).  No-ops in DryRun mode or when -Force is set.
+function Guard-AgentsDirty {
+    if ($DryRun -or $Force) { return }
+
+    $dirtyLines = & git status --porcelain .claude/agents/ 2>$null |
+                  Where-Object { $_ -ne '' }
+    if (-not $dirtyLines) { return }
+
+    Write-Host "WARNING: The following .claude/agents/ files have uncommitted edits:" -ForegroundColor Yellow
+    $dirtyLines | ForEach-Object { Write-Host "  $_" }
+    Write-Host ""
+
+    # Non-interactive session (CI / redirected stdin) → abort unless -Force.
+    $isInteractive = [Environment]::UserInteractive -and
+                     -not [Console]::IsInputRedirected
+    if (-not $isInteractive) {
+        Write-Host "ERROR: Non-interactive session detected. Pass -Force to discard edits." -ForegroundColor Red
+        exit 1
+    }
+
+    # Interactive: prompt the user.
+    $answer = Read-Host "Discard uncommitted edits in .claude/agents/? [y/N]"
+    if ($answer -notin @('y', 'Y')) {
+        Write-Host "Aborted. No files changed."
+        exit 1
+    }
+}
+
 switch ($Tier) {
     'max' {
         if ($DryRun) {
             Write-Host "[dry-run] Would: git checkout HEAD -- .claude/agents/"
             exit 0
         }
+        Guard-AgentsDirty
         Write-Host "==> Applying TIER MAX (operator's committed baseline)..."
         # .claude/agents/ is version-controlled; reverting restores the MAX baseline.
         $prevEAP = $ErrorActionPreference
@@ -116,6 +151,8 @@ Usage: .\bin\agent-teams-tier-set.ps1 max|l2|pro|free [--dry-run]
   free       Same as l2 (Free plan has similar quota constraints).
 
   --dry-run  Print what would be executed without making any changes.
+  -Force     Skip the dirty-file prompt and discard uncommitted .claude/agents/
+             edits without asking.  Required in non-interactive (CI/hook) sessions.
 
 Stays Opus regardless of tier:
   dev-sr-backend, dev-sr-frontend  (sr-* new-surface design)
