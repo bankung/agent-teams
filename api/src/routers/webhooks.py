@@ -108,10 +108,17 @@ _DETAIL_SECRET_NOT_CONFIGURED_TEMPLATE: Final[str] = (
 async def _resolve_project_or_404(
     session: AsyncSession, project_id: int
 ) -> Project:
-    """Look up the project. Webhook endpoints do NOT consider soft-delete
-    semantics — a missing OR soft-deleted project rejects with 404.
+    """Look up the project. 404 if missing OR soft-deleted (status != ACTIVE).
+
+    Mirrors ingest.py::_resolve_webhook_project — soft-deleted projects must
+    not silently accept webhook deliveries.
     """
-    project = await session.get(Project, project_id)
+    stmt = (
+        select(Project)
+        .where(Project.id == project_id)
+        .where(Project.status == RecordStatus.ACTIVE)
+    )
+    project = (await session.execute(stmt)).scalar_one_or_none()
     if project is None:
         raise HTTPException(
             status_code=404,

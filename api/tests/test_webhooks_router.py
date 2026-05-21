@@ -550,6 +550,84 @@ async def test_paypal_webhook_duplicate_event_id_dedupes(
 # ===========================================================================
 
 
+# ===========================================================================
+# Soft-deleted project → 404 (S1 fix)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_stripe_webhook_to_soft_deleted_project_returns_404(
+    client, scaffold_cleanup
+):
+    """Stripe webhook to a soft-deleted project must return 404.
+
+    POSITIVE: after DELETE the project no longer accepts webhook deliveries.
+    NEGATIVE (locked invariant): status code is 404, not 200 or 401.
+    """
+    pid = await _make_project(client, scaffold_cleanup, "wh-stripe-softdel")
+    await _seed_secret(
+        client, pid,
+        name="stripe_webhook_secret",
+        value=WEBHOOK_SENTINEL_SECRET_99887,
+    )
+
+    # Soft-delete the project.
+    del_resp = await client.delete(f"/api/projects/{pid}")
+    assert del_resp.status_code == 204, del_resp.text
+
+    # Attempt a webhook delivery to the now-deleted project.
+    payload = _build_stripe_payment_intent_event(event_id="evt_sd_1", amount=1000)
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    sig = _stripe_sign(payload, WEBHOOK_SENTINEL_SECRET_99887, now_ts)
+    resp = await client.post(
+        f"/api/webhooks/stripe/{pid}",
+        content=payload,
+        headers={"Stripe-Signature": f"t={now_ts},v1={sig}"},
+    )
+    # NEGATIVE: must be 404, not 200/401/any-other.
+    assert resp.status_code == 404, (
+        f"expected 404 for soft-deleted project but got {resp.status_code}: {resp.text}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_paypal_webhook_to_soft_deleted_project_returns_404(
+    client, scaffold_cleanup
+):
+    """PayPal webhook to a soft-deleted project must return 404.
+
+    POSITIVE: after DELETE the project no longer accepts webhook deliveries.
+    NEGATIVE (locked invariant): status code is 404, not 200 or 401.
+    """
+    pid = await _make_project(client, scaffold_cleanup, "wh-paypal-softdel")
+    await _seed_secret(
+        client, pid,
+        name="paypal_webhook_secret",
+        value=WEBHOOK_SENTINEL_SECRET_99887,
+    )
+
+    # Soft-delete the project.
+    del_resp = await client.delete(f"/api/projects/{pid}")
+    assert del_resp.status_code == 204, del_resp.text
+
+    # Attempt a webhook delivery to the now-deleted project.
+    payload = _build_paypal_sale_completed_event(event_id="WH-PP-SD-1", value="5.00")
+    resp = await client.post(
+        f"/api/webhooks/paypal/{pid}",
+        content=payload,
+        headers={"X-PayPal-Shared-Secret": WEBHOOK_SENTINEL_SECRET_99887},
+    )
+    # NEGATIVE: must be 404, not 200/401/any-other.
+    assert resp.status_code == 404, (
+        f"expected 404 for soft-deleted project but got {resp.status_code}: {resp.text}"
+    )
+
+
+# ===========================================================================
+# P&L smoke
+# ===========================================================================
+
+
 @pytest.mark.asyncio
 async def test_pl_endpoint_reflects_webhook_inserted_revenue(
     client, scaffold_cleanup
