@@ -419,11 +419,15 @@ class ProjectUpdate(BaseModel):
     approval_policies: dict[str, Any] | None = Field(
         default=None,
         description=(
-            "Per-project HITL approval rules. JSONB object with key 'rules' "
-            "holding an ordered list; each rule has 'name', 'match' "
-            "(predicates), 'action' in {auto_approve, auto_deny}, and "
-            "optional 'default_answer'. First match wins; no match falls "
-            "back to REQUIRE_ATTENTION. See `services/approval_evaluator.py`."
+            "Per-project HITL approval rules. CANONICAL SHAPE: "
+            '{"rules": [...]} where each rule has "name", "match" '
+            '(predicates), "action" in {auto_approve, auto_deny}, and '
+            'optional "default_answer". First match wins; no match falls '
+            "back to REQUIRE_ATTENTION. See `services/approval_evaluator.py`. "
+            "IMPORTANT: bare-list form ([...]) is NOT accepted here — sending "
+            "a JSON array returns 422. Use the dict-with-rules canonical shape. "
+            "The credentials /use gate (credentials.py::_policy_grants_use) "
+            "also only matches rules inside the 'rules' key."
         ),
     )
 

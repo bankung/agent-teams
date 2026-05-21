@@ -778,6 +778,77 @@ async def test_delete_then_recreate_same_name_returns_201_slot_reclaimed(
 
 
 # ---------------------------------------------------------------------------
+# 12. approval_policies shape gate — Kanban #1405 (bug fix lock).
+# ---------------------------------------------------------------------------
+
+
+def test_policy_grants_use_rejects_bare_list_form():
+    """Unit lock for Kanban #1405: _policy_grants_use MUST reject the bare-list
+    form and return False (deny), not match rules inside it.
+
+    NEGATIVE: passing a bare list with a matching rule does NOT grant access
+              (the function returns False).
+    POSITIVE: passing the same rule in the canonical dict-with-rules form
+              DOES grant access (proving the function is not simply broken).
+    """
+    from src.routers.credentials import _policy_grants_use
+
+    cred_name = "my_secret"
+    matching_rule = {
+        "action": "credential.use",
+        "credential_name": cred_name,
+        "auto_approve": True,
+    }
+
+    # NEGATIVE: bare-list form is REJECTED even when the rule would otherwise match.
+    assert _policy_grants_use([matching_rule], cred_name) is False, (
+        "bare-list form must not grant access (legacy shape rejected)"
+    )
+
+    # POSITIVE: same rule in canonical dict-with-rules shape is GRANTED.
+    assert _policy_grants_use({"rules": [matching_rule]}, cred_name) is True, (
+        "canonical dict-with-rules shape must grant access"
+    )
+
+
+@pytest.mark.asyncio
+async def test_patch_project_with_bare_list_approval_policies_returns_422(
+    client, scaffold_cleanup
+):
+    """Schema gate for Kanban #1405: PATCH /api/projects/{id} with
+    approval_policies as a bare JSON array returns 422 (Pydantic type mismatch
+    — the field type is dict[str, Any] | None, not list).
+
+    NEGATIVE: bare-list body does NOT succeed (not 200).
+    POSITIVE: the response status is 422 (validation error, not 500 or 200).
+    """
+    pid = await _make_project(client, scaffold_cleanup, "cred-policy-422")
+    headers = {"X-Project-Id": str(pid)}
+
+    resp = await client.patch(
+        f"/api/projects/{pid}",
+        json={
+            "approval_policies": [
+                {
+                    "action": "credential.use",
+                    "credential_name": "some_key",
+                    "auto_approve": True,
+                }
+            ]
+        },
+        headers=headers,
+    )
+    # NEGATIVE: must not succeed.
+    assert resp.status_code != 200, (
+        f"bare-list approval_policies must not be accepted; got 200: {resp.text}"
+    )
+    # POSITIVE: 422 Unprocessable Entity from Pydantic type validation.
+    assert resp.status_code == 422, (
+        f"Expected 422 for bare-list approval_policies; got {resp.status_code}: {resp.text}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 11. Audit-before-plaintext ordering lock (Kanban #1376 fix).
 # ---------------------------------------------------------------------------
 

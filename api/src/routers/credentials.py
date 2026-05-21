@@ -117,31 +117,40 @@ async def _resolve_project(
 
 
 def _policy_grants_use(
-    approval_policies: dict | list | None, credential_name: str
+    approval_policies: dict | None, credential_name: str
 ) -> bool:
     """Return True iff the project has an explicit auto_approve rule for this
     credential.
 
-    Accepts both shapes the JSONB column might carry:
-      - the new credentials-use convention: a list of {"action": "credential.use",
-        "credential_name": "<name>", "auto_approve": true}
-      - the existing approval_policies dict shape ({"rules": [...]}) — we only
-        match items inside `rules` that follow the same credentials-use shape.
+    Only the canonical dict-with-rules shape is accepted:
+      {"rules": [{"action": "credential.use", "credential_name": "<name>",
+                  "auto_approve": true, ...}, ...]}
+
+    Bare-list form ([...]) is explicitly rejected — the PATCH schema
+    (ProjectUpdate.approval_policies) only accepts dict[str, Any], so a list
+    in the DB column is a pre-schema-tightening legacy artifact. A warning is
+    logged so the operator can migrate the row; the safe fallback is deny.
 
     Anything else → no match → deny.
     """
     if not approval_policies:
         return False
 
-    # Tolerate both `[...]` and `{"rules": [...]}` element shapes.
+    # Reject bare-list form — legacy artifact pre-dating the canonical shape.
     if isinstance(approval_policies, list):
-        candidates = approval_policies
-    elif isinstance(approval_policies, dict):
-        candidates = approval_policies.get("rules") or []
-        # Some projects might store it as a flat dict; bail gracefully.
-        if not isinstance(candidates, list):
-            return False
-    else:
+        logger.warning(
+            "approval_policies is a bare list (legacy shape); "
+            "expected {'rules': [...]}. Treating as no policy — deny. "
+            "Migrate the project row to the canonical dict-with-rules shape."
+        )
+        return False
+
+    if not isinstance(approval_policies, dict):
+        return False
+
+    candidates = approval_policies.get("rules") or []
+    # Guard against a non-list value stored under "rules".
+    if not isinstance(candidates, list):
         return False
 
     for entry in candidates:
