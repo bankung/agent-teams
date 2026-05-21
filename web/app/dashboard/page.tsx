@@ -11,6 +11,7 @@ import {
 import { formatRelative } from "@/lib/time";
 import { AuditorActivityPanel } from "@/components/AuditorActivityPanel";
 import { AuditorVisibilityToggle } from "@/components/AuditorVisibilityToggle";
+import { DashboardWelcomeBanner } from "@/components/DashboardWelcomeBanner";
 import { BudgetBar, pickBudgetDisplay } from "@/components/BudgetBar";
 import { CostSummary } from "@/components/CostSummary";
 import { DashboardRefresher } from "@/components/DashboardRefresher";
@@ -368,6 +369,12 @@ export default async function DashboardPage() {
 
   return (
     <main className="flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950">
+      {/* T3 (#1362) — welcome banner; self-controls visibility (client-side
+          localStorage flag + own-project check). Pass the already-fetched
+          project list so the banner can detect whether the user has any own
+          projects without a separate fetch. */}
+      <DashboardWelcomeBanner projects={projects} />
+
       {/* #954 — header wraps on mobile so the right-aligned controls drop to a second row */}
       <header className="mb-4 flex flex-wrap items-center gap-2 text-sm">
         <span className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
