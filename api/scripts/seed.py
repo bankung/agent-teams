@@ -37,6 +37,12 @@ from src.settings import get_settings
 PROJECT_NAME = "agent-teams"
 PROJECT_DESCRIPTION = "Self-hosted Kanban for managing dev team tasks (dogfood)"
 
+DEMO_PROJECT_NAME = "demo-tour"
+DEMO_PROJECT_DESCRIPTION = (
+    "Sample tour — try the 3 tasks below. "
+    "Delete this project when you have seen enough."
+)
+
 
 def _project_kwargs() -> dict:
     settings = get_settings()
@@ -59,6 +65,94 @@ def _project_kwargs() -> dict:
         },
         "is_active": True,
     }
+
+
+def _demo_project_kwargs() -> dict:
+    return {
+        "name": DEMO_PROJECT_NAME,
+        "description": DEMO_PROJECT_DESCRIPTION,
+        "team": "general",
+        # working_path = None on purpose — uses default scaffold path.
+        # paths_web/api/db are NOT NULL columns but have no min-length CHECK;
+        # empty strings are intentional for this sample project that has no
+        # real on-disk stack.
+        "paths_web": "",
+        "paths_api": "",
+        "paths_db": "",
+        "is_active": True,
+    }
+
+
+def _demo_tasks(project_id: int) -> list[Task]:
+    return [
+        Task(
+            project_id=project_id,
+            title="[DEMO] Draft a small FastAPI hello-world endpoint with input validation",
+            description=(
+                "This is a sample task to show how agents do backend dev work.\n\n"
+                "ASK: Draft a simple FastAPI POST endpoint at /api/hello that accepts "
+                "{name: str} body, validates non-empty, returns {'message': f'Hello, {name}!'}. "
+                "Save the code as a markdown snippet in your agent role-state folder "
+                "(DO NOT modify the real api/ folder — this is a draft only).\n\n"
+                "Click 'Run' above to start. Watch the task drawer to see the agent work."
+            ),
+            task_type="feature",
+            task_kind="ai",
+            process_status=TaskStatus.TODO,
+            priority=TaskPriority.NORMAL,
+            assigned_role=None,
+            acceptance_criteria=[
+                {"text": "Agent drafted endpoint code with input validation", "status": "pending"},
+                {"text": "Code includes example request + response in markdown", "status": "pending"},
+                {"text": "No modification to api/ folder (draft only)", "status": "pending"},
+            ],
+        ),
+        Task(
+            project_id=project_id,
+            title="[DEMO] Draft 3 LinkedIn post variations about AI productivity",
+            description=(
+                "This is a sample task to show how agents do content work.\n\n"
+                "ASK: Draft 3 short LinkedIn post variations (each ≤300 words) about how AI "
+                "tools save time for knowledge workers. Vary the hook style: (1) statistic-driven, "
+                "(2) story-driven, (3) provocation-driven. Save as markdown.\n\n"
+                "Click 'Run' to see how the content team agents collaborate."
+            ),
+            task_type="feature",
+            task_kind="ai",
+            process_status=TaskStatus.TODO,
+            priority=TaskPriority.NORMAL,
+            assigned_role=None,
+            acceptance_criteria=[
+                {"text": "3 distinct post variations drafted (each ≤300 words)", "status": "pending"},
+                {"text": "Hook styles differ: statistic / story / provocation", "status": "pending"},
+                {"text": "Posts feel publishable (operator can edit, not rewrite from scratch)", "status": "pending"},
+            ],
+        ),
+        Task(
+            project_id=project_id,
+            title="[DEMO] Summarize sample_sales.csv: top categories + 30-day trend",
+            description=(
+                "This is a sample task to show how agents do data analysis.\n\n"
+                "ASK: There's a sample_sales.csv in your data/raw/ folder (will be created "
+                "when you install the data team scaffold; or use any small CSV you have). "
+                "Summarize: top 3 categories by revenue, simple 30-day trend chart, any "
+                "anomalies you spot.\n\n"
+                "Click 'Run' to see the bi-analyst agent work.\n\n"
+                "Note: Requires data-team scaffold (D.4 task) for full sample CSV. Without it, "
+                "agent will report 'no data found' and explain how to add one."
+            ),
+            task_type="feature",
+            task_kind="ai",
+            process_status=TaskStatus.TODO,
+            priority=TaskPriority.NORMAL,
+            assigned_role=None,
+            acceptance_criteria=[
+                {"text": "Summary covers top categories + trend", "status": "pending"},
+                {"text": "At least 1 chart generated (PNG or markdown table)", "status": "pending"},
+                {"text": "Anomalies (if found) noted with row context", "status": "pending"},
+            ],
+        ),
+    ]
 
 
 def _sample_tasks(project_id: int) -> list[Task]:
@@ -121,21 +215,49 @@ async def _seed() -> int:
         )
         if existing.scalar_one_or_none() is not None:
             print(f"[seed] project {PROJECT_NAME!r} already exists — already seeded.")
-            return 0
+        else:
+            project = Project(**_project_kwargs())
+            session.add(project)
+            await session.flush()  # populate project.id without committing
 
-        project = Project(**_project_kwargs())
-        session.add(project)
-        await session.flush()  # populate project.id without committing
+            for task in _sample_tasks(project.id):
+                session.add(task)
 
-        for task in _sample_tasks(project.id):
-            session.add(task)
+            await session.commit()
+            await session.refresh(project)
+            print(
+                f"[seed] inserted project id={project.id} name={project.name!r} + 3 sample tasks."
+            )
 
-        await session.commit()
-        await session.refresh(project)
-        print(
-            f"[seed] inserted project id={project.id} name={project.name!r} + 3 sample tasks."
-        )
-        return 0
+    # === demo-tour seed (Kanban #1361 — pilot user 5-minute walkthrough) ===
+    # Idempotency: if demo-tour already exists, skip. If operator deletes the
+    # project row (soft-delete sets status=0), name is freed by the partial
+    # unique index and re-seed would create a new row — this is intentional
+    # (operator can prevent re-creation by leaving the deleted row or by not
+    # re-running seed).
+    async with SessionLocal() as session:
+        demo_existing = (
+            await session.execute(
+                select(Project).where(Project.name == DEMO_PROJECT_NAME)
+            )
+        ).scalar_one_or_none()
+        if demo_existing is None:
+            demo_project = Project(**_demo_project_kwargs())
+            session.add(demo_project)
+            await session.flush()  # populate demo_project.id
+            for task in _demo_tasks(demo_project.id):
+                session.add(task)
+            await session.commit()
+            await session.refresh(demo_project)
+            print(
+                f"[seed] inserted demo-tour project id={demo_project.id} + 3 demo tasks."
+            )
+        else:
+            print(
+                f"[seed] demo-tour project already exists (id={demo_existing.id}) — skipping."
+            )
+
+    return 0
 
 
 async def _main() -> int:
