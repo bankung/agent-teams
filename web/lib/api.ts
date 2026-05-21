@@ -1296,6 +1296,42 @@ export async function getCrossProjectPl(
 }
 
 // ============================================================================
+// Kanban #945 — Cross-project active-tasks list (operator-level dashboard).
+// ============================================================================
+
+// DashboardActiveTaskRow — mirror of api/src/schemas/dashboard.py. One row per
+// active task across all status=1 projects. Project fields denormalized so
+// the FE doesn't N+1 lookup project_name. `process_status` is gated server-
+// side to IN_PROGRESS (2) / REVIEW (3) / BLOCKED (4).
+export type DashboardActiveTaskRow = {
+  task_id: number;
+  title: string;
+  project_id: number;
+  project_name: string;
+  team: string;
+  process_status: 2 | 3 | 4;
+  run_mode: TaskRunModeValue;
+  task_kind: TaskKindValue;
+  assigned_role: TaskRoleValue | null;
+  priority: TaskPriorityValue;
+  updated_at: string; // ISO 8601
+  blocked_by: number | null;
+};
+
+export type DashboardActiveTasks = {
+  rows: DashboardActiveTaskRow[];
+  total_count: number;
+};
+
+// getCrossProjectActiveTasks — operator-level cross-project list. NO
+// X-Project-Id header (the endpoint spans projects by design, mirroring the
+// /api/pnl pattern from #1329). Default sort is (project_name ASC,
+// updated_at DESC) — server-side; FE renders rows as received.
+export async function getCrossProjectActiveTasks(): Promise<DashboardActiveTasks> {
+  return jsonFetch<DashboardActiveTasks>(`/api/dashboard/active-tasks`);
+}
+
+// ============================================================================
 // Kanban #1011 (2026-05-20) — POST /api/tasks/{id}/snooze.
 // ============================================================================
 

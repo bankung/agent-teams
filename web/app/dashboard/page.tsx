@@ -2,15 +2,18 @@ import Link from "next/link";
 
 import {
   getAuditDailyRollup,
+  getCrossProjectActiveTasks,
   getProjectsStats,
   listAuditFlags,
   listProjects,
+  type DashboardActiveTasks,
   type ProjectRead,
   type ProjectStatsEntry,
 } from "@/lib/api";
 import { formatRelative } from "@/lib/time";
 import { AuditorActivityPanel } from "@/components/AuditorActivityPanel";
 import { AuditorVisibilityToggle } from "@/components/AuditorVisibilityToggle";
+import { CrossProjectActiveTasksList } from "@/components/CrossProjectActiveTasksList";
 import { DashboardWelcomeBanner } from "@/components/DashboardWelcomeBanner";
 import { BudgetBar, pickBudgetDisplay } from "@/components/BudgetBar";
 import { CostSummary } from "@/components/CostSummary";
@@ -358,11 +361,19 @@ export default async function DashboardPage() {
   // tasks; runs in parallel with the existing aggregate fetches. Failure
   // degrades to [] (the helper swallows per-project errors), so a single
   // backend hiccup doesn't blank the dashboard.
-  const [stats, projects, auditRollup, openFlags] = await Promise.all([
+  // Kanban #945 — cross-project active-tasks list. Server-component fetch
+  // alongside the other dashboard aggregates so SSE-driven `router.refresh()`
+  // (DashboardRefresher) refreshes this section automatically when any task
+  // row changes. Failure degrades to a zero-row placeholder so a single API
+  // hiccup doesn't blank the rest of the dashboard.
+  const [stats, projects, auditRollup, openFlags, activeTasks] = await Promise.all([
     getProjectsStats(),
     listProjects({ status: 1 }),
     getAuditDailyRollup(),
     listAuditFlags().catch(() => []),
+    getCrossProjectActiveTasks().catch(
+      (): DashboardActiveTasks => ({ rows: [], total_count: 0 }),
+    ),
   ]);
   const projectsById = new Map<number, ProjectRead>();
   for (const p of projects) projectsById.set(p.id, p);
@@ -420,6 +431,13 @@ export default async function DashboardPage() {
               window. Sits BELOW CostSummary (cost side first, P&L side after)
               and ABOVE the per-project navigation grid. */}
           <PnlDashboardSection />
+
+          {/* Kanban #945 — cross-project active-tasks list. Operator-level
+              view of tasks in {in-progress, review, blocked} across every
+              active project. Refreshes via DashboardRefresher's SSE-driven
+              router.refresh() (server-component fetch above). Sits BELOW
+              PnlDashboardSection and ABOVE the per-project nav grid. */}
+          <CrossProjectActiveTasksList data={activeTasks} />
 
           {/* Auditor activity (Kanban #1082 + #1291). Cross-project 7-day verdict
               rollup; hidden entirely when the API returns [] OR when the user

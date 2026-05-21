@@ -26,6 +26,7 @@ from src.middleware.rate_limit import limiter
 from src.middleware.request_size import request_size_middleware
 from src.routers import audit as audit_router
 from src.routers import credentials as credentials_router
+from src.routers import dashboard as dashboard_router
 from src.routers import events as events_router
 from src.routers import handoff_templates as handoff_templates_router
 from src.routers import ingest as ingest_router
@@ -314,6 +315,8 @@ def create_app() -> FastAPI:
     app.include_router(pl_router.router, prefix="/api")
     # Kanban #1329 — cross-project P&L rollup (operator-level, no X-Project-Id).
     app.include_router(pnl_router, prefix="/api")
+    # Kanban #945 — cross-project active-tasks list (operator-level, no X-Project-Id).
+    app.include_router(dashboard_router.router, prefix="/api")
     # Kanban #1010 — cross-project next-action recommender (USER-scoped, no
     # X-Project-Id header). Powers digest section 5 / mobile home tile / inbox
     # empty-state hint.
