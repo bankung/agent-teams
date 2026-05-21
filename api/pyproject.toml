@@ -36,6 +36,10 @@ dependencies = [
     # Kanban #955.A — Web Push adapter (notify_web_push.py). Pure-Python wrapper
     # around the Web Push protocol (RFC 8030 + 8291 + 8292). No native deps.
     "pywebpush>=1.14,<3.0",
+    # Kanban #1326 (M3) — symmetric Fernet encryption for the credentials vault
+    # (project_credentials.ciphertext). Master key in env CREDENTIALS_MASTER_KEY
+    # (Fernet url-safe base64, 32 bytes). >=42 ships the modern Fernet API.
+    "cryptography>=42.0,<46.0",
 ]
 
 [project.optional-dependencies]

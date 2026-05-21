@@ -25,6 +25,7 @@ from starlette.middleware.cors import CORSMiddleware
 from src.middleware.rate_limit import limiter
 from src.middleware.request_size import request_size_middleware
 from src.routers import audit as audit_router
+from src.routers import credentials as credentials_router
 from src.routers import events as events_router
 from src.routers import handoff_templates as handoff_templates_router
 from src.routers import notifications as notifications_router
@@ -133,6 +134,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # construct services that would bind to a rogue DB. See _validate_db_url.
     from src.db import engine
     _validate_db_url(str(engine.url))
+
+    # Kanban #1326 (M3) — refuse to start if the credentials master key is
+    # missing or malformed. Loud failure at lifespan-enter beats a deferred
+    # crash at the first credential request. The Fernet instance is cached
+    # at module level after first construction; subsequent calls (router
+    # encrypt/decrypt) reuse the same instance.
+    from src.services.credentials_crypto import get_fernet
+    get_fernet()
 
     # #782 — boot SSE broker before scheduler
     await start_listener()
@@ -314,6 +323,8 @@ def create_app() -> FastAPI:
     app.include_router(handoff_templates_router.router, prefix="/api")
     # Kanban #955.A — Web Push subscription CRUD (browser PushManager endpoints).
     app.include_router(push_router.router, prefix="/api")
+    # Kanban #1326 (M3) — credentials vault (per-project, Fernet-encrypted).
+    app.include_router(credentials_router.router, prefix="/api")
 
     return app
 
