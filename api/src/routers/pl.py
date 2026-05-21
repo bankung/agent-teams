@@ -280,77 +280,87 @@ async def get_cross_project_pl(
     currency_only` is null whenever projects span multiple `currency_default`
     values or any row has `mixed_currency=True`.
     """
-    try:
-        since, until = _resolve_window(period, since, until)
+    # HTTPException (422 from _resolve_window, auth errors) propagates naturally.
+    since, until = _resolve_window(period, since, until)
 
-        # Candidate projects — active only by default; include_killed adds
-        # soft-deleted rows (status=0). Ordered by name for deterministic JSON.
-        if include_killed:
-            proj_stmt = select(Project).order_by(Project.name.asc())
-        else:
-            proj_stmt = select(Project).where(Project.status == 1).order_by(Project.name.asc())
+    # Candidate projects — active only by default; include_killed adds
+    # soft-deleted rows (status=0). Ordered by name for deterministic JSON.
+    if include_killed:
+        proj_stmt = select(Project).order_by(Project.name.asc())
+    else:
+        proj_stmt = select(Project).where(Project.status == 1).order_by(Project.name.asc())
 
-        projects = list((await session.execute(proj_stmt)).scalars().all())
+    projects = list((await session.execute(proj_stmt)).scalars().all())
 
-        # N+1 acceptable at current project counts; refactor when projects > ~100
-        # (kanban followup — reshape to single SQL GROUP BY project_id, kind,
-        # currency, period_label + aggregation).
-        rows: list[PLCrossProjectRow] = []
-        for p in projects:
-            txn_stmt = (
-                select(Transaction)
-                .where(Transaction.project_id == p.id)
-                .where(Transaction.occurred_at >= since)
-                .where(Transaction.occurred_at < until)
-                .order_by(Transaction.occurred_at.asc())
-            )
-            txns = list((await session.execute(txn_stmt)).scalars().all())
+    # N+1 acceptable at current project counts; refactor when projects > ~100
+    # (kanban followup — reshape to single SQL GROUP BY project_id, kind,
+    # currency, period_label + aggregation).
+    rows: list[PLCrossProjectRow] = []
+    failed_project_ids: list[int] = []
+    for p in projects:
+        txn_stmt = (
+            select(Transaction)
+            .where(Transaction.project_id == p.id)
+            .where(Transaction.occurred_at >= since)
+            .where(Transaction.occurred_at < until)
+            .order_by(Transaction.occurred_at.asc())
+        )
+        txns = list((await session.execute(txn_stmt)).scalars().all())
+        try:
             summary = compute_pl(
                 txns, period, project_currency_default=(p.currency_default or "USD")
             )
-            # Detect mixed currency: compute_pl returns one bucket per
-            # (currency, period-label) pair; distinct currencies = the currency
-            # dimension of that set.
-            distinct_currencies = {b.currency for b in summary.buckets}
-            rows.append(
-                PLCrossProjectRow(
-                    project_id=p.id,
-                    project_name=p.name,
-                    team=p.team,
-                    currency_default=(p.currency_default or "USD"),
-                    period=period,
-                    revenue=summary.revenue,
-                    cost=summary.cost,
-                    expense=summary.expense,
-                    refund=summary.refund,
-                    transfer=summary.transfer,
-                    net=summary.net,
-                    transaction_count=summary.transaction_count,
-                    mixed_currency=len(distinct_currencies) > 1,
-                    bucket_count=len(summary.buckets),
-                )
+        except Exception:
+            logger.exception(
+                "get_cross_project_pl: compute_pl failed for project_id=%d", p.id
             )
-
-        # Grand total only when every row shares the same currency_default AND
-        # no row has mixed_currency (cross-currency sums are meaningless without FX).
-        grand_total: Decimal | None = None
-        if rows:
-            currencies = {r.currency_default for r in rows}
-            any_mixed = any(r.mixed_currency for r in rows)
-            if len(currencies) == 1 and not any_mixed:
-                grand_total = sum((r.net for r in rows), start=Decimal("0.0000"))
-
-        return PLCrossProject(
-            period=period,
-            since=since,
-            until=until,
-            rows=rows,
-            total_projects=len(rows),
-            grand_total_net_first_currency_only=grand_total,
+            failed_project_ids.append(p.id)
+            continue
+        # Detect mixed currency: compute_pl returns one bucket per
+        # (currency, period-label) pair; distinct currencies = the currency
+        # dimension of that set.
+        distinct_currencies = {b.currency for b in summary.buckets}
+        rows.append(
+            PLCrossProjectRow(
+                project_id=p.id,
+                project_name=p.name,
+                team=p.team,
+                currency_default=(p.currency_default or "USD"),
+                period=period,
+                revenue=summary.revenue,
+                cost=summary.cost,
+                expense=summary.expense,
+                refund=summary.refund,
+                transfer=summary.transfer,
+                net=summary.net,
+                transaction_count=summary.transaction_count,
+                mixed_currency=len(distinct_currencies) > 1,
+                bucket_count=len(summary.buckets),
+            )
         )
 
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("get_cross_project_pl: unexpected error")
+    # If every project failed, surface the 500 — no partial result to return.
+    if failed_project_ids and not rows and projects:
+        logger.error(
+            "get_cross_project_pl: all %d projects failed compute_pl", len(projects)
+        )
         raise HTTPException(status_code=500, detail="Internal server error")
+
+    # Grand total only when every row shares the same currency_default AND
+    # no row has mixed_currency (cross-currency sums are meaningless without FX).
+    grand_total: Decimal | None = None
+    if rows:
+        currencies = {r.currency_default for r in rows}
+        any_mixed = any(r.mixed_currency for r in rows)
+        if len(currencies) == 1 and not any_mixed:
+            grand_total = sum((r.net for r in rows), start=Decimal("0.0000"))
+
+    return PLCrossProject(
+        period=period,
+        since=since,
+        until=until,
+        rows=rows,
+        total_projects=len(rows),
+        grand_total_net_first_currency_only=grand_total,
+        failed_project_ids=failed_project_ids,
+    )

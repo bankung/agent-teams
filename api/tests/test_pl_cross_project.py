@@ -11,6 +11,11 @@ Coverage:
 - Mixed currency within a single project → mixed_currency=True.
 - include_killed=false hides killed projects; include_killed=true includes them.
 - since > until → 422.
+
+Kanban #1381 (per-row failure isolation):
+- compute_pl raises on one project → 200 + failed_project_ids populated, other rows present.
+- compute_pl raises on ALL projects → 500.
+- Happy path (no failures) → failed_project_ids is empty list.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 
@@ -315,3 +321,89 @@ async def test_pnl_since_greater_than_until_returns_422(client):
         },
     )
     assert resp.status_code == 422, resp.text
+
+
+# ---------------------------------------------------------------------------
+# Kanban #1381 — per-row failure isolation tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pnl_partial_failure_returns_200_with_failed_ids(client, scaffold_cleanup):
+    """compute_pl raises on one of two projects → 200, failing id in failed_project_ids,
+    the other row still present (Kanban #1381)."""
+    project_good = await _make_project(client, scaffold_cleanup, "pnl-partial-ok", currency="USD")
+    project_bad = await _make_project(client, scaffold_cleanup, "pnl-partial-bad", currency="USD")
+
+    await _add_txn(client, project_good, amount_minor=10000, kind="revenue", currency="USD")
+    await _add_txn(client, project_bad, amount_minor=20000, kind="revenue", currency="USD")
+
+    # Patch compute_pl so it raises only when called for the bad project.
+    original_compute_pl = None
+
+    import src.routers.pl as pl_module  # noqa: PLC0415 — local import for patching
+    original_compute_pl = pl_module.compute_pl
+
+    call_count = 0
+    bad_project_id = project_bad
+
+    def _selective_raise(txns, period, *, project_currency_default="USD"):
+        nonlocal call_count
+        call_count += 1
+        # Identify the bad project by its transaction amount (20000 minor).
+        if txns and txns[0].project_id == bad_project_id:
+            raise RuntimeError("simulated compute_pl failure")
+        return original_compute_pl(txns, period, project_currency_default=project_currency_default)
+
+    with patch.object(pl_module, "compute_pl", side_effect=_selective_raise):
+        resp = await client.get(
+            "/api/pnl",
+            params={"period": "monthly", "since": "2020-01-01T00:00:00Z"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # The good project's row must be present.
+    good_rows = [r for r in body["rows"] if r["project_id"] == project_good]
+    assert len(good_rows) == 1, "good project row must survive partial failure"
+
+    # The bad project must appear in failed_project_ids, NOT in rows.
+    assert project_bad in body["failed_project_ids"], "failing project_id must be in failed_project_ids"
+    bad_rows = [r for r in body["rows"] if r["project_id"] == project_bad]
+    assert len(bad_rows) == 0, "failing project must not appear in rows"
+
+
+@pytest.mark.asyncio
+async def test_pnl_all_projects_fail_returns_500(client, scaffold_cleanup):
+    """compute_pl raises for every project → 500 (Kanban #1381)."""
+    # Create a single project so the project list is non-empty.
+    await _make_project(client, scaffold_cleanup, "pnl-all-fail", currency="USD")
+
+    import src.routers.pl as pl_module  # noqa: PLC0415
+
+    with patch.object(pl_module, "compute_pl", side_effect=RuntimeError("total meltdown")):
+        resp = await client.get(
+            "/api/pnl",
+            params={"period": "monthly", "since": "2020-01-01T00:00:00Z"},
+        )
+
+    assert resp.status_code == 500, resp.text
+
+
+@pytest.mark.asyncio
+async def test_pnl_no_failure_returns_empty_failed_project_ids(client, scaffold_cleanup):
+    """Happy path — failed_project_ids is present in the response and is an empty list
+    (schema field default, Kanban #1381 — proves no regression on existing clients)."""
+    project_id = await _make_project(client, scaffold_cleanup, "pnl-no-fail", currency="USD")
+    await _add_txn(client, project_id, amount_minor=5000, kind="revenue", currency="USD")
+
+    resp = await client.get(
+        "/api/pnl",
+        params={"period": "monthly", "since": "2020-01-01T00:00:00Z"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert "failed_project_ids" in body, "field must be present in response"
+    assert body["failed_project_ids"] == [], "no failures → empty list, not null"

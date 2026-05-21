@@ -137,6 +137,12 @@ class PLCrossProject(BaseModel):
     Otherwise null — the FE should render per-row breakdowns rather than a
     misleading aggregate.
 
+    `failed_project_ids` is non-empty when one or more per-project compute_pl
+    calls raised an unexpected error (Kanban #1381). The response is still 200
+    so partial results are usable; callers should surface a warning when this
+    list is non-empty. An all-projects failure (every project raised) still
+    returns 500.
+
     Amounts are MAJOR units; no FX conversion is performed anywhere in this
     endpoint.
     """
@@ -149,3 +155,4 @@ class PLCrossProject(BaseModel):
     rows: list[PLCrossProjectRow]
     total_projects: int
     grand_total_net_first_currency_only: Decimal | None
+    failed_project_ids: list[int] = []
