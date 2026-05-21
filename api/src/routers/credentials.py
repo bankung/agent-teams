@@ -30,6 +30,7 @@ Audit:
 from __future__ import annotations
 
 import logging
+import re
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response
@@ -66,6 +67,32 @@ _DETAIL_USE_DENIED = (
     "HITL approval flow not implemented in M3 (deferred); operator must add "
     "an approval_policies entry to project to grant use."
 )
+
+
+# ---------------------------------------------------------------------------
+# X-Agent-Identity header sanitisation
+# ---------------------------------------------------------------------------
+
+_X_AGENT_IDENTITY_RE = re.compile(r"^[a-zA-Z0-9_:@/.\-]{1,100}$")
+
+
+def _sanitize_agent_identity(raw: str | None) -> str:
+    """Validate the X-Agent-Identity header value; coerce invalid input;
+    prefix the stored audit string to mark it header-supplied.
+
+    Returns 'header:<value>' for valid input, 'header:invalid_header' for
+    missing / over-length / pattern-mismatch input. The prefix lets audit
+    consumers tell header-supplied identity apart from system-derived identities
+    (which use bare strings like 'operator:api' or 'system:webhook').
+
+    None (absent header) returns the bare 'operator:api' fallback — the no-header
+    path is a legitimate direct-operator call and carries no taint.
+    """
+    if raw is None:
+        return "operator:api"
+    if not _X_AGENT_IDENTITY_RE.match(raw):
+        return "header:invalid_header"
+    return f"header:{raw}"
 
 
 def _assert_project_match(path_project_id: int, session_project_id: int) -> None:
@@ -346,7 +373,7 @@ async def use_credential(
     project = await _resolve_project(session, project_id)
     cred = await _get_active_credential_or_404(session, project_id, name)
 
-    identity = x_agent_identity or "operator:api"
+    identity = _sanitize_agent_identity(x_agent_identity)
 
     if not _policy_grants_use(project.approval_policies, name):
         # Audit the refusal — the trail covers denied attempts too.

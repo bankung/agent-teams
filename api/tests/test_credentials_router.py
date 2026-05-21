@@ -367,7 +367,7 @@ async def test_use_granted_with_matching_policy_returns_plaintext_and_logs(
             ).scalars()
         )
     assert len(logs) == 1
-    assert logs[0].accessed_by == "operator:smoke-test"
+    assert logs[0].accessed_by == "header:operator:smoke-test"
     assert "denied" not in logs[0].accessed_by
 
     # Credential counters bumped
@@ -488,3 +488,210 @@ async def test_duplicate_name_returns_409(client, scaffold_cleanup):
         headers=headers,
     )
     assert second.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# 9. X-Agent-Identity header sanitisation (S2 fix — Kanban review finding).
+# ---------------------------------------------------------------------------
+
+
+async def _make_approved_project_and_cred(
+    client, scaffold_cleanup, slug: str
+) -> tuple[int, dict, str]:
+    """Helper: project with auto-approve policy + one credential. Returns
+    (project_id, headers, cred_name).
+    """
+    pid = await _make_project(client, scaffold_cleanup, slug)
+    headers = {"X-Project-Id": str(pid)}
+    cred_name = f"key_{uuid.uuid4().hex[:6]}"
+
+    create_resp = await client.post(
+        f"/api/projects/{pid}/credentials",
+        json=_cred_create_body(name=cred_name, value=SENTINEL_PLAINTEXT),
+        headers=headers,
+    )
+    assert create_resp.status_code == 201, create_resp.text
+
+    grant_resp = await client.patch(
+        f"/api/projects/{pid}",
+        json={
+            "approval_policies": {
+                "rules": [
+                    {
+                        "action": "credential.use",
+                        "credential_name": cred_name,
+                        "auto_approve": True,
+                    }
+                ]
+            }
+        },
+        headers=headers,
+    )
+    assert grant_resp.status_code == 200, grant_resp.text
+    return pid, headers, cred_name
+
+
+@pytest.mark.asyncio
+async def test_use_credential_unsanitized_x_agent_identity_gets_prefixed(
+    client, scaffold_cleanup
+):
+    """Valid X-Agent-Identity header is prefixed with 'header:' in the audit log."""
+    pid, headers, cred_name = await _make_approved_project_and_cred(
+        client, scaffold_cleanup, "cred-s2-prefix"
+    )
+    cred_id = (
+        await client.get(f"/api/projects/{pid}/credentials", headers=headers)
+    ).json()[0]["id"]
+
+    use_resp = await client.post(
+        f"/api/projects/{pid}/credentials/{cred_name}/use",
+        json={},
+        headers={**headers, "X-Agent-Identity": "agent:dev-backend"},
+    )
+    assert use_resp.status_code == 200, use_resp.text
+
+    from sqlalchemy import select
+    from src.db import SessionLocal
+    from src.models.credential import CredentialAccessLog
+
+    async with SessionLocal() as s:
+        logs = list(
+            (
+                await s.execute(
+                    select(CredentialAccessLog)
+                    .where(CredentialAccessLog.credential_id == cred_id)
+                    .where(CredentialAccessLog.action == "use")
+                )
+            ).scalars()
+        )
+    assert len(logs) == 1
+    # POSITIVE: stored value is the prefixed form, not the raw header value.
+    assert logs[0].accessed_by == "header:agent:dev-backend"
+    # NEGATIVE: raw value (without prefix) is NOT stored verbatim.
+    assert logs[0].accessed_by != "agent:dev-backend"
+
+
+@pytest.mark.asyncio
+async def test_use_credential_malformed_x_agent_identity_gets_invalid_marker(
+    client, scaffold_cleanup
+):
+    """Header with invalid chars (e.g. SQL-injection payload) coerces to
+    'header:invalid_header' in the audit log — not written verbatim.
+    """
+    pid, headers, cred_name = await _make_approved_project_and_cred(
+        client, scaffold_cleanup, "cred-s2-malform"
+    )
+    cred_id = (
+        await client.get(f"/api/projects/{pid}/credentials", headers=headers)
+    ).json()[0]["id"]
+
+    malformed = "operator:admin'; DROP TABLE credentials;--"
+    use_resp = await client.post(
+        f"/api/projects/{pid}/credentials/{cred_name}/use",
+        json={},
+        headers={**headers, "X-Agent-Identity": malformed},
+    )
+    assert use_resp.status_code == 200, use_resp.text
+
+    from sqlalchemy import select
+    from src.db import SessionLocal
+    from src.models.credential import CredentialAccessLog
+
+    async with SessionLocal() as s:
+        logs = list(
+            (
+                await s.execute(
+                    select(CredentialAccessLog)
+                    .where(CredentialAccessLog.credential_id == cred_id)
+                    .where(CredentialAccessLog.action == "use")
+                )
+            ).scalars()
+        )
+    assert len(logs) == 1
+    # POSITIVE: coerced to the safe sentinel.
+    assert logs[0].accessed_by == "header:invalid_header"
+    # NEGATIVE: the raw malformed string is NOT stored.
+    assert malformed not in logs[0].accessed_by
+
+
+@pytest.mark.asyncio
+async def test_use_credential_no_x_agent_identity_uses_operator_api_default(
+    client, scaffold_cleanup
+):
+    """Absent X-Agent-Identity header stores 'operator:api' (no 'header:' prefix)
+    to preserve backwards-compat for direct-operator calls.
+    """
+    pid, headers, cred_name = await _make_approved_project_and_cred(
+        client, scaffold_cleanup, "cred-s2-noheader"
+    )
+    cred_id = (
+        await client.get(f"/api/projects/{pid}/credentials", headers=headers)
+    ).json()[0]["id"]
+
+    use_resp = await client.post(
+        f"/api/projects/{pid}/credentials/{cred_name}/use",
+        json={},
+        headers=headers,  # no X-Agent-Identity
+    )
+    assert use_resp.status_code == 200, use_resp.text
+
+    from sqlalchemy import select
+    from src.db import SessionLocal
+    from src.models.credential import CredentialAccessLog
+
+    async with SessionLocal() as s:
+        logs = list(
+            (
+                await s.execute(
+                    select(CredentialAccessLog)
+                    .where(CredentialAccessLog.credential_id == cred_id)
+                    .where(CredentialAccessLog.action == "use")
+                )
+            ).scalars()
+        )
+    assert len(logs) == 1
+    # POSITIVE: bare operator:api default (no header: prefix — it's system-derived).
+    assert logs[0].accessed_by == "operator:api"
+    # NEGATIVE: must not be the header: prefixed form.
+    assert logs[0].accessed_by != "header:operator:api"
+
+
+@pytest.mark.asyncio
+async def test_use_credential_long_x_agent_identity_truncated_to_invalid(
+    client, scaffold_cleanup
+):
+    """X-Agent-Identity exceeding 100 chars coerces to 'header:invalid_header'."""
+    pid, headers, cred_name = await _make_approved_project_and_cred(
+        client, scaffold_cleanup, "cred-s2-long"
+    )
+    cred_id = (
+        await client.get(f"/api/projects/{pid}/credentials", headers=headers)
+    ).json()[0]["id"]
+
+    long_identity = "a" * 101  # exactly over the limit
+    use_resp = await client.post(
+        f"/api/projects/{pid}/credentials/{cred_name}/use",
+        json={},
+        headers={**headers, "X-Agent-Identity": long_identity},
+    )
+    assert use_resp.status_code == 200, use_resp.text
+
+    from sqlalchemy import select
+    from src.db import SessionLocal
+    from src.models.credential import CredentialAccessLog
+
+    async with SessionLocal() as s:
+        logs = list(
+            (
+                await s.execute(
+                    select(CredentialAccessLog)
+                    .where(CredentialAccessLog.credential_id == cred_id)
+                    .where(CredentialAccessLog.action == "use")
+                )
+            ).scalars()
+        )
+    assert len(logs) == 1
+    # POSITIVE: over-length coerced to the safe sentinel.
+    assert logs[0].accessed_by == "header:invalid_header"
+    # NEGATIVE: the long value is NOT stored.
+    assert long_identity not in logs[0].accessed_by
