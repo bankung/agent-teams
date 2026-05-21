@@ -150,8 +150,23 @@ async def _live_db_row_count_invariant():
     # Enumerate all user tables in the public schema, then snapshot every one.
     # Using pg_tables + per-table SELECT count(*) (option 2 from #815) gives
     # exact counts rather than the slightly-noisy pg_stat_user_tables estimates.
-    # alembic_version excluded: it legitimately changes during dev migrations
-    # and would cause false-positive fires.
+    #
+    # Excluded tables (Kanban #1371):
+    #   alembic_version — legitimately changes during dev migrations.
+    #   tasks           — high-churn: live API writes tasks during any test run
+    #                     (operator Kanban usage). The pytest_runner role is
+    #                     SELECT-only on agent_teams (L4 gate), so test code
+    #                     cannot write here; false-positive drift from concurrent
+    #                     API activity would swamp signal.
+    #   tasks_history   — populated by the tasks audit trigger + notification_router
+    #                     direct inserts. Every tasks write (live API) generates
+    #                     tasks_history rows. Same concurrent-API-activity reason.
+    #
+    # The remaining tables (projects, sessions, projects_audit, etc.) are
+    # low-churn enough that any increase during a ~10-minute test run is a
+    # genuine signal worth investigating.
+    _INVARIANT_EXCLUDED = frozenset({"alembic_version", "tasks", "tasks_history"})
+
     async def _counts() -> dict[str, int]:
         async with live_engine.connect() as conn:
             rows = (
@@ -159,13 +174,14 @@ async def _live_db_row_count_invariant():
                     text(
                         "SELECT tablename FROM pg_tables "
                         "WHERE schemaname = 'public' "
-                        "AND tablename != 'alembic_version' "
                         "ORDER BY tablename"
                     )
                 )
             ).fetchall()
             result: dict[str, int] = {}
             for (tbl,) in rows:
+                if tbl in _INVARIANT_EXCLUDED:
+                    continue
                 n = (
                     await conn.execute(text(f"SELECT count(*) FROM {tbl}"))  # noqa: S608
                 ).scalar_one()
