@@ -2904,7 +2904,7 @@ async def test_777_edge_list_projects_includes_new_fields(
     id_y = create_y.json()["id"]
 
     try:
-        list_resp = await client.get("/api/projects?status=1")
+        list_resp = await client.get("/api/projects?status=1&limit=200")
         assert list_resp.status_code == 200, list_resp.text
         by_id = {row["id"]: row for row in list_resp.json()}
 
