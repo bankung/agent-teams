@@ -695,3 +695,83 @@ async def test_use_credential_long_x_agent_identity_truncated_to_invalid(
     assert logs[0].accessed_by == "header:invalid_header"
     # NEGATIVE: the long value is NOT stored.
     assert long_identity not in logs[0].accessed_by
+
+
+# ---------------------------------------------------------------------------
+# 10. Partial-unique index: soft-deleted slot is reclaimed (Kanban #1375 fix).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_then_recreate_same_name_returns_201_slot_reclaimed(
+    client, scaffold_cleanup
+):
+    """Regression lock for Kanban #1375: the UNIQUE index on (project_id, name)
+    must be partial on status=1 (ACTIVE) so that a soft-deleted credential's
+    slot is immediately available for re-use.
+
+    Before the fix (unbounded UNIQUE), step 3 would return 409 forever until a
+    manual hard-DELETE. After the fix (partial UNIQUE WHERE status=1), the same
+    name is accepted again as soon as the row is soft-deleted.
+
+    POSITIVE: third POST returns 201 with a NEW credential id.
+    NEGATIVE: the new id differs from the original (not a resurrect — a fresh row).
+    Also verifies the soft-deleted row is still present in the DB (not purged).
+    """
+    pid = await _make_project(client, scaffold_cleanup, "cred-slot-reclaim")
+    headers = {"X-Project-Id": str(pid)}
+    cred_name = "reusable_key"
+
+    # Step 1: POST → 201
+    create_resp = await client.post(
+        f"/api/projects/{pid}/credentials",
+        json=_cred_create_body(name=cred_name, value="first-value"),
+        headers=headers,
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    original_id = create_resp.json()["id"]
+
+    # Step 2: DELETE → 204 (soft-delete, status → 0)
+    del_resp = await client.delete(
+        f"/api/projects/{pid}/credentials/{cred_name}", headers=headers
+    )
+    assert del_resp.status_code == 204, del_resp.text
+
+    # Step 3: POST same name → 201 (slot reclaimed — this is the regression gate)
+    recreate_resp = await client.post(
+        f"/api/projects/{pid}/credentials",
+        json=_cred_create_body(name=cred_name, value="second-value"),
+        headers=headers,
+    )
+    assert recreate_resp.status_code == 201, (
+        f"Expected 201 (slot reclaim) but got {recreate_resp.status_code}: "
+        f"{recreate_resp.text}"
+    )
+    new_id = recreate_resp.json()["id"]
+
+    # POSITIVE: a fresh row was created (different id).
+    assert new_id != original_id, (
+        "Re-create returned the same id — row was resurrected instead of freshly inserted"
+    )
+    # POSITIVE: the new row is active and visible in the list.
+    list_resp = await client.get(f"/api/projects/{pid}/credentials", headers=headers)
+    assert list_resp.status_code == 200
+    active_names = [r["name"] for r in list_resp.json()]
+    assert cred_name in active_names
+
+    # Step 4: Verify the original soft-deleted row is still in the DB (not purged).
+    from sqlalchemy import select
+    from src.db import SessionLocal
+    from src.models.credential import ProjectCredential
+
+    async with SessionLocal() as s:
+        deleted_row = (
+            await s.execute(
+                select(ProjectCredential).where(ProjectCredential.id == original_id)
+            )
+        ).scalar_one_or_none()
+
+    assert deleted_row is not None, "Soft-deleted row was purged — expected it to remain"
+    assert deleted_row.status == 0, (
+        f"Expected status=0 (soft-deleted) but got status={deleted_row.status}"
+    )
