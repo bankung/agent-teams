@@ -284,6 +284,7 @@ export function PnlDashboardSection({
                     <th className="px-2 py-2">Currency</th>
                     <th className="px-2 py-2 text-right">Revenue</th>
                     <th className="px-2 py-2 text-right">Expenses</th>
+                    <th className="px-2 py-2 text-right">Refunds</th>
                     <th className="px-2 py-2 text-right">Net</th>
                     <th className="px-2 py-2 text-right">Txns</th>
                   </tr>
@@ -291,10 +292,10 @@ export function PnlDashboardSection({
                 <tbody>
                   {sortedRows.map((row) => {
                     const revenue = parseMoney(row.revenue);
+                    // Expenses = cost + operating expense; refund is separate (#1383).
                     const expenses =
-                      parseMoney(row.cost) +
-                      parseMoney(row.expense) +
-                      parseMoney(row.refund);
+                      parseMoney(row.cost) + parseMoney(row.expense);
+                    const refunds = parseMoney(row.refund);
                     const net = parseMoney(row.net);
                     const dimmed = row.transaction_count === 0;
                     const netClass =
@@ -342,6 +343,9 @@ export function PnlDashboardSection({
                         </td>
                         <td className="px-2 py-2 text-right tabular-nums text-zinc-700 dark:text-zinc-300">
                           {formatMoney(expenses, row.currency_default)}
+                        </td>
+                        <td className="px-2 py-2 text-right tabular-nums text-zinc-700 dark:text-zinc-300">
+                          {formatMoney(refunds, row.currency_default)}
                         </td>
                         <td
                           className={`px-2 py-2 text-right font-semibold tabular-nums ${netClass}`}

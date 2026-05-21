@@ -122,9 +122,9 @@ export function PnlSummaryCard({
     if (state.kind !== "ok") return null;
     const d = state.data;
     const revenue = parseMoney(d.revenue);
-    // "Expenses" = cost + expense + refund (per #953 ledger semantics).
-    const expenses =
-      parseMoney(d.cost) + parseMoney(d.expense) + parseMoney(d.refund);
+    // Expenses = cost + expense only. Refunds is a separate cell (#1383).
+    const expenses = parseMoney(d.cost) + parseMoney(d.expense);
+    const refunds = parseMoney(d.refund);
     const net = parseMoney(d.net);
     const marginPct = revenue > 0 ? (net / revenue) * 100 : null;
     const netColor =
@@ -139,7 +139,7 @@ export function PnlSummaryCard({
       d.buckets.map((b) => (b.currency ?? "").toUpperCase()).filter(Boolean),
     );
     const mixed = uniqueCurrencies.size > 1;
-    return { revenue, expenses, net, marginPct, netColor, mixed };
+    return { revenue, expenses, refunds, net, marginPct, netColor, mixed };
   }, [state]);
 
   const headerCurrency =
@@ -208,7 +208,7 @@ export function PnlSummaryCard({
       ) : (
         <>
           <div
-            className="grid grid-cols-1 gap-3 sm:grid-cols-3"
+            className="grid grid-cols-2 gap-3 sm:grid-cols-4"
             role="list"
             aria-label="P&L totals"
           >
@@ -227,7 +227,7 @@ export function PnlSummaryCard({
             <div
               role="listitem"
               className="flex flex-col items-start gap-1 rounded-md border border-emerald-100 bg-white/70 px-3 py-3 dark:border-emerald-900/30 dark:bg-zinc-950/40"
-              title="cost + expense + refund (per #953 ledger semantics)"
+              title="Expenses = cost + operating expense (excludes refunds)"
             >
               <span className="text-2xl font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100">
                 {formatMoney(render?.expenses ?? 0, state.data.currency)}
@@ -239,7 +239,19 @@ export function PnlSummaryCard({
             <div
               role="listitem"
               className="flex flex-col items-start gap-1 rounded-md border border-emerald-100 bg-white/70 px-3 py-3 dark:border-emerald-900/30 dark:bg-zinc-950/40"
-              title={`Net = revenue − (cost + expense + refund). transfer is excluded.`}
+              title="Refunds issued on prior sales"
+            >
+              <span className="text-2xl font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100">
+                {formatMoney(render?.refunds ?? 0, state.data.currency)}
+              </span>
+              <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                Refunds
+              </span>
+            </div>
+            <div
+              role="listitem"
+              className="flex flex-col items-start gap-1 rounded-md border border-emerald-100 bg-white/70 px-3 py-3 dark:border-emerald-900/30 dark:bg-zinc-950/40"
+              title="Net = revenue − expenses − refunds. transfer excluded."
             >
               <span
                 className={`text-2xl font-semibold tabular-nums leading-none ${render?.netColor ?? "text-zinc-900 dark:text-zinc-100"}`}
