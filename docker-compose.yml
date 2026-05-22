@@ -66,6 +66,21 @@ services:
       BACKUP_S3_REGION: ${BACKUP_S3_REGION:-us-east-1}
       BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-}
       BACKUP_S3_PREFIX: ${BACKUP_S3_PREFIX:-agent-teams/}
+      GMAIL_SMTP_HOST: ${GMAIL_SMTP_HOST:-smtp.gmail.com}
+      GMAIL_SMTP_PORT: ${GMAIL_SMTP_PORT:-587}
+      GMAIL_SMTP_USER: ${GMAIL_SMTP_USER:-}
+      GMAIL_SMTP_APP_PASSWORD: ${GMAIL_SMTP_APP_PASSWORD:-}
+      GMAIL_SMTP_FROM: ${GMAIL_SMTP_FROM:-}
+      DIGEST_EMAIL_RECIPIENT: ${DIGEST_EMAIL_RECIPIENT:-}
+      DIGEST_EMAIL_ENABLED: ${DIGEST_EMAIL_ENABLED:-false}
+      WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:5431}
+      # Kanban #1192 — ntfy push-notification channel.
+      # Operator sets NTFY_TOPIC + PUSH_ENABLED=true in .env to enable.
+      # NTFY_ACCESS_TOKEN is optional (only needed if ntfy topic is auth-protected).
+      NTFY_BASE_URL: ${NTFY_BASE_URL:-https://ntfy.sh}
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_ACCESS_TOKEN: ${NTFY_ACCESS_TOKEN:-}
+      PUSH_ENABLED: ${PUSH_ENABLED:-false}
       BACKUP_CRON_RULE: ${BACKUP_CRON_RULE:-0 3 * * *}
       BACKUP_TIMEZONE: ${BACKUP_TIMEZONE:-UTC}
       BACKUP_KEEP_DAILY: ${BACKUP_KEEP_DAILY:-30}
