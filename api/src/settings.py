@@ -63,6 +63,18 @@ class Settings(BaseSettings):
     # Gmail SMTP + digest env vars are read directly via os.environ.get in
     # notify_email.py (matches notify_telegram.py pattern); intentionally not parsed into Settings.
 
+    # Kanban #1437 — signed-token opt-out for digest emails (itsdangerous
+    # URLSafeTimedSerializer). Tokens are HMAC-signed; the key must be stable
+    # across API restarts so tokens remain valid for up to 90 days. In
+    # docker-compose the api service sets this from ${SECRET_KEY:-dev-default}.
+    # The dev-default is intentionally weak — production MUST rotate via .env.
+    # Salt is hardcoded per action ("digest-optout-v1") so the same key can be
+    # reused for future token types without cross-action forgery risk.
+    secret_key: str = Field(
+        default="dev-secret-NOT-FOR-PROD-change-in-dotenv",
+        alias="SECRET_KEY",
+    )
+
     # Kanban #1011 (2026-05-20): HITL aging nudge cron cadence.
     # How frequently the nudge scanner runs in minutes. Default 30.
     # Range 5..240 — below 5 is too aggressive; above 240 (4h) defeats the

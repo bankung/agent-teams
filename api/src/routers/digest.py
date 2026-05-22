@@ -26,10 +26,12 @@ from datetime import timezone, datetime
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db import get_session
 from src.middleware.rate_limit import limiter
+from src.models.project import Project
 from src.services.digest_template import (
     fetch_open_audit_flags,
     render_html,
@@ -45,6 +47,10 @@ from src.services.notify_email import (
 )
 from src.services.notify_ntfy import NTFY_ENV_ENABLED, NTFY_ENV_TOPIC, send_push
 
+# Kanban #1437 — "control" project id whose notification_targets carries the
+# digest_email_enabled flag. Single-tenant convention: always project id=1.
+_CONTROL_PROJECT_ID = 1
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/digest", tags=["digest"])
@@ -57,6 +63,8 @@ class DigestFireResponse(BaseModel):
     detail mirrors email SendResult.detail.
     push_ok=True when ntfy accepted the push; push_detail mirrors push SendResult.detail.
     flag_count, recipient, subject are informational for the caller / cron log.
+    email_skipped_reason: non-null when email was skipped by a gate other than
+      DIGEST_EMAIL_ENABLED env (e.g. "opted_out_per_project" for Kanban #1437).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -68,6 +76,7 @@ class DigestFireResponse(BaseModel):
     subject: str
     push_ok: bool = False
     push_detail: str = "push_disabled"
+    email_skipped_reason: str | None = None
 
 
 @router.post("/fire", response_model=DigestFireResponse)
@@ -95,6 +104,7 @@ async def fire_digest(
         "date": str(today),
         "flags": flags,
         "base_url": base_url,
+        "project_id": _CONTROL_PROJECT_ID,
     }
 
     subject = render_subject(flag_count, today)
@@ -108,7 +118,32 @@ async def fire_digest(
         or "<unset>"
     )
 
-    result = await asyncio.to_thread(send_email, recipient, subject, text_body, html_body)
+    # Kanban #1437 — per-project opt-out gate. Fetch the control project's
+    # config and skip email if digest_email_enabled is explicitly False.
+    # Missing key or NULL config = treat as True (opt-in by default).
+    # Stored in projects.config (free JSONB dict) rather than notification_targets
+    # (a typed list of push delivery targets — incompatible shape).
+    # This check is independent of DIGEST_EMAIL_ENABLED env (env is the ops
+    # gate; config.digest_email_enabled is the user-facing opt-out).
+    email_skipped_reason: str | None = None
+    project_config_row = (
+        await session.execute(
+            select(Project.config).where(Project.id == _CONTROL_PROJECT_ID)
+        )
+    ).scalar_one_or_none()
+    project_config: dict = project_config_row if isinstance(project_config_row, dict) else {}
+    if project_config.get("digest_email_enabled") is False:
+        email_skipped_reason = "opted_out_per_project"
+        logger.info(
+            "digest fire: email skipped — project %d opted out (config.digest_email_enabled=false)",
+            _CONTROL_PROJECT_ID,
+        )
+
+    if email_skipped_reason is None:
+        result = await asyncio.to_thread(send_email, recipient, subject, text_body, html_body)
+    else:
+        from src.services.notify_email import SendResult  # local import avoids circular
+        result = SendResult(ok=False, detail=email_skipped_reason)
 
     if not result.ok:
         logger.warning(
@@ -152,4 +187,5 @@ async def fire_digest(
         subject=subject,
         push_ok=push_ok,
         push_detail=push_detail,
+        email_skipped_reason=email_skipped_reason,
     )

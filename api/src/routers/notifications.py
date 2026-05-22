@@ -18,14 +18,18 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from itsdangerous import BadData
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db import get_session
+from src.middleware.rate_limit import limiter
+from src.models.project import Project
 from src.models.task import Task
 from src.schemas.notification import NotificationKind
+from src.services.digest_template import verify_optout_token
 from src.services.notification_router import deliver
 from src.services.session_project import (
     assert_task_belongs_to_session,
@@ -81,6 +85,64 @@ class DeliveryResponse(BaseModel):
 
     task_id: int
     attempts: list[DeliveryAttempt]
+
+
+@router.get("/digest-optout")
+@limiter.limit("6/minute")
+async def digest_optout(
+    request: Request,  # required by slowapi key_func
+    token: str = "",
+    session: AsyncSession = Depends(get_session),
+) -> str:
+    """Verify a signed opt-out token and flip digest_email_enabled=False for the project.
+
+    Kanban #1437. Token is a URLSafeTimedSerializer payload produced by
+    `make_optout_token` in digest_template.py. Expiry: 90 days.
+
+    Returns plain-text 200 on success (idempotent — already-false is OK).
+    Returns 400 with reason on invalid/expired token.
+    """
+    if not token:
+        raise HTTPException(status_code=400, detail="missing_token")
+
+    try:
+        data = verify_optout_token(token)
+    except BadData as exc:
+        # SignatureExpired and BadSignature are both BadData subclasses.
+        reason = "expired_token" if "expired" in type(exc).__name__.lower() else "invalid_token"
+        logger.warning("digest_optout: bad token reason=%s exc=%r", reason, exc)
+        raise HTTPException(status_code=400, detail=reason) from exc
+
+    project_id: int = int(data.get("pid", 0))
+    if not project_id:
+        raise HTTPException(status_code=400, detail="invalid_token_payload")
+
+    project = (
+        await session.execute(select(Project).where(Project.id == project_id))
+    ).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found")
+
+    # Merge into project.config — preserve existing keys; flip digest_email_enabled.
+    # Stored in projects.config (free JSONB dict) rather than notification_targets
+    # (a typed list of push delivery targets — incompatible shape).
+    existing_config: dict = project.config or {}
+    if existing_config.get("digest_email_enabled") is not False:
+        project.config = {**existing_config, "digest_email_enabled": False}
+        await session.commit()
+        logger.info(
+            "digest_optout: project %d opted out of digest emails", project_id
+        )
+    else:
+        logger.info(
+            "digest_optout: project %d already opted out (idempotent)", project_id
+        )
+
+    return (
+        "You've been opted out of agent-teams digest emails. "
+        f"To re-enable: PATCH /api/projects/{project_id} with "
+        'config={"digest_email_enabled": true}, or contact admin.'
+    )
 
 
 @router.post("/deliver", response_model=DeliveryResponse)

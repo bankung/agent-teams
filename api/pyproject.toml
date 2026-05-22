@@ -40,6 +40,10 @@ dependencies = [
     # (project_credentials.ciphertext). Master key in env CREDENTIALS_MASTER_KEY
     # (Fernet url-safe base64, 32 bytes). >=42 ships the modern Fernet API.
     "cryptography>=42.0,<46.0",
+    # Kanban #1437 — signed-token opt-out link in digest emails. URLSafeTimedSerializer
+    # produces compact URL-safe HMAC-signed tokens with built-in expiry. No new
+    # key material required — reuses SECRET_KEY (same posture as session signing).
+    "itsdangerous>=2.1,<3.0",
 ]
 
 [project.optional-dependencies]

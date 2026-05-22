@@ -66,6 +66,11 @@ services:
       BACKUP_S3_REGION: ${BACKUP_S3_REGION:-us-east-1}
       BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-}
       BACKUP_S3_PREFIX: ${BACKUP_S3_PREFIX:-agent-teams/}
+      # Kanban #1437 — signed-token opt-out for digest emails (itsdangerous).
+      # MUST be set to a random 32+ char string in production .env.
+      # Dev default is intentionally weak — token links still work but are
+      # not secret; operator should rotate before exposing the API publicly.
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-NOT-FOR-PROD-change-in-dotenv}
       GMAIL_SMTP_HOST: ${GMAIL_SMTP_HOST:-smtp.gmail.com}
       GMAIL_SMTP_PORT: ${GMAIL_SMTP_PORT:-587}
       GMAIL_SMTP_USER: ${GMAIL_SMTP_USER:-}
