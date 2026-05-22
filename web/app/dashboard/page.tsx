@@ -20,6 +20,7 @@ import { CostSummary } from "@/components/CostSummary";
 import { DashboardRefresher } from "@/components/DashboardRefresher";
 import { EditProjectModal } from "@/components/EditProjectModal";
 import { FlagBellBadge } from "@/components/FlagBellBadge";
+import { InboxBadge } from "@/components/InboxBadge";
 import { NewProjectModal } from "@/components/NewProjectModal";
 import { PnlDashboardSection } from "@/components/PnlDashboardSection";
 import { ReviewSummaryWidget } from "@/components/ReviewSummaryWidget";
@@ -402,6 +403,7 @@ export default async function DashboardPage() {
           <DashboardRefresher />
           <AuditorVisibilityToggle />
           <NewProjectModal />
+          <InboxBadge />
           <FlagBellBadge />
           <ThemePicker />
         </span>
