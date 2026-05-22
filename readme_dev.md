@@ -237,6 +237,101 @@ All entries below are part of the 2026-05-17 hardening sprint (21/27 prevention 
 
 ---
 
+## Notification channels
+
+The api supports two parallel notification channels: email digest and push notifications (ntfy.sh). Both are optional and independently gated by env vars. Delivery attempts are logged to `tasks_history` with operation code `'N'` for audit.
+
+### Configuration
+
+All notification vars live in the root `.env` file and are mapped via `docker-compose.yml` into the api container.
+
+**Email digest (Gmail SMTP relay):**
+
+| Env var | Default | Effect |
+|---|---|---|
+| `GMAIL_SMTP_HOST` | unset | Gmail SMTP server (`smtp.gmail.com`) |
+| `GMAIL_SMTP_PORT` | unset | Gmail SMTP port (`587` for TLS) |
+| `GMAIL_SMTP_USER` | unset | Gmail address (your.email@gmail.com) |
+| `GMAIL_SMTP_APP_PASSWORD` | unset | [App Password](https://support.google.com/accounts/answer/185833), not your main Gmail password |
+| `GMAIL_SMTP_FROM` | unset | From-address in the email (often same as `_USER`) |
+| `DIGEST_EMAIL_RECIPIENT` | unset | Recipient email (where the daily digest goes) |
+| `DIGEST_EMAIL_ENABLED` | `1` | Set to `"0"` to disable; `"1"` to enable. Unsubscribe link in email allows per-account opt-out. |
+
+**Push notifications (ntfy.sh):**
+
+| Env var | Default | Effect |
+|---|---|---|
+| `NTFY_BASE_URL` | unset | Base URL (`https://ntfy.sh` for public; `http://<host>:8080` for self-hosted) |
+| `NTFY_TOPIC` | unset | Topic name (alphanumeric + dashes; e.g., `agent-teams-abc123`). Topics are **world-readable** — use an obscure name. |
+| `NTFY_ACCESS_TOKEN` | unset | Optional Bearer token for private self-hosted instances |
+| `PUSH_ENABLED` | `1` | Set to `"0"` to disable; `"1"` to enable |
+
+**Deep linking + opt-out tokens:**
+
+| Env var | Default | Effect |
+|---|---|---|
+| `WEB_BASE_URL` | unset | Root URL for task links in emails/notifications (e.g., `http://localhost:5431`) |
+| `SECRET_KEY` | unset | Used to sign opt-out tokens in email footer links. Set to any random 32-char string; keep it secret. |
+
+### Endpoints
+
+**Fire the daily digest manually:**
+```bash
+curl -X POST http://localhost:8456/api/digest/fire \
+  -H "X-Project-Id: 1" \
+  -H "Content-Type: application/json"
+```
+Sends digest email (if `DIGEST_EMAIL_ENABLED=1`) and push notification (if `PUSH_ENABLED=1`) with a summary of all tasks from the past 24 hours. Runs atomically — if either channel fails, both are retried on the next scheduled tick (or manual trigger). [Task #1217]
+
+**Fire an ad-hoc push notification:**
+```bash
+curl -X POST http://localhost:8456/api/push/fire \
+  -H "X-Project-Id: 1" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Build failed", "message": "3 tests broke in api/"}'
+```
+[Task #1192]
+
+**Operator unsubscribe from digest:**
+```
+GET /api/notifications/digest-optout?token=<signed-token>
+```
+The email footer includes this link with a pre-signed token. Clicking it disables `DIGEST_EMAIL_ENABLED` for that operator's project. Re-enable via API:
+```bash
+curl -X PATCH http://localhost:8456/api/projects/1 \
+  -H "X-Project-Id: 1" \
+  -H "Content-Type: application/json" \
+  -d '{"config": {"digest_email_enabled": true}}'
+```
+[Task #1450]
+
+### Setup walkthrough
+
+1. **Gmail App Password** (required for email; ignore if digest disabled):
+   - Enable 2-step verification on your Google Account.
+   - Go to [Google Account → App Passwords](https://myaccount.google.com/apppasswords).
+   - Select "Mail" and "Windows Computer" (or your platform).
+   - Google issues a 16-char password. Copy it.
+   - Add to `.env`: `GMAIL_SMTP_APP_PASSWORD=<16-char-password>`
+
+2. **ntfy topic** (required for push; ignore if push disabled):
+   - Pick an alphanumeric + dashes string at least 8 chars long (e.g., `agent-teams-a7k9j2`).
+   - Add to `.env`: `NTFY_TOPIC=agent-teams-a7k9j2`
+
+3. **Restart the api:**
+   ```bash
+   docker compose restart api
+   ```
+
+4. **Test:**
+   ```bash
+   curl -X POST http://localhost:8456/api/digest/fire -H "X-Project-Id: 1"
+   ```
+
+See [context/projects/agent-teams/shared/runbooks/env-var-setup.md](context/projects/agent-teams/shared/runbooks/env-var-setup.md) for detailed troubleshooting and self-hosted ntfy instructions.
+
+---
+
 ## Built-in subsystems
 
 The api ships several background subsystems beyond CRUD task storage:

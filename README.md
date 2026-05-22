@@ -121,6 +121,17 @@ Replace `myapp` with your project name and `C:\code\myapp` with the folder where
 
 The command registers the project in the Kanban and scaffolds the orchestration layer (agent definitions, standards, decision logs) into your project folder. It's safe to run multiple times — existing files are skipped.
 
+## Notification channels
+
+agent-teams can alert you when tasks change, feature gates activate, or human feedback is needed. Two independent channels work in parallel:
+
+- **Email digest** — Daily summary of all task activity via Gmail SMTP. Operator-configured via `.env` variables. Unsubscribe via a signed link in the email footer; re-enable via API.
+- **Push notifications** — Real-time alerts to iOS or Android via ntfy.sh (free public service or self-hosted). Fires automatically when HITL-blocking tasks (kind=`question` or `decision`) are created, or on budget threshold breaches. Topic name is your choice; obscurity provides baseline safety since ntfy topics are world-readable.
+
+Both channels pull from `projects.notification_targets` (priority-ordered list) and `tasks.notification_targets` (per-task override). See [readme_dev.md](readme_dev.md#notification-channels) for env-var setup and API endpoints; [readme_remote-access.md](readme_remote-access.md) for mobile app installation.
+
+Sent via `POST /api/digest/fire` (scheduled daily or manual trigger) and `POST /api/push/fire` (ad-hoc or event-driven). Every delivery attempt is audited to `tasks_history` with operation code `'N'`.
+
 ## What's next
 
 Recently shipped:

@@ -183,6 +183,82 @@ The repo ships two small wrappers under `bin/`:
 
 Both scripts are pure shell (PowerShell on Windows, bash elsewhere) and assume `tailscale` is on `PATH`.
 
+## Push notifications
+
+Daily task summaries and HITL alerts can be pushed to your phone via ntfy.sh — a free public notification broker. No account, no app subscriptions, minimal setup.
+
+### iOS / Android setup
+
+1. **Install the ntfy app:**
+   - **iOS:** [App Store](https://apps.apple.com/app/ntfy/id1625396347) — search "ntfy".
+   - **Android:** [Play Store](https://play.google.com/store/apps/details?id=io.heckel.ntfy) — search "ntfy".
+
+2. **Subscribe to your topic in the app:**
+   - Open the app → **Add subscription**.
+   - Enter the topic name you configured in `NTFY_TOPIC` in `.env` (e.g., `agent-teams-abc123`).
+   - Choose whether to allow notifications (recommended: yes).
+   - Tap **Save**.
+
+3. **Test from your laptop:**
+   ```bash
+   curl -d "hello world" https://ntfy.sh/your-topic-name
+   # (Replace with your actual topic.)
+   ```
+   The message should appear in the app within seconds.
+
+### Topic naming
+
+ntfy topics are **world-readable and world-writable by default**. If you use the free public `https://ntfy.sh` service, anyone who knows your topic name can see (or send fake) notifications. Mitigation:
+
+- **Use an obscure topic name** (e.g., `agent-teams-a7k9j2x1q8`) rather than `agent-teams` or `my-tasks`. A random 8+ character suffix makes brute-force discovery impractical.
+- **Self-host ntfy** (optional) — Run `docker run -p 8080:8080 binwiederhier/ntfy serve` on your server, point `NTFY_BASE_URL=http://<host>:8080` in `.env`, and add your own auth. Follow-up: Kanban #1218.
+- **Private instance** — On self-hosted, restrict topic creation to authenticated users only (ntfy server config).
+
+For most personal setups, the obscure-name approach is sufficient.
+
+## Email digest
+
+Daily task summary via Gmail SMTP relay, with operator opt-out support.
+
+### Setup
+
+1. **Gmail prerequisites:**
+   - Your account must have 2-step verification enabled.
+   - Go to [Google Account → App Passwords](https://myaccount.google.com/apppasswords) → select Mail / your platform → Google issues a 16-char password.
+   - Add to `.env`: `GMAIL_SMTP_APP_PASSWORD=<your-16-char-password>`
+
+2. **Configure delivery:**
+   - `GMAIL_SMTP_USER=your.email@gmail.com`
+   - `GMAIL_SMTP_FROM=your.email@gmail.com` (or any address that makes sense to you)
+   - `DIGEST_EMAIL_RECIPIENT=your.email@gmail.com` (where the daily digest goes)
+   - `DIGEST_EMAIL_ENABLED=1`
+
+3. **Restart:**
+   ```bash
+   docker compose restart api
+   ```
+
+### Unsubscribe
+
+Every email footer includes an **Unsubscribe** link signed with a time-bound token. Click it to opt out of future digests. Your unsubscribe preference is stored in the database and survives service restarts.
+
+To **re-enable** digest emails after opting out, contact the operator or use the API:
+```bash
+curl -X PATCH http://localhost:8456/api/projects/1 \
+  -H "X-Project-Id: 1" \
+  -H "Content-Type: application/json" \
+  -d '{"config": {"digest_email_enabled": true}}'
+```
+
+### Schedule
+
+By default, the digest fires once daily. To trigger it manually:
+```bash
+curl -X POST http://localhost:8456/api/digest/fire \
+  -H "X-Project-Id: 1" \
+  -H "Content-Type: application/json"
+```
+
 ## Smoke test
 
 End-to-end check from a second device:
