@@ -30,6 +30,7 @@ from src.routers import dashboard as dashboard_router
 from src.routers import events as events_router
 from src.routers import handoff_templates as handoff_templates_router
 from src.routers import ingest as ingest_router
+from src.routers import digest as digest_router
 from src.routers import notifications as notifications_router
 from src.routers import decisions as decisions_router
 from src.routers import push as push_router
@@ -337,6 +338,8 @@ def create_app() -> FastAPI:
     app.include_router(webhooks_router.router, prefix="/api")
     # Kanban #1327 (M4a) — email-to-task ingest webhook.
     app.include_router(ingest_router.router, prefix="/api")
+    # Kanban #1217 — daily-digest fire endpoint (Gmail SMTP).
+    app.include_router(digest_router.router, prefix="/api")
 
     return app
 

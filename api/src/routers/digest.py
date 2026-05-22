@@ -1,0 +1,126 @@
+"""HTTP router for daily-digest fire endpoint (Kanban #1217).
+
+Mounted at `/api/digest` from main.py.
+
+Cross-project endpoint — takes NO `X-Project-Id` header (parity with
+`/api/audit/daily-rollup` and `/api/dashboard` precedent). The digest
+covers all active projects, so a project-scoped header would be wrong.
+
+POST /api/digest/fire:
+  - Fetches all open AA3 audit flags across active projects.
+  - Renders subject + text + html via digest_template.
+  - Sends via GmailSmtpSender (reads creds from env at call time).
+  - Returns 200 + delivery status JSON regardless of SMTP outcome
+    (ok=False is a soft failure — the endpoint doesn't 500 on send failure).
+
+The cron infrastructure (Kanban #1283 / #1432) fires this endpoint at 18:00
+BKK; the endpoint itself is stateless and idempotent.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from datetime import date, timezone, datetime
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.db import get_session
+from src.services.digest_template import fetch_open_audit_flags, render_html, render_subject, render_text
+from src.services.notify_email import (
+    EMAIL_ENV_RECIPIENT,
+    EMAIL_ENV_USER,
+    GmailSmtpSender,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/digest", tags=["digest"])
+
+
+class DigestFireResponse(BaseModel):
+    """Response from POST /api/digest/fire.
+
+    `ok`: True when SMTP accepted the message; False when disabled or failed.
+    `detail`: Human-readable outcome string (mirrors SendResult.detail).
+    `flag_count`: Number of open audit flags included in the digest.
+    `recipient`: Email address the digest was (attempted to be) sent to.
+    `subject`: Subject line that was rendered.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool
+    detail: str
+    flag_count: int
+    recipient: str
+    subject: str
+
+
+@router.post("/fire", response_model=DigestFireResponse)
+async def fire_digest(
+    session: AsyncSession = Depends(get_session),
+) -> DigestFireResponse:
+    """Pull open flags, render digest, send via Gmail SMTP.
+
+    Returns 200 in all cases — SMTP failure is a soft failure surfaced in
+    the response body (`ok=False`, `detail` describes the failure mode) so
+    the cron infrastructure's retry logic (or lack thereof, v1) can decide
+    how to handle it.
+
+    Recipient is resolved as:
+        DIGEST_EMAIL_RECIPIENT env  → if set and non-empty, use this.
+        GMAIL_SMTP_USER env         → fallback (same address as sender).
+    When neither is set, recipient='<unset>' and the SMTP gate will catch
+    the missing GMAIL_SMTP_USER env anyway (ok=False, missing_env_*).
+    """
+    today = datetime.now(timezone.utc).date()
+
+    # Fetch open flags across active projects.
+    flags = await fetch_open_audit_flags(session)
+    flag_count = len(flags)
+
+    # Build web base URL from env — defaults to localhost (dev) so links are
+    # always absolute even when the env is unconfigured.
+    base_url = os.environ.get("WEB_BASE_URL", "http://localhost:5431").rstrip("/")
+
+    payload = {
+        "date": str(today),
+        "flags": flags,
+        "base_url": base_url,
+    }
+
+    subject = render_subject(flag_count, today)
+    text_body = render_text(payload)
+    html_body = render_html(payload)
+
+    # Resolve recipient: DIGEST_EMAIL_RECIPIENT → GMAIL_SMTP_USER → '<unset>'.
+    recipient = (
+        os.environ.get(EMAIL_ENV_RECIPIENT, "").strip()
+        or os.environ.get(EMAIL_ENV_USER, "").strip()
+        or "<unset>"
+    )
+
+    sender = GmailSmtpSender()
+    result = sender.send(
+        to=recipient,
+        subject=subject,
+        text_body=text_body,
+        html_body=html_body,
+    )
+
+    if not result.ok:
+        logger.warning(
+            "digest fire: send failed detail=%r recipient=%s flag_count=%d",
+            result.detail, recipient, flag_count,
+        )
+
+    return DigestFireResponse(
+        ok=result.ok,
+        detail=result.detail,
+        flag_count=flag_count,
+        recipient=recipient,
+        subject=subject,
+    )
