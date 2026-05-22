@@ -124,9 +124,9 @@ def test_render_html_no_external_resources() -> None:
 
 
 @pytest.mark.parametrize("count,expected", [
-    (0, "Agent-Teams digest — all clear"),
-    (1, "Agent-Teams digest — 1 flag"),
-    (5, "Agent-Teams digest — 5 flags"),
+    (0, "Agent-Teams digest - all clear"),
+    (1, "Agent-Teams digest - 1 flag"),
+    (5, "Agent-Teams digest - 5 flags"),
 ])
 def test_render_push_title(count, expected) -> None:
     assert render_push_title(count, "2026-05-22") == expected
@@ -136,6 +136,14 @@ def test_render_push_title_is_short() -> None:
     """Title should fit comfortably in a mobile notification (≤ 80 chars)."""
     title = render_push_title(99, "2026-05-22")
     assert len(title) <= 80
+
+
+def test_render_push_title_is_ascii_safe() -> None:
+    """Push title flows into ntfy X-Title HTTP header — must be pure ASCII (Kanban #1218)."""
+    for flag_count in (0, 1, 5, 10):
+        title = render_push_title(flag_count, "2026-05-22")
+        # Raises UnicodeEncodeError if any non-ASCII byte is present.
+        title.encode("ascii")
 
 
 # ---------------------------------------------------------------------------

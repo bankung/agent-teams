@@ -142,14 +142,17 @@ def render_html(payload: dict[str, Any]) -> str:
 def render_push_title(flag_count: int, date: _date | str) -> str:
     """Build a short push-notification title (≤ 80 chars).
 
+    ASCII-only: title flows into ntfy's X-Title HTTP header which rejects
+    non-ASCII characters (UnicodeEncodeError on em-dash — Kanban #1218).
+
     Examples:
-        "Agent-Teams digest — 3 flag(s)"
-        "Agent-Teams digest — all clear"
+        "Agent-Teams digest - 3 flag(s)"
+        "Agent-Teams digest - all clear"
     """
     if flag_count == 0:
-        return "Agent-Teams digest — all clear"
+        return "Agent-Teams digest - all clear"
     noun = "flag" if flag_count == 1 else "flags"
-    return f"Agent-Teams digest — {flag_count} {noun}"
+    return f"Agent-Teams digest - {flag_count} {noun}"
 
 
 def render_push_body(flags: list[Any], top_n: int = 3) -> str:
