@@ -16,6 +16,19 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-22 — Env-var wiring trap documented (root .env + compose mapping) — Kanban #1449
+**Scope:** shared / infra docs
+
+**Decision:** Wrote `shared/runbooks/env-var-setup.md` documenting the env-var flow that bit #1217 (operator put Gmail SMTP vars in `api/.env` thinking it was the right file; docker compose only reads root `.env`; vars also need to be `${VAR}`-mapped in `docker-compose.yml` service `environment:` block). Runbook covers: 3-step add-a-var workflow, restart-vs-up-d distinction, 4 gotcha categories from real incidents (trailing comments, password spaces, BOM, split-brain `.env.example`), full env-var inventory, 5-step debug checklist.
+
+**Implications:**
+- Future env-var additions reference the runbook before editing files
+- The `api/.env.example` vs root `.env.example` split-brain remains (cosmetic followup) — runbook flags it
+- `api/.env.example` header doesn't currently redirect to root; deferred to dev-devops desktop session (target-project edit, Lead can't do)
+- Antivirus-quarantine incident caught during the same window — 78 `context/` files deleted from working tree (recovered via `git restore context/`); cause suspected Bitdefender during `docker compose up -d --build api` for itsdangerous rebuild; investigation followup filed
+
+---
+
 ## 2026-05-22 — Mobile push provider pick: ntfy — Kanban #1192
 **Scope:** shared / notification
 
