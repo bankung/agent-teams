@@ -139,6 +139,51 @@ def render_html(payload: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def render_push_title(flag_count: int, date: _date | str) -> str:
+    """Build a short push-notification title (≤ 80 chars).
+
+    Examples:
+        "Agent-Teams digest — 3 flag(s)"
+        "Agent-Teams digest — all clear"
+    """
+    if flag_count == 0:
+        return "Agent-Teams digest — all clear"
+    noun = "flag" if flag_count == 1 else "flags"
+    return f"Agent-Teams digest — {flag_count} {noun}"
+
+
+def render_push_body(flags: list[Any], top_n: int = 3) -> str:
+    """Build a short push-notification body (1-2 sentences, ≤ ~200 chars).
+
+    Lists up to `top_n` project names with per-project flag counts; appends
+    an overflow note when there are more. Returns "All clear — no open flags."
+    when the list is empty.
+
+    Examples (flags from 3 distinct projects, top_n=3):
+        "Open flags: proj-a (2), proj-b (1), proj-c (1)."
+        "Open flags: proj-a (2), proj-b (1), proj-c (1). +1 more project."
+    """
+    if not flags:
+        return "All clear — no open flags."
+
+    # Aggregate per project (order-stable — flags are sorted project_id ASC).
+    project_counts: dict[str, int] = {}
+    for flag in flags:
+        name = str(flag.get("project", "?"))
+        project_counts[name] = project_counts.get(name, 0) + 1
+
+    projects = list(project_counts.items())  # [(name, count), ...]
+    shown = projects[:top_n]
+    overflow = len(projects) - len(shown)
+
+    parts = ", ".join(f"{name} ({cnt})" for name, cnt in shown)
+    body = f"Open flags: {parts}."
+    if overflow > 0:
+        noun = "project" if overflow == 1 else "projects"
+        body += f" +{overflow} more {noun}."
+    return body
+
+
 def _esc(text: str) -> str:
     """Minimal HTML entity escaping for text inserted into HTML attributes/content."""
     return (

@@ -486,6 +486,32 @@ def smtp_env(monkeypatch) -> None:
 
 
 @pytest.fixture
+def ntfy_success_mock():
+    """MagicMock behaving as a successful httpx.Client for ntfy push sends.
+
+    Shared across test_digest_router for push-channel smoke tests (Kanban #1218).
+    The mock client returns a 200 response so send_push() returns ok=True.
+    """
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.text = ""
+    client = MagicMock()
+    client.post = MagicMock(return_value=resp)
+    return client
+
+
+@pytest.fixture
+def ntfy_env(monkeypatch) -> None:
+    """Set the 3-var ntfy env triplet that enables the push send gate.
+
+    Shared across test_digest_router (Kanban #1218).
+    """
+    monkeypatch.setenv("PUSH_ENABLED", "true")
+    monkeypatch.setenv("NTFY_TOPIC", "test-topic")
+    monkeypatch.setenv("NTFY_BASE_URL", "https://ntfy.sh")
+
+
+@pytest.fixture
 async def db_session():
     """Direct AsyncSession for tests that need to read tables without a public
     HTTP endpoint (e.g., `tasks_history` for audit-row counts).

@@ -30,12 +30,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db import get_session
 from src.middleware.rate_limit import limiter
-from src.services.digest_template import fetch_open_audit_flags, render_html, render_subject, render_text
+from src.services.digest_template import (
+    fetch_open_audit_flags,
+    render_html,
+    render_push_body,
+    render_push_title,
+    render_subject,
+    render_text,
+)
 from src.services.notify_email import (
     EMAIL_ENV_RECIPIENT,
     EMAIL_ENV_USER,
     send_email,
 )
+from src.services.notify_ntfy import NTFY_ENV_ENABLED, NTFY_ENV_TOPIC, send_push
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +54,9 @@ class DigestFireResponse(BaseModel):
     """Response from POST /api/digest/fire.
 
     ok=True when SMTP accepted the message; False when disabled or failed.
-    detail mirrors SendResult.detail. flag_count, recipient, subject are
-    informational for the caller / cron log.
+    detail mirrors email SendResult.detail.
+    push_ok=True when ntfy accepted the push; push_detail mirrors push SendResult.detail.
+    flag_count, recipient, subject are informational for the caller / cron log.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -57,6 +66,8 @@ class DigestFireResponse(BaseModel):
     flag_count: int
     recipient: str
     subject: str
+    push_ok: bool = False
+    push_detail: str = "push_disabled"
 
 
 @router.post("/fire", response_model=DigestFireResponse)
@@ -101,9 +112,37 @@ async def fire_digest(
 
     if not result.ok:
         logger.warning(
-            "digest fire: send failed detail=%r recipient=%s flag_count=%d",
+            "digest fire: email send failed detail=%r recipient=%s flag_count=%d",
             result.detail, recipient, flag_count,
         )
+
+    # --- Push channel (independent of email; soft-fail) ---------------------
+    push_enabled = os.environ.get(NTFY_ENV_ENABLED, "false").strip().lower() == "true"
+    push_topic = os.environ.get(NTFY_ENV_TOPIC, "").strip()
+
+    push_ok: bool = False
+    push_detail: str = "push_disabled"
+
+    if push_enabled and push_topic:
+        push_title = render_push_title(flag_count, today)
+        push_message = render_push_body(flags)
+        click_url = base_url.rstrip("/") + "/review"
+
+        push_result = await asyncio.to_thread(
+            send_push,
+            push_message,
+            title=push_title,
+            click_url=click_url,
+        )
+        push_ok = push_result.ok
+        push_detail = push_result.detail
+
+        if not push_result.ok:
+            logger.warning(
+                "digest fire: push send failed detail=%r flag_count=%d",
+                push_result.detail, flag_count,
+            )
+    # -----------------------------------------------------------------------
 
     return DigestFireResponse(
         ok=result.ok,
@@ -111,4 +150,6 @@ async def fire_digest(
         flag_count=flag_count,
         recipient=recipient,
         subject=subject,
+        push_ok=push_ok,
+        push_detail=push_detail,
     )
