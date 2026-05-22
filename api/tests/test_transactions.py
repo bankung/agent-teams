@@ -188,21 +188,21 @@ async def test_post_transaction_extra_field_rejected(client):
 
 
 @pytest.mark.asyncio
-async def test_post_transaction_fk_to_unknown_project_returns_400(
+async def test_post_transaction_fk_to_unknown_project_returns_404(
     client, scaffold_cleanup
 ):
     # Pick a project_id that doesn't exist. Use a very large number to be safe
     # against test ordering / seed counts. Header MUST match body to clear the
-    # cross-check gate; the FK then trips at the DB.
+    # cross-check gate; the project-active guard (#1403 M2) then short-circuits.
     impossible_id = 9_999_999
     resp = await client.post(
         "/api/transactions",
         json=_txn_payload(impossible_id),
         headers={"X-Project-Id": str(impossible_id)},
     )
-    # FK violation → 400 with the locked detail.
-    assert resp.status_code == 400, resp.text
-    assert "does not exist" in resp.json()["detail"]
+    # Project-active guard (#1403 M2) short-circuits with 404 BEFORE the FK check.
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["detail"] == "project not found or inactive"
 
 
 # =============================================================================
