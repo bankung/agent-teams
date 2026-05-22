@@ -103,6 +103,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 import pytest_asyncio
@@ -460,13 +461,11 @@ def scaffold_cleanup():
 
 
 @pytest.fixture
-def smtp_success_mock() -> "MagicMock":
+def smtp_success_mock() -> MagicMock:
     """A MagicMock behaving as a successful smtplib.SMTP context manager.
 
     Shared across test_notify_email, test_digest_router, test_digest_integration.
     """
-    from unittest.mock import MagicMock
-
     smtp = MagicMock()
     smtp.__enter__ = MagicMock(return_value=smtp)
     smtp.__exit__ = MagicMock(return_value=False)

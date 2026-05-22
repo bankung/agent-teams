@@ -1,7 +1,7 @@
 """Gmail SMTP email adapter for the daily-digest channel (Kanban #1217).
 
-`GmailSmtpSender` reads credentials from environment variables at call time
-(not at construction) and never raises — every failure lands in `SendResult`.
+`send_email` reads credentials from environment variables at call time and
+never raises — every failure lands in `SendResult`.
 DIGEST_EMAIL_ENABLED=false (or unset) skips the actual SMTP send and returns
 ok=False with detail='digest_email_disabled'.
 """
@@ -35,7 +35,7 @@ GMAIL_SMTP_DEFAULT_TIMEOUT = 30  # seconds — prevents infinite hang on unrespo
 
 @dataclass
 class SendResult:
-    """Return value from GmailSmtpSender.send().
+    """Return value from send_email().
 
     ok=True means the SMTP server accepted the message (250 OK). ok=False
     means delivery was not attempted or failed; `error` carries a short
@@ -47,120 +47,112 @@ class SendResult:
     error: str | None = field(default=None)
 
 
-class GmailSmtpSender:
-    """Gmail SMTP relay implementation using smtplib + STARTTLS (port 587).
+def send_email(
+    to: str,
+    subject: str,
+    text_body: str,
+    html_body: str,
+    *,
+    smtplib_factory=None,
+) -> SendResult:
+    """Send via Gmail SMTP. Never raises — all failures land in SendResult.
 
-    Reads configuration from environment variables at call time (not at
-    construction) so tests can monkeypatch without re-instantiating. This
-    mirrors the notify_telegram / notify_web_push pattern of reading env
-    inside the send function rather than caching at module level.
+    Reads configuration from environment variables at call time (not cached)
+    to mirror the notify_telegram / notify_web_push pattern.
 
     Gate: if DIGEST_EMAIL_ENABLED is not 'true' (case-insensitive), returns
     ok=False with detail='digest_email_disabled' immediately — no SMTP call.
-    This lets tests and dev deployments skip live sends without mocking SMTP.
 
     smtplib_factory: test seam — when provided, called as
         smtplib_factory(host, port) -> SMTP-like context manager.
     If None (production), `smtplib.SMTP` is used.
     """
+    enabled = os.environ.get(EMAIL_ENV_ENABLED, "false").strip().lower()
+    if enabled != "true":
+        return SendResult(
+            ok=False,
+            detail="digest_email_disabled",
+            error=f"{EMAIL_ENV_ENABLED} is not 'true'",
+        )
 
-    def __init__(self, *, smtplib_factory=None) -> None:
-        self._smtplib_factory = smtplib_factory
+    host = os.environ.get(EMAIL_ENV_HOST, GMAIL_SMTP_DEFAULT_HOST).strip()
+    port_raw = os.environ.get(EMAIL_ENV_PORT, str(GMAIL_SMTP_DEFAULT_PORT)).strip()
+    user = os.environ.get(EMAIL_ENV_USER, "").strip()
+    app_password = os.environ.get(EMAIL_ENV_APP_PASSWORD, "").strip()
+    from_addr = os.environ.get(EMAIL_ENV_FROM, user).strip() or user
 
-    def send(
-        self,
-        to: str,
-        subject: str,
-        text_body: str,
-        html_body: str,
-    ) -> SendResult:
-        """Send via Gmail SMTP. See class docstring for contract."""
-        enabled = os.environ.get(EMAIL_ENV_ENABLED, "false").strip().lower()
-        if enabled != "true":
+    # Env gate — fail fast with a clear diagnostic before attempting SMTP.
+    for env_name, env_val in (
+        (EMAIL_ENV_USER, user),
+        (EMAIL_ENV_APP_PASSWORD, app_password),
+    ):
+        if not env_val:
             return SendResult(
                 ok=False,
-                detail="digest_email_disabled",
-                error=f"{EMAIL_ENV_ENABLED} is not 'true'",
+                detail=f"missing_env_{env_name}",
+                error=f"Environment variable {env_name} is not set",
             )
 
-        host = os.environ.get(EMAIL_ENV_HOST, GMAIL_SMTP_DEFAULT_HOST).strip()
-        port_raw = os.environ.get(EMAIL_ENV_PORT, str(GMAIL_SMTP_DEFAULT_PORT)).strip()
-        user = os.environ.get(EMAIL_ENV_USER, "").strip()
-        app_password = os.environ.get(EMAIL_ENV_APP_PASSWORD, "").strip()
-        from_addr = os.environ.get(EMAIL_ENV_FROM, user).strip() or user
+    try:
+        port = int(port_raw)
+    except (ValueError, TypeError):
+        return SendResult(
+            ok=False,
+            detail=f"invalid_port: {port_raw!r}",
+            error=f"{EMAIL_ENV_PORT}={port_raw!r} is not an integer",
+        )
 
-        # Env gate — fail fast with a clear diagnostic before attempting SMTP.
-        for env_name, env_val in (
-            (EMAIL_ENV_USER, user),
-            (EMAIL_ENV_APP_PASSWORD, app_password),
-        ):
-            if not env_val:
-                return SendResult(
-                    ok=False,
-                    detail=f"missing_env_{env_name}",
-                    error=f"Environment variable {env_name} is not set",
-                )
+    # Build MIME/multipart message with text + HTML alternatives.
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    msg["To"] = to
+    msg.attach(MIMEText(text_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-        try:
-            port = int(port_raw)
-        except (ValueError, TypeError):
-            return SendResult(
-                ok=False,
-                detail=f"invalid_port: {port_raw!r}",
-                error=f"{EMAIL_ENV_PORT}={port_raw!r} is not an integer",
-            )
+    smtp_factory = smtplib_factory or smtplib.SMTP
 
-        # Build MIME/multipart message with text + HTML alternatives.
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = from_addr
-        msg["To"] = to
-        msg.attach(MIMEText(text_body, "plain", "utf-8"))
-        msg.attach(MIMEText(html_body, "html", "utf-8"))
-
-        smtp_factory = self._smtplib_factory or smtplib.SMTP
-
-        try:
-            with smtp_factory(host, port, timeout=GMAIL_SMTP_DEFAULT_TIMEOUT) as smtp:
-                smtp.ehlo()
-                smtp.starttls()
-                smtp.ehlo()
-                smtp.login(user, app_password)
-                smtp.sendmail(from_addr, [to], msg.as_string())
-            logger.info(
-                "notify_email: sent to=%s subject=%r host=%s port=%d",
-                to, subject, host, port,
-            )
-            return SendResult(ok=True, detail="sent")
-        except smtplib.SMTPAuthenticationError as exc:
-            logger.warning(
-                "notify_email: auth_error to=%s type=%s code=%s",
-                to, type(exc).__name__, exc.smtp_code,
-            )
-            return SendResult(
-                ok=False,
-                detail="smtp_auth_error",
-                error=f"SMTPAuthenticationError({exc.smtp_code})",
-            )
-        except smtplib.SMTPException as exc:
-            logger.warning("notify_email: smtp_error to=%s err=%r", to, exc)
-            return SendResult(
-                ok=False,
-                detail=f"smtp_error: {type(exc).__name__}",
-                error=repr(exc),
-            )
-        except OSError as exc:
-            # Covers ConnectionRefusedError, TimeoutError, socket errors, etc.
-            logger.warning("notify_email: network_error to=%s err=%r", to, exc)
-            return SendResult(
-                ok=False,
-                detail=f"network_error: {type(exc).__name__}",
-                error=repr(exc),
-            )
-        except Exception as exc:  # noqa: BLE001 — docstring contract: MUST NOT raise
-            logger.warning("notify_email: unexpected_error to=%s err=%r", to, exc)
-            return SendResult(
-                ok=False,
-                detail=f"unexpected_error: {type(exc).__name__}",
-                error=repr(exc),
-            )
+    try:
+        with smtp_factory(host, port, timeout=GMAIL_SMTP_DEFAULT_TIMEOUT) as smtp:
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.ehlo()
+            smtp.login(user, app_password)
+            smtp.sendmail(from_addr, [to], msg.as_string())
+        logger.info(
+            "notify_email: sent to=%s subject=%r host=%s port=%d",
+            to, subject, host, port,
+        )
+        return SendResult(ok=True, detail="sent")
+    except smtplib.SMTPAuthenticationError as exc:
+        logger.warning(
+            "notify_email: auth_error to=%s type=%s code=%s",
+            to, type(exc).__name__, exc.smtp_code,
+        )
+        return SendResult(
+            ok=False,
+            detail="smtp_auth_error",
+            error=f"SMTPAuthenticationError({exc.smtp_code})",
+        )
+    except smtplib.SMTPException as exc:
+        logger.warning("notify_email: smtp_error to=%s err=%r", to, exc)
+        return SendResult(
+            ok=False,
+            detail=f"smtp_error: {type(exc).__name__}",
+            error=repr(exc),
+        )
+    except OSError as exc:
+        # Covers ConnectionRefusedError, TimeoutError, socket errors, etc.
+        logger.warning("notify_email: network_error to=%s err=%r", to, exc)
+        return SendResult(
+            ok=False,
+            detail=f"network_error: {type(exc).__name__}",
+            error=repr(exc),
+        )
+    except Exception as exc:  # noqa: BLE001 — docstring contract: MUST NOT raise
+        logger.warning("notify_email: unexpected_error to=%s err=%r", to, exc)
+        return SendResult(
+            ok=False,
+            detail=f"unexpected_error: {type(exc).__name__}",
+            error=repr(exc),
+        )

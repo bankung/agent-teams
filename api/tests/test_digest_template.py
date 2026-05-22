@@ -50,6 +50,7 @@ def test_render_text_no_flags() -> None:
     assert "2026-05-22" in text
     assert "No open audit flags" in text
     assert "streak=" not in text
+    assert "agent-teams" in text.lower()
 
 
 def test_render_text_contains_flag_details() -> None:
@@ -59,11 +60,6 @@ def test_render_text_contains_flag_details() -> None:
     assert "streak=1" in text
     assert "severity=high" in text
     assert "/review?flag=100" in text
-
-
-def test_render_text_includes_footer() -> None:
-    text = render_text(_sample_payload(0))
-    assert "agent-teams" in text.lower()
 
 
 # ---------------------------------------------------------------------------

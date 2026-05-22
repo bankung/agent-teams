@@ -1,4 +1,4 @@
-"""Kanban #1217 — GmailSmtpSender unit tests.
+"""Kanban #1217 — send_email unit tests.
 
 Mocked smtplib (via test-seam factory arg) — no real SMTP.
 
@@ -14,6 +14,7 @@ Covers:
 from __future__ import annotations
 
 import smtplib
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -21,40 +22,36 @@ from src.services.notify_email import (
     EMAIL_ENV_APP_PASSWORD,
     EMAIL_ENV_ENABLED,
     EMAIL_ENV_USER,
-    GmailSmtpSender,
+    send_email,
 )
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helper
 # ---------------------------------------------------------------------------
 
 
-def _make_sender(exc: Exception | None = None):
-    """Return (sender, smtp_mock). If exc is provided, __enter__ raises it."""
-    from unittest.mock import MagicMock
+def _call_send(factory, **send_kwargs):
+    """Call send_email with smtplib_factory=factory. Extra kwargs override defaults."""
+    defaults = dict(
+        to="dest@example.com",
+        subject="Test subject",
+        text_body="Plain text body",
+        html_body="<p>HTML body</p>",
+    )
+    defaults.update(send_kwargs)
+    return send_email(**defaults, smtplib_factory=factory)
 
+
+def _make_factory(exc: Exception | None = None):
+    """Return (factory, smtp_mock). If exc is provided, __enter__ raises it."""
     smtp_mock = MagicMock()
     smtp_mock.__enter__ = MagicMock(return_value=smtp_mock)
     smtp_mock.__exit__ = MagicMock(return_value=False)
     if exc is not None:
         smtp_mock.__enter__.side_effect = exc
     factory = MagicMock(return_value=smtp_mock)
-    sender = GmailSmtpSender(smtplib_factory=factory)
-    return sender, smtp_mock
-
-
-def _make_login_raising_sender(exc: Exception):
-    """Return (sender, smtp_mock) where smtp.login() raises exc."""
-    from unittest.mock import MagicMock
-
-    smtp_mock = MagicMock()
-    smtp_mock.__enter__ = MagicMock(return_value=smtp_mock)
-    smtp_mock.__exit__ = MagicMock(return_value=False)
-    smtp_mock.login.side_effect = exc
-    factory = MagicMock(return_value=smtp_mock)
-    sender = GmailSmtpSender(smtplib_factory=factory)
-    return sender, smtp_mock
+    return factory, smtp_mock
 
 
 # ---------------------------------------------------------------------------
@@ -67,13 +64,8 @@ def test_send_happy_path(monkeypatch) -> None:
     monkeypatch.setenv(EMAIL_ENV_USER, "test@gmail.com")
     monkeypatch.setenv(EMAIL_ENV_APP_PASSWORD, "app-pw-16-chars-x")
 
-    sender, smtp_mock = _make_sender()
-    result = sender.send(
-        to="dest@example.com",
-        subject="Test subject",
-        text_body="Plain text body",
-        html_body="<p>HTML body</p>",
-    )
+    factory, smtp_mock = _make_factory()
+    result = _call_send(factory)
 
     assert result.ok is True
     assert result.detail == "sent"
@@ -99,8 +91,8 @@ def test_send_disabled_returns_ok_false(monkeypatch, env_val, use_delenv) -> Non
     monkeypatch.setenv(EMAIL_ENV_USER, "test@gmail.com")
     monkeypatch.setenv(EMAIL_ENV_APP_PASSWORD, "app-pw-16-chars-x")
 
-    sender, smtp_mock = _make_sender()
-    result = sender.send("d@e.com", "subj", "text", "<p>html</p>")
+    factory, smtp_mock = _make_factory()
+    result = _call_send(factory)
 
     assert result.ok is False
     assert result.detail == "digest_email_disabled"
@@ -122,8 +114,8 @@ def test_send_missing_env_returns_ok_false(monkeypatch, var_to_delete, expected_
     monkeypatch.setenv(EMAIL_ENV_APP_PASSWORD, "app-pw-16-chars-x")
     monkeypatch.delenv(var_to_delete, raising=False)
 
-    sender, _ = _make_sender()
-    result = sender.send("d@e.com", "subj", "text", "<p>html</p>")
+    factory, _ = _make_factory()
+    result = _call_send(factory)
 
     assert result.ok is False
     assert result.detail == expected_detail
@@ -139,10 +131,13 @@ def test_send_auth_error_returns_ok_false(monkeypatch) -> None:
     monkeypatch.setenv(EMAIL_ENV_USER, "test@gmail.com")
     monkeypatch.setenv(EMAIL_ENV_APP_PASSWORD, "wrong-password-xxxxx")
 
-    sender, _ = _make_login_raising_sender(
-        smtplib.SMTPAuthenticationError(535, b"5.7.8 Bad credentials")
-    )
-    result = sender.send("d@e.com", "subj", "text", "<p>html</p>")
+    # login() raises, not __enter__
+    smtp_mock = MagicMock()
+    smtp_mock.__enter__ = MagicMock(return_value=smtp_mock)
+    smtp_mock.__exit__ = MagicMock(return_value=False)
+    smtp_mock.login.side_effect = smtplib.SMTPAuthenticationError(535, b"5.7.8 Bad credentials")
+    factory = MagicMock(return_value=smtp_mock)
+    result = _call_send(factory)
 
     assert result.ok is False
     assert result.detail == "smtp_auth_error"
@@ -159,8 +154,8 @@ def test_send_network_error_returns_ok_false(monkeypatch) -> None:
     monkeypatch.setenv(EMAIL_ENV_USER, "test@gmail.com")
     monkeypatch.setenv(EMAIL_ENV_APP_PASSWORD, "app-pw-16-chars-x")
 
-    sender, _ = _make_sender(exc=ConnectionRefusedError("refused"))
-    result = sender.send("d@e.com", "subj", "text", "<p>html</p>")
+    factory, _ = _make_factory(exc=ConnectionRefusedError("refused"))
+    result = _call_send(factory)
 
     assert result.ok is False
     assert "network_error" in result.detail

@@ -9,7 +9,7 @@ covers all active projects, so a project-scoped header would be wrong.
 POST /api/digest/fire:
   - Fetches all open AA3 audit flags across active projects.
   - Renders subject + text + html via digest_template.
-  - Sends via GmailSmtpSender (reads creds from env at call time).
+  - Sends via send_email (reads creds from env at call time).
   - Returns 200 + delivery status JSON regardless of SMTP outcome
     (ok=False is a soft failure — the endpoint doesn't 500 on send failure).
 
@@ -34,7 +34,7 @@ from src.services.digest_template import fetch_open_audit_flags, render_html, re
 from src.services.notify_email import (
     EMAIL_ENV_RECIPIENT,
     EMAIL_ENV_USER,
-    GmailSmtpSender,
+    send_email,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,14 +97,7 @@ async def fire_digest(
         or "<unset>"
     )
 
-    sender = GmailSmtpSender()
-    result = await asyncio.to_thread(
-        sender.send,
-        recipient,
-        subject,
-        text_body,
-        html_body,
-    )
+    result = await asyncio.to_thread(send_email, recipient, subject, text_body, html_body)
 
     if not result.ok:
         logger.warning(
