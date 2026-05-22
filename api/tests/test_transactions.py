@@ -504,7 +504,7 @@ async def test_get_transactions_on_soft_deleted_project_returns_404(
 
     # Soft-delete the project.
     del_resp = await client.delete(f"/api/projects/{project_id}")
-    assert del_resp.status_code == 200, del_resp.text
+    assert del_resp.status_code == 204, del_resp.text
 
     resp = await client.get("/api/transactions", headers=headers)
     assert resp.status_code == 404, resp.text
@@ -523,7 +523,7 @@ async def test_post_transaction_on_soft_deleted_project_returns_404(
 
     # Soft-delete the project.
     del_resp = await client.delete(f"/api/projects/{project_id}")
-    assert del_resp.status_code == 200, del_resp.text
+    assert del_resp.status_code == 204, del_resp.text
 
     resp = await client.post(
         "/api/transactions",
