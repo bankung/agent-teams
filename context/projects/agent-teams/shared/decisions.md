@@ -16,6 +16,68 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-22 — Mobile push provider pick: ntfy — Kanban #1192
+**Scope:** shared / notification
+
+**Decision:** ntfy picked over Pushover / APNs / Pushy. Code work blocked on operator infra (topic name + iOS/Android app install + optional self-host).
+
+**Rationale:**
+- **ntfy**: free; HTTP-based (curl-able); self-hostable via Docker (fits Tailscale model); no Apple Developer account; no custom app build. iOS/Android apps exist (free). Cons: 3rd-party app on phone (not OS-native), iOS app UX is functional-not-polished.
+- **Pushover** (alternative): $5 one-time per platform; polished native UX; reliable delivery; closed-source. Acceptable upgrade if ntfy UX is rough.
+- **APNs**: requires Apple Developer account ($99/yr) + custom iOS app build + push entitlement. Major operator-cost; not justified for personal use.
+- **Pushy**: $19/mo + still requires own app; commercial managed proxy. Wrong scale for personal-niche v1.
+
+**Implementation pattern (when infra ready):** `notify_ntfy.py` at `api/src/services/` mirrors `notify_telegram.py` / `notify_web_push.py` / `notify_email.py` (the latter just landed via #1217). EmailSender-style interface extended to push channel. Provider swap = 1 file.
+
+**Implications:**
+- #1218 (push digest) gates on #1192 infra setup
+- Tailscale half of #1192 is operator-side: install Tailscale on agent-teams host + phone; secures phone-to-API direct access. Code-side just exposes the existing API endpoints; no Tailscale-specific code needed.
+- Operator-action checklist filed inline in #1192 status_change_reason (4 steps)
+
+---
+
+## 2026-05-22 — Cron scheduling: Path A pick + 5 standard schedules + quiet hours parking — Kanban #1283
+**Scope:** shared / scheduling
+
+**Decision:** Path A (harness-side `mcp__scheduled-tasks__`) picked for v1. agent-teams DB seeds 5 task-templates (`is_template=true`, `recurrence_rule` set, `recurrence_timezone=Asia/Bangkok`) as the declarative source-of-truth for what should fire when. Harness `mcp__scheduled-tasks__` entries become the execution engine (created Day-0 via the same Lead, or deferred to operator-driven `create_scheduled_task` calls).
+
+**Path A rationale:** zero infra build (tool exists out-of-box). Acknowledged con: schedules only fire while Claude Code is running. Mitigated by (a) v1 operator runs CC on a host that stays up most active hours; (b) promote to Path B (#852 langgraph worker as cron executor) when worker activates — DB templates already exist, only the executor swaps.
+
+**5 standard schedules** (cron expressions in Asia/Bangkok local time):
+- `0 8 * * *` — 08:00 daily — secretary email triage (Pattern 1)
+- `0 12 * * *` — 12:00 daily — news / RSS digest (Pattern 6)
+- `0 18 * * *` — 18:00 daily — Lead synthesizes day's digest (Pattern 4)
+- `0 23 * * *` — 23:00 daily — project-auditor sweep (per #1213)
+- `0 10 * * 0` — Sun 10:00 weekly — cross-channel rollup (Pattern 7)
+
+**Quiet hours JSONB placement:** parked under `projects.health_thresholds.quiet_hours` (existing JSONB column; semantic mismatch acknowledged — health_thresholds is for health-check alerting, but it's the only extant JSONB on `projects` that doesn't already have a different purpose). v1 shape:
+```json
+{
+  "quiet_hours": {
+    "start": "22:00",
+    "end": "07:00",
+    "tz": "Asia/Bangkok",
+    "emergency_override_allowed": true
+  }
+}
+```
+Followup: promote to dedicated `projects.scheduling_config` JSONB column via migration when scheduling concerns expand beyond quiet_hours (per-schedule overrides, holiday calendar, blackout windows). Filed as followup task on #1283 closure.
+
+**Override mechanism (AC4) — uses existing endpoints, no new build:**
+- Disable a schedule template: `PATCH /api/tasks/<template_id>` with `{"is_template": false}`
+- Adjust cron: `PATCH /api/tasks/<template_id>` with `{"recurrence_rule": "<new cron>"}`
+- One-off trigger: `PATCH /api/tasks/<template_id>` with `{"next_fire_at": "<ISO timestamp>"}`, OR create a clone task with `parent_task_id=<template_id>`
+- Harness MCP side: `mcp__scheduled-tasks__update_scheduled_task(taskId=..., cronExpression=..., enabled=...)`
+
+**Implications:**
+- 5 task-templates seeded as Kanban task ids on POST (rendered in #1283 close-out)
+- `projects.health_thresholds` PATCHed on project_id=1 with `quiet_hours` JSON shape above
+- Smoke test (AC5) deferred to a followup — register +2min schedule + verify fire + quiet-hours skip
+- When #852 langgraph worker activates, the worker becomes cron executor reading these templates; harness MCP entries can be retired then
+- Path A→B migration cost is low (DB templates unchanged; new executor reads same `recurrence_rule`/`recurrence_timezone` columns)
+
+---
+
 ## 2026-05-20 — Compact + reward-hacking pass on dev-*.md agents — Kanban #1293 PILOT GATE
 **Scope:** agent prompts / methodology
 **Status:** PILOT LANDED — operator review required BEFORE batch (per AC11). Files in place: `.claude/agents/_dev-shared.md` (90L NEW) + `.claude/agents/dev-backend.md` (102L, was 98L → +4 net; +reward-hacking-self-check + boundary clause + migration-timing pointer, –raw-SQL boilerplate to shared). Standards draft staged at `_scratch/standards-draft-reward-hacking-patterns.md` (187L, 9 patterns A-I) for human promotion to `context/standards/general/reward-hacking-patterns.md`.
