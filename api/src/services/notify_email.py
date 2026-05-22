@@ -1,19 +1,9 @@
 """Gmail SMTP email adapter for the daily-digest channel (Kanban #1217).
 
-Abstract `EmailSender` base + `GmailSmtpSender` implementation.
-Provider swap = replace the concrete class + update the `digest.py` router
-instantiation — no other call-site changes needed.
-
-Contract — `send(to, subject, text_body, html_body) -> SendResult`:
-- `ok=True` on a successful SMTP transaction (250 response from the relay).
-- `ok=False` on every failure (auth error, network, disabled via env).
-
-Never raises — every failure lands in `SendResult.error` so callers stay
-linear (same posture as notify_telegram / notify_web_push).
-
-DIGEST_EMAIL_ENABLED=false (or unset) skips the actual SMTP send and
-returns ok=False with detail='digest_email_disabled'. Tests use this flag
-(or monkeypatch the SMTP call) to avoid real outbound connections.
+`GmailSmtpSender` reads credentials from environment variables at call time
+(not at construction) and never raises — every failure lands in `SendResult`.
+DIGEST_EMAIL_ENABLED=false (or unset) skips the actual SMTP send and returns
+ok=False with detail='digest_email_disabled'.
 """
 
 from __future__ import annotations
@@ -21,7 +11,6 @@ from __future__ import annotations
 import logging
 import os
 import smtplib
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -46,7 +35,7 @@ GMAIL_SMTP_DEFAULT_TIMEOUT = 30  # seconds — prevents infinite hang on unrespo
 
 @dataclass
 class SendResult:
-    """Return value from EmailSender.send().
+    """Return value from GmailSmtpSender.send().
 
     ok=True means the SMTP server accepted the message (250 OK). ok=False
     means delivery was not attempted or failed; `error` carries a short
@@ -58,37 +47,7 @@ class SendResult:
     error: str | None = field(default=None)
 
 
-class EmailSender(ABC):
-    """Abstract base for email senders.
-
-    Concrete implementations swap the backend (SMTP, SendGrid, SES, etc.)
-    without changing the call-site in digest.py.
-    """
-
-    @abstractmethod
-    def send(
-        self,
-        to: str,
-        subject: str,
-        text_body: str,
-        html_body: str,
-    ) -> SendResult:
-        """Send an email with plaintext + HTML alternatives.
-
-        Args:
-            to:        Recipient email address.
-            subject:   Email subject line.
-            text_body: Plaintext body (required — spam-filter hygiene).
-            html_body: HTML body (the visual form; servers that can't render
-                       HTML fall back to text_body).
-
-        Returns:
-            SendResult with ok=True on success, ok=False + error on failure.
-            MUST NOT raise — failures must be captured into SendResult.
-        """
-
-
-class GmailSmtpSender(EmailSender):
+class GmailSmtpSender:
     """Gmail SMTP relay implementation using smtplib + STARTTLS (port 587).
 
     Reads configuration from environment variables at call time (not at
@@ -175,8 +134,8 @@ class GmailSmtpSender(EmailSender):
             return SendResult(ok=True, detail="sent")
         except smtplib.SMTPAuthenticationError as exc:
             logger.warning(
-                "notify_email: auth_error to=%s err=%s type=%s code=%s",
-                to, type(exc).__name__, type(exc).__name__, exc.smtp_code,
+                "notify_email: auth_error to=%s type=%s code=%s",
+                to, type(exc).__name__, exc.smtp_code,
             )
             return SendResult(
                 ok=False,

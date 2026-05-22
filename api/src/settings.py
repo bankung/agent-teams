@@ -60,19 +60,8 @@ class Settings(BaseSettings):
     vapid_private_key: str = Field(default="", alias="VAPID_PRIVATE_KEY")
     vapid_subject: str = Field(default="", alias="VAPID_SUBJECT")
 
-    # Kanban #1217 — Gmail SMTP relay for daily-digest email channel.
-    # Operator generates a 16-char app password via Google Account → Security →
-    # App Passwords (requires 2FA). The private app_password MUST NOT be committed.
-    # Defaults are empty so an unconfigured deployment gets ok=False with
-    # detail='missing_env_GMAIL_SMTP_*' (same posture as VAPID / TELEGRAM env gates).
-    # DIGEST_EMAIL_ENABLED=false (default) skips the SMTP send entirely.
-    gmail_smtp_host: str = Field(default="smtp.gmail.com", alias="GMAIL_SMTP_HOST")
-    gmail_smtp_port: int = Field(default=587, alias="GMAIL_SMTP_PORT")
-    gmail_smtp_user: str = Field(default="", alias="GMAIL_SMTP_USER")
-    gmail_smtp_app_password: str = Field(default="", alias="GMAIL_SMTP_APP_PASSWORD")
-    gmail_smtp_from: str = Field(default="", alias="GMAIL_SMTP_FROM")
-    digest_email_recipient: str = Field(default="", alias="DIGEST_EMAIL_RECIPIENT")
-    digest_email_enabled: bool = Field(default=False, alias="DIGEST_EMAIL_ENABLED")
+    # Gmail SMTP + digest env vars are read directly via os.environ.get in
+    # notify_email.py (matches notify_telegram.py pattern); intentionally not parsed into Settings.
 
     # Kanban #1011 (2026-05-20): HITL aging nudge cron cadence.
     # How frequently the nudge scanner runs in minutes. Default 30.

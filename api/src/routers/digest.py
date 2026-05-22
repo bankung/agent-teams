@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import date, timezone, datetime
+from datetime import timezone, datetime
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict
@@ -45,11 +45,9 @@ router = APIRouter(prefix="/digest", tags=["digest"])
 class DigestFireResponse(BaseModel):
     """Response from POST /api/digest/fire.
 
-    `ok`: True when SMTP accepted the message; False when disabled or failed.
-    `detail`: Human-readable outcome string (mirrors SendResult.detail).
-    `flag_count`: Number of open audit flags included in the digest.
-    `recipient`: Email address the digest was (attempted to be) sent to.
-    `subject`: Subject line that was rendered.
+    ok=True when SMTP accepted the message; False when disabled or failed.
+    detail mirrors SendResult.detail. flag_count, recipient, subject are
+    informational for the caller / cron log.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -70,15 +68,7 @@ async def fire_digest(
     """Pull open flags, render digest, send via Gmail SMTP.
 
     Returns 200 in all cases — SMTP failure is a soft failure surfaced in
-    the response body (`ok=False`, `detail` describes the failure mode) so
-    the cron infrastructure's retry logic (or lack thereof, v1) can decide
-    how to handle it.
-
-    Recipient is resolved as:
-        DIGEST_EMAIL_RECIPIENT env  → if set and non-empty, use this.
-        GMAIL_SMTP_USER env         → fallback (same address as sender).
-    When neither is set, recipient='<unset>' and the SMTP gate will catch
-    the missing GMAIL_SMTP_USER env anyway (ok=False, missing_env_*).
+    the response body (ok=False, detail describes the failure mode).
     """
     today = datetime.now(timezone.utc).date()
 

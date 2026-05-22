@@ -16,20 +16,13 @@ from src.services.digest_template import render_html, render_subject, render_tex
 # ---------------------------------------------------------------------------
 
 
-def test_render_subject_zero_flags() -> None:
-    result = render_subject(0, "2026-05-22")
-    assert result == "Digest 2026-05-22 — no open flags"
-
-
-def test_render_subject_one_flag() -> None:
-    result = render_subject(1, "2026-05-22")
-    assert "1 open flag" in result
-    assert "flags" not in result.replace("open flag", "")  # singular
-
-
-def test_render_subject_many_flags() -> None:
-    result = render_subject(5, "2026-05-22")
-    assert "5 open flags" in result
+@pytest.mark.parametrize("count,expected", [
+    (0, "Digest 2026-05-22 — no open flags"),
+    (1, "Digest 2026-05-22 — 1 open flag"),
+    (5, "Digest 2026-05-22 — 5 open flags"),
+])
+def test_render_subject(count, expected) -> None:
+    assert render_subject(count, "2026-05-22") == expected
 
 
 # ---------------------------------------------------------------------------
@@ -53,11 +46,9 @@ def _sample_payload(n_flags: int = 2, base_url: str = "http://localhost:5431") -
 
 
 def test_render_text_no_flags() -> None:
-    payload = {"date": "2026-05-22", "flags": [], "base_url": "http://localhost:5431"}
-    text = render_text(payload)
+    text = render_text(_sample_payload(0))
     assert "2026-05-22" in text
     assert "No open audit flags" in text
-    # Ensure no flag-row junk
     assert "streak=" not in text
 
 
@@ -67,7 +58,6 @@ def test_render_text_contains_flag_details() -> None:
     assert "proj-0" in text
     assert "streak=1" in text
     assert "severity=high" in text
-    # Deep link present
     assert "/review?flag=100" in text
 
 
@@ -82,8 +72,7 @@ def test_render_text_includes_footer() -> None:
 
 
 def test_render_html_no_flags_produces_valid_outer_structure() -> None:
-    payload = {"date": "2026-05-22", "flags": [], "base_url": "http://localhost:5431"}
-    html = render_html(payload)
+    html = render_html(_sample_payload(0))
     assert "<!DOCTYPE html>" in html
     assert "<body" in html
     assert "</html>" in html
@@ -92,7 +81,6 @@ def test_render_html_no_flags_produces_valid_outer_structure() -> None:
 
 def test_render_html_with_flags_contains_links() -> None:
     html = render_html(_sample_payload(2, "http://localhost:5431"))
-    # Deep link href
     assert "http://localhost:5431/review?flag=100" in html
     assert "Review flag #100" in html
 
@@ -123,6 +111,5 @@ def test_render_html_no_external_resources() -> None:
     """Spam hygiene: no external images or remote CSS in the output."""
     html = render_html(_sample_payload(3))
     assert "http" not in html.replace("http://localhost:5431", "REPLACED")
-    # No src= attributes pointing at external resources
     assert "<img" not in html
     assert "@import" not in html

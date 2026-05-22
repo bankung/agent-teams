@@ -1,28 +1,13 @@
 """Daily-digest email template renderer and open-flags query helper (Kanban #1217).
 
 Two responsibilities:
-1. Template rendering: `render_subject`, `render_text`, `render_html` — turn
-   a `DigestPayload` dict into email-ready strings.
-2. Open-flags query: `fetch_open_audit_flags` — return flag task summaries
-   across all active (non-killed, non-paused) projects for digest composition.
+1. Template rendering: `render_subject`, `render_text`, `render_html`.
+2. Open-flags query: `fetch_open_audit_flags` — flag task summaries across
+   all active (non-killed, non-paused) projects.
 
-Template design constraints (spam hygiene):
-- NO external images or tracking pixels.
-- Minimal inline CSS — only safe text properties.
-- Plaintext alternative MUST present the same information as HTML.
-- Deep links use the format `/review?flag=<id>` which the FE serves at
-  `web/app/review/page.tsx`.
-
-DigestPayload shape (dict keys used by the renderers):
-    date       : str  — ISO date string, e.g. "2026-05-22"
-    flags      : list[dict] — each element has:
-                   id        : int
-                   project   : str   — project name
-                   title     : str   — flag task title (truncated to 120 chars)
-                   streak    : int   — breach_streak_days from question_payload
-                   severity  : str   — from latest_audit_summary.severity
-                   verdict   : str   — from latest_audit_summary.verdict
-    base_url   : str  — web app base URL for deep links, e.g. "http://localhost:5431"
+Template design constraints (spam hygiene): no external images/tracking pixels,
+minimal inline CSS, plaintext alternative mirrors HTML.
+Deep links: `/review?flag=<id>` served at `web/app/review/page.tsx`.
 """
 
 from __future__ import annotations
@@ -58,21 +43,20 @@ def render_subject(flag_count: int, date: _date | str) -> str:
     return f"Digest {date_str} — {flag_count} open {noun}"
 
 
+def _unpack_flag(flag: dict[str, Any], base_url: str) -> tuple[Any, str, str, Any, str, str, str]:
+    """Extract the 7 display fields from a flag dict + compose the deep link."""
+    fid = flag.get("id", "?")
+    project = flag.get("project", "?")
+    title = str(flag.get("title", ""))[:120]
+    streak = flag.get("streak", 1)
+    severity = flag.get("severity") or "unspecified"
+    verdict = flag.get("verdict") or "review"
+    link = base_url + _FLAG_DEEP_LINK_PATH.format(id=fid)
+    return fid, project, title, streak, severity, verdict, link
+
+
 def render_text(payload: dict[str, Any]) -> str:
-    """Render the digest as plain text.
-
-    Structure:
-        Agent-Teams Daily Digest — <date>
-        ===================================
-
-        Open audit flags (<n>):
-          - [#<id>] <project>: <title> (streak=<n>, severity=<s>, verdict=<v>)
-            Deep link: <base_url>/review?flag=<id>
-
-        (or: "No open audit flags today.")
-
-        Footer.
-    """
+    """Render the digest as plain text."""
     date_str = payload.get("date", "")
     flags: list[dict[str, Any]] = payload.get("flags") or []
     base_url = (payload.get("base_url") or "").rstrip("/")
@@ -88,13 +72,7 @@ def render_text(payload: dict[str, Any]) -> str:
     else:
         lines.append(f"Open audit flags ({len(flags)}):")
         for flag in flags:
-            fid = flag.get("id", "?")
-            project = flag.get("project", "?")
-            title = str(flag.get("title", ""))[:120]
-            streak = flag.get("streak", 1)
-            severity = flag.get("severity") or "unspecified"
-            verdict = flag.get("verdict") or "review"
-            link = base_url + _FLAG_DEEP_LINK_PATH.format(id=fid)
+            fid, project, title, streak, severity, verdict, link = _unpack_flag(flag, base_url)
             lines.append(
                 f"  - [#{fid}] {project}: {title}"
                 f" (streak={streak}, severity={severity}, verdict={verdict})"
@@ -111,29 +89,10 @@ def render_text(payload: dict[str, Any]) -> str:
 
 
 def render_html(payload: dict[str, Any]) -> str:
-    """Render the digest as minimal HTML suitable for email delivery.
-
-    Constraints (spam hygiene):
-    - No external resources (no images, no remote CSS).
-    - Minimal inline styles (font-family, color, padding) only.
-    - Table layout for flag rows — safe in Gmail / Outlook / Hotmail.
-    - All links are absolute (deep links use base_url).
-    """
+    """Render the digest as minimal HTML suitable for email delivery."""
     date_str = payload.get("date", "")
     flags: list[dict[str, Any]] = payload.get("flags") or []
     base_url = (payload.get("base_url") or "").rstrip("/")
-
-    # Inline style constants — minimal, safe subset.
-    body_style = (
-        "font-family: Arial, Helvetica, sans-serif; "
-        "font-size: 14px; color: #222; "
-        "max-width: 600px; margin: 0 auto; padding: 16px;"
-    )
-    h1_style = "font-size: 18px; color: #333; border-bottom: 1px solid #ddd; padding-bottom: 8px;"
-    flag_row_style = "padding: 8px 0; border-bottom: 1px solid #eee;"
-    meta_style = "font-size: 12px; color: #777;"
-    link_style = "color: #1a73e8;"
-    footer_style = "font-size: 12px; color: #aaa; margin-top: 24px; border-top: 1px solid #eee; padding-top: 8px;"
 
     parts: list[str] = [
         "<!DOCTYPE html>",
@@ -143,8 +102,8 @@ def render_html(payload: dict[str, Any]) -> str:
         '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
         f"<title>Agent-Teams Digest {_esc(date_str)}</title>",
         "</head>",
-        f'<body style="{body_style}">',
-        f'<h1 style="{h1_style}">Agent-Teams Daily Digest &mdash; {_esc(date_str)}</h1>',
+        '<body style="font-family: Arial, Helvetica, sans-serif; font-size: 14px; color: #222; max-width: 600px; margin: 0 auto; padding: 16px;">',
+        f'<h1 style="font-size: 18px; color: #333; border-bottom: 1px solid #ddd; padding-bottom: 8px;">Agent-Teams Daily Digest &mdash; {_esc(date_str)}</h1>',
     ]
 
     if not flags:
@@ -153,30 +112,24 @@ def render_html(payload: dict[str, Any]) -> str:
         parts.append(f"<p><strong>Open audit flags ({len(flags)}):</strong></p>")
         parts.append('<table style="width:100%; border-collapse:collapse;">')
         for flag in flags:
-            fid = flag.get("id", "?")
-            project = flag.get("project", "?")
-            title = str(flag.get("title", ""))[:120]
-            streak = flag.get("streak", 1)
-            severity = flag.get("severity") or "unspecified"
-            verdict = flag.get("verdict") or "review"
-            link = base_url + _FLAG_DEEP_LINK_PATH.format(id=fid)
-            parts.append(f'<tr><td style="{flag_row_style}">')
+            fid, project, title, streak, severity, verdict, link = _unpack_flag(flag, base_url)
+            parts.append('<tr><td style="padding: 8px 0; border-bottom: 1px solid #eee;">')
             parts.append(
                 f'<strong>[#{fid}] {_esc(project)}:</strong> {_esc(title)}'
             )
             parts.append(
-                f'<br><span style="{meta_style}">'
+                f'<br><span style="font-size: 12px; color: #777;">'
                 f"streak={streak}, severity={_esc(severity)}, verdict={_esc(verdict)}"
                 f"</span>"
             )
             parts.append(
-                f'<br><a href="{_esc(link)}" style="{link_style}">Review flag #{fid}</a>'
+                f'<br><a href="{_esc(link)}" style="color: #1a73e8;">Review flag #{fid}</a>'
             )
             parts.append("</td></tr>")
         parts.append("</table>")
 
     parts += [
-        f'<p style="{footer_style}">',
+        '<p style="font-size: 12px; color: #aaa; margin-top: 24px; border-top: 1px solid #eee; padding-top: 8px;">',
         "This digest was generated by agent-teams.<br>",
         "Manage settings via <code>DIGEST_EMAIL_ENABLED</code> env var.",
         "</p>",

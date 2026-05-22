@@ -460,6 +460,33 @@ def scaffold_cleanup():
 
 
 @pytest.fixture
+def smtp_success_mock() -> "MagicMock":
+    """A MagicMock behaving as a successful smtplib.SMTP context manager.
+
+    Shared across test_notify_email, test_digest_router, test_digest_integration.
+    """
+    from unittest.mock import MagicMock
+
+    smtp = MagicMock()
+    smtp.__enter__ = MagicMock(return_value=smtp)
+    smtp.__exit__ = MagicMock(return_value=False)
+    return smtp
+
+
+@pytest.fixture
+def smtp_env(monkeypatch) -> None:
+    """Set the 4-var SMTP env triplet that enables the digest send gate.
+
+    Shared across test_digest_router, test_digest_router_failures,
+    test_digest_integration.
+    """
+    monkeypatch.setenv("DIGEST_EMAIL_ENABLED", "true")
+    monkeypatch.setenv("GMAIL_SMTP_USER", "test@gmail.com")
+    monkeypatch.setenv("GMAIL_SMTP_APP_PASSWORD", "app-pw-16-chars-x")
+    monkeypatch.setenv("DIGEST_EMAIL_RECIPIENT", "dest@example.com")
+
+
+@pytest.fixture
 async def db_session():
     """Direct AsyncSession for tests that need to read tables without a public
     HTTP endpoint (e.g., `tasks_history` for audit-row counts).
