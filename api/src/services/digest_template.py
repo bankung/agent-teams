@@ -141,10 +141,10 @@ def render_html(payload: dict[str, Any]) -> str:
         "<head>",
         '<meta charset="UTF-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
-        f"<title>Agent-Teams Digest {date_str}</title>",
+        f"<title>Agent-Teams Digest {_esc(date_str)}</title>",
         "</head>",
         f'<body style="{body_style}">',
-        f'<h1 style="{h1_style}">Agent-Teams Daily Digest &mdash; {date_str}</h1>',
+        f'<h1 style="{h1_style}">Agent-Teams Daily Digest &mdash; {_esc(date_str)}</h1>',
     ]
 
     if not flags:
@@ -194,6 +194,7 @@ def _esc(text: str) -> str:
         .replace("<", "&lt;")
         .replace(">", "&gt;")
         .replace('"', "&quot;")
+        .replace("'", "&#39;")
     )
 
 
@@ -204,7 +205,6 @@ def _esc(text: str) -> str:
 
 async def fetch_open_audit_flags(
     session: AsyncSession,
-    base_url: str = "",
 ) -> list[dict[str, Any]]:
     """Return open AA3 audit-flag task summaries across active projects.
 

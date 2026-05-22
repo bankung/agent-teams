@@ -19,15 +19,17 @@ BKK; the endpoint itself is stateless and idempotent.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from datetime import date, timezone, datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db import get_session
+from src.middleware.rate_limit import limiter
 from src.services.digest_template import fetch_open_audit_flags, render_html, render_subject, render_text
 from src.services.notify_email import (
     EMAIL_ENV_RECIPIENT,
@@ -60,7 +62,9 @@ class DigestFireResponse(BaseModel):
 
 
 @router.post("/fire", response_model=DigestFireResponse)
+@limiter.limit("6/minute")
 async def fire_digest(
+    request: Request,  # required by slowapi key_func — not used in handler body
     session: AsyncSession = Depends(get_session),
 ) -> DigestFireResponse:
     """Pull open flags, render digest, send via Gmail SMTP.
@@ -104,11 +108,12 @@ async def fire_digest(
     )
 
     sender = GmailSmtpSender()
-    result = sender.send(
-        to=recipient,
-        subject=subject,
-        text_body=text_body,
-        html_body=html_body,
+    result = await asyncio.to_thread(
+        sender.send,
+        recipient,
+        subject,
+        text_body,
+        html_body,
     )
 
     if not result.ok:

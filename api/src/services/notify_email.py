@@ -41,6 +41,7 @@ EMAIL_ENV_RECIPIENT = "DIGEST_EMAIL_RECIPIENT"
 # Defaults
 GMAIL_SMTP_DEFAULT_HOST = "smtp.gmail.com"
 GMAIL_SMTP_DEFAULT_PORT = 587  # STARTTLS
+GMAIL_SMTP_DEFAULT_TIMEOUT = 30  # seconds — prevents infinite hang on unresponsive relay
 
 
 @dataclass
@@ -161,7 +162,7 @@ class GmailSmtpSender(EmailSender):
         smtp_factory = self._smtplib_factory or smtplib.SMTP
 
         try:
-            with smtp_factory(host, port) as smtp:
+            with smtp_factory(host, port, timeout=GMAIL_SMTP_DEFAULT_TIMEOUT) as smtp:
                 smtp.ehlo()
                 smtp.starttls()
                 smtp.ehlo()
@@ -173,11 +174,14 @@ class GmailSmtpSender(EmailSender):
             )
             return SendResult(ok=True, detail="sent")
         except smtplib.SMTPAuthenticationError as exc:
-            logger.warning("notify_email: auth_error to=%s err=%r", to, exc)
+            logger.warning(
+                "notify_email: auth_error to=%s err=%s type=%s code=%s",
+                to, type(exc).__name__, type(exc).__name__, exc.smtp_code,
+            )
             return SendResult(
                 ok=False,
                 detail="smtp_auth_error",
-                error=f"SMTPAuthenticationError: {exc}",
+                error=f"SMTPAuthenticationError({exc.smtp_code})",
             )
         except smtplib.SMTPException as exc:
             logger.warning("notify_email: smtp_error to=%s err=%r", to, exc)
@@ -192,5 +196,12 @@ class GmailSmtpSender(EmailSender):
             return SendResult(
                 ok=False,
                 detail=f"network_error: {type(exc).__name__}",
+                error=repr(exc),
+            )
+        except Exception as exc:  # noqa: BLE001 — docstring contract: MUST NOT raise
+            logger.warning("notify_email: unexpected_error to=%s err=%r", to, exc)
+            return SendResult(
+                ok=False,
+                detail=f"unexpected_error: {type(exc).__name__}",
                 error=repr(exc),
             )
