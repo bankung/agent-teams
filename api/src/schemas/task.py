@@ -321,6 +321,74 @@ class DecisionRequest(BaseModel):
     chosen_by: str = "user"
 
 
+class HitlResolveRequest(BaseModel):
+    """Request body for `POST /api/tasks/{id}/decide` HITL phone-tap path
+    (Kanban #1452 — sub-feature 4 of #1192).
+
+    Distinct from `DecisionRequest` (Kanban #1007): the phone-push flow
+    records the operator's resolution into `resume_context` + clears
+    `is_pending` so Lead can resume the in-flight (ps=2) task — it does
+    NOT flip the task to DONE. The two contracts coexist on the SAME
+    endpoint because the wire URL is locked; the router discriminates by
+    body shape (the presence of `action` vs `chosen_id`).
+
+    Field contract:
+      - `action`: required; one of `approve` / `reject` / `custom`.
+      - `selected_option`: required when `action in {approve, reject}`;
+        must match `id` of one entry in `question_payload.options` (the
+        endpoint supports both the legacy `list[str]` shape — option id
+        is the string itself — AND the new `list[OptionItem]` shape — id
+        is the `id` field).
+      - `custom_text`: required + non-empty when `action='custom'`;
+        ignored otherwise.
+
+    `extra='forbid'` rejects unknown keys at 422.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["approve", "reject", "custom"]
+    selected_option: str | None = Field(default=None, min_length=1, max_length=128)
+    custom_text: str | None = Field(default=None, min_length=1, max_length=2_000)
+
+    @model_validator(mode="after")
+    def _check_action_payload_pair(self) -> "HitlResolveRequest":
+        """Enforce the action ↔ payload field pairing.
+
+        approve / reject → require `selected_option` (custom_text ignored).
+        custom            → require non-empty `custom_text` (selected_option ignored).
+        """
+        if self.action in ("approve", "reject"):
+            if self.selected_option is None:
+                raise ValueError(
+                    f"action='{self.action}' requires selected_option"
+                )
+        elif self.action == "custom":
+            if not self.custom_text or not self.custom_text.strip():
+                raise ValueError(
+                    "action='custom' requires non-empty custom_text"
+                )
+        return self
+
+
+class HitlResolveResponse(BaseModel):
+    """Response body for `POST /api/tasks/{id}/decide` HITL phone-tap path
+    (Kanban #1452).
+
+    Distinct from the legacy `TaskRead` response of the #1007 `/decide` flow.
+    The phone caller only needs to know: which task was resolved, what
+    process_status it's currently in (so the FE can show a confirmation
+    state), the resolution record (resume_context), and a timestamp.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: int
+    process_status: int
+    resume_context: dict[str, Any] | None
+    decided_at: datetime
+
+
 class DecisionListItem(BaseModel):
     """One row in `GET /api/decisions` response (Kanban #1007, AC5).
 

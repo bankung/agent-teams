@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi import status as http_status
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
@@ -34,6 +34,8 @@ from src.schemas.project import ResolveFlagRequest, ResolveFlagResponse
 from src.schemas.task import (
     AcceptanceCriterion,
     DecisionRequest,
+    HitlResolveRequest,
+    HitlResolveResponse,
     NextAutorunResponse,
     SnoozeRequest,
     TaskCreate,
@@ -41,6 +43,7 @@ from src.schemas.task import (
     TaskReorder,
     TaskUpdate,
 )
+from src.middleware.rate_limit import limiter
 from src.services.ai_task_parser import (
     AiCallFailed,
     AiCallTimeout,
@@ -172,9 +175,13 @@ def _fire_hitl_push(task_id: int, title: str, question_payload: dict | None) -> 
         else:
             body = "Tap to view"
 
-        # click_url: WEB_BASE_URL + /tasks/<id> (mirrors the #955.B URL pattern)
+        # click_url: WEB_BASE_URL + /approve/<id> (Kanban #1452 — phone HITL
+        # push-tap flow). Phone operator lands on the mobile approve page which
+        # POSTs back to /api/tasks/{id}/decide with the HitlResolveRequest body
+        # shape. Was /tasks/<id> pre-#1452 (#955.B), pointing at the desktop
+        # task focus view — wrong target for phone push.
         base_url = os.environ.get("WEB_BASE_URL", "http://localhost:5431").rstrip("/")
-        click_url = f"{base_url}/tasks/{task_id}"
+        click_url = f"{base_url}/approve/{task_id}"
 
         truncated_title = title[:50] if title else ""
         push_title = f"Agent-Teams: {truncated_title}"
@@ -2328,16 +2335,210 @@ async def fire_now(
     return child
 
 
+def _extract_option_ids(question_payload: dict | None) -> list[str]:
+    """Extract the list of valid option IDs from a question_payload.
+
+    Supports both shapes:
+      - legacy: `options: list[str]` — each string IS the option id
+      - new (#1007): `options: list[{id, label, ...}]` — `id` is the option id
+
+    Returns [] when payload is None / has no options / options is empty.
+    """
+    if not question_payload:
+        return []
+    options = question_payload.get("options") or []
+    ids: list[str] = []
+    for opt in options:
+        if isinstance(opt, str):
+            ids.append(opt)
+        elif isinstance(opt, dict) and "id" in opt:
+            ids.append(opt["id"])
+    return ids
+
+
 @router.post(
     "/{task_id}/decide",
-    response_model=TaskRead,
     status_code=http_status.HTTP_200_OK,
 )
+@limiter.limit("10/minute")
 async def decide_task(
+    request: Request,  # required by slowapi key_func
     task_id: int,
-    payload: DecisionRequest,
     session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
+):
+    """POST /api/tasks/{id}/decide — dual-contract endpoint.
+
+    Two distinct callers, discriminated by request-body shape:
+
+    1. Kanban #1007 (DecisionRequest body — `{chosen_id, rationale?, chosen_by?}`)
+       — the Inbox/DecisionInteractionView FE component finalises a decision
+       task. Mutates `question_payload` (merges chosen_id/rationale/...),
+       flips `process_status=5` (DONE), stamps `completed_at`, calls
+       `auto_unblock_dependents`. Returns the full TaskRead.
+
+    2. Kanban #1452 (HitlResolveRequest body — `{action, selected_option?,
+       custom_text?}`) — phone HITL push-tap flow (operator taps push,
+       lands on `/approve/<task_id>`, posts here). Mutates `resume_context`
+       (records action + selected_option/custom_text + decided_at +
+       decided_via='phone'), clears `is_pending=false`. Does NOT flip
+       process_status — Lead resumes the in-flight (ps=2) task from the
+       resume_context via the row_changed SSE stream. Returns
+       HitlResolveResponse (slim — task_id, process_status, resume_context,
+       decided_at).
+
+    Routing rule: body MUST validate cleanly against EXACTLY ONE schema.
+    A body with `action` falls through to the HITL path; a body with
+    `chosen_id` falls through to the legacy path. Ambiguous bodies (no
+    discriminator field, both fields, unknown fields) → 400.
+
+    Rate limit: 10/minute/IP (slowapi).
+
+    Lead-resume signal (Kanban #1452 AC3): no new event type. The PATCH
+    naturally fires the `notify_row_changed` PG trigger → broadcasts a
+    `row_changed` event on the SSE stream (GET /api/events/stream filtered
+    by project_id). Lead's session is already a subscriber. Design call:
+    reuse beats invent — minimum-viable-change per Karpathy lane.
+
+    Error codes (HITL path):
+      - 404 — task not found.
+      - 409 — task is not in HITL waiting state (interaction_kind in
+              {question,decision} AND is_pending=true) — covers
+              already-resolved, wrong-kind, never-pending.
+      - 400 — invalid body (Pydantic validation; also: selected_option
+              not in question_payload.options).
+      - 429 — rate-limited.
+
+    Error codes (legacy #1007 path):
+      - 404 — task not found.
+      - 409 — task is already DONE.
+      - 422 — task is not `interaction_kind='decision'`, or `chosen_id`
+              is not in the option list.
+    """
+    # --- Step 1: load raw body + route by shape -----------------------------
+    raw = await request.json()
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+
+    # Discriminator: explicit `action` key → HITL path; `chosen_id` → legacy.
+    # `action` wins on a tie (the HITL path is the new locked wire contract).
+    if "action" in raw:
+        try:
+            hitl_payload = HitlResolveRequest.model_validate(raw)
+        except Exception as exc:  # Pydantic ValidationError → 400
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return await _decide_hitl(task_id, hitl_payload, session_project_id, session)
+
+    if "chosen_id" in raw:
+        try:
+            legacy_payload = DecisionRequest.model_validate(raw)
+        except Exception as exc:  # Pydantic ValidationError → 400
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        legacy_task = await _decide_legacy_1007(
+            task_id, legacy_payload, session_project_id, session
+        )
+        # Serialize via TaskRead so the wire contract matches the prior
+        # `response_model=TaskRead`. The dual-shape handler can't carry a
+        # single response_model decoration — we materialise per branch.
+        return TaskRead.model_validate(legacy_task, from_attributes=True).model_dump(mode="json")
+
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "request body must carry either 'action' (HITL phone-tap, #1452) "
+            "or 'chosen_id' (decision-task finalize, #1007)"
+        ),
+    )
+
+
+async def _decide_hitl(
+    task_id: int,
+    payload: HitlResolveRequest,
+    session_project_id: int,
+    session: AsyncSession,
+) -> HitlResolveResponse:
+    """Kanban #1452 — phone HITL push-tap resolver. See `decide_task` docstring."""
+    task = await get_or_404(
+        session, Task, detail=f"Task id={task_id} not found", id=task_id
+    )
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+
+    # Guard: task must be in HITL waiting state. Single 409 covers all
+    # not-resolvable cases (already-resolved, wrong-kind, never-pending) —
+    # the FE re-poll on a 409 surfaces the current state to the operator.
+    if task.interaction_kind not in (
+        TaskInteractionKind.QUESTION,
+        TaskInteractionKind.DECISION,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Task id={task_id} is not awaiting HITL resolution "
+                f"(interaction_kind='{task.interaction_kind}')"
+            ),
+        )
+    if not task.is_pending:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task id={task_id} is already resolved (is_pending=false)",
+        )
+
+    # Validate selected_option (approve/reject) against the option list.
+    if payload.action in ("approve", "reject"):
+        valid_ids = _extract_option_ids(task.question_payload)
+        if valid_ids and payload.selected_option not in valid_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"selected_option '{payload.selected_option}' not in "
+                    f"question_payload.options: {valid_ids}"
+                ),
+            )
+
+    # Build the resume_context entry. PATCH semantics: merge into any
+    # existing resume_context (Lead may have stored mid-task state); the
+    # new keys win on conflict. decided_via='phone' marks the channel —
+    # future channels (web, telegram, etc.) carry their own values.
+    now_utc = datetime.now(timezone.utc)
+    existing_rc: dict = task.resume_context or {}
+    rc_entry: dict = {
+        "action": payload.action,
+        "decided_at": now_utc.isoformat(),
+        "decided_via": "phone",
+    }
+    if payload.action in ("approve", "reject"):
+        rc_entry["selected_option"] = payload.selected_option
+    else:  # action == "custom"
+        rc_entry["custom_text"] = payload.custom_text
+    task.resume_context = {**existing_rc, **rc_entry}
+
+    # Clear the HITL-waiting flag. process_status stays unchanged — Lead
+    # resumes the in-flight task from where it halted (typically ps=2
+    # IN_PROGRESS, but the gate is is_pending not the ps value).
+    task.is_pending = False
+    task.updated_at = func.now()
+
+    await session.commit()
+    await session.refresh(task)
+
+    # The PATCH above fires the notify_row_changed PG trigger automatically;
+    # Lead's SSE subscriber (GET /api/events/stream?project_id=N) receives
+    # the row_changed event and refetches the task to read resume_context.
+    # No explicit pg_notify call needed.
+
+    return HitlResolveResponse(
+        task_id=task.id,
+        process_status=task.process_status,
+        resume_context=task.resume_context,
+        decided_at=now_utc,
+    )
+
+
+async def _decide_legacy_1007(
+    task_id: int,
+    payload: DecisionRequest,
+    session_project_id: int,
+    session: AsyncSession,
 ) -> Task:
     """Kanban #1007 (AC4) — record a human decision on a decision task.
 

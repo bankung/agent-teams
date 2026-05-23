@@ -34,6 +34,7 @@ import { useRouter } from "next/navigation";
 import {
   decideTask,
   patchTask,
+  resolveHitlTask,
   type AcceptanceCriterion,
   type ProjectRead,
   type TaskRead,
@@ -89,6 +90,33 @@ function narrowOption(opt: unknown): OptItem | string {
   // Fallback — render whatever we have as a JSON string. Should not happen
   // against a well-formed BE payload.
   return JSON.stringify(opt);
+}
+
+// HITL-resume option-id resolver (Kanban #1451). Returns the id string for the
+// Nth option in question_payload.options, supporting both legacy plain-string
+// shape and new {id,label} dict shape. Returns null when the index is out of
+// range (caller decides — Approve falls back to `action:'approve'` with no
+// option; Reject hides the button entirely).
+function resolveHitlOptionId(
+  task: TaskRead,
+  index: number,
+): string | null {
+  const raw = task.question_payload?.options ?? [];
+  if (index < 0 || index >= raw.length) return null;
+  const opt = narrowOption(raw[index]);
+  if (typeof opt === "string") return opt;
+  return opt.id;
+}
+
+// HITL-resume branch predicate (Kanban #1451). True when this task is a
+// question/decision with is_pending=true — the resolveHitlTask path applies.
+// Work tasks + non-pending tasks fall through to legacy PATCH ps=DONE / etc.
+function isHitlResumeTask(task: TaskRead): boolean {
+  return (
+    (task.interaction_kind === "question" ||
+      task.interaction_kind === "decision") &&
+    task.is_pending === true
+  );
 }
 
 export function TaskFocusView({ task: initialTask, project, actionHint }: Props) {
@@ -165,7 +193,21 @@ export function TaskFocusView({ task: initialTask, project, actionHint }: Props)
     setInlineError(null);
     setSubmitting(true);
     try {
-      if (approveResolution.mode === "decide_single") {
+      // Kanban #1451 — HITL RESUME path. question/decision tasks with
+      // is_pending=true call POST /api/tasks/{id}/decide with the new body
+      // shape; the BE writes resume_context + flips is_pending=false WITHOUT
+      // changing process_status (Lead resumes via SSE). All other tasks fall
+      // through to the legacy PATCH ps=DONE / decideTask terminate paths.
+      if (isHitlResumeTask(task)) {
+        const selectedOption =
+          resolveHitlOptionId(task, 0) ?? undefined;
+        await resolveHitlTask(project.id, task.id, {
+          action: "approve",
+          ...(selectedOption !== undefined && { selected_option: selectedOption }),
+        });
+        // Resume path — process_status is unchanged on the row. We don't
+        // re-fetch; the SSE broker will notify Lead. Just toast + redirect.
+      } else if (approveResolution.mode === "decide_single") {
         const updated = await decideTask(project.id, task.id, {
           chosen_id: approveResolution.singleOption.id,
           rationale: REASON_APPROVE,
@@ -192,11 +234,21 @@ export function TaskFocusView({ task: initialTask, project, actionHint }: Props)
     setInlineError(null);
     setSubmitting(true);
     try {
-      const updated = await decideTask(project.id, task.id, {
-        chosen_id: option.id,
-        rationale: `${REASON_APPROVE} (chose ${option.label})`,
-      });
-      setTask(updated);
+      // Kanban #1451 — HITL RESUME path for multi-option decision picks.
+      // is_pending=true → resolveHitlTask (resume, ps unchanged). Otherwise
+      // legacy decideTask (DONE-flip).
+      if (isHitlResumeTask(task)) {
+        await resolveHitlTask(project.id, task.id, {
+          action: "approve",
+          selected_option: option.id,
+        });
+      } else {
+        const updated = await decideTask(project.id, task.id, {
+          chosen_id: option.id,
+          rationale: `${REASON_APPROVE} (chose ${option.label})`,
+        });
+        setTask(updated);
+      }
       onSuccessRedirect(`Chose: ${option.label}`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Decision failed";
@@ -211,12 +263,28 @@ export function TaskFocusView({ task: initialTask, project, actionHint }: Props)
     setInlineError(null);
     setSubmitting(true);
     try {
-      const reasonSuffix = reason.length > 0 ? reason : REJECT_NO_REASON_SUFFIX;
-      const updated = await patchTask(project.id, task.id, {
-        process_status: TaskStatus.CANCELLED,
-        status_change_reason: `${REASON_REJECT_PREFIX}: ${reasonSuffix}`,
-      });
-      setTask(updated);
+      // Kanban #1451 — HITL RESUME path. Reject for question/decision tasks
+      // with is_pending=true maps to the second option (or first if only one
+      // exists — but in that case the Reject button is hidden per
+      // `hideRejectForHitl` below). The free-form reason is preserved via
+      // custom_text so the resume_context carries the operator's rationale
+      // even on the option-pick path.
+      if (isHitlResumeTask(task)) {
+        const selectedOption =
+          resolveHitlOptionId(task, 1) ?? resolveHitlOptionId(task, 0) ?? undefined;
+        await resolveHitlTask(project.id, task.id, {
+          action: "reject",
+          ...(selectedOption !== undefined && { selected_option: selectedOption }),
+          ...(reason.length > 0 && { custom_text: reason }),
+        });
+      } else {
+        const reasonSuffix = reason.length > 0 ? reason : REJECT_NO_REASON_SUFFIX;
+        const updated = await patchTask(project.id, task.id, {
+          process_status: TaskStatus.CANCELLED,
+          status_change_reason: `${REASON_REJECT_PREFIX}: ${reasonSuffix}`,
+        });
+        setTask(updated);
+      }
       setRejectOpen(false);
       onSuccessRedirect("Task rejected");
     } catch (err: unknown) {
@@ -270,6 +338,11 @@ export function TaskFocusView({ task: initialTask, project, actionHint }: Props)
   // #1001 follow-up — once the ?task=<id> deep-link landed on Board (#1349
   // batch), the "Open full" button targets the matching task card directly.
   const openFullHref = `/p/${encodeURIComponent(project.name)}?task=${task.id}`;
+
+  // Kanban #1451 — hide Reject when HITL has 0/1 options (no meaningful 2nd
+  // choice to map Reject to). Non-HITL tasks keep Reject (CANCELLED terminate).
+  const hitlOptionCount = task.question_payload?.options?.length ?? 0;
+  const hideRejectForHitl = isHitlResumeTask(task) && hitlOptionCount < 2;
 
   return (
     <>
@@ -435,6 +508,7 @@ export function TaskFocusView({ task: initialTask, project, actionHint }: Props)
           }
           submitting={submitting}
           actionHint={actionHint}
+          hideReject={hideRejectForHitl}
           openFullHref={openFullHref}
           onApprove={onApprove}
           onRejectClick={() => setRejectOpen(true)}

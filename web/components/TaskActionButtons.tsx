@@ -29,6 +29,10 @@ type Props = {
   approveDisabledReason?: string;
   submitting: boolean;
   actionHint: "approve" | "reject" | null;
+  // Kanban #1451 — hide Reject for HITL question/decision tasks that have
+  // 0 or 1 option (no meaningful "second choice" to map Reject to). Halt is
+  // still surfaced as the meta-escape regardless.
+  hideReject?: boolean;
 
   // "Open full" target (resolved by the parent — typically /p/<project_name>).
   openFullHref: string;
@@ -45,6 +49,7 @@ export function TaskActionButtons({
   approveDisabledReason,
   submitting,
   actionHint,
+  hideReject = false,
   openFullHref,
   onApprove,
   onRejectClick,
@@ -70,17 +75,19 @@ export function TaskActionButtons({
       >
         {submitting ? "…" : approveLabel}
       </button>
-      <button
-        type="button"
-        onClick={onRejectClick}
-        disabled={submitting}
-        // eslint-disable-next-line jsx-a11y/no-autofocus
-        autoFocus={actionHint === "reject"}
-        data-task-action="reject"
-        className="flex-1 rounded border border-red-500 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-wide text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px] sm:flex-none sm:min-h-0 sm:px-3 sm:py-1.5 dark:border-red-700 dark:bg-zinc-900 dark:text-red-300 dark:hover:bg-red-950/40"
-      >
-        Reject
-      </button>
+      {!hideReject && (
+        <button
+          type="button"
+          onClick={onRejectClick}
+          disabled={submitting}
+          // eslint-disable-next-line jsx-a11y/no-autofocus
+          autoFocus={actionHint === "reject"}
+          data-task-action="reject"
+          className="flex-1 rounded border border-red-500 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-wide text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px] sm:flex-none sm:min-h-0 sm:px-3 sm:py-1.5 dark:border-red-700 dark:bg-zinc-900 dark:text-red-300 dark:hover:bg-red-950/40"
+        >
+          Reject
+        </button>
+      )}
       <button
         type="button"
         onClick={onHaltClick}

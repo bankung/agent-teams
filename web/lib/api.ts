@@ -893,6 +893,58 @@ export async function decideTask(
   });
 }
 
+// ============================================================================
+// Kanban #1451 — HITL question/decision RESUME path.
+//
+// Sibling to decideTask() above. Same URL (POST /api/tasks/{id}/decide), but a
+// DIFFERENT body shape — the BE dispatches on body shape:
+//   - legacy {chosen_id, rationale, chosen_by?}     → decideTask path (DONE-flip)
+//   - new   {action, selected_option?, custom_text?} → resolveHitlTask path
+//                                                      (is_pending=false +
+//                                                       resume_context written;
+//                                                       process_status UNCHANGED
+//                                                       so Lead resumes)
+//
+// Decision-task DONE-flips keep using decideTask() (legacy contract — used by
+// DecisionInteractionView). HITL question/decision tasks paired with the push-
+// click-resolve UX use resolveHitlTask().
+//
+// `action`:
+//   - 'approve' — operator accepted; selected_option SHOULD be set
+//   - 'reject'  — operator rejected; selected_option SHOULD be set (fallback id)
+//   - 'custom'  — operator typed free text; custom_text SHOULD be set
+// ============================================================================
+
+export type HitlResolveAction = "approve" | "reject" | "custom";
+
+export type HitlResolveBody = {
+  action: HitlResolveAction;
+  selected_option?: string;
+  custom_text?: string;
+};
+
+export type HitlResolveResponse = {
+  task_id: number;
+  process_status: TaskStatusValue;
+  resume_context: Record<string, unknown>;
+  decided_at: string;
+};
+
+export async function resolveHitlTask(
+  projectId: number,
+  taskId: number,
+  body: HitlResolveBody,
+): Promise<HitlResolveResponse> {
+  return jsonFetch<HitlResolveResponse>(`/api/tasks/${taskId}/decide`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Project-Id": String(projectId),
+    },
+    body: JSON.stringify(body),
+  });
+}
+
 // #980 / #949d — per-task tool-call audit rows. BE writes one row per tool
 // invocation during agent runs (success / failure / permission decision /
 // timing / input + truncated output). Section is lazy-loaded in TaskDetail
