@@ -1,7 +1,7 @@
 import { listAuditFlags } from "@/lib/api";
 import { ReviewClient } from "@/components/ReviewClient";
 
-// Kanban #1212 AA4 — operator board-chairman /review surface.
+// Kanban #1212 GOV4 — operator board-chairman /review surface.
 //
 // Server Component pattern matches /dashboard: fetch initial state at
 // request time, then hand off to a Client component for selection +

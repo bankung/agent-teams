@@ -10,7 +10,7 @@ import {
   type ProjectRead,
 } from "@/lib/api";
 
-// Kanban #1209 AA1 (D5) — hard kill switch confirmation modal. Single
+// Kanban #1209 GOV1 (D5) — hard kill switch confirmation modal. Single
 // component handles BOTH kill + revive flows via the `mode` prop:
 //
 //   mode="kill"   → red-themed; type-project-name + reason (>=10 chars)

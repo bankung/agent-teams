@@ -87,7 +87,7 @@ type Props = {
   // #7 §A AC#3 — per-project role whitelist (project.config.enabled_roles).
   // null / undefined / empty array → show all roles (current behaviour).
   enabledRoles?: number[] | null;
-  // #1238 AA3 — same prop pair as NewTaskModal. The override checkbox + 423
+  // #1238 GOV3 — same prop pair as NewTaskModal. The override checkbox + 423
   // toast handling fires in the preview phase (where the actual createTask
   // POST lands); the input/parse phase is BE-call-against-/ai-parse which
   // is not gated by pause.
@@ -95,7 +95,7 @@ type Props = {
   onPushToast?: (text: string) => void;
 };
 
-// #1238 AA3 — mirror of NewTaskModal constant.
+// #1238 GOV3 — mirror of NewTaskModal constant.
 const ALLOW_DURING_PAUSE_REASON_MIN_CHARS = 10;
 
 type ErrorKind =
@@ -141,7 +141,7 @@ export function AiTaskModal({
   const [blockedBy, setBlockedBy] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
-  // #1238 AA3 — per-task pause override (only meaningful when isProjectPaused).
+  // #1238 GOV3 — per-task pause override (only meaningful when isProjectPaused).
   const [allowDuringPause, setAllowDuringPause] = useState(false);
   const [allowDuringPauseReason, setAllowDuringPauseReason] = useState("");
   // #1340 / #1343 — template state shared across input + preview phases.
@@ -287,7 +287,7 @@ export function AiTaskModal({
   const blockedByValid =
     blockedByNum === null ||
     (Number.isInteger(blockedByNum) && blockedByNum >= 1);
-  // #1238 AA3 — override-reason gate, same shape as NewTaskModal.
+  // #1238 GOV3 — override-reason gate, same shape as NewTaskModal.
   const trimmedOverrideReason = allowDuringPauseReason.trim();
   const overrideReasonValid =
     !isProjectPaused ||
@@ -315,7 +315,7 @@ export function AiTaskModal({
       ...(description.trim() ? { description: description.trim() } : {}),
       ...(role !== "" ? { assigned_role: role } : {}),
       ...(blockedByNum !== null ? { blocked_by: blockedByNum } : {}),
-      // #1238 AA3 — same override-pair semantics as NewTaskModal.
+      // #1238 GOV3 — same override-pair semantics as NewTaskModal.
       ...(isProjectPaused && allowDuringPause
         ? {
             allow_during_pause: true,
@@ -338,7 +338,7 @@ export function AiTaskModal({
       resetAll();
     } catch (err: unknown) {
       if (err instanceof HttpError) {
-        // #1238 AA3 — same 423 toast pattern as NewTaskModal.
+        // #1238 GOV3 — same 423 toast pattern as NewTaskModal.
         if (err.status === 423 && isProjectPaused) {
           const pausedReason =
             (project?.paused_reason && project.paused_reason.trim()) ||
@@ -669,7 +669,7 @@ export function AiTaskModal({
                 disabled={creating}
               />
 
-              {/* #1238 AA3 — paused-project override (preview phase only —
+              {/* #1238 GOV3 — paused-project override (preview phase only —
                   this is where the actual createTask POST lands; the input
                   phase calls /ai-parse which is not gated by pause). */}
               {isProjectPaused && (

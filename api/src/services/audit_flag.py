@@ -1,4 +1,4 @@
-"""AA3 audit-flag pipeline (Kanban #1211).
+"""GOV3 audit-flag pipeline (Kanban #1211).
 
 One entry point:
 - `apply_flag_from_audit_report(audit_task_id, actor, session)` — called from
@@ -10,7 +10,7 @@ Pipeline (AC#3 + AC#4 + D5):
    'continue' | 'review' | 'pause'). Missing / unknown → no-op + WARN log.
 3. If 'continue': no flag action.
 4. If 'review' or 'pause':
-   - SELECT open AA3 flag tasks for the project (interaction_kind='question',
+   - SELECT open GOV3 flag tasks for the project (interaction_kind='question',
      process_status IN {1, 2, 4}, question_payload->>'is_audit_flag' = 'true').
    - If found: UPDATE question_payload — increment breach_streak_days, append
      audit_history, refresh question text, update latest_audit.
@@ -56,12 +56,12 @@ def _format_flag_question(
     latest_audit_id: int,
     audit_report: dict[str, Any],
 ) -> str:
-    """Build the human-readable flag question (D5 — appears in the AA4 drawer).
+    """Build the human-readable flag question (D5 — appears in the GOV4 drawer).
 
     Pulls a short summary from audit_report (verdict / severity / evidence
     highlights) so the operator gets the gist without opening the audit task.
     Value-tolerant on shape — the auditor's exact schema is still evolving
-    (AA2's responsibility) so we degrade gracefully on missing keys.
+    (GOV2's responsibility) so we degrade gracefully on missing keys.
     """
     verdict = audit_report.get("verdict") or audit_report.get("status") or "review"
     severity = audit_report.get("severity") or "unspecified"
@@ -102,12 +102,12 @@ def _new_flag_payload(
         ),
         "options": ["continue", "adjust_continue", "keep_paused", "terminate"],
         "answer_history": [],
-        # AA3-specific bookkeeping (D5):
+        # GOV3-specific bookkeeping (D5):
         "is_audit_flag": True,
         "breach_streak_days": breach_streak_days,
         "audit_history": [audit_task_id],
         "latest_audit": audit_task_id,
-        # Snapshot the audit-report summary so the AA4 drawer doesn't need to
+        # Snapshot the audit-report summary so the GOV4 drawer doesn't need to
         # cross-join when rendering streak history. Truncated to keep payload
         # small (the audit task itself carries the full report).
         "latest_audit_summary": {
@@ -124,7 +124,7 @@ def _bump_existing_flag_payload(
     audit_task_id: int,
     audit_report: dict[str, Any],
 ) -> dict[str, Any]:
-    """Increment streak + append history on an existing AA3 flag's payload.
+    """Increment streak + append history on an existing GOV3 flag's payload.
 
     Returns a NEW dict — never mutates the input (the ORM identity-map needs
     a fresh JSONB value to trigger an UPDATE; in-place dict mutation can
@@ -163,7 +163,7 @@ async def apply_flag_from_audit_report(
     actor: str = "system",
     session: AsyncSession,
 ) -> dict[str, Any]:
-    """Apply AA3 flag pipeline to an audit task that just transitioned to DONE.
+    """Apply GOV3 flag pipeline to an audit task that just transitioned to DONE.
 
     The caller (PATCH /api/tasks/{id} hook) has already written the audit
     task's DONE flip — this helper only reads it + applies side effects in
@@ -239,8 +239,8 @@ async def apply_flag_from_audit_report(
     # recommendation in {'review', 'pause'} — flag pipeline.
     project_id = audit_task.project_id
 
-    # Look up existing OPEN AA3 flag for this project. We use a JSONB path
-    # predicate on `is_audit_flag` to distinguish AA3 flags from other
+    # Look up existing OPEN GOV3 flag for this project. We use a JSONB path
+    # predicate on `is_audit_flag` to distinguish GOV3 flags from other
     # question tasks (e.g., approval prompts, design Option A/B questions).
     existing_stmt = (
         select(Task)
@@ -272,9 +272,9 @@ async def apply_flag_from_audit_report(
         new_payload = _new_flag_payload(project_id, audit_task_id, audit_report)
         flag_task = Task(
             project_id=project_id,
-            title=f"[AA3] Project #{project_id} audit flag — operator review",
+            title=f"[GOV3] Project #{project_id} audit flag — operator review",
             description=(
-                "AA3 governance flag opened from audit task "
+                "GOV3 governance flag opened from audit task "
                 f"#{audit_task_id}. Resolve via "
                 f"POST /api/tasks/{{flag_id}}/resolve-flag with body "
                 "{action: continue | adjust_continue | keep_paused | terminate}."
@@ -302,7 +302,7 @@ async def apply_flag_from_audit_report(
             await pause_project(
                 project_id=project_id,
                 reason=(
-                    f"AA3 audit task #{audit_task_id} recommended pause"
+                    f"GOV3 audit task #{audit_task_id} recommended pause"
                 ),
                 actor=actor,
                 session=session,

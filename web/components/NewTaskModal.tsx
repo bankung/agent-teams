@@ -74,17 +74,17 @@ type Props = {
   // #7 §A AC#3 — per-project role whitelist (project.config.enabled_roles).
   // null / undefined / empty array → show all roles (current behaviour).
   enabledRoles?: number[] | null;
-  // #1238 AA3 — full ProjectRead so the modal can read `is_paused` + show
+  // #1238 GOV3 — full ProjectRead so the modal can read `is_paused` + show
   // the override checkbox + render the 423 toast with paused_reason context.
   // Optional for forward-compat with callers that don't carry it yet.
   project?: ProjectRead;
-  // #1238 AA3 — Board exposes its toast push helper so 423 errors land in the
+  // #1238 GOV3 — Board exposes its toast push helper so 423 errors land in the
   // ToastStack rather than as inline-only red text. Optional for the same
   // forward-compat reason.
   onPushToast?: (text: string) => void;
 };
 
-// #1238 AA3 — minimum length for the per-task pause-override reason. Mirrors
+// #1238 GOV3 — minimum length for the per-task pause-override reason. Mirrors
 // the BE schema (api/src/schemas/task.py — Field(min_length=10)).
 const ALLOW_DURING_PAUSE_REASON_MIN_CHARS = 10;
 
@@ -115,7 +115,7 @@ export function NewTaskModal({
   const [blockedBy, setBlockedBy] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // #1238 AA3 — per-task pause override (only meaningful when isProjectPaused).
+  // #1238 GOV3 — per-task pause override (only meaningful when isProjectPaused).
   const [allowDuringPause, setAllowDuringPause] = useState(false);
   const [allowDuringPauseReason, setAllowDuringPauseReason] = useState("");
   // #1340 — action template chip selection. When set, server pre-fills
@@ -182,7 +182,7 @@ export function NewTaskModal({
   const blockedByValid =
     blockedByNum === null ||
     (Number.isInteger(blockedByNum) && blockedByNum >= 1);
-  // #1238 AA3 — when the override is checked on a paused project, the reason
+  // #1238 GOV3 — when the override is checked on a paused project, the reason
   // textarea must satisfy the BE min_length=10 gate before submit is enabled.
   // We DO NOT block submit when the override is unchecked — the user is
   // allowed to attempt the POST without the override; the BE will return 423
@@ -209,7 +209,7 @@ export function NewTaskModal({
       ...(description.trim() ? { description: description.trim() } : {}),
       ...(role !== "" ? { assigned_role: role } : {}),
       ...(blockedByNum !== null ? { blocked_by: blockedByNum } : {}),
-      // #1238 AA3 — only attach the override pair when both (a) the project
+      // #1238 GOV3 — only attach the override pair when both (a) the project
       // is paused and (b) the operator checked the box. The BE schema
       // requires the reason to accompany allow_during_pause=true; the form
       // guards that above so a paired POST never lands with a missing reason.
@@ -237,7 +237,7 @@ export function NewTaskModal({
       resetFields();
     } catch (err: unknown) {
       if (err instanceof HttpError) {
-        // #1238 AA3 — 423 = paused-project gate. Render a toast with the
+        // #1238 GOV3 — 423 = paused-project gate. Render a toast with the
         // project's paused_reason + a hint about the override checkbox so
         // the operator can react without re-reading the BE detail blob.
         if (err.status === 423 && isProjectPaused) {
@@ -443,7 +443,7 @@ export function NewTaskModal({
               disabled={submitting}
             />
 
-            {/* #1238 AA3 — paused-project override. Only rendered when the
+            {/* #1238 GOV3 — paused-project override. Only rendered when the
                 operator is filing a task against a currently-paused project;
                 hidden entirely otherwise so the form chrome stays minimal.
                 When checked, reveals a reason textarea (>=10 chars) that the

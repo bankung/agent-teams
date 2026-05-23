@@ -4,7 +4,7 @@ import { useState } from "react";
 
 import type { AuditFlagWithProject } from "@/lib/api";
 
-// Kanban #1212 AA4 (D4) — mass-action bar above the project-grouped flag
+// Kanban #1212 GOV4 (D4) — mass-action bar above the project-grouped flag
 // list on /review. Multi-select N flags + apply one of 3 mass actions:
 // Continue / Keep Paused / Terminate. Adjust is NOT batchable per the
 // locked spec brief (per-project adjustments form makes batching ambiguous).

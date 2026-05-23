@@ -7,7 +7,7 @@ Cross-project endpoint — takes NO `X-Project-Id` header (parity with
 covers all active projects, so a project-scoped header would be wrong.
 
 POST /api/digest/fire:
-  - Fetches all open AA3 audit flags across active projects.
+  - Fetches all open GOV3 audit flags across active projects.
   - Renders subject + text + html via digest_template.
   - Sends via send_email (reads creds from env at call time).
   - Returns 200 + delivery status JSON regardless of SMTP outcome

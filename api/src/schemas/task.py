@@ -51,7 +51,7 @@ TaskRunModeLiteral = Literal["manual", "auto_pickup", "auto_headless"]
 TaskKindLiteral = Literal["ai", "human"]
 
 # Wire enum for tasks.task_type — 'bug'/'feature'/'chore'/'docs'/'refactor'
-# (#803) + 'audit' (#1211 AA3); lockstep guard at module bottom.
+# (#803) + 'audit' (#1211 GOV3); lockstep guard at module bottom.
 TaskTypeLiteral = Literal["bug", "feature", "chore", "docs", "refactor", "audit"]
 
 # Wire enum for tasks.interaction_kind (#830); lockstep guard at module bottom
@@ -246,12 +246,12 @@ class QuestionPayload(BaseModel):
     (Kanban #832) is NOT in this slice — PATCH semantics are full-replace
     (same as `acceptance_criteria`).
 
-    Kanban #1211 (2026-05-19): `extra='allow'` (was 'forbid') so AA3 audit-
+    Kanban #1211 (2026-05-19): `extra='allow'` (was 'forbid') so GOV3 audit-
     flag bookkeeping keys (is_audit_flag / breach_streak_days /
     audit_history / latest_audit / latest_audit_summary / resolved_action /
     resolved_at / resolved_by / etc.) pass through both POST validation AND
     TaskRead response validation without requiring a per-feature schema
-    field. Future flag-type families (e.g. AA4 review prompts, AA5 tuning
+    field. Future flag-type families (e.g. GOV4 review prompts, GOV5 tuning
     proposals) ride the same pattern. Each writer (services/audit_flag.py,
     services/pause_switch.py) shapes its own extras; element-shape rigor
     lives at the writer.
@@ -474,12 +474,12 @@ class TaskCreate(BaseModel):
     # Free-form partial-work state stored by Lead when auto-run halts mid-task.
     # Used by re-spawn brief on resume. No shape constraint.
     resume_context: dict[str, Any] | None = None
-    # Kanban #1211 (2026-05-19): AA3 per-spawn override hatch. Default false
+    # Kanban #1211 (2026-05-19): GOV3 per-spawn override hatch. Default false
     # — the typical POST path. Operators set true (with a reason >=10 chars)
     # to bypass the 423 gate when the parent project is paused. The router
     # writes a `projects_audit` row with action='pause_override' when this
     # combination lands on a paused project so override usage stays
-    # auditable (D6 + AA5 threshold-tuning signal). The pair is validated
+    # auditable (D6 + GOV5 threshold-tuning signal). The pair is validated
     # together by `_check_allow_during_pause_needs_reason` below — true
     # without a reason fails 422 before reaching the DB CHECK.
     allow_during_pause: bool = False
@@ -595,7 +595,7 @@ class TaskCreate(BaseModel):
 
     @model_validator(mode="after")
     def _check_allow_during_pause_needs_reason(self) -> "TaskCreate":
-        """Kanban #1211 (AA3 D6): `allow_during_pause=true` REQUIRES
+        """Kanban #1211 (GOV3 D6): `allow_during_pause=true` REQUIRES
         `allow_during_pause_reason` set (>=10 chars enforced by the field
         Field(min_length=10)). Fires a friendly 422 ahead of the DB CHECK
         `ck_tasks_pause_reason_length` 400 fallback. allow=false with a
@@ -870,7 +870,7 @@ class TaskUpdate(BaseModel):
     # No element-shape validation this slice — the service is the only writer
     # and shapes the dict server-side.
     health_alert: dict[str, Any] | None = None
-    # Kanban #1211 (2026-05-19): AA3 per-spawn override hatch. PATCH-able for
+    # Kanban #1211 (2026-05-19): GOV3 per-spawn override hatch. PATCH-able for
     # the rare flow where the operator changes their mind mid-task lifecycle
     # (e.g. flip true → false after the parent project is unpaused to clean
     # up the audit-signal). Mirrors TaskCreate's semantics + validator. The
@@ -1167,7 +1167,7 @@ class TaskRead(BaseModel):
     # object latest-only JSONB. None = no current alert. Backfilled to NULL on
     # existing rows by migration 0031.
     health_alert: dict[str, Any] | None = None
-    # Kanban #1211 (2026-05-19) — AA3 per-spawn override hatch. Backfilled to
+    # Kanban #1211 (2026-05-19) — GOV3 per-spawn override hatch. Backfilled to
     # FALSE / NULL on existing rows by migration 0040's server_default /
     # nullable. The pair represents whether the task was filed against a
     # paused project via the bypass route; surfaces on every read so the FE

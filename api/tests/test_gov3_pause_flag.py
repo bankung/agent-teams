@@ -1,4 +1,4 @@
-"""Kanban #1211 — AA3 soft-pause governance backend tests.
+"""Kanban #1211 — GOV3 soft-pause governance backend tests.
 
 Coverage:
 - POST /api/projects/{id}/pause — happy path + 409 idempotent + 422 reason.
@@ -16,7 +16,7 @@ Coverage:
 - POST /api/tasks/{flag_id}/resolve-flag action=continue → flag DONE + unpause.
 - POST /resolve-flag action=adjust_continue + adjustments → applied + unpause.
 - POST /resolve-flag action=keep_paused → flag DONE; is_paused stays.
-- POST /resolve-flag action=terminate → AA1 kill called + flag DONE.
+- POST /resolve-flag action=terminate → GOV1 kill called + flag DONE.
 - Resolve-flag rolls back on bad adjustments (no partial state).
 
 Runs against `agent_teams_test` per conftest.py rewrite. Live `agent_teams`
@@ -71,7 +71,7 @@ def _task_create_payload(
     return body
 
 
-_VALID_PAUSE_REASON = "smoke pause — Kanban #1211 AA3 verification"
+_VALID_PAUSE_REASON = "smoke pause — Kanban #1211 GOV3 verification"
 _VALID_OVERRIDE_REASON = "operator approves bypass for hotfix work"
 
 
@@ -120,7 +120,7 @@ async def test_pause_project_happy_path(client, scaffold_cleanup) -> None:
         assert body["paused_at"] is not None
         assert isinstance(body["drain_summary"], dict)
         # Soft-pause does NOT freeze in-flight or open TODOs (load-bearing
-        # semantic vs AA1 kill).
+        # semantic vs GOV1 kill).
         assert body["drain_summary"]["in_flight_marked"] == 0
         assert body["drain_summary"]["frozen_tasks"] == 0
         # GET reflects the new state.
@@ -453,7 +453,7 @@ async def test_audit_done_creates_new_flag(
                 .where(Task.status == 1)
             )
         ).scalars().all()
-        # Filter to AA3 audit flags (is_audit_flag in question_payload).
+        # Filter to GOV3 audit flags (is_audit_flag in question_payload).
         flags = [
             t
             for t in flag_rows
@@ -509,7 +509,7 @@ async def test_second_audit_updates_existing_flag(
             json={"process_status": 5},
         )
 
-        # Verify: exactly one AA3 flag still, streak=2, audit_history has both.
+        # Verify: exactly one GOV3 flag still, streak=2, audit_history has both.
         flag_rows = (
             await db_session.execute(
                 select(Task)

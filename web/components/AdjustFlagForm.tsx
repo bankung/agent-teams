@@ -8,8 +8,8 @@ import type {
   ResolveFlagResponse,
 } from "@/lib/api";
 
-// Kanban #1212 AA4 — inline form for the "Adjust + Continue" action on an
-// AA3 audit flag. Opens directly below the ProjectFlagCard's action row
+// Kanban #1212 GOV4 — inline form for the "Adjust + Continue" action on an
+// GOV3 audit flag. Opens directly below the ProjectFlagCard's action row
 // (not a modal — keeps the operator in the flag's context).
 //
 // 3 sections (locked spec brief):
@@ -357,7 +357,7 @@ export function AdjustFlagForm({ project, onSubmit, onCancel }: Props) {
         />
         <p className="text-[10px] text-zinc-500 dark:text-zinc-500">
           Will be appended to project.description with a timestamp marker. Not
-          yet wired to the resolve-flag backend — see open question in AA4
+          yet wired to the resolve-flag backend — see open question in GOV4
           handoff notes.
         </p>
       </fieldset>

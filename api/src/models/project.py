@@ -259,7 +259,7 @@ class Project(Base):
         server_default=text("'USD'"),
     )
 
-    # Kanban #1209 (2026-05-19): AA1 hard kill switch. `is_killed` is the hot
+    # Kanban #1209 (2026-05-19): GOV1 hard kill switch. `is_killed` is the hot
     # pause state — operator-triggered emergency stop, revive-able. Separate
     # from `is_active` (cold archive). `killed_at` is the first-kill timestamp
     # (PRESERVED across revive — historical signal); `killed_reason` mirrors
@@ -278,13 +278,13 @@ class Project(Base):
     )
     killed_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Kanban #1211 (2026-05-19): AA3 soft-pause governance. Orthogonal to
+    # Kanban #1211 (2026-05-19): GOV3 soft-pause governance. Orthogonal to
     # `is_killed` — DB CHECK `ck_projects_kill_pause_mutex` enforces the
     # two cannot both be true. Soft semantics (in-flight tasks complete
     # naturally; new POSTs blocked unless the per-task `allow_during_pause`
     # escape hatch is set with a reason). `paused_at` + `paused_reason`
     # preserved across unpause for the historical-signal pattern mirrored
-    # from AA1's killed_at/killed_reason (D4). `audit_enabled` defaults true;
+    # from GOV1's killed_at/killed_reason (D4). `audit_enabled` defaults true;
     # operator flips false to suppress audit-template creation/firing for a
     # project that doesn't want governance audits (AC#2 deferred — column
     # added now to avoid a follow-up migration when AC#2 lands).
@@ -381,7 +381,7 @@ class Project(Base):
             "fiscal_year_start IS NULL OR (fiscal_year_start >= 1 AND fiscal_year_start <= 12)",
             name="ck_projects_fiscal_year_start_valid",
         ),
-        # Kanban #1211 — AA1 hard kill (is_killed) and AA3 soft pause
+        # Kanban #1211 — GOV1 hard kill (is_killed) and GOV3 soft pause
         # (is_paused) are mutually exclusive. Mirror of migration 0040's
         # CHECK; defense-in-depth against raw-SQL drift. The pause/unpause
         # service ALSO checks at the app layer so the 409 fires before the

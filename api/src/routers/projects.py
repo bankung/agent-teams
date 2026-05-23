@@ -668,7 +668,7 @@ async def kill_project_endpoint(
     x_actor: str | None = Header(default=None, alias="X-Actor"),
     session: AsyncSession = Depends(get_session),
 ) -> KillProjectResponse:
-    """Hard-pause a project (Kanban #1209, AA1).
+    """Hard-pause a project (Kanban #1209, GOV1).
 
     Operator emergency-stop. Drains recurring tasks (suspends next_fire_at),
     marks in-flight langgraph runs for graceful checkpoint, freezes open
@@ -748,7 +748,7 @@ async def pause_project_endpoint(
     x_actor: str | None = Header(default=None, alias="X-Actor"),
     session: AsyncSession = Depends(get_session),
 ) -> PauseUnpauseResponse:
-    """Soft-pause a project (Kanban #1211, AA3 D3).
+    """Soft-pause a project (Kanban #1211, GOV3 D3).
 
     Operator/system soft suspend. Drains recurring tasks (non-templates →
     next_fire_at=NULL; templates → kill_frozen=true) but lets in-flight
@@ -764,7 +764,7 @@ async def pause_project_endpoint(
     - 422 — `reason` missing / shorter than 10 chars.
 
     `X-Actor` header (default 'operator') stamps `projects_audit.actor`,
-    truncated at 200 chars (mirrors the AA1 P1-4 precedent).
+    truncated at 200 chars (mirrors the GOV1 P1-4 precedent).
     """
     actor = (x_actor or "operator").strip()[:200] or "operator"
     result = await pause_project(
@@ -797,7 +797,7 @@ async def unpause_project_endpoint(
     - 404 — project not found / soft-deleted.
     - 409 — project is NOT currently paused (idempotent guard).
 
-    `X-Actor` truncated at 200 chars (mirrors AA1 P1-4 precedent).
+    `X-Actor` truncated at 200 chars (mirrors GOV1 P1-4 precedent).
     """
     actor = (x_actor or "operator").strip()[:200] or "operator"
     result = await unpause_project(

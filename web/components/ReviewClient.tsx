@@ -21,7 +21,7 @@ import {
   type TerminateTarget,
 } from "./TerminateFlagModal";
 
-// Kanban #1212 AA4 — interactive shell for the /review page.
+// Kanban #1212 GOV4 — interactive shell for the /review page.
 //
 // Owns:
 //   - Per-flag selection state (Set<flag_id>).
@@ -230,7 +230,7 @@ export function ReviewClient({ initialFlags }: Props) {
             No flags — all projects continuing.
           </p>
           <p className="text-xs text-zinc-500 dark:text-zinc-400">
-            New AA3 audit flags will appear here when the auditor escalates.
+            New GOV3 audit flags will appear here when the auditor escalates.
           </p>
         </div>
       ) : (

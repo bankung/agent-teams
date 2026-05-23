@@ -1,12 +1,12 @@
-"""AA3 soft-pause service (Kanban #1211).
+"""GOV3 soft-pause service (Kanban #1211).
 
 Two entry points + one resolve helper:
 - `pause_project(project_id, reason, actor)`    — soft pause for review.
 - `unpause_project(project_id, actor, ?reason)` — inverse: clear is_paused.
 - `resolve_flag(flag_id, action, adjustments?, actor)` — atomic single-txn
-  handler for the four operator answers on an AA3 flag task.
+  handler for the four operator answers on an GOV3 flag task.
 
-Soft-pause semantics (D3) — DIFFERENT from AA1 hard kill:
+Soft-pause semantics (D3) — DIFFERENT from GOV1 hard kill:
   (a) recurring tasks → suspended same way as kill (next_fire_at→NULL on
       non-template rows; kill_frozen=true on templates).
   (b) in-flight tasks → DO NOT freeze. They complete naturally. The signal
@@ -16,7 +16,7 @@ Soft-pause semantics (D3) — DIFFERENT from AA1 hard kill:
   (d) new POSTs → blocked at the router layer unless the per-task escape
       hatch (`allow_during_pause=true` + reason >=10 chars) is set.
   (e) escape-hatch usage → logged in `projects_audit` with
-      action='pause_override' so the AA5 cycle can flag over-use.
+      action='pause_override' so the GOV5 cycle can flag over-use.
 
 Mutual exclusion (D3): a project cannot be both killed AND paused. The DB
 CHECK `ck_projects_kill_pause_mutex` is the load-bearing invariant; the
@@ -81,7 +81,7 @@ RESOLVE_FLAG_ACTIONS: tuple[str, ...] = (
 # Which project columns the `adjust_continue` action is allowed to bump /
 # tweak. The deliberately narrow allowlist prevents an operator-supplied
 # adjustments dict from rewriting unrelated state (team / name / paths) —
-# the AA5 cycle will refine this as new tuning surfaces land.
+# the GOV5 cycle will refine this as new tuning surfaces land.
 ADJUST_CONTINUE_ALLOWED_KEYS: frozenset[str] = frozenset(
     {
         "budget_daily_usd",
@@ -128,12 +128,12 @@ async def pause_project(
 
     now = datetime.now(timezone.utc)
 
-    # ---- (a) suspend recurring (same shape as AA1 kill) --------------------
+    # ---- (a) suspend recurring (same shape as GOV1 kill) --------------------
     # Non-template rows with recurrence_rule: NULL out next_fire_at; unpause
     # recomputes via next_cron_fire. Template rows: ck_tasks_template_recurrence_complete
     # forbids NULL on either field — mark kill_frozen=true instead. The
     # scheduler integration to honor kill_frozen-during-pause rides the same
-    # follow-up as AA1's kill-frozen handling (out of scope this slice; the
+    # follow-up as GOV1's kill-frozen handling (out of scope this slice; the
     # router-layer POST gate + the recurring-NULL mechanism cover v1).
     recurring_stmt = select(Task).where(
         Task.project_id == project_id,
@@ -152,7 +152,7 @@ async def pause_project(
     # ---- (b) + (c) NOT applied for soft-pause --------------------------------
     # In-flight + open TODO tasks ride through the pause unchanged. The pause
     # is a "no new pickups" gate, not a "stop everything in motion" gate.
-    # This is the load-bearing semantic difference from AA1.
+    # This is the load-bearing semantic difference from GOV1.
 
     # ---- flip project state -------------------------------------------------
     project.is_paused = True
@@ -163,12 +163,12 @@ async def pause_project(
     drain_summary: dict[str, Any] = {
         "recurring_suspended": recurring_suspended,
         # (b) + (c) NOT applied — surface explicitly so audit consumers
-        # (project-auditor, AA5 reviewer) see the soft-vs-hard distinction.
+        # (project-auditor, GOV5 reviewer) see the soft-vs-hard distinction.
         "in_flight_marked": 0,
         "frozen_tasks": 0,
         "router_gate_active": True,
         # (d) PreToolUse-hook integration for spawn-block ride on the same
-        # follow-up wave as AA1's spawn_hook_gate_pending.
+        # follow-up wave as GOV1's spawn_hook_gate_pending.
         "spawn_hook_gate_pending": True,
     }
     audit = ProjectsAudit(
@@ -233,9 +233,9 @@ async def unpause_project(
     now = datetime.now(timezone.utc)
 
     # ---- recompute next_fire_at on recurring tasks --------------------------
-    # Mirrors AA1's revive logic. No staleness gate this slice — soft-pause
-    # cadence is expected to be days, not weeks; if AA5 surfaces stale-revive
-    # noise, port the AA1 REVIVE_MAX_STALENESS_DAYS gate over.
+    # Mirrors GOV1's revive logic. No staleness gate this slice — soft-pause
+    # cadence is expected to be days, not weeks; if GOV5 surfaces stale-revive
+    # noise, port the GOV1 REVIVE_MAX_STALENESS_DAYS gate over.
     recurring_stmt = select(Task).where(
         Task.project_id == project_id,
         Task.status == RecordStatus.ACTIVE,
@@ -252,7 +252,7 @@ async def unpause_project(
     # ---- unfreeze every kill_frozen=true row in the project -----------------
     # Pause only ever sets kill_frozen=true on templates (see pause_project
     # comment); revive sweeps every kill_frozen=true row defensively in case
-    # an out-of-band pause + AA1 kill chain left an inconsistency. Cheap
+    # an out-of-band pause + GOV1 kill chain left an inconsistency. Cheap
     # full-project scan — no FK-driven cascade concerns at this scale.
     frozen_stmt = select(Task).where(
         Task.project_id == project_id,
@@ -332,10 +332,10 @@ async def resolve_flag(
     actor: str = "operator",
     session: AsyncSession,
 ) -> dict[str, Any]:
-    """Atomic single-transaction handler for the four AA3 flag actions (D4).
+    """Atomic single-transaction handler for the four GOV3 flag actions (D4).
 
     The flag task is identified by `flag_id`. The handler:
-    1. Validates `flag_id` exists + is an AA3 flag (`interaction_kind='question'`
+    1. Validates `flag_id` exists + is an GOV3 flag (`interaction_kind='question'`
        AND `question_payload.is_audit_flag=true`).
     2. Validates the action against the flag's `question_payload.options`
        (defensive — the auditor sets these; we don't trust the caller).
@@ -347,11 +347,11 @@ async def resolve_flag(
                             branch — the flag-DONE itself IS the signal;
                             avoiding a 'pause' duplicate row keeps the audit
                             trail honest about who paused when).
-       - terminate       → call AA1 kill_project (reason auto-formatted),
+       - terminate       → call GOV1 kill_project (reason auto-formatted),
                             flag DONE.
 
     Single commit wraps everything; partial failure rolls back. Imports
-    `kill_project` lazily — the AA1 service handles its own commits, so the
+    `kill_project` lazily — the GOV1 service handles its own commits, so the
     terminate branch uses two commits (kill, then flag) but the second has
     no rollback risk by design.
     """
@@ -380,7 +380,7 @@ async def resolve_flag(
             detail=(
                 f"Task id={flag_id} is not a question task "
                 f"(interaction_kind={flag.interaction_kind!r}); "
-                "resolve-flag only applies to AA3 audit flags"
+                "resolve-flag only applies to GOV3 audit flags"
             ),
         )
     payload = flag.question_payload or {}
@@ -388,7 +388,7 @@ async def resolve_flag(
         raise HTTPException(
             status_code=422,
             detail=(
-                f"Task id={flag_id} is not an AA3 audit flag "
+                f"Task id={flag_id} is not an GOV3 audit flag "
                 "(question_payload.is_audit_flag is missing/false)"
             ),
         )
@@ -466,7 +466,7 @@ async def resolve_flag(
         # writing a duplicate 'pause' row would lie about who paused when.
         flag.process_status = 5  # TaskStatus.DONE
         flag.completed_at = datetime.now(timezone.utc)
-        # Annotate the question_payload with the resolution so the AA4 UI
+        # Annotate the question_payload with the resolution so the GOV4 UI
         # surfaces "kept paused on YYYY-MM-DD" rather than just "DONE".
         new_payload = dict(payload)
         new_payload["resolved_action"] = "keep_paused"
@@ -485,12 +485,12 @@ async def resolve_flag(
         return flag_done_response
 
     if action == "terminate":
-        # Delegate to AA1. kill_project commits independently — we accept the
+        # Delegate to GOV1. kill_project commits independently — we accept the
         # two-commit split because the kill is the unrecoverable step
         # (operator-explicit) and the flag-DONE write that follows has no
         # rollback risk (it's a single column flip on a row we just loaded).
         kill_reason = (
-            f"resolved via AA3 flag #{flag_id} terminate action by {actor}"
+            f"resolved via GOV3 flag #{flag_id} terminate action by {actor}"
         )
         kill_result = await kill_project(
             project_id=project_id,

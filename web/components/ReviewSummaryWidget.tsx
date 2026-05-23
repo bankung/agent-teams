@@ -2,7 +2,7 @@ import Link from "next/link";
 
 import type { AuditFlagWithProject } from "@/lib/api";
 
-// Kanban #1212 AA4 (D5) — dashboard widget summarizing open AA3 audit flags.
+// Kanban #1212 GOV4 (D5) — dashboard widget summarizing open GOV3 audit flags.
 // Server Component (no `"use client"`); the parent dashboard page fetches
 // the list once + passes it down so the widget shares the SSR round-trip
 // instead of double-fetching.

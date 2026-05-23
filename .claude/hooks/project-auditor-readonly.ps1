@@ -28,7 +28,7 @@
 #   first thing accidentally widened during agent edits. The hook is the durable
 #   gate that survives a sloppy frontmatter PR.
 #
-# Kanban #1210 (AA2 — project-auditor agent scaffolding).
+# Kanban #1210 (GOV2 — project-auditor agent scaffolding).
 # Patterns mirrored from:
 #   - .claude/hooks/tester-curl-allow.ps1            (per-agent allow JSON shape)
 #   - .claude/hooks/block-raw-sql-dml.ps1            (DML keyword detection)

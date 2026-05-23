@@ -125,7 +125,7 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
   // SSR-safe: initial state always 'board'; hydrated from localStorage in useEffect.
   const [view, setView] = useState<ViewMode>("board");
 
-  // #1238 AA3 — audit-task lane filter. Audit tasks are governance noise on
+  // #1238 GOV3 — audit-task lane filter. Audit tasks are governance noise on
   // the main Kanban (they're not operator-actionable from the board — the
   // /review page resolves the resulting flag). Default OFF (filter them out);
   // operator toggles ON to see the full audit trail inline. Session-scoped
@@ -232,7 +232,7 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
-  // #1238 AA3 — audit-task tally is computed against the unfiltered list so
+  // #1238 GOV3 — audit-task tally is computed against the unfiltered list so
   // the toggle chip can show "Show audit tasks (N)" even when the filter is
   // active. AuditHistorySection consumes the full audit list separately (via
   // listProjectAuditTasks on its own fetch path); the board-local count here
@@ -402,7 +402,7 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
               <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
                 ·
               </span>
-              {/* #1238 AA3 — audit-task filter toggle. Default OFF; chip click
+              {/* #1238 GOV3 — audit-task filter toggle. Default OFF; chip click
                   flips the local pref. Hidden entirely when the project has
                   no audit tasks at all so it doesn't add chrome for nothing. */}
               <button
@@ -558,10 +558,10 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
             />
           )}
         </div>
-        {/* #1209 AA1 D5 — red strip above the consent banner when killed.
+        {/* #1209 GOV1 D5 — red strip above the consent banner when killed.
             (Renders nothing when is_killed=false.) */}
         <KilledBanner project={project} />
-        {/* #1211 / #1238 AA3 — amber strip above the consent banner when paused.
+        {/* #1211 / #1238 GOV3 — amber strip above the consent banner when paused.
             (Renders nothing when is_paused=false.) */}
         <PausedBanner project={project} />
         <ProjectConsentBanner
@@ -597,7 +597,7 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
           </div>
         </DndContext>
       )}
-      {/* #1238 AA3 — Audit History archive below the lanes. Self-collapses;
+      {/* #1238 GOV3 — Audit History archive below the lanes. Self-collapses;
           shows "No audit history yet." when the project has no audit_task rows.
           Sources from the in-memory tasks snapshot (no extra fetch — every
           audit task is already in `tasks` via the initial /api/tasks limit=500

@@ -1,4 +1,4 @@
-"""ProjectsAudit ORM model (Kanban #1209 — AA1 hard kill switch).
+"""ProjectsAudit ORM model (Kanban #1209 — GOV1 hard kill switch).
 
 Append-only audit ledger for project-level kill / revive events. NOT extending
 `tasks_history` (those are per-task UPDATE/DELETE snapshots from the audit
@@ -6,7 +6,7 @@ trigger; kill/revive are project-level events with their own drain payload).
 Mirrors the `transactions` ledger pattern: FK ON DELETE CASCADE so a project
 hard-delete (rare; soft-delete is the norm via status=0) leaves no orphans.
 
-Future project-auditor (AA2) reads here to summarize kill cadence per project.
+Future project-auditor (GOV2) reads here to summarize kill cadence per project.
 
 `drain_summary` JSONB shape (validated at the service layer, not by DB CHECK):
   on kill   : {recurring_suspended: N, frozen_tasks: N, in_flight_marked: N,
@@ -45,12 +45,12 @@ if TYPE_CHECKING:
 # 0039 (kill/revive) + 0040 (pause/unpause/pause_override). Module constant
 # so the Pydantic Literal in schemas/project.py stays in lockstep.
 #
-# - kill / revive       : AA1 hard kill switch (Kanban #1209).
-# - pause / unpause     : AA3 soft-pause governance state (Kanban #1211).
-# - pause_override      : AA3 per-task escape hatch — a POST /api/tasks
+# - kill / revive       : GOV1 hard kill switch (Kanban #1209).
+# - pause / unpause     : GOV3 soft-pause governance state (Kanban #1211).
+# - pause_override      : GOV3 per-task escape hatch — a POST /api/tasks
 #                         against a paused project that succeeded via
 #                         allow_during_pause=true + reason. The bypass IS
-#                         the audit signal (D6 + AA5 threshold-tuning).
+#                         the audit signal (D6 + GOV5 threshold-tuning).
 PROJECT_AUDIT_ACTIONS: tuple[str, ...] = (
     "kill",
     "revive",

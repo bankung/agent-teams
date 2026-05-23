@@ -243,10 +243,10 @@ def _esc(text: str) -> str:
 async def fetch_open_audit_flags(
     session: AsyncSession,
 ) -> list[dict[str, Any]]:
-    """Return open AA3 audit-flag task summaries across active projects.
+    """Return open GOV3 audit-flag task summaries across active projects.
 
     "Active" means: project.status=1, NOT is_killed, NOT is_paused.
-    "Open flag" means: task is an AA3 audit-flag question task with
+    "Open flag" means: task is an GOV3 audit-flag question task with
       process_status IN {TODO, IN_PROGRESS, REVIEW, BLOCKED} AND status=1
       AND question_payload->>'is_audit_flag' = 'true'.
 
@@ -269,7 +269,7 @@ async def fetch_open_audit_flags(
             Project.status == RecordStatus.ACTIVE,
             Project.is_killed.is_(False),
             Project.is_paused.is_(False),
-            # Task guards — open AA3 flag.
+            # Task guards — open GOV3 flag.
             Task.status == RecordStatus.ACTIVE,
             Task.interaction_kind == TaskInteractionKind.QUESTION,
             Task.process_status.in_(

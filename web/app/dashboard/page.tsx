@@ -359,7 +359,7 @@ export default async function DashboardPage() {
   // calls. BE defaults the window to today-7..today inclusive (UTC); we omit
   // the query params and let the server decide. Empty array is the typical
   // state today; AuditorActivity hides the entire section when so.
-  // Kanban #1212 AA4 (D5) — listAuditFlags joins listProjects + per-project
+  // Kanban #1212 GOV4 (D5) — listAuditFlags joins listProjects + per-project
   // tasks; runs in parallel with the existing aggregate fetches. Failure
   // degrades to [] (the helper swallows per-project errors), so a single
   // backend hiccup doesn't blank the dashboard.
@@ -415,7 +415,7 @@ export default async function DashboardPage() {
         </p>
       ) : (
         <>
-          {/* AA4 — operator review surface. Hidden when no flags are open. */}
+          {/* GOV4 — operator review surface. Hidden when no flags are open. */}
           <ReviewSummaryWidget flags={openFlags} />
 
           <AggregateSummary stats={stats} />

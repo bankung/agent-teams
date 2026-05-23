@@ -2,21 +2,21 @@
 
 import { useEffect, useRef, useState } from "react";
 
-// Kanban #1212 AA4 — extra-friction modal for the "Terminate" action on an
-// AA3 audit flag (single-flag mode) or a batch of flags (mass mode).
+// Kanban #1212 GOV4 — extra-friction modal for the "Terminate" action on an
+// GOV3 audit flag (single-flag mode) or a batch of flags (mass mode).
 //
 // UX strength mirrors KillProjectModal: 3 gates must all pass before submit.
 //   1. type project name(s) exactly to confirm — single mode only; mass mode
 //      shows the project-name list inline + skips this gate (the list itself
 //      IS the warning).
-//   2. reason >= 10 chars — same min-length as AA1 kill_project (D5).
+//   2. reason >= 10 chars — same min-length as GOV1 kill_project (D5).
 //   3. type literal word "TERMINATE" — final muscle-memory brake (matches
 //      the locked spec brief).
 //
-// Calling `resolveFlag({action:'terminate'})` cascades to AA1 kill_project on
+// Calling `resolveFlag({action:'terminate'})` cascades to GOV1 kill_project on
 // the backend (services/pause_switch.py:resolve_flag terminate branch). The
 // modal is intentionally pessimistic — disable submit until ALL gates pass;
-// no "force" toggle (the AA3 path always uses the gentle drain).
+// no "force" toggle (the GOV3 path always uses the gentle drain).
 
 const REASON_MIN_CHARS = 10;
 const CONFIRM_WORD = "TERMINATE";
@@ -130,7 +130,7 @@ export function TerminateFlagModal({
             : `Terminate project ${single?.projectName}?`}
         </h2>
         <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
-          Terminate cascades to AA1 hard kill: drains recurring tasks, blocks
+          Terminate cascades to GOV1 hard kill: drains recurring tasks, blocks
           new task creation, and freezes open TODO / BLOCKED rows. External
           commitments (calendars, third-party APIs) are NOT auto-cancelled.
         </p>

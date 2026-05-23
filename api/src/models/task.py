@@ -339,7 +339,7 @@ class Task(Base):
         default=0,
     )
 
-    # Kanban #1209 (2026-05-19): AA1 hard kill switch — per-task frozen-in-place
+    # Kanban #1209 (2026-05-19): GOV1 hard kill switch — per-task frozen-in-place
     # marker. Set TRUE by `services/kill_switch.py::kill_project` for every open
     # TODO/IN_PROGRESS row in the killed project (preserved through kill, not
     # archived — D3 "ค้างไว้แบบไหน กลับมาแบบนั้น"). Cleared back to FALSE on
@@ -355,13 +355,13 @@ class Task(Base):
         default=False,
     )
 
-    # Kanban #1211 (2026-05-19): AA3 soft-pause per-spawn override hatch.
+    # Kanban #1211 (2026-05-19): GOV3 soft-pause per-spawn override hatch.
     # When the parent project is paused (`projects.is_paused=true`), POST
     # /api/tasks is blocked with 423 — UNLESS the body carries
     # `allow_during_pause=true` AND `allow_during_pause_reason` (>=10 chars).
     # The bypass IS the audit signal: a `projects_audit` row with
     # action='pause_override' is written so operators can review the
-    # override frequency / signal-quality of the threshold (D6 + AA5
+    # override frequency / signal-quality of the threshold (D6 + GOV5
     # callout: "if used >X times/week per project, threshold is wrong").
     # DB CHECK `ck_tasks_pause_reason_length` enforces the >=10-chars
     # invariant; Pydantic TaskCreate fires the friendlier 422 first.
@@ -543,7 +543,7 @@ class Task(Base):
             "max_active_children IS NULL OR max_active_children > 0",
             name="ck_tasks_max_active_children_positive",
         ),
-        # Kanban #1211 — AA3 per-spawn override: when allow_during_pause=true
+        # Kanban #1211 — GOV3 per-spawn override: when allow_during_pause=true
         # the reason must be present and >= 10 chars. Mirror of migration
         # 0040's CHECK; defense-in-depth against raw-SQL drift (Pydantic
         # TaskCreate also enforces; the DB CHECK catches direct INSERTs that

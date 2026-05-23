@@ -874,7 +874,7 @@ async def create_task(
                 ),
             )
 
-    # Kanban #1209 (AA1 hard kill switch): refuse new task POSTs against a
+    # Kanban #1209 (GOV1 hard kill switch): refuse new task POSTs against a
     # killed project. 423 Locked (per AC#4) distinguishes "project state
     # blocks this action" from 409 (resource conflict on kill/revive) and
     # from 422 (validation). The detail surfaces killed_at + killed_reason
@@ -924,7 +924,7 @@ async def create_task(
             },
         )
 
-    # Kanban #1211 (AA3 soft-pause D3): refuse new task POSTs against a paused
+    # Kanban #1211 (GOV3 soft-pause D3): refuse new task POSTs against a paused
     # project UNLESS the per-task escape hatch is engaged. Order matters:
     # the kill check above is stricter (mutex constraint guarantees only
     # one can fire), so kill takes precedence on the rare race window.
@@ -932,7 +932,7 @@ async def create_task(
     # Escape hatch: body carries `allow_during_pause=true` + a reason
     # >=10 chars (Pydantic enforces). When both conditions land, we
     # ALLOW + log a `projects_audit` row with action='pause_override' so
-    # operators can review override frequency (D6 + AA5 callout: "if used
+    # operators can review override frequency (D6 + GOV5 callout: "if used
     # >X times/week, threshold is wrong"). The audit row is written here
     # at the router after we know the override fired but BEFORE the task
     # INSERT — same session, same transaction, atomic with the task INSERT.
@@ -963,7 +963,7 @@ async def create_task(
         # Escape hatch engaged — stage the audit row for the same commit as
         # the INSERT. Captured as a dict (not the ORM object yet) so we can
         # add it AFTER the task INSERT and let the audit row reference the
-        # new task's id in drain_summary for AA4 deep-linking.
+        # new task's id in drain_summary for GOV4 deep-linking.
         pause_override_audit_pending = {
             "reason": payload.allow_during_pause_reason,
         }
@@ -1231,11 +1231,11 @@ async def create_task(
     task = Task(**payload_dict)
     session.add(task)
 
-    # Kanban #1211 (AA3 D6): if the pause-override hatch fired above, stage
+    # Kanban #1211 (GOV3 D6): if the pause-override hatch fired above, stage
     # a projects_audit row with action='pause_override' in the SAME
     # transaction as the INSERT — so a failed INSERT also rolls back the
     # audit row (no orphan signals). flush() materializes task.id so we
-    # can reference it in drain_summary for AA4 deep-linking.
+    # can reference it in drain_summary for GOV4 deep-linking.
     if pause_override_audit_pending is not None:
         from src.models.projects_audit import ProjectsAudit
         try:
@@ -1995,7 +1995,7 @@ async def update_task(
         await auto_unblock_dependents(session, task_id)
         await session.commit()  # second commit for the unblock writes
 
-    # Kanban #1211 (AA3 AC#3): post-PATCH hook — if the patched task is an
+    # Kanban #1211 (GOV3 AC#3): post-PATCH hook — if the patched task is an
     # audit task (task_type='audit') that just transitioned to DONE, invoke
     # the flag pipeline. The hook is surgical: it only fires on the
     # DONE-flip of an 'audit' task, leaving every other PATCH path
@@ -2024,7 +2024,7 @@ async def update_task(
             )
             await session.commit()  # commit flag-pipeline side effects
             logger.info(
-                "AA3 flag pipeline: audit_task=%d summary=%s",
+                "GOV3 flag pipeline: audit_task=%d summary=%s",
                 task_id,
                 flag_summary,
             )
@@ -2036,14 +2036,14 @@ async def update_task(
             # caller's response is still 200.
             await session.rollback()
             logger.exception(
-                "AA3 flag pipeline raised HTTPException on audit_task=%d; "
+                "GOV3 flag pipeline raised HTTPException on audit_task=%d; "
                 "audit-task DONE flip stands but flag pipeline rolled back",
                 task_id,
             )
         except Exception:  # noqa: BLE001 — defensive: never crash the PATCH
             await session.rollback()
             logger.exception(
-                "AA3 flag pipeline crashed on audit_task=%d; "
+                "GOV3 flag pipeline crashed on audit_task=%d; "
                 "audit-task DONE flip stands but flag pipeline rolled back",
                 task_id,
             )
@@ -2171,7 +2171,7 @@ async def resolve_flag_endpoint(
     session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
 ) -> ResolveFlagResponse:
-    """Atomic resolve handler for an AA3 audit flag (Kanban #1211 D4).
+    """Atomic resolve handler for an GOV3 audit flag (Kanban #1211 D4).
 
     Body shape: `{action, adjustments?}` — action is one of
     'continue' / 'adjust_continue' / 'keep_paused' / 'terminate'.
@@ -2187,11 +2187,11 @@ async def resolve_flag_endpoint(
     - 200 — resolve applied (returns shape varies by branch — see ResolveFlagResponse).
     - 400 — cross-project header mismatch.
     - 404 — flag task not found / soft-deleted.
-    - 422 — action invalid OR flag is not an AA3 audit flag OR
+    - 422 — action invalid OR flag is not an GOV3 audit flag OR
             adjust_continue with empty/non-allowlisted adjustments.
 
     `X-Actor` (default 'operator') stamps `projects_audit.actor` on any
-    audit rows the service writes; truncated at 200 chars (AA1 P1-4 precedent).
+    audit rows the service writes; truncated at 200 chars (GOV1 P1-4 precedent).
     """
     from src.services.pause_switch import resolve_flag
 

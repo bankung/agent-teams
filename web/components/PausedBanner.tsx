@@ -5,8 +5,8 @@ import { useEffect, useState } from "react";
 import type { ProjectRead } from "@/lib/api";
 import { PauseProjectModal } from "@/components/PauseProjectModal";
 
-// Kanban #1211 / #1238 AA3 (FE) — amber strip rendered at the top of the
-// board when `project.is_paused=true`. Mirror of KilledBanner (AA1) but
+// Kanban #1211 / #1238 GOV3 (FE) — amber strip rendered at the top of the
+// board when `project.is_paused=true`. Mirror of KilledBanner (GOV1) but
 // amber/yellow themed because soft-pause is a warning, not an error.
 //
 // Client component because of the relative-time render — re-computes once

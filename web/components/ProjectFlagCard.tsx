@@ -1,6 +1,6 @@
 "use client";
 
-// Kanban #1212 AA4 — compact card per AA3 audit flag, rendered inside the
+// Kanban #1212 GOV4 — compact card per GOV3 audit flag, rendered inside the
 // /review page's per-project section. Component uses a neutral functional
 // name per the project's code-keyword discipline (see operator memory);
 // mirrors the project-auditor naming precedent (#1210/#1211).

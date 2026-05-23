@@ -1,4 +1,4 @@
-"""Kanban #1209 — AA1 hard kill switch backend tests.
+"""Kanban #1209 — GOV1 hard kill switch backend tests.
 
 Coverage:
 - POST /api/projects/{id}/kill — happy path + 409 idempotent guard.
@@ -65,7 +65,7 @@ def _task_create_payload(
     return body
 
 
-_VALID_KILL_REASON = "smoke test kill — Kanban #1209 verifying AA1 hard switch"
+_VALID_KILL_REASON = "smoke test kill — Kanban #1209 verifying GOV1 hard switch"
 
 
 # ---------------------------------------------------------------------------

@@ -11,7 +11,7 @@ import type {
 } from "./constants";
 
 // TaskTypeValue — mirror of api/src/schemas/task.TaskTypeLiteral.
-// Kanban #803 ('bug'/'feature'/'chore'/'docs'/'refactor') + #1211 AA3 ('audit').
+// Kanban #803 ('bug'/'feature'/'chore'/'docs'/'refactor') + #1211 GOV3 ('audit').
 export type TaskTypeValue =
   | "bug"
   | "feature"
@@ -60,23 +60,23 @@ export type ProjectRead = {
   budget_daily_usd: string | null;
   budget_monthly_usd: string | null;
   budget_total_usd: string | null;
-  // Kanban #1209 (2026-05-19) AA1 — hard kill switch state. `is_killed` is
+  // Kanban #1209 (2026-05-19) GOV1 — hard kill switch state. `is_killed` is
   // ALWAYS present on ProjectRead (NOT NULL DEFAULT false on the column);
   // `killed_at` / `killed_reason` are preserved through revive (D4 history),
   // so the FE can show "last killed YYYY-MM-DD" even on revived projects.
-  // Optional in the FE type for legacy-row defensive resilience — pre-AA1
+  // Optional in the FE type for legacy-row defensive resilience — pre-GOV1
   // serialized payloads may omit them, in which case treat as not-killed.
   is_killed?: boolean;
   killed_at?: string | null;
   killed_reason?: string | null;
-  // Kanban #1211 AA3 — soft-pause state (separate from AA1 hard kill).
+  // Kanban #1211 GOV3 — soft-pause state (separate from GOV1 hard kill).
   // is_paused stays true between the audit task DONE and the operator's
   // resolve-flag action. paused_at / paused_reason preserved across unpause
-  // for audit-trail continuity (D4 history pattern from AA1).
+  // for audit-trail continuity (D4 history pattern from GOV1).
   is_paused?: boolean;
   paused_at?: string | null;
   paused_reason?: string | null;
-  // Kanban #1212 AA4 — adjustments allowlist (services/pause_switch.py
+  // Kanban #1212 GOV4 — adjustments allowlist (services/pause_switch.py
   // ADJUST_CONTINUE_ALLOWED_KEYS). FE pre-fills the Adjust+Continue form
   // from these. NULL on health_thresholds = use auditor defaults
   // (budget_burn_threshold_pct=100, failure_rate_threshold_pct=20, etc).
@@ -113,13 +113,13 @@ export type AnswerHistoryEntry = {
 
 // QuestionPayload — JSONB payload for question/decision tasks (#834).
 //
-// Kanban #1211 AA3 (2026-05-19) added the AA3-flag bookkeeping fields below
+// Kanban #1211 GOV3 (2026-05-19) added the GOV3-flag bookkeeping fields below
 // (`is_audit_flag`, `breach_streak_days`, `audit_history`, `latest_audit`,
 // `latest_audit_summary`, `reasons`, `metrics`, plus the resolution sentinel
-// triplet written by AA3 resolve_flag). All are optional — generic question
+// triplet written by GOV3 resolve_flag). All are optional — generic question
 // tasks (approval prompts, design Option A/B questions) carry only the base
-// triad (question/options/answer_history); only AA3-spawned flag rows set
-// `is_audit_flag=true` and the AA3 fields.
+// triad (question/options/answer_history); only GOV3-spawned flag rows set
+// `is_audit_flag=true` and the GOV3 fields.
 //
 // `options` is heterogeneous on the wire (BE schema is `list[str | OptionItem]
 // | None` per api/src/schemas/task.py): question tasks carry plain `string[]`
@@ -138,7 +138,7 @@ export type QuestionPayload = {
   rationale?: string | null;
   chosen_at?: string | null;
   chosen_by?: string | null;
-  // ---- AA3 audit-flag fields (services/audit_flag.py:_new_flag_payload) ----
+  // ---- GOV3 audit-flag fields (services/audit_flag.py:_new_flag_payload) ----
   is_audit_flag?: boolean;
   breach_streak_days?: number;
   audit_history?: number[];
@@ -149,14 +149,14 @@ export type QuestionPayload = {
     recommendation?: string | null;
   };
   // Optional auditor-surfaced extras (rendered in the expand-card view when
-  // present). Auditor schema is still evolving (AA2 ownership) — value-
+  // present). Auditor schema is still evolving (GOV2 ownership) — value-
   // tolerant on shape.
   reasons?: string[];
   metrics?: Record<string, unknown>;
   raw_evidence?: unknown;
   // Resolution sentinel written by services/pause_switch.resolve_flag on
   // keep_paused / terminate branches (also set on continue / adjust_continue
-  // for symmetry once the flag is DONE). Lets the AA4 UI show
+  // for symmetry once the flag is DONE). Lets the GOV4 UI show
   // "kept paused on YYYY-MM-DD" rather than just "DONE".
   resolved_action?: "continue" | "adjust_continue" | "keep_paused" | "terminate";
   resolved_at?: string | null;
@@ -176,7 +176,7 @@ export type TaskRead = {
   assigned_role: TaskRoleValue | null;
   run_mode: TaskRunModeValue; // #483 — default "manual"
   task_kind: TaskKindValue; // #706 — default "human"
-  // #803 (2026-05-12) + #1211 AA3 (2026-05-19 — added "audit"). Backfilled to
+  // #803 (2026-05-12) + #1211 GOV3 (2026-05-19 — added "audit"). Backfilled to
   // 'feature' on legacy rows by migration 0015's server_default. Always present
   // on TaskRead from the BE; defensive optional on the FE for legacy serialized
   // payloads that pre-date the addition.
@@ -206,7 +206,7 @@ export type TaskRead = {
   // severity / recommendation / evidence keys when populated). Surfaces the
   // raw blob so the Audit History expand-card can pretty-print it.
   audit_report?: Record<string, unknown> | null;
-  // #1211 AA3 — per-task override hatch (paired). The pair is set on POST
+  // #1211 GOV3 — per-task override hatch (paired). The pair is set on POST
   // when the operator chose to file the task against a paused project; the
   // FE reads them to render a "bypassed pause" indicator + the rationale.
   allow_during_pause?: boolean;
@@ -482,7 +482,7 @@ export async function grantConsent(
   });
 }
 
-// killProject / reviveProject — Kanban #1209 AA1 hard kill switch (D5).
+// killProject / reviveProject — Kanban #1209 GOV1 hard kill switch (D5).
 // Shared response shape (`KillReviveResponse`): success, project_id, action,
 // is_killed, killed_at, killed_reason, drain_summary (operator-readable counts),
 // audit_id (FK into projects_audit for any future audit-log deep-link).
@@ -541,7 +541,7 @@ export async function reviveProject(
   });
 }
 
-// pauseProject / unpauseProject — Kanban #1211 AA3 soft-pause (D3).
+// pauseProject / unpauseProject — Kanban #1211 GOV3 soft-pause (D3).
 // Mirror of api/src/routers/projects.py pause / unpause endpoints + the
 // PauseUnpauseResponse schema in api/src/schemas/project.py.
 //
@@ -673,7 +673,7 @@ export type TaskCreateBody = {
   priority?: TaskPriorityValue;
   assigned_role?: TaskRoleValue;
   blocked_by?: number;
-  // Kanban #1211 AA3 — per-task override hatch for paused projects. When BOTH
+  // Kanban #1211 GOV3 — per-task override hatch for paused projects. When BOTH
   // are set on POST, the BE allows the task to land against an otherwise-paused
   // project AND writes a `projects_audit` row with action='pause_override'.
   // `allow_during_pause_reason` is min_length=10 on the BE; FE forms enforce
@@ -931,7 +931,7 @@ export async function getTaskToolCalls(
 }
 
 // ============================================================================
-// Kanban #1212 AA4 — operator board-chairman /review surface.
+// Kanban #1212 GOV4 — operator board-chairman /review surface.
 // ============================================================================
 
 // AuditFlagAction — vocabulary mirror of services/pause_switch.RESOLVE_FLAG_ACTIONS
@@ -1131,7 +1131,7 @@ export const push = {
   },
 };
 
-// listAuditFlags — cross-project aggregation for the AA4 /review page.
+// listAuditFlags — cross-project aggregation for the GOV4 /review page.
 //
 // Implementation: the existing /api/tasks endpoint is single-project-scoped
 // (gates on X-Project-Id per Kanban #695). To aggregate across N projects
@@ -1145,7 +1145,7 @@ export const push = {
 //
 // `pending=true` returns process_status != 5 (TODO/IN_PROGRESS/REVIEW/BLOCKED);
 // `include_cancelled` defaults to false so CANCELLED (ps=6) is also out.
-// AA3 flag tasks are created with process_status=BLOCKED (4); operator-resolved
+// GOV3 flag tasks are created with process_status=BLOCKED (4); operator-resolved
 // flags transition to DONE (5) which the pending filter naturally drops.
 export async function listAuditFlags(): Promise<AuditFlagWithProject[]> {
   const projects = await listProjects({ status: 1 });

@@ -1,10 +1,10 @@
-"""AA1 hard kill switch — projects.is_killed + tasks.kill_frozen + projects_audit (Kanban #1209)
+"""GOV1 hard kill switch — projects.is_killed + tasks.kill_frozen + projects_audit (Kanban #1209)
 
 Revision ID: 0039_aa1_kill_switch
 Revises: 0038_projects_team_content
 Create Date: 2026-05-19 17:00 UTC
 
-Operator emergency-stop per project (the rare-event tier; AA3 will ship the
+Operator emergency-stop per project (the rare-event tier; GOV3 will ship the
 soft-pause audit pipeline for the regular tier). Three surfaces in one slice:
 
 1. `projects` hot-pause columns (separate from `is_active` which is the cold
@@ -19,7 +19,7 @@ soft-pause audit pipeline for the regular tier). Three surfaces in one slice:
    กลับมาแบบนั้น" (D3 — freeze in place, do NOT archive).
 
 3. NEW `projects_audit` table — append-only kill/revive audit log. Future
-   project-auditor agent (AA2) reads here. NOT extending `tasks_history`
+   project-auditor agent (GOV2) reads here. NOT extending `tasks_history`
    (semantics mismatch — those are per-task UPDATE/DELETE snapshots; kill is
    a project-level event). Element shape:
    - actor TEXT NOT NULL       — 'operator' / 'system' / 'project-auditor' etc.

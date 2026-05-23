@@ -592,7 +592,7 @@ class ProjectRead(BaseModel):
     fiscal_year_start: int | None = None
     currency_default: str | None = None
 
-    # Kanban #1209 (2026-05-19): AA1 hard kill switch — hot pause state.
+    # Kanban #1209 (2026-05-19): GOV1 hard kill switch — hot pause state.
     # `is_killed` always present (NOT NULL DEFAULT false on the column).
     # `killed_at` / `killed_reason` carry historical signal AFTER revive too —
     # revive only flips `is_killed=false` and intentionally preserves the
@@ -602,7 +602,7 @@ class ProjectRead(BaseModel):
     killed_at: datetime | None = None
     killed_reason: str | None = None
 
-    # Kanban #1211 (2026-05-19): AA3 soft-pause governance — soft pause state.
+    # Kanban #1211 (2026-05-19): GOV3 soft-pause governance — soft pause state.
     # `is_paused` + `paused_at` + `paused_reason` mirror the kill triad above
     # (D4 history-preservation pattern). `audit_enabled` is the per-project
     # opt-out for governance audits — defaults true; operators set false to
@@ -735,7 +735,7 @@ class ProjectGrantConsent(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Kanban #1209 (2026-05-19) — AA1 hard kill switch request / response schemas
+# Kanban #1209 (2026-05-19) — GOV1 hard kill switch request / response schemas
 # ---------------------------------------------------------------------------
 
 ProjectAuditAction = Literal[
@@ -808,7 +808,7 @@ class ReviveProjectResponse(_KillReviveBase):
 
 
 # ---------------------------------------------------------------------------
-# Kanban #1211 (2026-05-19) — AA3 soft-pause request / response schemas
+# Kanban #1211 (2026-05-19) — GOV3 soft-pause request / response schemas
 # ---------------------------------------------------------------------------
 
 
@@ -828,7 +828,7 @@ class PauseProjectRequest(BaseModel):
         max_length=2000,
         description=(
             "Operator/system rationale for the pause. >=10 chars required; "
-            "captured into projects_audit.reason for AA4/AA5 review."
+            "captured into projects_audit.reason for GOV4/GOV5 review."
         ),
     )
 
@@ -881,7 +881,7 @@ class ResolveFlagRequest(BaseModel):
     - adjust_continue → adjustments REQUIRED; only allowlisted keys are
                         applied (see services/pause_switch.ADJUST_CONTINUE_ALLOWED_KEYS).
     - keep_paused     → flag DONE; project stays paused for next audit cycle.
-    - terminate       → delegates to AA1 kill_project with auto-formatted reason.
+    - terminate       → delegates to GOV1 kill_project with auto-formatted reason.
 
     `extra='forbid'` matches the kill/grant-consent deliberate-action posture.
     """

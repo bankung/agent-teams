@@ -1,4 +1,4 @@
-"""AA1 hard kill switch service (Kanban #1209).
+"""GOV1 hard kill switch service (Kanban #1209).
 
 Two entry points:
 - `kill_project(project_id, reason, force, actor)` — operator emergency-stop.
@@ -156,7 +156,7 @@ async def kill_project(
     for row in in_flight_rows:
         row.kill_frozen = True
         row.status_change_reason = (
-            f"AA1 kill: graceful checkpoint requested (force={force})"
+            f"GOV1 kill: graceful checkpoint requested (force={force})"
         )
     in_flight_marked = len(in_flight_rows)
 
@@ -281,7 +281,7 @@ async def revive_project(
             # Stale revive: halt the template rather than auto-fire.
             row.halt_reason = "revive_stale"
             row.status_change_reason = (
-                f"AA1 revive: project killed > {REVIVE_MAX_STALENESS_DAYS} "
+                f"GOV1 revive: project killed > {REVIVE_MAX_STALENESS_DAYS} "
                 f"days; manual re-arm required"
             )
             halted_stale += 1

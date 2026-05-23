@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import type { ProjectRead } from "@/lib/api";
 import { KillProjectModal } from "@/components/KillProjectModal";
 
-// Kanban #1209 AA1 (D5 step 5) — red strip rendered at the top of the board
+// Kanban #1209 GOV1 (D5 step 5) — red strip rendered at the top of the board
 // when `project.is_killed=true`. Shows when the project was killed + the
 // reason captured in the audit row, and surfaces a Revive trigger inline.
 //

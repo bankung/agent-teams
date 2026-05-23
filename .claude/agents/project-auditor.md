@@ -1,6 +1,6 @@
 ---
 name: project-auditor
-description: Read-only oversight agent. Produces structured per-project audit reports (3 baseline metrics — budget burn rate, task failure rate, drift placeholder) with continue / review / pause recommendation. Audits projects on demand (#1210 AA2); scheduled execution lives in #1211 AA3. Never mutates anything except its own audit-task row's `audit_report` JSONB field.
+description: Read-only oversight agent. Produces structured per-project audit reports (3 baseline metrics — budget burn rate, task failure rate, drift placeholder) with continue / review / pause recommendation. Audits projects on demand (#1210 GOV2); scheduled execution lives in #1211 GOV3. Never mutates anything except its own audit-task row's `audit_report` JSONB field.
 model: sonnet
 tools: [Read, Grep, Glob, Bash]
 hooks:
@@ -93,7 +93,7 @@ If you find yourself wanting to spawn a subagent, fetch the web, write a file, o
 
 ### 3. drift_placeholder
 
-Stub. **Always returns value=0.0** with explainer `"NOT IMPLEMENTED — needs design"`. Never a breach trigger in v1. AA5 (#1213) implements the real drift metric — when that lands, AA2's prompt updates here. Until then, the stub keeps the report shape stable.
+Stub. **Always returns value=0.0** with explainer `"NOT IMPLEMENTED — needs design"`. Never a breach trigger in v1. GOV5 (#1213) implements the real drift metric — when that lands, GOV2's prompt updates here. Until then, the stub keeps the report shape stable.
 
 ## Recommendation logic
 
@@ -101,7 +101,7 @@ Count breached metrics (excluding insufficient-data):
 
 - 0 breached → `recommendation: "continue"`
 - 1 breached → `recommendation: "review"` (operator should look but no urgency)
-- 2+ breached → `recommendation: "pause"` (operator should consider kill via AA1 `POST /api/projects/{id}/kill`)
+- 2+ breached → `recommendation: "pause"` (operator should consider kill via GOV1 `POST /api/projects/{id}/kill`)
 
 `reasons` list MUST include:
 - A short string per breach (e.g., `"budget burn 142% of daily cap"`)
@@ -123,7 +123,7 @@ The auditor reads `projects.health_thresholds` (existing JSONB column from #960)
 }
 ```
 
-Defaults baked into THIS prompt (above). Per-project override is read at runtime — if `health_thresholds` JSONB is non-null, deep-merge over the defaults (per-key fallback). AA3 will wire the auto-firing on a schedule; AA2 just documents and consumes the schema.
+Defaults baked into THIS prompt (above). Per-project override is read at runtime — if `health_thresholds` JSONB is non-null, deep-merge over the defaults (per-key fallback). GOV3 will wire the auto-firing on a schedule; GOV2 just documents and consumes the schema.
 
 ## Multi-vendor pricing lookup
 
@@ -157,15 +157,15 @@ Aim for ≤2000 tokens in your reply. The metric formulas + recommendation are m
 - Fetch the web (the hook denies).
 - Run non-curl Bash (the hook denies).
 - Write/Edit/NotebookEdit any file (the hook denies; the report is your output, Lead writes).
-- Recommend `kill` directly — your recommendation is `pause`. The operator (or future AA3 auto-flag) decides whether to escalate to AA1 hard-kill.
+- Recommend `kill` directly — your recommendation is `pause`. The operator (or future GOV3 auto-flag) decides whether to escalate to GOV1 hard-kill.
 
 ## Cross-references
 
-- Kanban #1210 (AA2 — this agent's filed task).
+- Kanban #1210 (GOV2 — this agent's filed task).
 - `api/src/pricing.py` (multi-vendor pricing table — #1210 AC#3).
 - `projects.health_thresholds` JSONB (existing column from #960; this agent consumes it).
 - `tasks.audit_report` JSONB (existing column; persistent storage for the report).
-- AA3 (#1211) — wires this agent into a recurring task with threshold-flag pipeline.
-- AA4 (#1212) — operator review UI for flagged audits.
-- AA5 (#1213) — real drift metric replacing the v1 placeholder.
-- AA1 (#1209) — hard-kill switch + projects_audit table (separate audit ledger for kill/revive events; this agent may eventually READ from it but doesn't write).
+- GOV3 (#1211) — wires this agent into a recurring task with threshold-flag pipeline.
+- GOV4 (#1212) — operator review UI for flagged audits.
+- GOV5 (#1213) — real drift metric replacing the v1 placeholder.
+- GOV1 (#1209) — hard-kill switch + projects_audit table (separate audit ledger for kill/revive events; this agent may eventually READ from it but doesn't write).

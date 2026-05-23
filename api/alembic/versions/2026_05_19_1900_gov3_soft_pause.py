@@ -1,13 +1,13 @@
-"""AA3 soft-pause governance — projects.is_paused + audit_enabled + tasks.allow_during_pause + 'pause'/'unpause'/'pause_override' actions + 'audit' task_type (Kanban #1211)
+"""GOV3 soft-pause governance — projects.is_paused + audit_enabled + tasks.allow_during_pause + 'pause'/'unpause'/'pause_override' actions + 'audit' task_type (Kanban #1211)
 
 Revision ID: 0040_aa3_soft_pause
 Revises: 0039_aa1_kill_switch
 Create Date: 2026-05-19 19:00 UTC
 
-Phase 1 of AA3 — api-side governance ONLY. The auto-fire mechanism (Path A:
+Phase 1 of GOV3 — api-side governance ONLY. The auto-fire mechanism (Path A:
 Lead session manually invokes auditor) is deferred. This slice adds:
 
-1. `projects` soft-pause columns (separate from AA1's hard kill — DB CHECK
+1. `projects` soft-pause columns (separate from GOV1's hard kill — DB CHECK
    enforces mutual exclusion):
    - `is_paused` BOOLEAN NOT NULL DEFAULT false — soft pause for review.
    - `paused_at` TIMESTAMPTZ NULL                — first-pause timestamp.
@@ -47,7 +47,7 @@ projects + ~517 tasks see no row rewrite (instant on Postgres >= 11).
 
 Downgrade caveats:
 - Dropping the columns silently discards is_paused=true rows (they revert
-  to "not paused" semantics). Same approach as AA1's downgrade for is_killed.
+  to "not paused" semantics). Same approach as GOV1's downgrade for is_killed.
 - DROP CONSTRAINT then re-ADD with the old definitions for the two CHECK
   extensions — reversible without data loss as long as no rows currently
   carry the new action values.
@@ -123,7 +123,7 @@ def upgrade() -> None:
     # CHECK: when allow_during_pause=true the reason must be present + >= 10 chars.
     # The Pydantic TaskCreate boundary enforces the same rule; this is defense-
     # in-depth against raw-SQL drift (mirrors the kill-switch reason >=10 chars
-    # pattern that lives at Pydantic only — AA3 promotes it to the DB layer for
+    # pattern that lives at Pydantic only — GOV3 promotes it to the DB layer for
     # the bypass column specifically since this is operator-audit critical).
     op.create_check_constraint(
         "ck_tasks_pause_reason_length",
@@ -160,7 +160,7 @@ def downgrade() -> None:
     # Reverse the CHECK extensions first. If any row currently carries the new
     # values, DROP/ADD will fail at the CHECK validation step — caller must
     # clean up first (UPDATE pause/unpause/pause_override rows to one of the
-    # AA1 values, UPDATE 'audit' tasks to one of the pre-AA3 values).
+    # GOV1 values, UPDATE 'audit' tasks to one of the pre-GOV3 values).
     op.drop_constraint("ck_tasks_task_type_valid", "tasks", type_="check")
     op.create_check_constraint(
         "ck_tasks_task_type_valid",

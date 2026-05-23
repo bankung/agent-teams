@@ -3,7 +3,7 @@
 Module-level `MODEL_PRICING` is a manual snapshot of public per-million-token
 prices for the LLM vendors / sizes we currently care about, plus a synthetic
 `local` category for self-hosted consumer-GPU runs (electricity + amortized
-hardware). It is consumed by AA2 project-auditor's budget-burn metric as a
+hardware). It is consumed by GOV2 project-auditor's budget-burn metric as a
 fallback when a task row has no `estimated_cost_usd`.
 
 `_last_updated` + `_notes` are tombstone markers on the table itself — grep
@@ -33,7 +33,7 @@ unknown model return `None` (the auditor surfaces this via `coverage_pct`).
 
 The `local` entries are placeholder estimates for self-hosted consumer-GPU
 inference (electricity + amortized hardware over expected lifetime). They
-are deliberately tiny and conservative. AA2 / AA5 will read a per-project
+are deliberately tiny and conservative. GOV2 / GOV5 will read a per-project
 override from `projects.config.local_llm_cost_override` (a JSONB blob with
 the same `{size: {input_per_M, output_per_M}}` shape) when present; that
 override consumption is NOT implemented in this module — it is the
@@ -43,7 +43,7 @@ Out of scope here (Kanban #1210 + future AA work)
 -------------------------------------------------
 
 - Cache pricing nuance (Anthropic input cache 90% off, OpenAI prompt
-  caching) — would distort fallback math; revisit in AA5 if material.
+  caching) — would distort fallback math; revisit in GOV5 if material.
 - Real-time pricing fetch from vendor APIs — table is a manual snapshot.
 - Per-project override merging — caller's job.
 """

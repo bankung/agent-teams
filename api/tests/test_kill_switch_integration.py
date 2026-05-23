@@ -252,7 +252,7 @@ async def test_kill_switch_full_multi_component_drain(
         assert rec_row.next_fire_at is None, "recurring task next_fire_at should be NULL after kill"
         assert rec_row.recurrence_rule == "0 9 * * 1", "recurrence_rule must be preserved"
 
-        # in-flight task: kill_frozen=True, status_change_reason mentions AA1 kill
+        # in-flight task: kill_frozen=True, status_change_reason mentions GOV1 kill
         # (service REPLACES status_change_reason for in-flight rows)
         inf_row = (
             await db_session.execute(
@@ -262,8 +262,8 @@ async def test_kill_switch_full_multi_component_drain(
         ).first()
         assert inf_row.kill_frozen is True, "in-flight task should be kill_frozen=True"
         assert inf_row.status_change_reason is not None
-        assert "AA1 kill" in inf_row.status_change_reason, (
-            f"expected 'AA1 kill' in status_change_reason, got: {inf_row.status_change_reason!r}"
+        assert "GOV1 kill" in inf_row.status_change_reason, (
+            f"expected 'GOV1 kill' in status_change_reason, got: {inf_row.status_change_reason!r}"
         )
         assert "graceful checkpoint requested" in inf_row.status_change_reason
 

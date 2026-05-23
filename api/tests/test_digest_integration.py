@@ -56,7 +56,7 @@ def _audit_flag_task_payload(project_id: int, title: str = "k1217 open flag") ->
 
     interaction_kind='question' + process_status=1 (TODO) +
     question_payload.is_audit_flag='true'. The QuestionPayload schema uses
-    extra='allow' so the AA3 bookkeeping keys pass through POST validation.
+    extra='allow' so the GOV3 bookkeeping keys pass through POST validation.
     """
     return {
         "project_id": project_id,

@@ -10,9 +10,9 @@ import {
   type ProjectRead,
 } from "@/lib/api";
 
-// Kanban #1211 / #1238 AA3 (FE) — soft-pause confirmation modal. Single
+// Kanban #1211 / #1238 GOV3 (FE) — soft-pause confirmation modal. Single
 // component handles BOTH pause + unpause flows via the `mode` prop. Lighter
-// than KillProjectModal (the AA1 hard-kill modal) on purpose: pause is a
+// than KillProjectModal (the GOV1 hard-kill modal) on purpose: pause is a
 // reversible governance action, not a destructive one.
 //
 //   mode="pause"   → amber-themed; ONLY a reason textarea (>=10 chars).
