@@ -72,6 +72,12 @@ _scratch/*
 # Sandbox test projects — created via POST /api/projects for LangGraph smoke
 context/projects/test-*/
 
+# HITL push trigger smoke artifacts (#1450) — POST /api/projects auto-scaffolds
+# folders for tests of the push-on-HITL-transition feature. Test projects use
+# distinctive prefixes; ignore both patterns so `git status` stays clean.
+context/projects/hitl-push-proj-*/
+context/projects/smoke-push-*/
+
 # Private / confidential strategic docs — per-machine, NEVER committed.
 _private/
 
