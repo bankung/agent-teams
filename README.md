@@ -10,14 +10,31 @@ Download and install [Docker Desktop](https://www.docker.com/products/docker-des
 
 ### Step 2: Run the installer
 
-Open a terminal (Command Prompt or PowerShell on Windows; Terminal on Mac) in this folder, then paste the command for your system:
+Open a terminal **in this folder** (the one you just cloned), then paste the command for your system:
 
 **Windows (PowerShell):**
+
+To open PowerShell in this folder, use one of these methods:
+
+1. **File Explorer method:** In File Explorer, navigate to the cloned folder, then press `Shift + Right-click` in the empty space → select "Open PowerShell window here".
+2. **Command line method:** Open PowerShell anywhere, then paste: `cd "C:\path\to\agent-teams"` (replace with your actual folder path).
+
+If you see an error like `cannot be loaded because running scripts is disabled`, run this command ONCE:
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+Then run the installer:
 ```powershell
 .\bin\install.ps1
 ```
 
 **macOS / Linux / WSL:**
+
+Open Terminal (or any terminal app), navigate to the cloned folder:
+```bash
+cd /path/to/agent-teams
+```
+Then run:
 ```bash
 ./bin/install.sh
 ```
