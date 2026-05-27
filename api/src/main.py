@@ -43,6 +43,7 @@ from src.routers import scaffold as scaffold_router
 from src.routers import sessions as sessions_router
 from src.routers import tasks as tasks_router
 from src.routers import tool_calls as tool_calls_router
+from src.routers import tools_email as tools_email_router
 from src.routers import transactions as transactions_router
 from src.routers import user_actions as user_actions_router
 from src.routers import webhooks as webhooks_router
@@ -343,6 +344,9 @@ def create_app() -> FastAPI:
     app.include_router(ingest_router.router, prefix="/api")
     # Kanban #1217 — daily-digest fire endpoint (Gmail SMTP).
     app.include_router(digest_router.router, prefix="/api")
+    # Kanban #1604 — email tools (Gmail trash + OAuth + 3-layer safety gate).
+    # #1608 will append Outlook routes to the same router file.
+    app.include_router(tools_email_router.router, prefix="/api")
 
     return app
 
