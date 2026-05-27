@@ -1,3 +1,29 @@
+<#
+PreToolUse hook: block Agent spawn when project is marked killed.
+
+CONTEXT (Kanban #1209, 2026-05-18):
+Lead bootstrap step 5 persists the active project's id to `_runtime/lead_project_id.txt`
+(single integer, no surrounding whitespace). This file is the contract read by this hook.
+On every Agent spawn, we verify the project's `is_killed` state via `GET /api/projects/<id>`
+and deny the spawn if the project is killed.
+
+WHY:
+During context compaction or multi-session environments, session-scoped active-project
+binding can drift. The hook fails open (with stderr WARN) if the file is missing, so
+Lead-direct work continues, but the spawn-block layer is INACTIVE until the file is written.
+This prevents accidental agent spawns against killed projects.
+
+FAILURE MODES:
+- File missing / corrupted → fails open with WARN; spawn proceeds (Lead-direct work unaffected).
+- API connection error → fails open with WARN; spawn proceeds (safety > blockade).
+- Project is_killed=true → deny spawn; return error message to user.
+
+IMPLEMENTATION:
+Read `_runtime/lead_project_id.txt`, parse the integer id, call FastAPI
+`GET /api/projects/<id>`, check `is_killed` flag, deny if true.
+#>
+
+
 # Block PreToolUse(Agent) spawns when the session-bound project is killed (is_killed=true).
 #
 # Kanban #1209 AC#2(d) — layer-2 defense complementing the API gate. The primary defense
@@ -125,3 +151,4 @@ $output = @{
 
 Write-Output $output
 exit 2
+
