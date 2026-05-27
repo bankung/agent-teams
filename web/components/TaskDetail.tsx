@@ -21,6 +21,66 @@ import { TaskKindBadge } from "./TaskKindBadge";
 import { TaskMuteToggle } from "./TaskMuteToggle";
 import { TaskToolCalls } from "./TaskToolCalls";
 
+// #1581 — "Tip: add AC" banner. Follows the same localStorage pattern as
+// DashboardWelcomeBanner: show=false on SSR, hydrate from localStorage in
+// useEffect, dismiss writes the key permanently (per browser).
+const AC_TIP_LS_KEY = "agent-teams.taskDrawer.acTipDismissed";
+
+function AcTipBanner() {
+  const [show, setShow] = useState(false);
+
+  useEffect(() => {
+    try {
+      const dismissed = localStorage.getItem(AC_TIP_LS_KEY) === "true";
+      if (!dismissed) setShow(true);
+    } catch {
+      // localStorage blocked (private browsing, etc.) — silently skip
+    }
+  }, []);
+
+  if (!show) return null;
+
+  function handleDismiss() {
+    try {
+      localStorage.setItem(AC_TIP_LS_KEY, "true");
+    } catch {
+      // silently ignore
+    }
+    setShow(false);
+  }
+
+  return (
+    <aside
+      role="note"
+      aria-label="Tip: Acceptance Criteria"
+      data-ac-tip-banner
+      className="flex items-start justify-between gap-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100"
+    >
+      <p className="leading-relaxed">
+        <span className="font-semibold">Tip:</span> Adding Acceptance Criteria
+        helps AI agents stay on target — they check each criterion before
+        marking a task done. Ask Lead to set them when creating a task.
+      </p>
+      <button
+        type="button"
+        aria-label="Dismiss tip"
+        onClick={handleDismiss}
+        className="shrink-0 rounded p-0.5 text-amber-600 hover:bg-amber-100 hover:text-amber-800 dark:text-amber-400 dark:hover:bg-amber-900/40 dark:hover:text-amber-200"
+      >
+        <svg
+          aria-hidden
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 16 16"
+          fill="currentColor"
+          className="h-3.5 w-3.5"
+        >
+          <path d="M2.22 2.22a.75.75 0 0 1 1.06 0L8 6.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L9.06 8l4.72 4.72a.75.75 0 1 1-1.06 1.06L8 9.06l-4.72 4.72a.75.75 0 0 1-1.06-1.06L6.94 8 2.22 3.28a.75.75 0 0 1 0-1.06Z" />
+        </svg>
+      </button>
+    </aside>
+  );
+}
+
 type Props = {
   task: TaskRead;
   allTasks: TaskRead[];
@@ -382,6 +442,8 @@ export function TaskDetail({
           )}
 
           {/* #827 — AC section always rendered (discipline gate) */}
+          {/* #1581 — first-time tip banner; dismisses to localStorage */}
+          <AcTipBanner />
           <AcceptanceCriteriaSection criteria={task.acceptance_criteria} />
 
           {task.parent_task_id !== null && (

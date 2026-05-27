@@ -6,6 +6,45 @@ import { useRouter } from "next/navigation";
 import { createProject, HttpError } from "@/lib/api";
 import { ProjectTeam, type ProjectTeamValue } from "@/lib/constants";
 
+// Inline info-icon popover (click-toggle). No external library — uses
+// Tailwind positioning + outside-click dismiss. Reused for team + working_path.
+function InfoPopover({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, [open]);
+
+  return (
+    <span ref={ref} className="relative inline-flex">
+      <button
+        type="button"
+        aria-label="More info"
+        onClick={() => setOpen((v) => !v)}
+        className="ml-1 inline-flex h-4 w-4 items-center justify-center rounded-full border border-zinc-400 bg-zinc-100 text-[10px] font-semibold text-zinc-700 hover:border-zinc-600 hover:bg-zinc-200 hover:text-zinc-900 dark:border-zinc-500 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:border-zinc-300 dark:hover:bg-zinc-600 dark:hover:text-zinc-50"
+      >
+        ?
+      </button>
+      {open && (
+        <div
+          role="tooltip"
+          className="absolute left-5 top-0 z-50 w-72 rounded border border-zinc-200 bg-white p-3 text-xs text-zinc-700 shadow-md dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+        >
+          {children}
+        </div>
+      )}
+    </span>
+  );
+}
+
 // Trigger button + dialog for POST /api/projects (Kanban #843 FE).
 // Visual pattern mirrors ProjectConsentGrantModal: zinc-bordered panel, focus
 // on first input, ESC closes, backdrop click closes. Team options are derived
@@ -161,7 +200,27 @@ export function NewProjectModal() {
             </label>
 
             <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-              Working path <span className="font-normal text-zinc-400">(optional)</span>
+              <span className="inline-flex items-center">
+                Working path <span className="font-normal text-zinc-400 ml-1">(optional)</span>
+                <InfoPopover>
+                  <p className="font-semibold text-zinc-800 dark:text-zinc-200 mb-1">Working path</p>
+                  <p className="mb-1">The folder where this project&apos;s files actually live. Agents read/write files under this path.</p>
+                  <p className="mb-1">
+                    <span className="font-medium">Leave blank</span> → uses{" "}
+                    <span className="font-mono">context/projects/&lt;name&gt;/</span> inside the
+                    agent-teams repo itself (good for novel, general, or one-off projects with no
+                    separate repo).
+                  </p>
+                  <p>
+                    <span className="font-medium">Set an absolute path</span> → agents work in that
+                    folder (e.g.{" "}
+                    <span className="font-mono">C:\Code\myapp</span>). Use this when the project has
+                    its own repo. Agents will write to{" "}
+                    <span className="font-mono">&lt;path&gt;/shared/</span> and{" "}
+                    <span className="font-mono">&lt;path&gt;/&lt;role&gt;/</span>.
+                  </p>
+                </InfoPopover>
+              </span>
               <input
                 type="text"
                 value={workingPath}
@@ -197,7 +256,42 @@ export function NewProjectModal() {
             </label>
 
             <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-              Team <span className="text-red-600 dark:text-red-400">*</span>
+              <span className="inline-flex items-center">
+                Team <span className="text-red-600 dark:text-red-400 ml-0.5">*</span>
+                <InfoPopover>
+                  <p className="font-semibold text-zinc-800 dark:text-zinc-200 mb-1.5">Team — agent roster</p>
+                  <dl className="space-y-1.5">
+                    <div>
+                      <dt className="font-medium text-zinc-800 dark:text-zinc-200">dev</dt>
+                      <dd className="text-zinc-500 dark:text-zinc-400">dev-sr-frontend · dev-sr-backend · dev-frontend · dev-backend · dev-devops · dev-tester · dev-reviewer · dev-documentor</dd>
+                    </div>
+                    <div>
+                      <dt className="font-medium text-zinc-800 dark:text-zinc-200">content</dt>
+                      <dd className="text-zinc-500 dark:text-zinc-400">content-writer · content-editor · content-seo-optimizer · content-veracity-checker · content-hook-doctor · thai-proofreader</dd>
+                    </div>
+                    <div>
+                      <dt className="font-medium text-zinc-800 dark:text-zinc-200">novel</dt>
+                      <dd className="text-zinc-500 dark:text-zinc-400">novel-writer · novel-editor · thai-proofreader</dd>
+                    </div>
+                    <div>
+                      <dt className="font-medium text-zinc-800 dark:text-zinc-200">seo</dt>
+                      <dd className="text-zinc-500 dark:text-zinc-400">seo-strategist · technical-seo-specialist · content-seo-optimizer · seo-reporting-analyst</dd>
+                    </div>
+                    <div>
+                      <dt className="font-medium text-zinc-800 dark:text-zinc-200">data-analytics</dt>
+                      <dd className="text-zinc-500 dark:text-zinc-400">bi-analyst · sql-optimizer · dashboard-designer · analytics-platform-integrator</dd>
+                    </div>
+                    <div>
+                      <dt className="font-medium text-zinc-800 dark:text-zinc-200">sem</dt>
+                      <dd className="text-zinc-500 dark:text-zinc-400">sem-campaign-lead · google-ads-specialist · meta-ads-specialist · platform-ads-coordinator</dd>
+                    </div>
+                    <div>
+                      <dt className="font-medium text-zinc-800 dark:text-zinc-200">general</dt>
+                      <dd className="text-zinc-500 dark:text-zinc-400">Multi-domain fallback — Lead picks specialists from any team case-by-case</dd>
+                    </div>
+                  </dl>
+                </InfoPopover>
+              </span>
               <select
                 value={team}
                 onChange={(e) => {
