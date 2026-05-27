@@ -11,6 +11,8 @@ Covers (Kanban #977 AC1):
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from tools import GLOBAL_REGISTRY
@@ -42,14 +44,14 @@ def test_global_registry_has_all_batch_1_tools():
     assert EXPECTED_BATCH_1.issubset(set(GLOBAL_REGISTRY.list()))
 
 
+@pytest.mark.skipif(
+    os.environ.get("LANGGRAPH_LLM_PROVIDER", "").strip().lower() == "ollama",
+    reason="batch_2 tools require non-ollama provider (registry gates HTTP tools off on ollama)",
+)
 def test_global_registry_has_batch_2_when_provider_supports_tool_use():
     """HTTP tools register when LANGGRAPH_LLM_PROVIDER != ollama. The test
     runtime doesn't set the env var (or sets it to anthropic), so batch 2
     should be present."""
-    import os
-    assert os.environ.get("LANGGRAPH_LLM_PROVIDER", "").lower() != "ollama", (
-        "Test runtime should not have provider=ollama for this assertion."
-    )
     assert EXPECTED_BATCH_2.issubset(set(GLOBAL_REGISTRY.list()))
 
 
