@@ -426,6 +426,7 @@ export function TaskDetail({
               original QuestionInteractionSection chip variant. */}
           {task.interaction_kind === "decision" && (
             <DecisionInteractionView
+              key={task.id}
               task={task}
               projectId={projectId}
               onPatch={onPatch}
@@ -434,6 +435,7 @@ export function TaskDetail({
           )}
           {task.interaction_kind === "question" && (
             <QuestionInteractionSection
+              key={task.id}
               task={task}
               projectId={projectId}
               onPatch={onPatch}
@@ -629,6 +631,8 @@ function QuestionInteractionSection({
   const [submittingAnswer, setSubmittingAnswer] = useState(false);
   const [invalidateReasonFor, setInvalidateReasonFor] = useState<number | null>(null);
   const [invalidateReason, setInvalidateReason] = useState("");
+  // #1183 — Other-option escape hatch: when true, show freetext block instead of cards
+  const [otherMode, setOtherMode] = useState(false);
 
   const payload = task.question_payload;
   const history: AnswerHistoryEntry[] = payload?.answer_history ?? [];
@@ -648,6 +652,7 @@ function QuestionInteractionSection({
     try {
       const updated = await submitAnswer(projectId, task.id, value);
       setAnswerValue("");
+      setOtherMode(false);
       onPatch(updated);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Submit failed";
@@ -696,32 +701,64 @@ function QuestionInteractionSection({
           <p className="rounded bg-green-50 px-3 py-2 text-sm font-medium text-green-700 dark:bg-green-900/30 dark:text-green-300">
             {sectionLabel} resolved
           </p>
-        ) : payload?.options != null && payload.options.length > 0 ? (
-          // Options mode — buttons; clicking one immediately submits.
-          // #954 — 44px min tap target on mobile for option chips
-          // #1335 — `options` is heterogeneous (string | OptionItem). For
-          // question tasks (this code path) the legacy shape is `string[]`;
-          // narrow defensively so a stray OptionItem dict renders its label.
-          <div className="flex flex-wrap gap-2" data-question-options>
+        ) : payload?.options != null && payload.options.length > 0 && !otherMode ? (
+          // Options mode — full-width cards; clicking one immediately submits.
+          // #1183 — replaced chip layout with stacked full-width cards (label + optional description).
+          // #1335 — `options` is heterogeneous (string | OptionItem); narrow defensively.
+          <div className="flex flex-col gap-2" data-question-options>
             {payload.options.map((opt, idx) => {
               const label = typeof opt === "string" ? opt : opt.label;
+              const description = typeof opt === "string" ? null : (opt.description ?? null);
               return (
-              <button
-                key={`${label}-${idx}`}
-                type="button"
-                disabled={submittingAnswer}
-                onClick={() => handleSubmitAnswer(label)}
-                data-question-option={label}
-                className="min-h-[44px] rounded border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-medium text-violet-800 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-800 dark:bg-violet-900/30 dark:text-violet-200 dark:hover:bg-violet-900/50"
-              >
-                {label}
-              </button>
+                <button
+                  key={`${label}-${idx}`}
+                  type="button"
+                  disabled={submittingAnswer}
+                  onClick={() => handleSubmitAnswer(label)}
+                  data-question-option={label}
+                  className="min-h-[44px] w-full rounded border border-violet-200 bg-violet-50 px-4 py-3 text-left hover:bg-violet-100 disabled:opacity-50 dark:border-violet-800 dark:bg-violet-900/30 dark:hover:bg-violet-900/50"
+                >
+                  <span className="block text-sm font-medium text-violet-800 dark:text-violet-200">
+                    {label}
+                  </span>
+                  {description && (
+                    <span className="mt-0.5 block text-xs text-zinc-500 dark:text-zinc-400">
+                      {description}
+                    </span>
+                  )}
+                </button>
               );
             })}
+            {/* #1183 — "Other" escape hatch always appended FE-side */}
+            <button
+              type="button"
+              disabled={submittingAnswer}
+              onClick={() => setOtherMode(true)}
+              data-question-option="Other"
+              className="min-h-[44px] w-full rounded border border-violet-200 bg-violet-50 px-4 py-3 text-left hover:bg-violet-100 disabled:opacity-50 dark:border-violet-800 dark:bg-violet-900/30 dark:hover:bg-violet-900/50"
+            >
+              <span className="block text-sm font-medium text-violet-800 dark:text-violet-200">
+                Other
+              </span>
+              <span className="mt-0.5 block text-xs text-zinc-500 dark:text-zinc-400">
+                Type a custom answer
+              </span>
+            </button>
           </div>
         ) : (
-          // Free-text mode — textarea + explicit submit button.
+          // Free-text mode — shown when no options OR when "Other" card is clicked.
+          // #1183 — shared freetext block used by both pure freetext and Other-mode paths.
           <div className="flex flex-col gap-2" data-question-freetext>
+            {/* Back link only visible when operator chose "Other" from an options list */}
+            {otherMode && (
+              <button
+                type="button"
+                onClick={() => setOtherMode(false)}
+                className="self-start text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+              >
+                ← back to options
+              </button>
+            )}
             <textarea
               value={answerValue}
               onChange={(e) => setAnswerValue(e.target.value)}
