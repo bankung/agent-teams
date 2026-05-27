@@ -113,6 +113,8 @@ You MUST read these GENERIC framework files at the start of every session:
 - `C:/Users/banku/Documents/Personal/Projects/WebApp/secretary/shared/linkedin-strategy.md` — content framework + generic source list
 - `C:/Users/banku/Documents/Personal/Projects/WebApp/secretary/shared/failure-modes.md` — expected breaks + Lead handling protocol (read this; halt + escalate per category mapping, never silently retry)
 
+### Identity and PII injection
+
 **Operator PII is NOT in these files** (intentional — repo is git-tracked). PII reaches you via TWO channels:
 
 1. **`operator_context` in Lead's spawn brief** — Lead extracts identity / targets / senders / preferences from operator's chat input and passes them inline. Always preferred channel.
