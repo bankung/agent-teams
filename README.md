@@ -2,6 +2,8 @@
 
 A self-hosted Kanban board paired with an AI orchestration engine that works for any type of project. Create tasks in a simple board UI, and specialized AI agents break down the work and execute it end-to-end — whether that's writing code and tests, drafting prose, or managing research. Ships with a full software development agent team ready to use out of the box. Everything runs on your computer in Docker containers. No cloud sign-ups. No subscriptions. No leaving your code.
 
+> 🚀 **Just want to see it work?** → See [QUICKSTART.md](QUICKSTART.md) (5 minutes)
+
 ## Get started in 2 steps
 
 ### Step 1: Install Docker Desktop
@@ -47,6 +49,18 @@ The browser opens to `http://localhost:5431`. You'll see an empty Kanban board. 
 
 You can close the terminal anytime. The services keep running in the background. If you restart your computer, open the same terminal and run the installer command again — it's safe to run more than once.
 
+## Two ways to use agent-teams
+
+| | **Kanban board (browser UI)** | **Claude Code session (terminal)** |
+|---|---|---|
+| **When to use** | Daily task management, watching agents work, answering HITL questions | Direct agent control, scripting multi-step workflows, exploring codebase, multi-task queueing |
+| **What you get** | Click-to-run tasks, live task history, notification channels (email/mobile), clean UI for non-dev users | Full context on project decisions, multi-agent orchestration, headless auto-mode tasks, real-time feedback from Lead |
+| **Getting started** | See [QUICKSTART.md](QUICKSTART.md) (5 min) | See [CLAUDE-CODE-START.md](CLAUDE-CODE-START.md) (3 min) |
+
+Both modes share the same Kanban board and database — you can switch between them anytime. Start with the browser UI, graduate to Claude Code when you need more control.
+
+Power features (parallel agents, auto-mode, mobile remote access): see [USAGE-POWER.md](USAGE-POWER.md).
+
 ## Stop / restart / reset
 
 **Stop the services:**
@@ -79,6 +93,24 @@ Those tools are **in-editor completions** — they auto-suggest the next line or
 ### Does my code get sent to the cloud?
 
 No. Everything runs in Docker on your machine. Cloud AI models (Claude via Anthropic, GPT-4 via OpenAI) do run in the cloud — your code is sent to the model as plain text in the prompt (like asking a question). The model never stores your code — it generates a response and that response is discarded after the agent finishes. If you're concerned about proprietary logic, you can audit what gets sent by reading the agent's prompt before it runs, **or run a local model via Ollama** — all inference stays on your machine and never touches the network.
+
+### Why use a Kanban task vs. just chatting with Claude Code?
+
+**Chat-only:** "Add a login form" — agent writes code, you approve each edit, no clear definition of done, hard to resume if interrupted.
+
+**Kanban task:** File a task with **acceptance criteria**:
+- AC1: Email + password input fields with validation
+- AC2: "Forgot password" link present
+- AC3: POST returns 401 on bad credentials
+
+**Benefits:**
+- **Clear definition of done** — agent knows exactly what "done" means, not guessing
+- **Queueable** — add 5 tasks, agents work through them in order or in parallel
+- **Auditable history** — every task tracks what was tried, what worked, what didn't
+- **AI hits target more reliably** — structured AC beats prose every time
+- **Resumable** — if an agent gets stuck, another agent picks up mid-task from the checkpoint
+
+Chat is great for questions and exploration. Tasks are great for real work.
 
 ### Do I need to know how to code to use this?
 
@@ -150,6 +182,8 @@ Both channels pull from `projects.notification_targets` (priority-ordered list) 
 Sent via `POST /api/digest/fire` (scheduled daily or manual trigger) and `POST /api/push/fire` (ad-hoc or event-driven). Every delivery attempt is audited to `tasks_history` with operation code `'N'`.
 
 ## What's next
+
+**Want more power?** See [USAGE-POWER.md](USAGE-POWER.md) for queuing, auto-mode, parallel agents, mobile remote, and multi-project workflows.
 
 Recently shipped:
 

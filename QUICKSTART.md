@@ -5,6 +5,20 @@
 AI agents do work for you in projects you create. You give them a task,
 they work, you approve key decisions.
 
+### Why use a Kanban task?
+
+**Task-mode (structured)** vs. **chat-mode (freeform):**
+
+- **Chat:** "add a login form" → agent writes code → you approve each edit → no clear done state
+- **Task:** Create task with acceptance criteria:
+  - AC1: Email + password validation
+  - AC2: "Forgot password" link
+  - AC3: 401 on bad creds
+  
+  Agent knows exactly what done looks like. Queueable. Auditable. Other agents can resume if one gets stuck.
+
+**Pick tasks for real work** (features, bugs, refactors). Use chat for questions and exploration.
+
 ## Open the UI
 
 Open your browser to **http://localhost:5431**
@@ -57,5 +71,7 @@ Then restart your Claude Code session.
 
 ## For more
 
+- **Power features:** see [USAGE-POWER.md](USAGE-POWER.md) — queuing, auto-mode, parallel agents, mobile remote access, multi-project workflows.
+- **Claude Code (advanced):** see [CLAUDE-CODE-START.md](CLAUDE-CODE-START.md) — direct agent control from your terminal.
 - **Technical details:** see `README.md` (Docker, config, API).
 - **Bug reports:** open an issue or email bankung99@gmail.com.
