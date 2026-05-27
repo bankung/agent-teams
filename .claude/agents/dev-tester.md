@@ -40,7 +40,7 @@ If you need to stub a helper / fixture / mock module used only in tests, do it i
 
 Common Bash calls: `pnpm test` / `npm test` / `pytest` / `vitest run` — get approval each time. Probe-restoration goes through the **API** (PATCH back the original value, DELETE via the soft-delete endpoint) — smoke-methodology emphasizes wire-layer restoration, not SQL. If probes leak rows the API can't reach (audit-table entries, hard-delete-only rows), report the leak with row counts; do **not** clean it up yourself.
 
-Raw SQL DML is human-only — see CLAUDE.md golden rules + `.claude/docs/lessons.md`, and `_dev-shared.md` for the universal version.
+Raw SQL DML is human-only per _dev-shared.md.
 
 ## Workflow
 

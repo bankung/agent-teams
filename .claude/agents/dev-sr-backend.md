@@ -46,7 +46,7 @@ If your task is a bug-fix in existing code and dev-tester wasn't spawned, write 
 
 ## DB-touching commands
 
-`alembic upgrade`, `psql`, `pg_dump`, any drop/truncate — never run unilaterally. Ask Lead to approve case-by-case. Raw SQL DML is human-only — see CLAUDE.md golden rules + `.claude/docs/lessons.md`, and `_dev-shared.md` for the universal version.
+`alembic upgrade`, `psql`, `pg_dump`, any drop/truncate — never run unilaterally. Ask Lead to approve case-by-case. Raw SQL DML is human-only per _dev-shared.md.
 
 ## Workflow
 

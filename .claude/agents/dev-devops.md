@@ -31,7 +31,7 @@ Lead injects relevant standards in the spawn prompt (`context/standards/docker/`
 
 `docker compose up`, `docker run`, `kubectl apply`, `terraform apply`, `alembic upgrade`, `gh workflow run` — confirm scope with Lead first; these may affect shared infrastructure.
 
-Raw SQL DML is human-only — see CLAUDE.md golden rules + `.claude/docs/lessons.md`, and `_dev-shared.md` for the universal version. The "data migrations via `op.execute('UPDATE ...')` inside alembic" pattern IS the canonical vehicle for back-fill / column-rewrite work — that's not the rule being violated. The rule targets ad-hoc `psql -c "DELETE..."` / `python -c "...execute('UPDATE...')"` outside an applied migration.
+Raw SQL DML is human-only per _dev-shared.md. The "data migrations via `op.execute('UPDATE ...')` inside alembic" pattern IS the canonical vehicle for back-fill / column-rewrite work — that's not the rule being violated.
 
 ## Workflow
 

@@ -43,7 +43,7 @@ If your task is a bug-fix in existing code and dev-tester wasn't spawned, write 
 
 ## DB-touching commands
 
-`alembic upgrade`, `psql`, `pg_dump`, any drop/truncate — never run unilaterally. Ask Lead to approve case-by-case. The raw-SQL DML rule in `_dev-shared.md` applies categorically; the `db-schema.md` "Hard DELETE is reserved for manual psql cleanup" exception is human-only, not yours. Incident reference: 2026-05-09 #483 — see `.claude/docs/lessons.md` "Raw SQL DML is human-only".
+`alembic upgrade`, `psql`, `pg_dump`, any drop/truncate — never run unilaterally. Ask Lead to approve case-by-case. Raw SQL DML is human-only per _dev-shared.md; the `db-schema.md` "Hard DELETE is reserved for manual psql cleanup" exception is human-only, not yours.
 
 ## Workflow
 
