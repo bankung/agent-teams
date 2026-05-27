@@ -69,6 +69,18 @@ Before writing, walk three questions. First "yes" wins.
 - **Q2. Does this apply to every project under one team?** → **Team methodology** (`context/teams/<team>/`).
 - **Otherwise:** content is project-scoped (shared or role-state).
 
+### Q3 — operator memory dir vs project shared/
+
+Auto-memory (`~/.claude/projects/<cwd-hash>/memory/`) lives OUTSIDE the 5 zones above — it's operator-personal, scoped to Claude Code's CWD not Lead's project binding. A session in agent-teams writes here even when bound (via API) to project=secretary.
+
+Before saving any memory, walk:
+
+- **Q3a. Universal Lead behavior** (Karpathy, AC, subagent rules, operator personal prefs)? → **memory dir** (default).
+- **Q3b. agent-teams platform rule** (classifier, hooks, AT ops)? → **memory dir**.
+- **Q3c. Project-scoped** (workflow rules, project state, project-specific rules)? → **`<working_path>/shared/<filename>.md`** of that project — **NOT memory dir**.
+
+Project-scoped content in agent-teams memory dir is an anti-pattern: loads every agent-teams session even for unrelated work, pollutes Lead context, invisible to other operators. Refactor incident 2026-05-27 (Kanban #1593) moved 18 misplaced memories out.
+
 ## Permission model (universal)
 
 `.claude/settings.json` enforces:
@@ -111,6 +123,7 @@ Dev team tracks subagent tier in `tasks.subagent_models` per Kanban #887 — ful
 - `git add -A` on scoped task → **stage only files this task touched**.
 - Carrying context across project switch → **re-resolve active project, re-read team playbook + shared/**.
 - Lifecycle-program lock-code keywords in committed files → see `.git/hooks/pre-push` and [.claude/docs/lessons.md](.claude/docs/lessons.md) "Lifecycle-program keywords."
+- Saving a project-scoped memory to operator memory dir instead of `<working_path>/shared/` → **wrong zone; see Q3 above**.
 
 ## Available teams
 
