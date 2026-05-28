@@ -146,6 +146,8 @@ Yes. The installer creates one project in the Kanban at first (called "agent-tea
 
 This registers "myapp" in the Kanban and scaffolds the orchestration layer into that folder. Multiple projects run against the same Kanban instance. Switch between projects by naming the project when you talk to the AI, or use the project switcher in the UI.
 
+Available teams: `dev` (software development), `novel` (novel writing), `general` (multi-domain fallback), `content` (content production), `seo` (SEO), `data-analytics` (BI/analytics), `sem` (paid media). The `-Team` parameter accepts any of these values.
+
 ### Can I customize the AI agents?
 
 Yes. Each agent is defined in a markdown file (`.claude/agents/<role>.md` in your project). You can edit the agent's instructions, the role's scope, even add new roles for your team. Changes take effect on the next task. See "For developers" for more detail.
