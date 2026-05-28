@@ -77,6 +77,52 @@ if ($dockerInfoExit -ne 0) {
 }
 Write-Log "Docker daemon OK."
 
+# ---- 1b. .env + CREDENTIALS_MASTER_KEY ------------------------------------
+# Ensure .env exists. If not, copy from .env.example so docker compose can start.
+$EnvFile     = Join-Path $RepoRoot '.env'
+$EnvExample  = Join-Path $RepoRoot '.env.example'
+if (-not (Test-Path -LiteralPath $EnvFile)) {
+    if (Test-Path -LiteralPath $EnvExample) {
+        Copy-Item -LiteralPath $EnvExample -Destination $EnvFile
+        Write-Log ".env not found — copied from .env.example."
+    } else {
+        Write-Warn ".env.example not found. You may need to create .env manually."
+    }
+}
+
+# Generate CREDENTIALS_MASTER_KEY if missing or empty in .env.
+# Fernet key = URL-safe base64 of 32 random bytes (44 chars ending in '=').
+# Does NOT touch an existing non-empty value (idempotent).
+if (Test-Path -LiteralPath $EnvFile) {
+    $envContent = Get-Content -LiteralPath $EnvFile -Raw
+    # Match the key line — value is empty or the placeholder text.
+    $keyMissing = $envContent -notmatch '(?m)^CREDENTIALS_MASTER_KEY=\S+'
+    if ($keyMissing) {
+        Write-Log "CREDENTIALS_MASTER_KEY is missing/empty — generating a Fernet key..."
+        # Generate 32 cryptographically random bytes, then URL-safe base64-encode them.
+        $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+        $keyBytes = New-Object byte[] 32
+        $rng.GetBytes($keyBytes)
+        $rng.Dispose()
+        $fernetKey = [Convert]::ToBase64String($keyBytes).Replace('+', '-').Replace('/', '_')
+
+        # Replace the line in .env (handles both empty-value and placeholder-value lines).
+        $envContent = $envContent -replace '(?m)^CREDENTIALS_MASTER_KEY=.*', "CREDENTIALS_MASTER_KEY=$fernetKey"
+        # If the line was absent entirely, -replace was a no-op — append it.
+        if ($envContent -notmatch '(?m)^CREDENTIALS_MASTER_KEY=\S+') {
+            $envContent = $envContent.TrimEnd("`r","`n") + "`nCREDENTIALS_MASTER_KEY=$fernetKey`n"
+        }
+        [IO.File]::WriteAllText($EnvFile, $envContent, [Text.Encoding]::UTF8)
+        Write-Host ""
+        Write-Host "NOTICE: A new CREDENTIALS_MASTER_KEY has been generated and written to .env." -ForegroundColor Cyan
+        Write-Host "        Back it up securely (password manager / offline storage). Losing this" -ForegroundColor Cyan
+        Write-Host "        key makes ALL stored vault credentials permanently unrecoverable." -ForegroundColor Cyan
+        Write-Host ""
+    } else {
+        Write-Log "CREDENTIALS_MASTER_KEY already set — leaving untouched."
+    }
+}
+
 # ---- 2. docker compose up ---------------------------------------------------
 # `docker compose` writes build progress to stderr. With $ErrorActionPreference='Stop'
 # PS 5.1 wraps each line in a NativeCommandError and halts. Run with 'Continue'

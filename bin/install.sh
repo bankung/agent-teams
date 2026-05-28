@@ -62,6 +62,49 @@ if ! docker info >/dev/null 2>&1; then
 fi
 log "Docker daemon OK."
 
+# ---- 1b. .env + CREDENTIALS_MASTER_KEY ------------------------------------
+# Ensure .env exists. If not, copy from .env.example so docker compose can start.
+ENV_FILE="$REPO_ROOT/.env"
+ENV_EXAMPLE="$REPO_ROOT/.env.example"
+if [ ! -f "$ENV_FILE" ]; then
+  if [ -f "$ENV_EXAMPLE" ]; then
+    cp "$ENV_EXAMPLE" "$ENV_FILE"
+    log ".env not found — copied from .env.example."
+  else
+    warn ".env.example not found. You may need to create .env manually."
+  fi
+fi
+
+# Generate CREDENTIALS_MASTER_KEY if missing or empty in .env.
+# Fernet key = URL-safe base64 of 32 random bytes (44 chars ending in '=').
+# Does NOT touch an existing non-empty value (idempotent).
+if [ -f "$ENV_FILE" ]; then
+  # Matches the key line only if value is non-empty (POSIX ERE; no perl-regex needed).
+  if ! grep -qE '^CREDENTIALS_MASTER_KEY=[^[:space:]]+' "$ENV_FILE" 2>/dev/null; then
+    log "CREDENTIALS_MASTER_KEY is missing/empty — generating a Fernet key..."
+    # URL-safe base64 of 32 random bytes.
+    # base64 of exactly 32 bytes = 44 chars (32/3*4 + padding). Strip newline only,
+    # keep the trailing '=', then swap standard +/ to url-safe -_.
+    FERNET_KEY="$(head -c 32 /dev/urandom | base64 | tr -d '\n' | tr '+/' '-_')"
+    # Replace (or append) the key line in .env.
+    if grep -qE '^CREDENTIALS_MASTER_KEY=' "$ENV_FILE"; then
+      # Line exists but value is empty/placeholder — replace it.
+      sed -i.bak "s|^CREDENTIALS_MASTER_KEY=.*|CREDENTIALS_MASTER_KEY=${FERNET_KEY}|" "$ENV_FILE"
+      rm -f "${ENV_FILE}.bak"
+    else
+      # Line missing entirely — append it.
+      printf '\nCREDENTIALS_MASTER_KEY=%s\n' "$FERNET_KEY" >> "$ENV_FILE"
+    fi
+    printf '\n'
+    printf 'NOTICE: A new CREDENTIALS_MASTER_KEY has been generated and written to .env.\n'
+    printf '        Back it up securely (password manager / offline storage). Losing this\n'
+    printf '        key makes ALL stored vault credentials permanently unrecoverable.\n'
+    printf '\n'
+  else
+    log "CREDENTIALS_MASTER_KEY already set — leaving untouched."
+  fi
+fi
+
 # ---- 2. docker compose up ---------------------------------------------------
 log "Building and starting services (docker compose up -d --build)..."
 if ! docker compose up -d --build; then
