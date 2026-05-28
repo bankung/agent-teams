@@ -79,8 +79,8 @@ def _client_config() -> dict[str, Any]:
     if not client_id or not client_secret:
         raise RuntimeError(
             "Gmail OAuth not configured: set GOOGLE_OAUTH_CLIENT_ID and "
-            "GOOGLE_OAUTH_CLIENT_SECRET in api/.env (see api/.env.example "
-            "Kanban #1604 block for setup steps)."
+            "GOOGLE_OAUTH_CLIENT_SECRET in the repo-root .env (dockerized stack) "
+            "or api/.env (local uvicorn) — see .env.example Kanban #1604 block for setup steps."
         )
     return {
         "web": {

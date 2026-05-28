@@ -121,6 +121,19 @@ services:
       # generate a fresh key per deployment and set it in .env. See
       # _scratch/standards-draft-credentials-rotation.md for rotation procedure.
       CREDENTIALS_MASTER_KEY: ${CREDENTIALS_MASTER_KEY:-}
+      # Email tools — Gmail + Outlook OAuth (Kanban #1604/#1608 wired via #1626).
+      # os.environ passthrough: gmail_client.py / outlook_client.py / gate.py read
+      # these directly; no load_dotenv() in the container — values must land here.
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:8456/api/tools/email/auth/gmail/callback}
+      EMAIL_TOOLS_DAILY_UNITS_CAP: ${EMAIL_TOOLS_DAILY_UNITS_CAP:-5000}
+      EMAIL_TOOLS_BULK_THRESHOLD: ${EMAIL_TOOLS_BULK_THRESHOLD:-100}
+      EMAIL_TOOLS_AUDIT_PATH: ${EMAIL_TOOLS_AUDIT_PATH:-/repo/_scratch/email-tools-audit.jsonl}
+      AZURE_OAUTH_CLIENT_ID: ${AZURE_OAUTH_CLIENT_ID:-}
+      AZURE_OAUTH_CLIENT_SECRET: ${AZURE_OAUTH_CLIENT_SECRET:-}
+      AZURE_OAUTH_TENANT: ${AZURE_OAUTH_TENANT:-consumers}
+      AZURE_OAUTH_REDIRECT_URI: ${AZURE_OAUTH_REDIRECT_URI:-http://localhost:8456/api/tools/email/auth/outlook/callback}
     ports:
       - "${API_PORT:-8456}:8456"
     volumes:

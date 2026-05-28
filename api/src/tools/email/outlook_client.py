@@ -94,8 +94,8 @@ def _client_config() -> tuple[str, str, str, str]:
     if not client_id or not client_secret:
         raise RuntimeError(
             "Outlook OAuth not configured: set AZURE_OAUTH_CLIENT_ID and "
-            "AZURE_OAUTH_CLIENT_SECRET in api/.env (see api/.env.example "
-            "Kanban #1608 block for setup steps)."
+            "AZURE_OAUTH_CLIENT_SECRET in the repo-root .env (dockerized stack) "
+            "or api/.env (local uvicorn) — see .env.example Kanban #1608 block for setup steps."
         )
     return client_id, client_secret, tenant, redirect_uri
 
