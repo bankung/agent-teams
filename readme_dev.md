@@ -684,6 +684,19 @@ Both scripts pin `-p agent-teams` on the `docker compose down -v` call (defense 
 
 If you must call docker directly, the equivalent is `docker compose -p agent-teams down -v` — the `-p agent-teams` flag is critical when multiple compose projects exist on the same host.
 
+### Web shows a 500 / white page after rapid FE edits
+**Cause:** `next dev` Fast-Refresh performs incremental recompiles on every file-change event. When a dev agent edits several files in rapid succession over a Windows Docker-Desktop bind mount, filesystem change events can arrive coalesced or out-of-order, leaving `.next/server/` in an inconsistent state where the webpack runtime chunk references module IDs that no longer exist in the current chunk manifest. The process stays alive serving 500s (`TypeError: e[o] is not a function` at `.next/server/webpack-runtime.js`) — it does not crash — so neither the healthcheck nor a restart policy recovers it automatically.
+**Fix:**
+```powershell
+# Windows
+.\bin\web-heal.ps1
+# Mac / Linux / WSL
+./bin/web-heal.sh
+```
+Add `-Clean` / `--clean` for the stubborn case (stops the container, removes `web/.next/` from the host, then brings it back up so Next.js rebuilds from scratch). Manual equivalent: `docker compose -p agent-teams restart web`.
+
+If the 500 keeps recurring after multiple restarts, set `WATCHPACK_POLLING=true` in the `web` service env in `docker-compose.yml` — this forces reliable polling-based file watching inside Docker instead of relying on inotify events over the bind mount.
+
 ### A subagent claims it edited shared/ or standards/
 **Check:** `git status` / `git diff` against `context/projects/*/shared/` and `context/standards/`.
 **Fix:** if there's a diff Lead didn't write, revert it and have Lead rewrite from the proposal.

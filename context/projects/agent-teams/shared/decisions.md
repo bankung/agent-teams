@@ -16,6 +16,17 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-28 — web 500 (.next hot-reload corruption): heal-script + runbook, not autoheal sidecar — Kanban #1625
+**Scope:** devops / shared
+
+**Decision:** Mitigate the recurring `web` 500 (`TypeError: e[o] is not a function` at `.next/server/webpack-runtime.js`, seen twice after rapid multi-file FE edits) with a deterministic, operator/agent-triggered heal: `bin/web-heal.ps1` + `bin/web-heal.sh` (`docker compose -p agent-teams restart web`, plus a `--clean`/`-Clean` mode that wipes `web/.next`), plus a `## Troubleshooting` runbook entry in `readme_dev.md`. No change to `docker-compose.yml`.
+
+**Reasoning:** Root cause is a webpack chunk/runtime-manifest desync — `next dev` Fast-Refresh incremental recompiles racing against coalesced/out-of-order filesystem events over the Windows Docker-Desktop bind mount. The `next dev` process does NOT crash (it serves 500s while alive), so `restart: on-failure` and the existing healthcheck can't recover it; only an explicit restart does. Rejected an autoheal sidecar (e.g. willfarrell/autoheal): a 5s healthcheck timeout is shorter than a legit cold `next dev` compile, so autoheal would false-positive-restart mid-compile and *worsen* churn — disproportionate for a dev-only, low-urgency, 1-command-fix issue. The real pain was *diagnosis* ("white page, no error"), which the runbook removes.
+
+**Implications:**
+- If it recurs after repeated heals, the documented next lever is `WATCHPACK_POLLING=true` on the `web` service env (reliable polling over inotify-on-bind-mount). Not applied now (adds recompile churn).
+- `web` still has no `restart:` policy (intentional — wouldn't help this failure mode, which is process-alive).
+
 ## 2026-05-28 — projects.team CHECK dropped; team enum is app-validated single-source — Kanban #1620
 **Scope:** backend / schema / shared
 
