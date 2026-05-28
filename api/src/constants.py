@@ -104,11 +104,12 @@ class ProjectTeam:
 # Every role here MUST have a matching `.claude/agents/<role>.md` file — the
 # scaffold manifest convention relies on it. Verified 2026-05-28.
 #
-# NOTE: `content` has NO `.claude/teams/content.md` playbook today, so its roster
-# is INFERRED from the content-* agent files (the content-production pipeline used
-# as "Cross-team reuse" by seo/sem/data-analytics) + thai-proofreader (the
-# language pass; its agent file explicitly names "content team output"). When a
-# content.md playbook lands, reconcile this entry against its Roster table.
+# NOTE: `content` roster is OPERATOR-CONFIRMED (2026-05-28, Kanban #1623),
+# reconciled against `.claude/teams/content.md` Roster table. Pipeline order:
+# write → edit → hook → on-page SEO → veracity → proofread.
+# content-seo-optimizer is shared with the SEO team (appears in both rosters —
+# TEAM_ROSTERS values are per-team; an agent may serve multiple teams).
+# thai-proofreader is cross-team but a standing content-pipeline step.
 TEAM_ROSTERS: dict[str, tuple[str, ...]] = {
     ProjectTeam.DEV: (
         "dev-sr-frontend",
@@ -130,6 +131,7 @@ TEAM_ROSTERS: dict[str, tuple[str, ...]] = {
         "content-writer",
         "content-editor",
         "content-hook-doctor",
+        "content-seo-optimizer",
         "content-veracity-checker",
         "thai-proofreader",
     ),
