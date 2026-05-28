@@ -16,6 +16,23 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-28 — api suite determinism: triage closed, 0051 downgrade regression fixed, concurrent-invocation lock added — Kanban #1599
+**Scope:** qa / backend / shared
+
+**Decision:** Closed the #1599 suite-flakiness triage with three findings + one guard:
+1. **Problem A (20 named failures) — already resolved.** All 7 named failing groups (kill_switch, notification_router, sessions, subagent_models, template_auto_run_confirm, user_next_action, + integration) now pass (136/136). The failures from the 2026-05-27 #1284 run were cleared by intervening work (#1266/#1269/#1271 + later). No new fix needed.
+2. **Real regression found by the FULL-suite run:** `test_tool_calls.py::test_migration_downgrade_then_upgrade_leaves_clean_state` failed because #1620's migration 0051 had a no-op `downgrade()`. Fixed (0051 now recreates the then-current 7-team CHECK — see the #1620 entry's updated implication line).
+3. **Problem B (non-deterministic counts 20→155→472→623) root cause:** the suite is single-process with deterministic collection order (no xdist, no pytest-randomly), so a single run is inherently deterministic. The historical variance came from **concurrent pytest invocations** colliding on the HARDCODED `agent_teams_test` DB name: a second run's `_setup_test_database` does `pg_terminate_backend` + `DROP DATABASE agent_teams_test` while the first is mid-suite, killing its connections → cascade.
+
+**Isolation mechanism chosen (AC3):** serial execution (already the design — single-process) + a **`filelock.FileLock`** (existing dep) wrapping `_setup_test_database` in conftest. Concurrent invocations now serialize: the second blocks on the lock until the first finishes teardown, instead of corrupting it. OS-level lock → auto-released on process death (no permanent stuck-lock risk). 900s timeout raises a clear RuntimeError naming the collision.
+
+**Reasoning:** Empirically proved determinism — 3 consecutive full runs all reported an identical **1385 passed / 0 failed**. Chose a fixture lock over per-test rollback (the suite relies on a session-scoped seeded DB + unique-name discipline, not transactional rollback; retrofitting rollback would be a large, risky rewrite) and over unique-per-invocation DB names (orphan-DB cleanup complexity on crash). The lock is ~10 LOC, uses an existing dep, and matches this repo's prevention-layer culture (L1–L19).
+
+**Implications:**
+- The suite is now a reliable 0/deterministic regression signal again. Full-suite green = 1385 passed.
+- Concurrent pytest invocations on one host no longer corrupt each other — the second waits.
+- The 0051 regression slipped past #1620 because that task validated with SCOPED selectors, not full files (same gap that let #1618 break test_777). Methodology reinforcement in `context/teams/dev/decisions.md`.
+
 ## 2026-05-28 — web 500 (.next hot-reload corruption): heal-script + runbook, not autoheal sidecar — Kanban #1625
 **Scope:** devops / shared
 
@@ -38,7 +55,7 @@ Template:
 - Add a team = edit `constants.py` (ProjectTeam value + TEAM_ROSTERS entry) + drop `.claude/teams/<t>.md` + agent `.md`s for new roles. NO migration, no ORM/FE/ps1 edits.
 - Unknown team → 422 everywhere (was: silent dev-fallback at scaffold; wrong-409 at create/update).
 - `content` roster is INFERRED (no `content.md` playbook exists yet) — followup to author it.
-- Migration 0051 `downgrade()` is a documented no-op (re-adding the CHECK could fail on rows carrying migration-free teams).
+- Migration 0051 `downgrade()` recreates the then-current 7-team CHECK (UPDATED #1599 — was a no-op, which broke the down→up roundtrip test `test_migration_downgrade_then_upgrade_leaves_clean_state`: the no-op left 0044's bare `DROP CONSTRAINT ck_projects_team_valid` with nothing to drop. Recreate-then-current-set was an explicitly-permitted option in the locked #1620 design). Same caveat as every team migration: the downgrade fails if a row carries a team outside that 7-set (operator re-teams/soft-deletes first — never raw SQL DML).
 - Add-team / add-agent methodology + the TaskRole-code coupling floor: see `context/teams/dev/decisions.md` (same date).
 
 ## 2026-05-22 — Env-var wiring trap documented (root .env + compose mapping) — Kanban #1449

@@ -21,6 +21,18 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-28 — Validate with full test FILES, not scoped selectors (regression-detection floor) — Kanban #1599
+**Scope:** lifecycle / methodology
+**Proposed by:** lead (after #1599 full-suite triage)
+**Decision:** When a task touches a migration, model, router, or any shared surface, the verifying pytest run MUST execute the affected test FILE(S) in full (ideally the full suite for migration/schema changes) — NOT a narrow node-id selector scoped to the new behavior. A scoped selector only proves the new path; it cannot catch a regression in a *sibling* test that exercises the same surface differently.
+**Reasoning:** This gap has now caused TWO shipped regressions on agent-teams:
+- #1618 broke `test_routes_smoke.py::test_777_edge_scaffold_uses_repo_root_not_working_path` — the scoped run validated the new scaffold-skip behavior but not the existing test that asserted the old behavior.
+- #1620's migration 0051 (no-op downgrade) broke `test_tool_calls.py::test_migration_downgrade_then_upgrade_leaves_clean_state` — the down→up roundtrip test was never in the scoped validation set, so the broken downgrade chain shipped and only surfaced in #1599's full-suite run.
+Both were cheap to fix once found and would have been caught by running the full file/suite at task-verify time. Migration/schema changes specifically must run the full suite (the migration-roundtrip test lives in an unrelated file).
+**Implications:**
+- Spawn briefs for migration/schema/router work should require a full-file (or full-suite) pytest run in the verification AC, not a node-id selector.
+- The api full suite is a reliable deterministic signal again (see agent-teams `shared/decisions.md` #1599 — concurrent-invocation filelock guard); "green" = a known fixed count, so a full run is a trustworthy gate.
+
 ## 2026-05-28 — Add-team / add-agent edit floor + TaskRole coupling — Kanban #1620
 **Scope:** team-playbook / agent-roster / methodology
 **Proposed by:** lead (agent-teams #1620 team-SSOT refactor, after 5 design-review rounds)

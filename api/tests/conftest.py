@@ -102,8 +102,11 @@ _os.environ.setdefault("APP_SCHEDULER_DISABLE", "true")
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
+
+import filelock
 
 import pytest
 import pytest_asyncio
@@ -257,94 +260,124 @@ async def _setup_test_database():
 
     Defensive `pg_terminate_backend` before DROP DATABASE so a leftover
     connection from a prior crash doesn't block the drop.
+
+    Cross-invocation lock (#1599): `agent_teams_test` is a HARDCODED DB name.
+    Two concurrent pytest invocations share it — the second's DROP DATABASE in
+    setup kills the first run's connections mid-suite, causing a non-deterministic
+    cascade of failures. A FileLock (OS-level, auto-released on process death)
+    serializes invocations so the second waits until the first finishes teardown.
+    See Kanban #1599 for the root-cause analysis. Long rationale in decisions.md.
     """
-    from sqlalchemy import text
-    from sqlalchemy.ext.asyncio import create_async_engine
-
-    test_url = os.environ["DATABASE_URL"]
-    # Admin operations (DROP/CREATE DATABASE, pg_terminate_backend of other-
-    # user sessions) require postgres superuser — pytest_runner cannot do
-    # them. Re-derive the admin URL from the captured original DATABASE_URL
-    # (stashed by the top-of-file rewrite into _PG_ADMIN_URL). #1109.
-    _admin_base = os.environ["_PG_ADMIN_URL"]
-    admin_url = _admin_base.rsplit("/", 1)[0] + "/postgres"
-
-    admin_engine = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
+    # --- Cross-invocation serialization lock (#1599) ---
+    # All pytest processes in this container contend on the same lock file.
+    # FileLock (not SoftFileLock) — OS-level flock; auto-released if process dies.
+    _lock_path = Path(tempfile.gettempdir()) / "agent_teams_test_db.setup.lock"
+    _lock = filelock.FileLock(str(_lock_path))
     try:
-        async with admin_engine.connect() as conn:
-            await conn.execute(
-                text(
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = 'agent_teams_test' AND pid <> pg_backend_pid()"
-                )
-            )
-            await conn.execute(text("DROP DATABASE IF EXISTS agent_teams_test"))
-            # OWNER pytest_runner gives the constrained role full DDL/DML on
-            # the new test DB (CREATE/DROP/ALTER on tables, triggers,
-            # functions, sequences) WITHOUT promoting it to superuser. The
-            # postgres role still owns the agent_teams (live) DB so the
-            # REVOKE matrix from migration 0034 stays effective there.
-            await conn.execute(
-                text("CREATE DATABASE agent_teams_test OWNER pytest_runner")
-            )
-    finally:
-        await admin_engine.dispose()
-
-    # Run alembic upgrade head against the test DB. Subprocess keeps alembic's
-    # sync internals out of our async event loop, and the env var (set at the
-    # top of this module) flows into the child process so env.py picks it up.
-    alembic_run = subprocess.run(
-        ["alembic", "upgrade", "head"],
-        check=False,
-        capture_output=True,
-        text=True,
-        cwd="/repo/api",
-        env={**os.environ, "DATABASE_URL": test_url},
-    )
-    if alembic_run.returncode != 0:
+        _lock.acquire(timeout=900)
+    except filelock.Timeout:
         raise RuntimeError(
-            "alembic upgrade head failed for test DB.\n"
-            f"stdout:\n{alembic_run.stdout}\n"
-            f"stderr:\n{alembic_run.stderr}"
+            f"Could not acquire test-DB setup lock within 900 seconds "
+            f"(lock file: {_lock_path}). Another pytest invocation has held "
+            f"the lock too long. The test DB name `agent_teams_test` is "
+            f"hardcoded — concurrent runs corrupt each other (#1599 root cause). "
+            f"Wait for the other run to finish or kill it, then retry."
         )
 
-    # Run the seed against the test DB. `_seed` is the async coroutine inside
-    # scripts/seed.py — it opens its own session via SessionLocal which is now
-    # bound to agent_teams_test (since src.db built its engine after the env
-    # override).
-    from scripts.seed import _seed
-
-    await _seed()
-
-    # Dispose the engine after seed so the connection used during seed (which
-    # bound to the seed-time event loop) is released; the per-test
-    # `_reset_engine_pool_per_test` fixture takes over from here.
-    from src import db as _db
-
-    await _db.engine.dispose()
-
-    yield
-
-    # Teardown — dispose any connections then drop the test DB.
     try:
-        await _db.engine.dispose()
-    except Exception:
-        pass
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
 
-    # Teardown also uses the postgres-superuser admin URL — pytest_runner
-    # cannot pg_terminate_backend other sessions.
-    admin_engine = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
-    try:
-        async with admin_engine.connect() as conn:
-            await conn.execute(
-                text(
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = 'agent_teams_test' AND pid <> pg_backend_pid()"
+        test_url = os.environ["DATABASE_URL"]
+        # Admin operations (DROP/CREATE DATABASE, pg_terminate_backend of other-
+        # user sessions) require postgres superuser — pytest_runner cannot do
+        # them. Re-derive the admin URL from the captured original DATABASE_URL
+        # (stashed by the top-of-file rewrite into _PG_ADMIN_URL). #1109.
+        _admin_base = os.environ["_PG_ADMIN_URL"]
+        admin_url = _admin_base.rsplit("/", 1)[0] + "/postgres"
+
+        admin_engine = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
+        try:
+            async with admin_engine.connect() as conn:
+                await conn.execute(
+                    text(
+                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                        "WHERE datname = 'agent_teams_test' AND pid <> pg_backend_pid()"
+                    )
                 )
+                await conn.execute(text("DROP DATABASE IF EXISTS agent_teams_test"))
+                # OWNER pytest_runner gives the constrained role full DDL/DML on
+                # the new test DB (CREATE/DROP/ALTER on tables, triggers,
+                # functions, sequences) WITHOUT promoting it to superuser. The
+                # postgres role still owns the agent_teams (live) DB so the
+                # REVOKE matrix from migration 0034 stays effective there.
+                await conn.execute(
+                    text("CREATE DATABASE agent_teams_test OWNER pytest_runner")
+                )
+        finally:
+            await admin_engine.dispose()
+
+        # Run alembic upgrade head against the test DB. Subprocess keeps alembic's
+        # sync internals out of our async event loop, and the env var (set at the
+        # top of this module) flows into the child process so env.py picks it up.
+        alembic_run = subprocess.run(
+            ["alembic", "upgrade", "head"],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd="/repo/api",
+            env={**os.environ, "DATABASE_URL": test_url},
+        )
+        if alembic_run.returncode != 0:
+            raise RuntimeError(
+                "alembic upgrade head failed for test DB.\n"
+                f"stdout:\n{alembic_run.stdout}\n"
+                f"stderr:\n{alembic_run.stderr}"
             )
-            await conn.execute(text("DROP DATABASE IF EXISTS agent_teams_test"))
+
+        # Run the seed against the test DB. `_seed` is the async coroutine inside
+        # scripts/seed.py — it opens its own session via SessionLocal which is now
+        # bound to agent_teams_test (since src.db built its engine after the env
+        # override).
+        from scripts.seed import _seed
+
+        await _seed()
+
+        # Dispose the engine after seed so the connection used during seed (which
+        # bound to the seed-time event loop) is released; the per-test
+        # `_reset_engine_pool_per_test` fixture takes over from here.
+        from src import db as _db
+
+        await _db.engine.dispose()
+
+        yield
+
+        # Teardown — dispose any connections then drop the test DB.
+        try:
+            await _db.engine.dispose()
+        except Exception:
+            pass
+
+        # Teardown also uses the postgres-superuser admin URL — pytest_runner
+        # cannot pg_terminate_backend other sessions.
+        admin_engine = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
+        try:
+            async with admin_engine.connect() as conn:
+                await conn.execute(
+                    text(
+                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                        "WHERE datname = 'agent_teams_test' AND pid <> pg_backend_pid()"
+                    )
+                )
+                await conn.execute(text("DROP DATABASE IF EXISTS agent_teams_test"))
+        finally:
+            await admin_engine.dispose()
+
     finally:
-        await admin_engine.dispose()
+        # Release the cross-invocation lock AFTER teardown completes so the
+        # next waiting invocation only proceeds once the test DB is fully torn
+        # down (#1599).
+        _lock.release()
 
 
 @pytest.fixture(autouse=True)

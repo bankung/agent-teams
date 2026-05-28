@@ -29,17 +29,19 @@ the constraint is known to exist (created by 0001/0038/.../0044). A plain
 DROP CONSTRAINT cannot fail on row data (it only removes a rule), so this is a
 zero-risk, reversible-by-recreate change on the single-owner dev/dogfood DB.
 
-Downgrade caveat (intentional NO-OP): re-adding the CHECK is NOT safe to do
-blindly. By the time anyone downgrades, the live `projects` table may carry rows
-whose `team` is a value that did not exist in any historical CHECK tuple (the
-whole point of #1620 is that new teams are added WITHOUT a migration). Recreating
-the constraint with any fixed historical tuple would fail
-(`ERROR: check constraint ... is violated by some row`) on those rows, or worse,
-silently exclude legitimate teams. On this single-owner dev DB the safe downgrade
-is to do nothing; if a hard rollback to a CHECK-enforced schema is ever required,
-the operator must first decide the exact allowed-team tuple for the CURRENT data
-and recreate the constraint by hand (never raw SQL DML to mutate rows). See
-shared/db-schema.md for the soft-delete + audit-trigger contract.
+Downgrade: recreates `ck_projects_team_valid` with the 7-team set that was
+current as of this revision (the set that 0044 established). This keeps the
+downgrade chain self-consistent: older team migrations (0044 and earlier) expect
+the constraint to be present in the DB when their `downgrade()` runs its
+`op.drop_constraint` call. Without this recreate, 0044's downgrade would fail
+with `ERROR: constraint "ck_projects_team_valid" of relation "projects" does not
+exist`.
+
+The same caveat as every team migration applies: if any rows carry a `team` value
+outside this 7-set (e.g. a team added post-#1620 without a migration), the
+recreate will fail (`ERROR: check constraint ... is violated by some row`). The
+operator must re-team or soft-delete those rows via the API first — never raw SQL
+DML. See shared/db-schema.md for the soft-delete + audit-trigger contract.
 """
 
 from __future__ import annotations
@@ -53,13 +55,48 @@ branch_labels = None
 depends_on = None
 
 
+# The 7-team set that was current when 0051 ran. Migrations must NOT import app
+# code — see standards/sqlalchemy/migrations.md "Helper duplication between app
+# and migration". Kept in sync with src/constants.py ProjectTeam.ALL at the time
+# of this revision.
+_PROJECT_TEAM_ALL = (
+    "dev",
+    "novel",
+    "general",
+    "content",
+    "seo",
+    "data-analytics",
+    "sem",
+)
+
+
+def _in_clause_text(column: str, values: tuple[str, ...]) -> str:
+    # Mirror of src.constants.in_clause_text — duplicated locally so the
+    # migration has zero app-code imports.
+    _allowed = set("abcdefghijklmnopqrstuvwxyz0123456789_-")
+    for v in values:
+        if not v or any(c not in _allowed for c in v):
+            raise ValueError(
+                f"_in_clause_text only allows [a-z0-9_-]+ values; got {v!r}"
+            )
+    quoted = ", ".join("'" + v + "'" for v in values)
+    return f"{column} IN ({quoted})"
+
+
 def upgrade() -> None:
     op.drop_constraint("ck_projects_team_valid", "projects", type_="check")
 
 
 def downgrade() -> None:
-    # Intentional NO-OP — re-adding the CHECK after #1620 could fail on rows
-    # carrying a team value that was added without a migration. See the module
-    # docstring "Downgrade caveat". A hard rollback to CHECK-enforced schema is a
-    # manual, data-aware operator step, not an automatic downgrade.
-    pass
+    # Recreate the CHECK with the then-current 7-team set so the downgrade chain
+    # stays self-consistent. Older migrations (0044 and below) call
+    # op.drop_constraint("ck_projects_team_valid", ...) in their own downgrade()
+    # and will fail if the constraint is absent. The constraint is guaranteed
+    # ABSENT here (0051.upgrade() dropped it), so a bare create is correct.
+    # CAVEAT: if any rows carry a team value outside this 7-set, the recreate
+    # will fail. Operator must re-team/soft-delete those rows via API first.
+    op.create_check_constraint(
+        "ck_projects_team_valid",
+        "projects",
+        _in_clause_text("team", _PROJECT_TEAM_ALL),
+    )
