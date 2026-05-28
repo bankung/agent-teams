@@ -102,12 +102,19 @@ def auth_start(project_id: int) -> str:
     _prune_pending()
     config, redirect_uri = _client_config()
     flow = Flow.from_client_config(config, scopes=SCOPES, redirect_uri=redirect_uri)
+    # PKCE (C): code_verifier makes the code exchange binding to this client
+    # instance; google-auth-oauthlib 1.x picks it up automatically in fetch_token.
+    flow.code_verifier = secrets.token_urlsafe(96)
+    # Explicit state (E): generate state ourselves so the value stored in
+    # _PENDING_FLOWS is identical to what Google echoes back in the callback.
     # access_type=offline → refresh token; prompt=consent → force re-consent so
     # we always receive a refresh_token (Google omits it on re-grant otherwise).
-    auth_url, state = flow.authorization_url(
+    state = secrets.token_urlsafe(32)
+    auth_url, _ = flow.authorization_url(
         access_type="offline",
         prompt="consent",
         include_granted_scopes="true",
+        state=state,
     )
     _PENDING_FLOWS[state] = (flow, project_id, datetime.datetime.utcnow())
     return auth_url

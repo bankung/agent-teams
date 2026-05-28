@@ -92,7 +92,8 @@ class GmailTrashRequest(BaseModel):
             # Bound message_ids length so a 10k-id payload can't slip past the
             # bulk-threshold gate via length-game. 1000 is a hard ceiling; the
             # bulk threshold check (default 100) is the soft refusal.
-            assert self.message_ids is not None
+            if self.message_ids is None:
+                raise ValueError("message_ids required")
             if len(self.message_ids) > 1000:
                 raise ValueError("message_ids list cannot exceed 1000 entries per call.")
             # Each id is a Gmail message id — short ASCII; bound length to
@@ -177,7 +178,8 @@ class OutlookTrashRequest(BaseModel):
         if has_ids:
             # Match Gmail's hard ceiling on list length; bulk threshold gate
             # (default 100) is the soft refusal.
-            assert self.message_ids is not None
+            if self.message_ids is None:
+                raise ValueError("message_ids required")
             if len(self.message_ids) > 1000:
                 raise ValueError("message_ids list cannot exceed 1000 entries per call.")
             # Graph message ids are long base64-ish strings — bound to 512 chars

@@ -218,8 +218,9 @@ async def gmail_trash(
         # Pay list units before we know the count — this is honest accounting.
         _cap_check_or_429(session_project_id, _LIST_UNITS_PER_CALL, "list")
         try:
-            ids = gmail_client.list_message_ids(
-                creds, body.query or "", max_results=_MAX_LIST_RESULTS,
+            ids = await run_in_threadpool(
+                gmail_client.list_message_ids,
+                creds, body.query or "", _MAX_LIST_RESULTS,
             )
         except Exception as exc:
             gate.log_audit(
@@ -248,7 +249,7 @@ async def gmail_trash(
 
     # Execute the trash loop.
     try:
-        trashed, errors = gmail_client.trash_messages(creds, ids)
+        trashed, errors = await run_in_threadpool(gmail_client.trash_messages, creds, ids)
     except Exception as exc:
         gate.log_audit(
             "gmail", session_project_id, "trash", total_units,
@@ -435,7 +436,8 @@ async def outlook_trash(
             },
         )
 
-    assert body.message_ids is not None  # pydantic XOR validator guarantees this.
+    if body.message_ids is None:  # pydantic XOR validator guarantees this; guard for -O safety.
+        raise HTTPException(status_code=500, detail="message_ids unexpectedly None after validation")
     ids = list(body.message_ids)
 
     if not ids:

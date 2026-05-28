@@ -25,8 +25,9 @@ from pathlib import Path
 # Persists for the lifetime of the api container process only.
 _DAILY_UNITS: dict[tuple[int, str], int] = {}
 
-# Audit log path. Repo-relative inside the container (/repo bind-mount).
-_AUDIT_PATH = Path("/repo/_scratch/email-tools-audit.jsonl")
+# Audit log path. Configurable via EMAIL_TOOLS_AUDIT_PATH env var; defaults to
+# /repo/_scratch/email-tools-audit.jsonl (the _scratch bind-mount in the container).
+_AUDIT_PATH = Path(os.environ.get("EMAIL_TOOLS_AUDIT_PATH", "/repo/_scratch/email-tools-audit.jsonl"))
 
 
 def _today() -> str:

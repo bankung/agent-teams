@@ -287,7 +287,8 @@ def _graph_request_with_retry(
         )
         time.sleep(sleep_s)
     # All retries exhausted — return last 429 response so caller can surface it.
-    assert last_response is not None
+    if last_response is None:
+        raise RuntimeError("no response after retries")
     return last_response
 
 
