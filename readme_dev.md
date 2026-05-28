@@ -645,6 +645,36 @@ Lead:
    These commands target whatever `DATABASE_URL` resolves to. The MIGRATION_TARGET gate (see [Live migration procedure](#live-migration-procedure-production--dev-db) below) will refuse if you accidentally point at a non-`_test` DB.
 3. PL/pgSQL trigger errors → `docker compose logs db` for migration syntax issues.
 
+### Fresh machine / after-pull bring-up
+
+After cloning on a secondary machine, or after a `git pull` that brought in new migrations, run one command to bring everything up to date:
+
+**Windows:**
+```
+bin\bring-up.cmd
+```
+(Batch files bypass PowerShell's ExecutionPolicy — no policy changes required. See the [ExecutionPolicy note](#executionpolicy-note-windows) below for details.)
+
+**Mac / Linux / WSL / Git-Bash:**
+```bash
+./bin/bring-up.sh
+```
+
+The command runs four steps in order:
+
+1. **`git pull --ff-only`** — fast-forward only; aborts cleanly if history has diverged so you can resolve the conflict manually. Also aborts if the working tree is dirty (uncommitted/untracked changes). Pass `--force` / `-Force` to skip the dirty check.
+2. **`docker compose up -d --build`** — builds images (cached after first run) and starts all services.
+3. **`alembic upgrade head` with `MIGRATION_TARGET=live`** — applies any new migrations to the live `agent_teams` DB. The `MIGRATION_TARGET=live` env var is required by the L10 guard in `api/alembic/env.py` (Kanban #1117), which refuses to migrate a non-`_test` DB without it. Without this guard a migration misfired against the wrong DB in the 2026-05-17 incident.
+4. **`scripts/seed` with `SEED_TARGET=production`** — seeds default projects/tasks. The `SEED_TARGET=production` env var is required by the L11 guard in `scripts/seed.py`, which refuses to seed a non-`_test` DB without it (prevents the dev-DB-wipe pattern from the 2026-05-17 incident, where seed silently erased a populated DB).
+
+> **The API does NOT auto-migrate on startup.** The Dockerfile CMD is `uvicorn --reload` only — it does not call `alembic upgrade head`. After any `git pull` that includes new migration files, you must run the migrate step explicitly. `bring-up.*` does this for you.
+
+`bring-up.*` delegates entirely to the existing `bin/install.*` scripts (idempotent, safe to re-run, does **not** wipe data). Alembic reports "no new revisions" and seed reports "already seeded" on a current DB — both are no-ops.
+
+To wipe the DB and rebuild from scratch, use `bin/reset.*` instead (destructive — see [Reset everything](#reset-everything-dev-only) below).
+
+**Post-pull `.next` desync sub-case:** if the web container shows a 500 / white page immediately after bring-up, the `.next/` cache may be stale from the bind-mount. See [Web shows a 500 / white page after rapid FE edits](#web-shows-a-500--white-page-after-rapid-fe-edits) (Kanban #1625) for the `web-heal.*` one-liner fix.
+
 ### Live migration procedure (production / dev DB)
 
 > **First-time install vs live migration.** If you are installing agent-teams for the first time on a freshly checked-out repo + freshly-created docker compose db volume, use `./bin/install.sh` (Linux/Mac) or `.\bin\install.ps1` (Windows). The installer transparently bypasses the L10/L11 safety guards with `MIGRATION_TARGET=live` + `SEED_TARGET=production` env vars — this is safe because a fresh DB has nothing to lose. The procedure below ("Live migration procedure") applies ONLY to a DIFFERENT scenario: applying a new migration against a populated production DB where the L10 guard exists to prevent accidental destructive ops. If you're a non-tech installer, you don't need this section.
@@ -696,6 +726,30 @@ If you must call docker directly, the equivalent is `docker compose -p agent-tea
 Add `-Clean` / `--clean` for the stubborn case (stops the container, removes `web/.next/` from the host, then brings it back up so Next.js rebuilds from scratch). Manual equivalent: `docker compose -p agent-teams restart web`.
 
 If the 500 keeps recurring after multiple restarts, set `WATCHPACK_POLLING=true` in the `web` service env in `docker-compose.yml` — this forces reliable polling-based file watching inside Docker instead of relying on inotify events over the bind mount.
+
+#### ExecutionPolicy note (Windows)
+
+On a fresh Windows machine the default PowerShell ExecutionPolicy is **Restricted**, which blocks `.ps1` scripts with a `PSSecurityException` ("running scripts is disabled on this system"). Three remedies in order of preference:
+
+1. **Single-shot, no system change (recommended for first use):**
+   ```
+   powershell -ExecutionPolicy Bypass -File .\bin\web-heal.ps1 -Clean
+   ```
+   Policy is bypassed only for this invocation — nothing is changed globally.
+
+2. **Persistent dev-machine setting (if you run `.ps1` scripts regularly):**
+   ```powershell
+   Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+   ```
+   Applies only to your user; does not affect other users or the system policy.
+
+3. **Git Bash / WSL alternative (no policy involved):**
+   ```bash
+   ./bin/web-heal.sh --clean
+   ```
+   Bash scripts are unaffected by PowerShell ExecutionPolicy.
+
+For the **bring-up flow** specifically, `bin\bring-up.cmd` already sidesteps this: batch files run unconditionally and launch `bring-up.ps1` with `-ExecutionPolicy Bypass` internally, so no policy change is ever needed for that path.
 
 ### A subagent claims it edited shared/ or standards/
 **Check:** `git status` / `git diff` against `context/projects/*/shared/` and `context/standards/`.
