@@ -28,7 +28,7 @@ import sys
 
 from sqlalchemy import select
 
-from src.constants import TaskPriority, TaskRole, TaskStatus
+from src.constants import RecordStatus, TaskPriority, TaskRole, TaskStatus
 from src.models.project import Project
 from src.models.task import Task
 from src.settings import get_settings
@@ -212,6 +212,12 @@ async def _seed() -> int:
             )
 
     async with SessionLocal() as session:
+        # Intentionally NO status filter here: skip on ANY row (including soft-deleted).
+        # Re-creating agent-teams under a NEW auto-increment id would break every
+        # id=1-pinned reference (LANGGRAPH_PROJECT_ID=1 in docker-compose,
+        # `_runtime/lead_project_id.txt`, operator-bound sessions). A true restore
+        # would need to un-delete the existing row to preserve id=1 — that is a
+        # separate future enhancement, not handled here.
         existing = await session.execute(
             select(Project).where(Project.name == PROJECT_NAME)
         )
@@ -232,15 +238,19 @@ async def _seed() -> int:
             )
 
     # === demo-tour seed (Kanban #1361 — pilot user 5-minute walkthrough) ===
-    # Idempotency: if demo-tour already exists, skip. If operator deletes the
-    # project row (soft-delete sets status=0), name is freed by the partial
-    # unique index and re-seed would create a new row — this is intentional
-    # (operator can prevent re-creation by leaving the deleted row or by not
-    # re-running seed).
+    # Idempotency: check ACTIVE rows only (status=RecordStatus.ACTIVE). A
+    # soft-deleted demo-tour (status=0) does NOT block re-creation — the
+    # partial unique index `ux_projects_name_active` is scoped to status=1, so
+    # the name is freed on soft-delete and a fresh ACTIVE row can be inserted.
+    # This is the design intent (demo-tour is disposable; contrast with the
+    # agent-teams block above which must preserve id=1).  (#1629 fix)
     async with SessionLocal() as session:
         demo_existing = (
             await session.execute(
-                select(Project).where(Project.name == DEMO_PROJECT_NAME)
+                select(Project).where(
+                    Project.name == DEMO_PROJECT_NAME,
+                    Project.status == RecordStatus.ACTIVE,
+                )
             )
         ).scalar_one_or_none()
         if demo_existing is None:

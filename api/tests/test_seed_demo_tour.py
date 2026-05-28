@@ -5,6 +5,8 @@ Covers:
   - idempotency: second seed run does not duplicate
   - required field shapes (title prefix, task_type, task_kind, status, AC count)
   - project.team == 'general'
+  - #1629 regression: soft-deleted demo-tour does NOT block re-seed from
+    creating a fresh ACTIVE row
 
 Test isolation: these tests run against `agent_teams_test` (via the conftest
 session fixture that drops/creates/migrates the test DB before the session
@@ -20,7 +22,7 @@ import pytest
 from sqlalchemy import func, select
 
 from scripts.seed import DEMO_PROJECT_NAME, _demo_tasks, _seed
-from src.constants import TaskStatus
+from src.constants import RecordStatus, TaskStatus
 from src.models.project import Project
 from src.models.task import Task
 
@@ -133,4 +135,67 @@ async def test_seed_demo_tour_team_is_general(db_session) -> None:
 
     assert project.team == "general", (
         f"demo-tour project must have team='general'; got {project.team!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_seed_creates_fresh_demo_tour_after_soft_delete(
+    client, db_session
+) -> None:
+    """Regression for #1629: a soft-deleted demo-tour row must NOT block re-seed.
+
+    Pre-fix behaviour: the existence check had no status filter, so a
+    soft-deleted row (status=0) matched and seed printed "already exists —
+    skipping", leaving GET /api/projects/by-name/demo-tour returning 404.
+
+    Soft-delete method: flip `status` directly on the ORM row via db_session
+    (avoids DELETE endpoint scaffold-folder side effects in the test environment
+    while still exercising the same DB state the bug required).
+
+    Steps:
+      1. Confirm demo-tour is ACTIVE and by-name returns 200; capture id.
+      2. Soft-delete via db_session (status=DELETED).
+      3. Confirm by-name returns 404.
+      4. Re-run _seed().
+      5. Assert by-name returns 200 with a DIFFERENT id (fresh ACTIVE row).
+    """
+    # 1. Confirm demo-tour is active after the conftest seed.
+    resp = await client.get("/api/projects/by-name/demo-tour")
+    assert resp.status_code == 200, (
+        f"Expected 200 for demo-tour before soft-delete; got {resp.status_code}"
+    )
+    original_id = resp.json()["id"]
+
+    # 2. Soft-delete the demo-tour row directly via db_session.
+    project = (
+        await db_session.execute(
+            select(Project).where(
+                Project.name == DEMO_PROJECT_NAME,
+                Project.status == RecordStatus.ACTIVE,
+            )
+        )
+    ).scalar_one()
+    project.status = RecordStatus.DELETED
+    project.is_active = False
+    await db_session.commit()
+
+    # 3. by-name must now 404 (soft-deleted row is invisible).
+    resp = await client.get("/api/projects/by-name/demo-tour")
+    assert resp.status_code == 404, (
+        f"Expected 404 after soft-delete; got {resp.status_code}"
+    )
+
+    # 4. Re-run seed — the ACTIVE-scoped check must not match the deleted row.
+    await _seed()
+
+    # 5. by-name must return 200 with a brand-new id (the fix created a fresh row).
+    resp = await client.get("/api/projects/by-name/demo-tour")
+    assert resp.status_code == 200, (
+        f"Expected 200 after re-seed (post-fix); got {resp.status_code}. "
+        "Pre-fix: seed skipped because soft-deleted row matched the no-status-filter check."
+    )
+    new_id = resp.json()["id"]
+    assert new_id != original_id, (
+        f"Re-seeded demo-tour must have a NEW id; both are {original_id}. "
+        "This indicates the old row was reactivated rather than a fresh row inserted."
     )
