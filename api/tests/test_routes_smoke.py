@@ -2482,6 +2482,77 @@ async def test_patch_project_agent_overrides_replace_semantics(
     assert patch.json()["agent_overrides"] == {"b": "sonnet"}
 
 
+# =============================================================================
+# Kanban #1618 — working_path gate on scaffold_project_folder
+# =============================================================================
+# Tests for the fix that gates scaffold_project_folder behind `not working_path`.
+# When working_path is SET, the API must NOT create an in-repo
+# context/projects/<name>/ dir (the host-side init script handles scaffolding
+# for those projects). When working_path is NULL, the in-repo scaffold MUST
+# still be created (the existing contract).
+
+
+@pytest.mark.asyncio
+async def test_create_project_with_working_path_does_not_create_in_repo_dir(
+    client, scaffold_cleanup
+) -> None:
+    """POST /api/projects with working_path SET → NO context/projects/<name>/ dir.
+
+    Kanban #1618: scaffold_project_folder must be gated behind `not working_path`.
+    A Windows host path is deliberately used so the container cannot stat it,
+    confirming the gate fires before any filesystem work, not just because the
+    path is unreachable.
+    """
+    from pathlib import Path
+
+    from src.settings import get_settings
+
+    name = scaffold_cleanup(_unique_name("proj-1618-wp"))
+    payload = _project_create_payload(name)
+    # A Windows-style path the Linux container can never stat — the gate must
+    # fire before scaffold_project_folder is even called.
+    payload["working_path"] = "C:/tmp/1618-nonexistent-smoke"
+
+    resp = await client.post("/api/projects", json=payload)
+    assert resp.status_code == 201, resp.text
+
+    # The in-repo dir must NOT have been created.
+    repo_root = Path(get_settings().repo_root)
+    in_repo_dir = repo_root / "context" / "projects" / name
+    assert not in_repo_dir.exists(), (
+        f"scaffold_project_folder created {in_repo_dir} for a working_path project "
+        "— the #1618 gate is not working"
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_project_without_working_path_creates_in_repo_dir(
+    client, scaffold_cleanup
+) -> None:
+    """POST /api/projects with working_path NULL → context/projects/<name>/shared/ exists.
+
+    Locks the existing contract: in-repo (working_path=null) projects continue
+    to get scaffold_project_folder called so the context/projects/<name>/shared/
+    and role subdirs land on disk (Kanban #1618 regression guard).
+    """
+    from pathlib import Path
+
+    from src.settings import get_settings
+
+    name = scaffold_cleanup(_unique_name("proj-1618-null"))
+    # No working_path → working_path=null in DB.
+    resp = await client.post("/api/projects", json=_project_create_payload(name))
+    assert resp.status_code == 201, resp.text
+
+    repo_root = Path(get_settings().repo_root)
+    shared_dir = repo_root / "context" / "projects" / name / "shared"
+    assert shared_dir.exists(), (
+        f"context/projects/{name}/shared/ was NOT created for a null working_path "
+        "project — scaffold_project_folder is being skipped when it should not be "
+        "(Kanban #1618 regression)"
+    )
+
+
 @pytest.mark.asyncio
 async def test_patch_project_omitted_fields_unchanged(
     client, scaffold_cleanup

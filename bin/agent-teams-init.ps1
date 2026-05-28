@@ -20,7 +20,8 @@
     Absolute Windows path where the harness should land. Created silently if missing.
 
 .PARAMETER Team
-    'dev' or 'novel'. Drives which roster + standards subset the manifest carries.
+    One of: dev, novel, general, content, seo, data-analytics, sem.
+    Drives which roster + standards subset the manifest carries.
 
 .PARAMETER ApiUrl
     Base URL of the agent-teams API. Default http://localhost:8456.
@@ -38,7 +39,7 @@
 param(
     [Parameter(Mandatory)][string]$Name,
     [Parameter(Mandatory)][string]$WorkingPath,
-    [Parameter(Mandatory)][ValidateSet('dev','novel')][string]$Team,
+    [Parameter(Mandatory)][ValidateSet('dev','novel','general','content','seo','data-analytics','sem')][string]$Team,
     [string]$ApiUrl = 'http://localhost:8456',
     [switch]$Force  # MVP no-op; reserved
 )
@@ -179,7 +180,67 @@ foreach ($f in $manifest.files) {
     }
 }
 
-# --- 5. Summary ---------------------------------------------------------------
+# --- 5. Create shared/ + role folders ----------------------------------------
+# Mirrors api/src/services/project_scaffold.py: creates the dev-template trio
+# under shared/ and per-team role folders under WorkingPath.
+#
+# TEAM_ROSTERS (must stay in lockstep with project_scaffold.py):
+#   dev             -> dev-frontend, dev-backend, dev-devops, dev-tester, dev-reviewer, dev-security-reviewer
+#   novel           -> novel-writer, novel-editor
+#   general         -> general
+#   content/seo/sem/data-analytics -> fallback to dev roster (mirrors scaffold.py behavior)
+$TeamRosters = @{
+    'dev'    = @('dev-frontend','dev-backend','dev-devops','dev-tester','dev-reviewer','dev-security-reviewer')
+    'novel'  = @('novel-writer','novel-editor')
+    'general'= @('general')
+}
+$roles = if ($TeamRosters.ContainsKey($Team)) { $TeamRosters[$Team] } else {
+    Write-Warning "Team '$Team' not in roster map — falling back to dev roster (mirrors scaffold.py behavior)."
+    $TeamRosters['dev']
+}
+
+# Locate the bundled templates — resolve relative to the script, NOT cwd.
+$ScriptDir2 = Split-Path -Parent $MyInvocation.MyCommand.Path
+$TemplatesDir = Join-Path $ScriptDir2 '..\api\src\templates\project_shared'
+$TemplatesDir = [IO.Path]::GetFullPath($TemplatesDir)
+$SharedTemplates = @('decisions.md', 'api-contracts.md', 'db-schema.md')
+
+# shared/
+$sharedDir = Join-Path $WorkingPath 'shared'
+if (-not (Test-Path -LiteralPath $sharedDir)) {
+    New-Item -ItemType Directory -Path $sharedDir -Force | Out-Null
+}
+foreach ($tpl in $SharedTemplates) {
+    $dest = Join-Path $sharedDir $tpl
+    if (Test-Path -LiteralPath $dest) {
+        $skipped += "shared/$tpl"
+        continue
+    }
+    $src = Join-Path $TemplatesDir $tpl
+    if (Test-Path -LiteralPath $src) {
+        Copy-Item -LiteralPath $src -Destination $dest
+        $copied += "shared/$tpl"
+    } else {
+        $errors += [pscustomobject]@{ rel_path = "shared/$tpl"; error = "Template not found at $src" }
+    }
+}
+
+# role folders + .gitkeep
+foreach ($role in $roles) {
+    $roleDir  = Join-Path $WorkingPath $role
+    $keepFile = Join-Path $roleDir '.gitkeep'
+    if (-not (Test-Path -LiteralPath $roleDir)) {
+        New-Item -ItemType Directory -Path $roleDir -Force | Out-Null
+    }
+    if (Test-Path -LiteralPath $keepFile) {
+        $skipped += "$role/.gitkeep"
+    } else {
+        [IO.File]::WriteAllBytes($keepFile, @())
+        $copied += "$role/.gitkeep"
+    }
+}
+
+# --- 6. Summary ---------------------------------------------------------------
 Write-Host ""
 Write-Host "Scaffolded $WorkingPath"
 Write-Host ("  copied : {0}" -f $copied.Count)

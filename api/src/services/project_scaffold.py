@@ -10,7 +10,7 @@ Called from POST /api/projects after the row is committed. Creates:
         <role>/.gitkeep       (per-team roster)
 
 Per-team roster:
-    dev     -> dev-frontend, dev-backend, dev-devops, dev-tester, dev-reviewer
+    dev     -> dev-frontend, dev-backend, dev-devops, dev-tester, dev-reviewer, dev-security-reviewer
     novel   -> novel-writer, novel-editor
     general -> general (single generalist agent; Kanban #844/#845)
 

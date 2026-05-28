@@ -454,9 +454,15 @@ async def create_project(
         ) from exc
     await session.refresh(project)
 
-    # Side-effect: scaffold context/projects/<name>/ — failure is non-fatal.
+    # Side-effect: scaffold context/projects/<name>/ ONLY for in-repo
+    # (working_path=null) projects. working_path projects are scaffolded
+    # host-side by bin/agent-teams-init.ps1 (#796) because the API container
+    # cannot reach host paths (#795); calling scaffold_project_folder for them
+    # just creates orphan dirs in the agent-teams repo (Kanban #1618 —
+    # papillon-pod #621 split-brain regression).
     settings = get_settings()
-    scaffold_project_folder(settings.repo_root, project.name, team=project.team)
+    if not project.working_path:
+        scaffold_project_folder(settings.repo_root, project.name, team=project.team)
 
     # Kanban #793 — second scaffold step: if the project declared a
     # working_path AND that directory already exists, copy the agent-teams
