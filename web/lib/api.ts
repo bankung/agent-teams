@@ -1433,6 +1433,21 @@ export type ActionTemplateRead = {
   suggested_attachments: string[];
 };
 
+// Team — mirror of GET /api/teams response item (Kanban #1620 Phase 2).
+// Global endpoint, no X-Project-Id header. `roster` is the ordered list of
+// agent-role slugs for that team (e.g. ["dev-frontend", "dev-backend", ...]).
+export type Team = {
+  team: string;
+  roster: string[];
+};
+
+// getTeams — GET /api/teams. No X-Project-Id (global). Returns all teams with
+// their roster arrays. Used by NewProjectModal to dynamically drive the team
+// <select> and the per-team roster help text.
+export async function getTeams(): Promise<Team[]> {
+  return jsonFetch<Team[]>(`/api/teams`);
+}
+
 // templates — namespace for the read-only template surfaces. Today only
 // `actions`; if a later slice adds question / decision templates, they slot
 // in here.

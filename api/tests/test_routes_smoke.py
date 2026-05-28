@@ -3052,17 +3052,25 @@ async def test_777_edge_get_by_id_parity_with_by_name(
 async def test_777_edge_scaffold_uses_repo_root_not_working_path(
     client, scaffold_cleanup
 ) -> None:
-    """POST with working_path set still scaffolds under settings.repo_root.
+    """POST with working_path set → NO in-repo scaffold dir, and NO file created
+    at the (fake) working_path location either.
 
-    Regression-guard: scaffold_project_folder(repo_root, name, team) signature
-    has NEVER taken working_path — it builds the on-disk role folders under
-    `<repo_root>/context/projects/<name>/` regardless of working_path. A
-    future refactor that re-routes scaffolding to working_path would silently
-    leak directories outside the repo. Lock the current behavior.
+    Updated for Kanban #1618 (surfaced during #1620): commit bf200ca gated
+    scaffold_project_folder behind `if not project.working_path` so that
+    working_path projects are not double-scaffolded (the host-side init script
+    handles that path). This test previously asserted the OLD behavior (in-repo
+    dir always created). The new behavior is correct per #1618.
 
-    Assert: `<repo_root>/context/projects/<name>/` exists after POST. We don't
-    assert the working_path target does NOT exist (it's a fake `/nonsense/...`
-    path — `os.path.exists` is trivially False, no signal).
+    Two-sided lock (mirrors anti-Pattern H — neither side vacuous):
+      NEGATIVE: in-repo canonical dir must NOT exist (the #1618 gate holds).
+      POSITIVE: also confirm that the fake working_path location was not
+                touched (scaffold does not blindly mkdir at working_path either).
+
+    The two #1618 canonical tests cover the same behaviors, but this test is
+    retained because it exercises the SAME project in one shot and pins the
+    precise fake-path form (/nonsense/... absolute path the container can't
+    stat) as a path-routing regression guard distinct from the #1618 tests'
+    Windows-style path.
     """
     from src.settings import get_settings
 
@@ -3070,27 +3078,27 @@ async def test_777_edge_scaffold_uses_repo_root_not_working_path(
     name = scaffold_cleanup(_unique_name("proj-777-edge-scaffold"))
 
     payload = _project_create_payload(name)
-    # Deliberately non-existent absolute path — proves scaffold doesn't try
-    # to use it as the on-disk root (would error or no-op silently).
+    # Deliberately non-existent absolute path — confirms scaffold does NOT
+    # try to mkdir at working_path (it only calls the zero_config_scaffold
+    # stat-check path, which skips on non-existent dirs).
     payload["working_path"] = "/nonsense/scaffold-target/that/does/not/exist"
     resp = await client.post("/api/projects", json=payload)
     assert resp.status_code == 201, resp.text
     assert resp.json()["working_path"] == "/nonsense/scaffold-target/that/does/not/exist"
 
-    # The canonical scaffold location must exist regardless.
+    # NEGATIVE: in-repo dir must NOT exist (Kanban #1618 gate: working_path set
+    # → scaffold_project_folder is skipped entirely).
     canonical = repo_root / "context" / "projects" / name
-    assert canonical.exists(), (
-        f"scaffold target {canonical!s} does not exist after POST — "
-        f"scaffolder may have been mis-routed via working_path"
+    assert not canonical.exists(), (
+        f"in-repo scaffold dir {canonical!s} was created despite working_path "
+        f"being set — the #1618 gate (`if not project.working_path`) is broken"
     )
-    assert canonical.is_dir(), f"{canonical!s} exists but is not a directory"
 
-    # Sanity: at least one expected role folder under the canonical scaffold
-    # (dev team → role folders like dev-lead / dev-frontend / etc.).
-    role_subdirs = [p.name for p in canonical.iterdir() if p.is_dir()]
-    assert role_subdirs, (
-        f"scaffold {canonical!s} is empty — no role folders created. "
-        f"Expected dev-team roster sub-folders."
+    # sanity guard (scaffold did not mkdir at working_path): the nonsense
+    # working_path location was also not created.
+    import os
+    assert not os.path.exists("/nonsense/scaffold-target/that/does/not/exist"), (
+        "scaffold created a dir at the fake working_path — unexpected side-effect"
     )
 
 
@@ -4431,3 +4439,127 @@ async def test_project_name_65_chars_error_mentions_length(client) -> None:
     assert any(kw in msgs for kw in ("characters", "length", "max_length", "too long")), (
         f"422 error message does not mention a length constraint: {msgs!r}"
     )
+
+
+# -----------------------------------------------------------------------------
+# Kanban #1620 — single-source team registry: GET /api/teams + unknown-team 422
+# (P4 owns the comprehensive add-team end-to-end + 7-team regression suite;
+# these are the P1 first-pass contract-smoke tests proving the gate is wired.)
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_teams_lists_all_registry_teams_with_rosters(client) -> None:
+    """GET /api/teams (global, no X-Project-Id) returns one entry per
+    ProjectTeam.ALL, each with its TEAM_ROSTERS roster.
+
+    Positive contract: status 200, exact team set matches the constants
+    registry, every roster is a non-empty list of strings, and a spot-checked
+    roster matches the constant (so a future roster edit that drops a role is
+    caught here, not just in the unit-level constant).
+    """
+    from src.constants import TEAM_ROSTERS, ProjectTeam
+
+    resp = await client.get("/api/teams")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert isinstance(body, list)
+
+    # Exact team set matches the single source of truth (currently 7 teams).
+    teams_returned = [entry["team"] for entry in body]
+    assert set(teams_returned) == set(ProjectTeam.ALL), (
+        f"GET /api/teams team set {sorted(teams_returned)} drifted from "
+        f"ProjectTeam.ALL {sorted(ProjectTeam.ALL)}"
+    )
+    assert len(body) == len(ProjectTeam.ALL)
+
+    # Every roster is a non-empty list of role strings AND matches TEAM_ROSTERS.
+    by_team = {entry["team"]: entry["roster"] for entry in body}
+    for team, roster in TEAM_ROSTERS.items():
+        returned = by_team[team]
+        assert isinstance(returned, list) and returned, (
+            f"team {team!r} returned an empty/invalid roster: {returned!r}"
+        )
+        assert returned == list(roster), (
+            f"team {team!r} roster drifted: API {returned!r} vs "
+            f"TEAM_ROSTERS {list(roster)!r}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_post_project_unknown_team_returns_422_not_409(client) -> None:
+    """POST /api/projects with an unknown team → 422 with the registry detail,
+    NOT the old wrong-409 name-conflict message.
+
+    Pairs the POSITIVE assertion (a VALID team still creates 201) with the
+    NEGATIVE assertion this fix locks (unknown team is 422, never 409). Before
+    #1620 an unknown team fell through to the IntegrityError handler and
+    returned `409 Project name '<name>' already exists`. The status assertion
+    `== 422` (explicitly `!= 409`) is the regression lock.
+    """
+    # NEGATIVE: unknown team rejected at 422 (not 409).
+    bad = _project_create_payload(_unique_name("proj-1620-badteam"), team="notateam")
+    resp = await client.post("/api/projects", json=bad)
+    assert resp.status_code == 422, (
+        f"unknown team expected 422, got {resp.status_code}: {resp.text}"
+    )
+    assert resp.status_code != 409, "unknown team must NOT return the wrong 409"
+    # The 422 body must NOT be the old name-conflict message.
+    assert "already exists" not in resp.text, (
+        f"unknown-team 422 leaked the wrong-409 name-conflict wording: {resp.text}"
+    )
+
+    # POSITIVE: a valid team on the same minimal payload still creates 201,
+    # proving the gate rejects only unknown teams (not every POST).
+    name = _unique_name("proj-1620-goodteam")
+    ok = await client.post("/api/projects", json=_project_create_payload(name, team="dev"))
+    assert ok.status_code == 201, ok.text
+    await client.delete(f"/api/projects/{ok.json()['id']}")
+
+
+@pytest.mark.asyncio
+async def test_patch_project_unknown_team_returns_422_not_409(client) -> None:
+    """PATCH /api/projects/{id} with an unknown team → 422, NOT the old wrong-409.
+
+    Mirrors test_post_project_unknown_team_returns_422_not_409 for the PATCH path.
+    Locks M1 of Kanban #1620: the team-validation gate must fire on PATCH too,
+    returning 422 rather than falling through to an IntegrityError 409.
+    """
+    # Create a valid project to PATCH against.
+    name = _unique_name("proj-1620-patch-badteam")
+    create_resp = await client.post(
+        "/api/projects", json=_project_create_payload(name, team="dev")
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    project_id = create_resp.json()["id"]
+
+    try:
+        # NEGATIVE: unknown team rejected at 422 (not 409).
+        resp = await client.patch(
+            f"/api/projects/{project_id}", json={"team": "notateam"}
+        )
+        assert resp.status_code == 422, (
+            f"PATCH with unknown team expected 422, got {resp.status_code}: {resp.text}"
+        )
+        assert resp.status_code != 409, "unknown team must NOT return the wrong 409"
+        assert "already exists" not in resp.text, (
+            f"unknown-team PATCH 422 leaked wrong-409 wording: {resp.text}"
+        )
+
+        # POSITIVE: PATCH with a valid team succeeds (gate rejects only unknowns).
+        ok = await client.patch(f"/api/projects/{project_id}", json={"team": "dev"})
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["team"] == "dev"
+
+        # M1 lock: PATCH {"team": null} → 422 with "cannot be set to null".
+        null_resp = await client.patch(
+            f"/api/projects/{project_id}", json={"team": None}
+        )
+        assert null_resp.status_code == 422, (
+            f"PATCH team=null expected 422, got {null_resp.status_code}: {null_resp.text}"
+        )
+        assert "cannot be set to null" in null_resp.text, (
+            f"expected 'cannot be set to null' in body, got: {null_resp.text}"
+        )
+    finally:
+        await client.delete(f"/api/projects/{project_id}")

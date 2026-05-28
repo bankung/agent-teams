@@ -23,7 +23,13 @@ from src.constants import ProjectTeam, TaskRole
 from src.models.projects_audit import PROJECT_AUDIT_ACTIONS
 from src.schemas.notification import NotificationTarget
 
-TeamCode = Literal["dev", "novel", "general", "content", "seo", "data-analytics", "sem"]
+# Kanban #1620 (2026-05-28): TeamCode is auto-derived from ProjectTeam.ALL — the
+# single source of truth — instead of hand-maintained. Adding a team needs only a
+# constants.py edit; this Literal (and every FastAPI request/response schema that
+# uses it) tracks automatically. `Literal[*ProjectTeam.ALL]` unpacks the tuple of
+# str values into the Literal at module import; Pydantic v2 enforces it at the
+# request boundary exactly as a hand-written Literal would.
+TeamCode = Literal[*ProjectTeam.ALL]  # type: ignore[valid-type]  # mypy doesn't model Literal[*tuple]; runtime + pyright are correct
 
 # Kanban #777: per-project agent-model overrides. Values are constrained to the
 # three Claude tiers we route across via AgentModelLiteral (Pydantic enforces at
@@ -944,13 +950,10 @@ class ProjectsAuditEntry(BaseModel):
     created_at: datetime
 
 
-# Sanity: the Literal stays in lockstep with src.constants.ProjectTeam.ALL.
-# Use a real exception (not `assert`) so the guard survives `python -O`.
-if set(TeamCode.__args__) != set(ProjectTeam.ALL):  # type: ignore[attr-defined]
-    raise RuntimeError(
-        f"TeamCode Literal {TeamCode.__args__!r} drifted from "  # type: ignore[attr-defined]
-        f"ProjectTeam.ALL {ProjectTeam.ALL!r}"
-    )
+# Kanban #1620 (2026-05-28): the former TeamCode-vs-ProjectTeam.ALL drift guard
+# was removed — TeamCode is now `Literal[*ProjectTeam.ALL]` (auto-derived above),
+# so the equality check is tautological (`set(ProjectTeam.ALL) == set(ProjectTeam.ALL)`
+# can never fail). There is no longer a second hand-maintained list to drift from.
 
 # Sanity (Kanban #1209 + #1211): ProjectAuditAction Literal stays in lockstep
 # with models.projects_audit.PROJECT_AUDIT_ACTIONS (which mirrors the DB CHECK

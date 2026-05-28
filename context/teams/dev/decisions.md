@@ -21,6 +21,16 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-28 — Add-team / add-agent edit floor + TaskRole coupling — Kanban #1620
+**Scope:** team-playbook / agent-roster / methodology
+**Proposed by:** lead (agent-teams #1620 team-SSOT refactor, after 5 design-review rounds)
+**Decision:** Canonical cost of extending the roster after the #1620 single-source refactor (team enum is now app-validated against `api/src/constants.py` `ProjectTeam.ALL` + `TEAM_ROSTERS`; no CHECK constraint, no per-team migration):
+- **Add a team:** edit `constants.py` (ProjectTeam value + TEAM_ROSTERS tuple) + author `.claude/teams/<team>.md` playbook + author `.claude/agents/<role>.md` for any NEW roles. NO migration; ORM/FE/ps1 all derive from constants + `GET /api/teams`.
+- **Add an agent to an existing team:** drop `.claude/agents/<role>.md` + add the role name to that team's TEAM_ROSTERS tuple → spawnable + scaffolded. For FIRST-CLASS Kanban-assignability (`tasks.assigned_role` routing, Lead spawn→code mapping, `config.enabled_roles` gating) ALSO add a named `TaskRole` code in the team's 10-code band.
+- **Ceiling:** `TaskRole.RANGE_MAX = 50` + the 10-code-per-team partition (dev 1-10, novel 11-20, seo 21-30, sem 31-40, data-analytics 41-50). A 6th non-dev team or an over-full roster needs a RANGE_MAX bump + partition rethink. content/general have no TaskRole band today.
+**Reasoning:** #1620 made the common case (1-2 edits + drop .md) true, but TaskRole integer codes remain a real coupling for Kanban-first-class agents (surfaced in design-review rounds 3-4). Documenting the floor prevents a future "added the .md but the agent isn't assignable / pushed past RANGE_MAX" surprise.
+**Implications:** Optional hardening — a startup sanity check that every TEAM_ROSTERS role maps to a named TaskRole code would turn silent drift into a loud warning. The dedicated-vs-borrowed roster distinction (TEAM_ROSTERS = dedicated agents that own a role-state folder; cross-team-reuse agents stay ad-hoc) is the rule that keeps the convention-derived scaffold manifest correct.
+
 ## 2026-05-14 — Claude Code Desktop worktree-per-session is hardcoded; cross-session shared/* invisibility is the friction
 **Scope:** team-playbook / multi-session-safety / lifecycle
 **Proposed by:** lead (NewsAnalyzer session 2026-05-14, verified via `claude-code-guide` agent vs docs.claude.com)

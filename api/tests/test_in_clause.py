@@ -11,7 +11,6 @@ from __future__ import annotations
 import pytest
 
 from src.constants import (
-    ProjectTeam,
     TaskPriority,
     TaskRole,
     TaskStatus,
@@ -53,13 +52,12 @@ def test_in_clause_uses_comma_space_separator() -> None:
     assert in_clause("foo", (1, 2)) == "foo IN (1, 2)"
 
 
-def test_in_clause_text_canonical_team_values() -> None:
-    # Kanban #1266/#1269/#1271 (2026-05-20): ProjectTeam.ALL expanded to include
-    # 'content', 'seo', 'data-analytics', 'sem' alongside original dev/novel/general.
-    assert (
-        in_clause_text("team", ProjectTeam.ALL)
-        == "team IN ('dev', 'novel', 'general', 'content', 'seo', 'data-analytics', 'sem')"
-    )
+# Kanban #1620 (2026-05-28): test_in_clause_text_canonical_team_values was
+# REMOVED — it source-locked the `ck_projects_team_valid` CHECK string, which was
+# dropped (migration 0051). `in_clause_text` is still exercised below (the helper
+# remains in use for the `status` CHECK). The team enum's single source of truth
+# is now `ProjectTeam.ALL`; its coverage is asserted by the GET /api/teams +
+# unknown-team-422 contract tests in test_routes_smoke.py.
 
 
 def test_in_clause_text_rejects_apostrophe() -> None:

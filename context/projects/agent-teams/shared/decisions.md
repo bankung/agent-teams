@@ -16,6 +16,20 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-28 — projects.team CHECK dropped; team enum is app-validated single-source — Kanban #1620
+**Scope:** backend / schema / shared
+
+**Decision:** Dropped `ck_projects_team_valid` CHECK (migration 0051). `projects.team` is now a plain NOT NULL DEFAULT 'dev' string validated at the API boundary: Pydantic `TeamCode` Literal auto-derived from `ProjectTeam.ALL` + an explicit 422 gate in BOTH `create_project` and `update_project`. Single source of truth = `api/src/constants.py` `ProjectTeam.ALL` + `TEAM_ROSTERS`. New `GET /api/teams` (global, no X-Project-Id) serves the registry; `GET /api/scaffold/{team}/files` gains `role_folders`; `zero_config_scaffold._resolve_manifest` is convention-derived from the roster (`.claude/agents/{role}.md` + `.claude/teams/{team}.md` when present + `context/teams/{team}/**`). FE `NewProjectModal` and `bin/agent-teams-init.ps1` consume the API instead of hardcoded team/roster copies.
+
+**Reasoning:** Adding a team previously required ~11 coordinated edits including a per-team migration — the CHECK constraint was the thing forcing the migration. Rejected a `teams` DB table as over-engineered (no UI/runtime team-management need; settled over 5 design-review rounds). Dropping the CHECK + app-layer validation is a strictly stronger gate (clean 422 vs the prior mistranslated 409 from the IntegrityError handler) on a single-owner DB where raw DML is human-only. Bonus: fixes the wrong-409-on-unknown-team bug in create + update.
+
+**Implications:**
+- Add a team = edit `constants.py` (ProjectTeam value + TEAM_ROSTERS entry) + drop `.claude/teams/<t>.md` + agent `.md`s for new roles. NO migration, no ORM/FE/ps1 edits.
+- Unknown team → 422 everywhere (was: silent dev-fallback at scaffold; wrong-409 at create/update).
+- `content` roster is INFERRED (no `content.md` playbook exists yet) — followup to author it.
+- Migration 0051 `downgrade()` is a documented no-op (re-adding the CHECK could fail on rows carrying migration-free teams).
+- Add-team / add-agent methodology + the TaskRole-code coupling floor: see `context/teams/dev/decisions.md` (same date).
+
 ## 2026-05-22 — Env-var wiring trap documented (root .env + compose mapping) — Kanban #1449
 **Scope:** shared / infra docs
 

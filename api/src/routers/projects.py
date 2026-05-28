@@ -30,7 +30,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
 from sqlalchemy.sql.elements import ClauseElement
 
-from src.constants import RecordStatus, TaskRunMode, TaskStatus  # TaskStatus.CANCELLED used by stats
+from src.constants import (  # TaskStatus.CANCELLED used by stats
+    ProjectTeam,
+    RecordStatus,
+    TaskRunMode,
+    TaskStatus,
+)
 from src.db import get_or_404, get_session
 from src.middleware.rate_limit import _projects_post_limit, limiter
 from src.models.project import Project
@@ -389,6 +394,18 @@ async def create_project(
     payload: ProjectCreate,
     session: AsyncSession = Depends(get_session),
 ) -> Project:
+    # Kanban #1620 — validate team against the constants.py registry (the
+    # single source of truth now that the DB CHECK is dropped). The TeamCode
+    # Literal already 422s at the Pydantic boundary, but this explicit gate
+    # gives a precise message and is the load-bearing validation if TeamCode is
+    # ever loosened. Before #1620 an unknown team fell through to the
+    # IntegrityError handler and returned a WRONG 409 name-conflict message.
+    if payload.team not in ProjectTeam.ALL:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown team {payload.team!r}; valid: {sorted(ProjectTeam.ALL)}",
+        )
+
     config = dict(payload.config or {})
     if payload.standards is not None:
         config["standards"] = payload.standards.model_dump()
@@ -533,6 +550,17 @@ async def update_project(
     )
 
     updates = payload.model_dump(exclude_unset=True)
+
+    # Kanban #1620 — validate team on PATCH too (only when the key is present).
+    # Same registry gate + precise 422 as create_project; fixes the wrong-409
+    # IntegrityError mistranslation that the old path produced for unknown teams.
+    if "team" in updates and updates["team"] is None:
+        raise HTTPException(status_code=422, detail="team cannot be set to null")
+    if "team" in updates and updates["team"] not in ProjectTeam.ALL:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown team {updates['team']!r}; valid: {sorted(ProjectTeam.ALL)}",
+        )
 
     # Kanban #777 WARN-1: PATCH explicit-null on agent_overrides means "clear to
     # empty dict", NOT "write SQL NULL". The server_default '{}'::jsonb fires only

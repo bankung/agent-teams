@@ -18,9 +18,15 @@ Three rules, in priority order:
    is recorded in `errors` and the scan continues. Caller decides what to do
    with partial scaffolds; this service does not raise mid-walk.
 
-The file set is hard-coded by team (`dev` / `novel` / `general`). Universal
-files land on every team; team-specific files only on that team. Adding a
-file = edit the constants below.
+The team-specific file set is convention-derived from `constants.TEAM_ROSTERS`
+(Kanban #1620, 2026-05-28): for team T the manifest is
+`.claude/agents/<role>.md` for every role in `TEAM_ROSTERS[T]`, plus
+`.claude/teams/<T>.md` if that playbook exists, plus the `context/teams/<T>/**`
+glob, on top of the universal files/globs that land on every team. Adding a team
+needs NO edit here — drop the agent .md + roster line in constants.py. A missing
+playbook (e.g. `.claude/teams/content.md` does not exist today) is SKIPPED, not
+an error. Universal files land on every team; adding a universal file = edit the
+constants below.
 
 Path-traversal guard rejects `target_path` that resolves to or under
 `agent_teams_root` so a misconfigured `working_path = "."` can never overwrite
@@ -37,6 +43,8 @@ import logging
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from src.constants import TEAM_ROSTERS
 
 logger = logging.getLogger(__name__)
 
@@ -133,43 +141,6 @@ _UNIVERSAL_FILES: tuple[str, ...] = (
 
 _UNIVERSAL_GLOBS: tuple[str, ...] = ("context/standards/**",)
 
-_DEV_FILES: tuple[str, ...] = (
-    ".claude/agents/dev-backend.md",
-    ".claude/agents/dev-frontend.md",
-    ".claude/agents/dev-devops.md",
-    ".claude/agents/dev-reviewer.md",
-    ".claude/agents/dev-tester.md",
-    ".claude/agents/dev-security-reviewer.md",
-    ".claude/teams/dev.md",
-)
-
-_DEV_GLOBS: tuple[str, ...] = ("context/teams/dev/**",)
-
-_NOVEL_FILES: tuple[str, ...] = (
-    ".claude/agents/novel-writer.md",
-    ".claude/agents/novel-editor.md",
-    ".claude/teams/novel.md",
-)
-
-# Novel team source dir may not exist yet — globs that resolve to a missing
-# directory are silently skipped (see _expand_glob).
-_NOVEL_GLOBS: tuple[str, ...] = ("context/teams/novel/**",)
-
-# Kanban #844 (2026-05-13): generalist team — single agent + single playbook.
-# Both files are drafted by follow-up Kanban #845 (.claude/teams/general.md)
-# and #846 (.claude/agents/general.md); scaffolding a `team='general'`
-# project before those land will record both paths in `report.errors`
-# ("source not found: …"), which is the existing graceful-fallback behavior
-# in _copy_one. The DB row commit is unaffected (best-effort scaffold per
-# the service's contract).
-_GENERAL_FILES: tuple[str, ...] = (
-    ".claude/agents/general.md",
-    ".claude/teams/general.md",
-)
-
-# General team source dir may not exist yet — same _expand_glob skip path.
-_GENERAL_GLOBS: tuple[str, ...] = ("context/teams/general/**",)
-
 
 @dataclass
 class ScaffoldReport:
@@ -187,32 +158,47 @@ class ScaffoldReport:
     errors: list[tuple[str, str]] = field(default_factory=list)
 
 
-def _resolve_manifest(team: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Pick (files, globs) for the given team. Universal entries are always
-    included; team-specific entries are appended.
+def _resolve_manifest(
+    team: str, agent_teams_root: Path
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Convention-derive (files, globs) for the given team (Kanban #1620).
 
-    Unknown team → log + fall back to dev-only (defensive; the DB CHECK on
-    projects.team already restricts to {'dev','novel','general'} so this
-    should never fire in production).
+    Team-specific files = `.claude/agents/<role>.md` for every role in
+    `TEAM_ROSTERS[team]`, plus `.claude/teams/<team>.md` IF that playbook exists
+    under `agent_teams_root` (missing playbook → skipped, not an error — e.g.
+    `.claude/teams/content.md` does not exist today). Team-specific glob =
+    `context/teams/<team>/**` (missing dir → empty via `_expand_glob`). Universal
+    files/globs are always prepended.
+
+    Unknown team (not in TEAM_ROSTERS) → raise KeyError. The router 422 gate +
+    the constants.py import-time invariant prevent this reaching here; raising
+    loud beats silently scaffolding the wrong team's harness (the pre-#1620
+    behavior was a dev fallback).
     """
+    if team not in TEAM_ROSTERS:
+        raise KeyError(
+            f"zero_config_scaffold: unknown team {team!r} not in TEAM_ROSTERS "
+            f"(valid: {sorted(TEAM_ROSTERS)})"
+        )
+
     files = list(_UNIVERSAL_FILES)
     globs = list(_UNIVERSAL_GLOBS)
-    if team == "dev":
-        files += _DEV_FILES
-        globs += _DEV_GLOBS
-    elif team == "novel":
-        files += _NOVEL_FILES
-        globs += _NOVEL_GLOBS
-    elif team == "general":
-        files += _GENERAL_FILES
-        globs += _GENERAL_GLOBS
+
+    files += [f".claude/agents/{role}.md" for role in TEAM_ROSTERS[team]]
+
+    playbook_rel = f".claude/teams/{team}.md"
+    if (agent_teams_root / playbook_rel).is_file():
+        files.append(playbook_rel)
     else:
-        logger.warning(
-            "zero_config_scaffold: unknown team %r — falling back to dev manifest",
+        logger.info(
+            "zero_config_scaffold: no playbook %s — skipping (team %r scaffolds "
+            "agents + standards only)",
+            playbook_rel,
             team,
         )
-        files += _DEV_FILES
-        globs += _DEV_GLOBS
+
+    globs.append(f"context/teams/{team}/**")
+
     return tuple(files), tuple(globs)
 
 
@@ -297,7 +283,7 @@ def scaffold_orchestration(
 
     target_abs.mkdir(parents=True, exist_ok=True)
 
-    files, globs = _resolve_manifest(team)
+    files, globs = _resolve_manifest(team, root_abs)
 
     # Bare files first (deterministic-ish ordering for predictable reports).
     for rel in files:

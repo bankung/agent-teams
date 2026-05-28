@@ -23,7 +23,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from src.constants import ProjectTeam, RecordStatus, in_clause, in_clause_text
+from src.constants import ProjectTeam, RecordStatus, in_clause
 from src.models.base import Base
 
 if TYPE_CHECKING:
@@ -340,11 +340,13 @@ class Project(Base):
             in_clause("status", RecordStatus.ALL),
             name="ck_projects_status_valid",
         ),
-        # ProjectTeam.ALL is read at class-definition time — don't mutate it post-import.
-        CheckConstraint(
-            in_clause_text("team", ProjectTeam.ALL),
-            name="ck_projects_team_valid",
-        ),
+        # Kanban #1620 (2026-05-28): the `ck_projects_team_valid` CHECK was
+        # DROPPED (migration 0051_drop_projects_team_check). `team` stays NOT NULL
+        # DEFAULT 'dev', but valid-value enforcement now lives at the API boundary
+        # (routers/projects.py validates `team in ProjectTeam.ALL` -> 422, and the
+        # auto-derived TeamCode Literal 422s at the Pydantic boundary). Adding a
+        # team no longer needs a migration. ProjectTeam is still imported above for
+        # the column's server_default/default ('dev').
         # Partial unique on name — only one ACTIVE row per name; soft-deleted rows
         # don't occupy the unique slot, so the name can be reused.
         Index(

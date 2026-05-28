@@ -32,9 +32,10 @@ import base64
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from src.constants import TEAM_ROSTERS
 from src.services.zero_config_scaffold import (
     _expand_glob,
     _resolve_manifest,
@@ -57,6 +58,11 @@ class ScaffoldManifestResponse(BaseModel):
     project_name: str
     project_id: int
     files: list[ScaffoldFile]
+    # Kanban #1620 — per-team dedicated role-folder roster (from TEAM_ROSTERS).
+    # The host-side bin/agent-teams-init.ps1 (P3) creates
+    # `context/projects/<name>/<role>/` folders from this list instead of
+    # carrying its own $TeamRosters hashtable.
+    role_folders: list[str]
 
 
 _SETTINGS_REL = ".claude/settings.json"
@@ -111,14 +117,20 @@ def get_scaffold_manifest(
     ),
 ) -> ScaffoldManifestResponse:
     """Return the agent-teams orchestration harness manifest as base64-encoded
-    file bytes for the given team.
+    file bytes for the given team, plus the team's dedicated role-folder roster.
 
-    Unknown team falls back to the dev manifest (same fallback as the on-disk
-    scaffolder — defensive; the DB CHECK on `projects.team` already restricts
-    the value in the project create path).
+    Unknown team → 422 (Kanban #1620). The manifest is convention-derived from
+    `TEAM_ROSTERS`; a team with no roster entry has no harness to serve, so we
+    reject loud rather than fall back to a wrong-team manifest (the pre-#1620
+    behavior was a silent dev fallback).
     """
+    if team not in TEAM_ROSTERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown team {team!r}; valid: {sorted(TEAM_ROSTERS)}",
+        )
     repo_root = Path(get_settings().repo_root)
-    files, globs = _resolve_manifest(team)
+    files, globs = _resolve_manifest(team, repo_root)
 
     out: list[ScaffoldFile] = []
 
@@ -142,4 +154,5 @@ def get_scaffold_manifest(
         project_name=project_name,
         project_id=project_id,
         files=out,
+        role_folders=list(TEAM_ROSTERS[team]),
     )

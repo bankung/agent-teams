@@ -9,10 +9,8 @@ Called from POST /api/projects after the row is committed. Creates:
             db-schema.md       (copied from templates)
         <role>/.gitkeep       (per-team roster)
 
-Per-team roster:
-    dev     -> dev-frontend, dev-backend, dev-devops, dev-tester, dev-reviewer, dev-security-reviewer
-    novel   -> novel-writer, novel-editor
-    general -> general (single generalist agent; Kanban #844/#845)
+Per-team roster: `src/constants.TEAM_ROSTERS` is the SINGLE source (Kanban #1620,
+2026-05-28). It covers all 7 teams; this service no longer keeps its own copy.
 
 Per-team shared templates are NOT yet implemented — every project gets the dev
 template trio regardless of team. Follow-up: ship novel-specific shared templates
@@ -29,33 +27,9 @@ import logging
 import shutil
 from pathlib import Path
 
-from src.constants import ProjectTeam
+from src.constants import TEAM_ROSTERS, ProjectTeam
 
 logger = logging.getLogger(__name__)
-
-# Roster per team — must stay in lockstep with .claude/teams/<team>.md and the
-# ProjectTeam.ALL tuple in src/constants.py.
-TEAM_ROSTERS: dict[str, tuple[str, ...]] = {
-    ProjectTeam.DEV: (
-        "dev-frontend",
-        "dev-backend",
-        "dev-devops",
-        "dev-tester",
-        "dev-reviewer",
-        "dev-security-reviewer",
-    ),
-    ProjectTeam.NOVEL: (
-        "novel-writer",
-        "novel-editor",
-    ),
-    # Kanban #844 (2026-05-13): single-agent generalist team. The playbook
-    # file `.claude/teams/general.md` is drafted by #845 (blocked on #844);
-    # the role folder is created with .gitkeep so a project scaffolded with
-    # team='general' gets a parking slot for that agent's role-state.
-    ProjectTeam.GENERAL: (
-        "general",
-    ),
-}
 
 _SHARED_TEMPLATES = ("decisions.md", "api-contracts.md", "db-schema.md")
 
@@ -67,15 +41,26 @@ def _templates_dir() -> Path:
 
 
 def _resolve_role_folders(team: str) -> tuple[str, ...]:
-    """Pick the role-folder roster for a given team. Falls back to dev roster
-    if the team is not in TEAM_ROSTERS — should never happen because the DB
-    CHECK rejects unknown teams, but defensive in case the map drifts.
+    """Pick the role-folder roster for a given team (Kanban #1620).
+
+    Unknown team → log loud + return () (NO dev fallback). The router 422 gate
+    in create_project/update_project rejects unknown teams before they reach
+    scaffold, and the constants.py import-time invariant guarantees every
+    ProjectTeam.ALL value has a roster — so this branch should never fire. If it
+    does, scaffolding the WRONG team's role folders (the old dev fallback) is
+    worse than scaffolding none. `scaffold_project_folder` is best-effort and
+    must never raise (the DB row commit must not roll back), so we return empty
+    rather than raise.
     """
-    if team not in TEAM_ROSTERS:
-        logger.warning(
-            "scaffold: unknown team %r — falling back to dev roster", team
+    roster = TEAM_ROSTERS.get(team)
+    if roster is None:
+        logger.error(
+            "scaffold: unknown team %r not in TEAM_ROSTERS — creating NO role "
+            "folders (router 422 + constants invariant should prevent this)",
+            team,
         )
-    return TEAM_ROSTERS.get(team, TEAM_ROSTERS[ProjectTeam.DEV])
+        return ()
+    return roster
 
 
 def scaffold_project_folder(

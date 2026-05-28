@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { createProject, HttpError } from "@/lib/api";
+import { createProject, getTeams, HttpError, type Team } from "@/lib/api";
 import { ProjectTeam, type ProjectTeamValue } from "@/lib/constants";
 
 // Inline info-icon popover (click-toggle). No external library — uses
@@ -57,7 +57,9 @@ function InfoPopover({ children }: { children: React.ReactNode }) {
 
 const NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
-const TEAM_OPTIONS: ProjectTeamValue[] = Object.values(ProjectTeam);
+// Compile-time fallback list — used while /api/teams is in flight or on fetch
+// failure. Keeps the select populated even without a network round-trip.
+const TEAM_OPTIONS_FALLBACK: ProjectTeamValue[] = Object.values(ProjectTeam);
 
 export function NewProjectModal() {
   const router = useRouter();
@@ -69,6 +71,27 @@ export function NewProjectModal() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Fetched teams from /api/teams. null = not yet loaded; [] = fetch failed.
+  const [teams, setTeams] = useState<Team[] | null>(null);
+
+  useEffect(() => {
+    getTeams()
+      .then(setTeams)
+      .catch(() => setTeams([]));
+  }, []);
+
+  // The select options: runtime API list if available, compile-time fallback otherwise.
+  const teamOptions: string[] =
+    teams && teams.length > 0
+      ? teams.map((t) => t.team)
+      : TEAM_OPTIONS_FALLBACK;
+
+  // Roster for the currently-selected team (from fetched data only).
+  const selectedTeamRoster: string[] | null =
+    teams && teams.length > 0
+      ? (teams.find((t) => t.team === team)?.roster ?? null)
+      : null;
 
   useEffect(() => {
     if (!open) return;
@@ -260,36 +283,15 @@ export function NewProjectModal() {
                 Team <span className="text-red-600 dark:text-red-400 ml-0.5">*</span>
                 <InfoPopover>
                   <p className="font-semibold text-zinc-800 dark:text-zinc-200 mb-1.5">Team — agent roster</p>
-                  <dl className="space-y-1.5">
-                    <div>
-                      <dt className="font-medium text-zinc-800 dark:text-zinc-200">dev</dt>
-                      <dd className="text-zinc-500 dark:text-zinc-400">dev-sr-frontend · dev-sr-backend · dev-frontend · dev-backend · dev-devops · dev-tester · dev-reviewer · dev-documentor</dd>
-                    </div>
-                    <div>
-                      <dt className="font-medium text-zinc-800 dark:text-zinc-200">content</dt>
-                      <dd className="text-zinc-500 dark:text-zinc-400">content-writer · content-editor · content-seo-optimizer · content-veracity-checker · content-hook-doctor · thai-proofreader</dd>
-                    </div>
-                    <div>
-                      <dt className="font-medium text-zinc-800 dark:text-zinc-200">novel</dt>
-                      <dd className="text-zinc-500 dark:text-zinc-400">novel-writer · novel-editor · thai-proofreader</dd>
-                    </div>
-                    <div>
-                      <dt className="font-medium text-zinc-800 dark:text-zinc-200">seo</dt>
-                      <dd className="text-zinc-500 dark:text-zinc-400">seo-strategist · technical-seo-specialist · content-seo-optimizer · seo-reporting-analyst</dd>
-                    </div>
-                    <div>
-                      <dt className="font-medium text-zinc-800 dark:text-zinc-200">data-analytics</dt>
-                      <dd className="text-zinc-500 dark:text-zinc-400">bi-analyst · sql-optimizer · dashboard-designer · analytics-platform-integrator</dd>
-                    </div>
-                    <div>
-                      <dt className="font-medium text-zinc-800 dark:text-zinc-200">sem</dt>
-                      <dd className="text-zinc-500 dark:text-zinc-400">sem-campaign-lead · google-ads-specialist · meta-ads-specialist · platform-ads-coordinator</dd>
-                    </div>
-                    <div>
-                      <dt className="font-medium text-zinc-800 dark:text-zinc-200">general</dt>
-                      <dd className="text-zinc-500 dark:text-zinc-400">Multi-domain fallback — Lead picks specialists from any team case-by-case</dd>
-                    </div>
-                  </dl>
+                  {selectedTeamRoster ? (
+                    <p className="text-zinc-500 dark:text-zinc-400">
+                      <span className="font-medium text-zinc-800 dark:text-zinc-200">{team}</span>
+                      {" — "}
+                      {selectedTeamRoster.join(" · ")}
+                    </p>
+                  ) : (
+                    <p className="text-zinc-400 dark:text-zinc-500 italic">Select a team to see its roster.</p>
+                  )}
                 </InfoPopover>
               </span>
               <select
@@ -302,7 +304,7 @@ export function NewProjectModal() {
                 className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
                 data-new-project-team
               >
-                {TEAM_OPTIONS.map((t) => (
+                {teamOptions.map((t) => (
                   <option key={t} value={t}>
                     {t}
                   </option>

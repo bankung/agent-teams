@@ -61,14 +61,18 @@ class RecordStatus:
 
 class ProjectTeam:
     """projects.team — dev / novel / general / content / seo / data-analytics / sem.
-    Mirror of migrations 0038 (content) + 0042 (seo, #1266) + 0043 (data-analytics, #1271)
-    + 0044 (sem, #1269). Intentionally duplicated from the migrations — kept in lockstep
-    with schemas/project.py::TeamCode via the runtime drift-check at end of project.py.
 
-    Extending: add the new value here, in TeamCode Literal in schemas/project.py, in
-    web/lib/constants.ts, AND in a new alembic migration that adds the value to the
-    ck_projects_team_valid CHECK. All four must land in the same commit per the
-    feedback_migration_orm_timing memory.
+    SINGLE SOURCE OF TRUTH for the team enum (Kanban #1620, 2026-05-28). The
+    DB-side CHECK `ck_projects_team_valid` was DROPPED by migration
+    `0051_drop_projects_team_check` — adding a new team no longer requires a
+    migration. Validation now happens at the API boundary: `routers/projects.py`
+    `create_project` / `update_project` reject `team not in ProjectTeam.ALL`
+    with 422, and `schemas/project.py::TeamCode` is auto-derived from `ALL`.
+
+    Extending the enum (post-#1620): add the value here + its roster entry in
+    `TEAM_ROSTERS` below + drop `.claude/teams/<t>.md` and the new roster roles'
+    `.claude/agents/<r>.md`. NO migration, no ORM CheckConstraint, no ps1/
+    scaffold/FE edits — those all derive from this module + the API.
     """
 
     DEV = "dev"
@@ -80,6 +84,84 @@ class ProjectTeam:
     SEM = "sem"
 
     ALL = (DEV, NOVEL, GENERAL, CONTENT, SEO, DATA_ANALYTICS, SEM)
+
+
+# Per-team scaffold roster — the SINGLE source for which dedicated agents own a
+# per-project role-state folder (Kanban #1620, 2026-05-28). Consumed by:
+#   * services/project_scaffold.py — creates `context/projects/<name>/<role>/`
+#   * services/zero_config_scaffold.py::_resolve_manifest — copies
+#     `.claude/agents/<role>.md` per team
+#   * routers/teams.py (GET /api/teams) + routers/scaffold.py
+#     (role_folders on the manifest response) — so the FE select + the host-side
+#     bin/agent-teams-init.ps1 derive folders without re-hardcoding the map.
+#
+# Reconciled from each team's `.claude/teams/<team>.md` "Roster" table — the
+# DEDICATED agents that own a `context/projects/<active>/<role>/` folder. EXCLUDES:
+#   * "Cross-team reuse" / borrowed agents (general-researcher in every team's
+#     table — it writes _scratch, not a role folder).
+#   * dev-documentor (in the dev Roster table but drafts into _scratch, not a
+#     per-project role folder).
+# Every role here MUST have a matching `.claude/agents/<role>.md` file — the
+# scaffold manifest convention relies on it. Verified 2026-05-28.
+#
+# NOTE: `content` has NO `.claude/teams/content.md` playbook today, so its roster
+# is INFERRED from the content-* agent files (the content-production pipeline used
+# as "Cross-team reuse" by seo/sem/data-analytics) + thai-proofreader (the
+# language pass; its agent file explicitly names "content team output"). When a
+# content.md playbook lands, reconcile this entry against its Roster table.
+TEAM_ROSTERS: dict[str, tuple[str, ...]] = {
+    ProjectTeam.DEV: (
+        "dev-sr-frontend",
+        "dev-sr-backend",
+        "dev-frontend",
+        "dev-backend",
+        "dev-devops",
+        "dev-tester",
+        "dev-reviewer",
+        "dev-security-reviewer",
+    ),
+    ProjectTeam.NOVEL: (
+        "novel-writer",
+        "novel-editor",
+        "thai-proofreader",
+    ),
+    ProjectTeam.GENERAL: ("general",),
+    ProjectTeam.CONTENT: (
+        "content-writer",
+        "content-editor",
+        "content-hook-doctor",
+        "content-veracity-checker",
+        "thai-proofreader",
+    ),
+    ProjectTeam.SEO: (
+        "seo-strategist",
+        "technical-seo-specialist",
+        "content-seo-optimizer",
+        "seo-reporting-analyst",
+    ),
+    ProjectTeam.SEM: (
+        "sem-campaign-lead",
+        "google-ads-specialist",
+        "meta-ads-specialist",
+        "platform-ads-coordinator",
+    ),
+    ProjectTeam.DATA_ANALYTICS: (
+        "bi-analyst",
+        "sql-optimizer",
+        "dashboard-designer",
+        "analytics-platform-integrator",
+    ),
+}
+
+# Import-time invariant: every team in the enum MUST carry a roster entry. A new
+# ProjectTeam value with no TEAM_ROSTERS row would scaffold zero role folders and
+# (post-#1620) raise in _resolve_manifest — catch the drift at module load, not
+# at the first POST. Use a real exception (not assert) so it survives `python -O`.
+if set(TEAM_ROSTERS) != set(ProjectTeam.ALL):
+    raise RuntimeError(
+        f"TEAM_ROSTERS keys {sorted(TEAM_ROSTERS)!r} drifted from "
+        f"ProjectTeam.ALL {sorted(ProjectTeam.ALL)!r}"
+    )
 
 
 class TaskPriority:

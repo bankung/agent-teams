@@ -184,19 +184,12 @@ foreach ($f in $manifest.files) {
 # Mirrors api/src/services/project_scaffold.py: creates the dev-template trio
 # under shared/ and per-team role folders under WorkingPath.
 #
-# TEAM_ROSTERS (must stay in lockstep with project_scaffold.py):
-#   dev             -> dev-frontend, dev-backend, dev-devops, dev-tester, dev-reviewer, dev-security-reviewer
-#   novel           -> novel-writer, novel-editor
-#   general         -> general
-#   content/seo/sem/data-analytics -> fallback to dev roster (mirrors scaffold.py behavior)
-$TeamRosters = @{
-    'dev'    = @('dev-frontend','dev-backend','dev-devops','dev-tester','dev-reviewer','dev-security-reviewer')
-    'novel'  = @('novel-writer','novel-editor')
-    'general'= @('general')
-}
-$roles = if ($TeamRosters.ContainsKey($Team)) { $TeamRosters[$Team] } else {
-    Write-Warning "Team '$Team' not in roster map — falling back to dev roster (mirrors scaffold.py behavior)."
-    $TeamRosters['dev']
+# Role folders are sourced from the manifest's role_folders field (single-source
+# of truth in backend TEAM_ROSTERS — Kanban #1620 AC#8). No local roster copy.
+$roles = $manifest.role_folders
+if (-not $roles -or $roles.Count -eq 0) {
+    Write-Error "Manifest did not return role_folders for team=$Team — cannot create role directories."
+    exit 1
 }
 
 # Locate the bundled templates — resolve relative to the script, NOT cwd.

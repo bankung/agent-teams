@@ -83,25 +83,45 @@ async def test_scaffold_endpoint_novel_team_returns_novel_files(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_scaffold_endpoint_unknown_team_falls_back_to_dev(client) -> None:
-    """Unknown team string → service falls back to the dev manifest (matches
-    _resolve_manifest's defensive fallback)."""
+async def test_scaffold_endpoint_unknown_team_returns_422(client) -> None:
+    """Kanban #1620: unknown team string → 422 (was: silent dev fallback).
+
+    The manifest is convention-derived from `TEAM_ROSTERS`; a team with no
+    roster entry has no harness to serve, so the endpoint rejects loud rather
+    than scaffold a wrong-team manifest. Locks the behavior change away from the
+    pre-#1620 dev fallback (`test_scaffold_endpoint_unknown_team_falls_back_to_dev`).
+    """
     resp = await client.get(
         "/api/scaffold/xyz/files",
         params={"project_name": "foo", "project_id": 7},
     )
+    assert resp.status_code == 422, resp.text
+    assert "xyz" in resp.text, "422 detail should name the rejected team"
+
+
+@pytest.mark.asyncio
+async def test_scaffold_endpoint_dev_team_includes_role_folders(client) -> None:
+    """Kanban #1620: the manifest response carries `role_folders` (from
+    TEAM_ROSTERS) so the host-side ps1 (P3) creates role folders from it.
+
+    Spot-checks the dev roster — must include the sr-* + security-reviewer roles
+    and exclude borrowed/cross-team agents (general-researcher) and the
+    _scratch-only dev-documentor.
+    """
+    resp = await client.get(
+        "/api/scaffold/dev/files",
+        params={"project_name": "foo", "project_id": 99},
+    )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    # Endpoint echoes the requested team verbatim — fallback is in the file set,
-    # not the response.team field.
-    assert body["team"] == "xyz"
-
-    rels = _rel_paths(body)
-    # Dev manifest landed via fallback.
-    assert ".claude/agents/dev-backend.md" in rels
-    assert ".claude/teams/dev.md" in rels
-    # Novel manifest must NOT leak in.
-    assert ".claude/agents/novel-writer.md" not in rels
+    assert "role_folders" in body, "manifest response missing role_folders"
+    folders = body["role_folders"]
+    assert isinstance(folders, list) and folders
+    assert "dev-sr-backend" in folders
+    assert "dev-security-reviewer" in folders
+    # Borrowed / _scratch-only agents are NOT role folders.
+    assert "general-researcher" not in folders
+    assert "dev-documentor" not in folders
 
 
 @pytest.mark.asyncio
