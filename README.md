@@ -32,7 +32,7 @@ The gap it fills: a **self-hosted, persistent, governed, multi-domain orchestrat
 
 - **Meta-orchestrator + team playbooks.** A "Lead" agent resolves the active project, loads that project's team playbook, and spawns the right domain specialists for the work. **7 teams** (dev, novel, general, content, SEO, data-analytics, SEM) and **~37 specialist agent definitions** live in `.claude/agents/`, each with a scoped lane and permission model.
 
-- **Persistent state + 5-zone context architecture.** A PostgreSQL-backed Kanban (projects / tasks / history) plus a five-zone storage model — **DB, standards, team-methodology, project-shared, role-state** — that survives sessions and gives each spawned agent its bounded, relevant slice. Each zone has an explicit writer and read scope. (See "Storage architecture" in [CLAUDE.md](CLAUDE.md).) Prompt-caching of the stable specialist context measured a **77.5% input-cost reduction** on a 10-iteration scenario.
+- **Persistent state + 5-zone context architecture.** A PostgreSQL-backed Kanban (projects / tasks / history) plus a five-zone storage model — **DB, standards, team-methodology, project-shared, role-state** — that survives sessions and gives each spawned agent its bounded, relevant slice. Each zone has an explicit writer and read scope. (See "Storage architecture" in [CLAUDE.md](CLAUDE.md).) Prompt-caching of the stable specialist context measured a **77.5% input-cost reduction** on a 10-iteration scenario. See the **[quota-efficiency guide](readme_quota-efficiency.md)** (TH: [ฉบับภาษาไทย](readme_quota-efficiency.th.md)) for how this lands in day-to-day usage.
 
 - **Incident-driven defense-in-depth.** Born from a real dev-DB-wipe postmortem (2026-05-17): **21 prevention layers** span the database, API, LangGraph engine, and CLI hooks — Postgres role-level gates on destructive SQL, a migration target guard (`MIGRATION_TARGET`), a seed target guard (`SEED_TARGET`), payload size caps, agent-context sanitization, an LLM safety prelude prepended to every prompt, a pre-push secret/keyword scan, and soft-delete + audit triggers. Each layer carries verification evidence in the incident record.
 
@@ -86,7 +86,7 @@ The orchestration runs on agentic coding CLIs — **Claude Code and OpenAI Codex
 3. Open **http://localhost:5431** — your Kanban board (the installer seeds a `demo-tour` project to explore). Create, queue, and track tasks here, and answer agents' questions as they come up. Two ways to put agents to work:
 
    - **3.1 — From a Claude Code or Codex session (works today).** Open this repo in Claude Code or OpenAI Codex; the Lead resolves your project, loads its team playbook, and orchestrates the specialists end-to-end. This is the production path right now. → see **[CLAUDE-CODE-START.md](CLAUDE-CODE-START.md)**.
-   - **3.2 — One-click "Start" on the board *(under development)*.** Flipping a task to auto-run hands it to the headless `langgraph` engine so it runs with no terminal open. This path is **in active development** (the specialist execution is text-only today) — see the "What it is — and isn't" section above.
+   - **3.2 — One-click "Start" on the board *(in active development)*.** Flipping a task to auto-run hands it to the headless `langgraph` engine so it runs with no terminal open. This path is **in active development** (the specialist execution is text-only today) — see the "What it is — and isn't" section above.
 
 The installer is safe to re-run; the services keep running after you close the terminal.
 

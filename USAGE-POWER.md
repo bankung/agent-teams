@@ -4,6 +4,8 @@ Five advanced capabilities that unlock faster workflows.
 
 ## 1. Queue multiple tasks
 
+**Status: Production.** Queueing and Claude Code / Codex pickup work today; the `auto_pickup` hand-off to the headless engine is in active development (see feature #2).
+
 **What it does:** Add N tasks to the Kanban in rapid succession; Lead picks them up and queues them automatically.
 
 **When to use:** You have 3–5 distinct pieces of work to hand off (backend API, frontend UI, test coverage, etc.). Queue them all on the board, then work through them — either driven from a Claude Code / Codex session (the path that executes for real today), or by flipping `run_mode=auto_pickup` to hand them to the headless engine (see feature #2 for that engine's current status).
@@ -17,7 +19,7 @@ In the Kanban UI, create 3 tasks:
 
 Option A (works today): Open a Claude Code session, tell Lead "work through
 the queued tasks" — Lead picks them up in order, one at a time.
-Option B (in development): Click "Run" on each (or set run_mode=auto_pickup)
+Option B (in active development): Click "Run" on each (or set run_mode=auto_pickup)
 to hand them to the headless engine; see feature #2 for current limitations.
 ```
 
@@ -25,13 +27,13 @@ to hand them to the headless engine; see feature #2 for current limitations.
 
 ---
 
-## 2. Auto-mode (headless agent pickup) — in active development
+## 2. Auto-mode (headless agent pickup)
+
+**Status: In active development.** Posts a plan + status updates and checkpoints state in Postgres; autonomous code edits / tests / commits are not live yet.
 
 **What it does:** Flip a task from `run_mode=manual` to `run_mode=auto_pickup` in the Kanban drawer. The headless `langgraph` container picks it up and runs through a supervisor → specialist graph — no Claude Code session needed.
 
-**Status:** This engine is **in active development**. Today it posts a plan and status updates to the task, and checkpoints its state in Postgres so runs are resumable. Full autonomous end-to-end execution (writing code, running tests, making commits) is not live yet. For real end-to-end work, use the Claude Code / Codex path (feature #3, or [CLAUDE-CODE-START.md](CLAUDE-CODE-START.md)).
-
-**When to use (once mature):** Overnight runs, routine maintenance, or any task you trust the agent to handle without approval prompts on every file write.
+**When to use (once mature):** Overnight runs, routine maintenance, or any task you trust the agent to handle without approval prompts on every file write. For real end-to-end work today, use the Claude Code / Codex path (feature #3, or [CLAUDE-CODE-START.md](CLAUDE-CODE-START.md)).
 
 **Example:**
 ```
@@ -47,6 +49,8 @@ answer it and click Resume; the agent picks up from its checkpoint.
 ---
 
 ## 3. Parallel agent spawns
+
+**Status: Production.**
 
 **What it does:** Ask Lead to spawn multiple specialist agents on the same task at the same time (e.g., backend + frontend + reviewer all working on one feature). This runs via an interactive Claude Code or Codex session — it is the path that executes for real today.
 
@@ -69,6 +73,8 @@ Lead: (spawns dev-backend and dev-frontend simultaneously)
 
 ## 4. Mobile remote access
 
+**Status: Production.**
+
 **What it does:** Access the Kanban board from your phone (iOS or Android) via Tailscale VPN. View task status, create tasks, answer HITL questions, trigger notifications.
 
 **When to use:** You're away from your desk but want to check if agents finished work, or answer a question that's blocking an agent.
@@ -89,6 +95,8 @@ At a coffee shop on cellular:
 ---
 
 ## 5. Multi-project context switch
+
+**Status: Production.**
 
 **What it does:** Switch to a different project mid-session. Lead re-bootstraps, loads the new project's context, and all subsequent agents use the new project's standards and team.
 
