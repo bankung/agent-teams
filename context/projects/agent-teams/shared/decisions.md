@@ -16,6 +16,18 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-29 — Weekly release cadence: dev branch + weekly merge-to-main + vMAJOR.MINOR.PATCH (trial) — Kanban #1646
+**Scope:** shared / process
+
+**Decision:** Switch agent-teams from continuous-push-to-main to a weekly release cadence. Develop on `dev`; `main` is the published release (the curated weekly snapshot a recruiter/user sees), updated only by a weekly merge from `dev` (or a hotfix merge). Versioning `vMAJOR.MINOR.PATCH`: MAJOR starts 0, bumped only on operator command; MINOR = running number per normal (weekly) release (bump + reset PATCH=0); PATCH = hotfix number (resets per weekly release). Version of record = the annotated git tag (gh CLI not installed → tags are the mechanism; formal GitHub Releases once gh lands). Full runbook: `shared/release-workflow.md`. Weekly trigger = recurring template task #1647 (Fri 18:00 Asia/Bangkok).
+
+**Reasoning:** Team proposal — 1 publish/week. Chose dev-branch + weekly-merge-to-main (over continuous-main + weekly-tags) so `main` stays a clean, stable, curated line for the public/portfolio audience while churn lives on `dev`. Builds on the existing Tier-2 release-wrap-up gate. For THIS repo this supersedes the old solo-dev "always-main / no-branch" default.
+
+**Implications:**
+- All sessions/worktrees now push to `dev`, NOT `main` directly.
+- `main` HEAD always == the latest release tag; never force-push `main`.
+- Trial run: first release `v0.1.0` cut from main today (2026-05-29); hotfix (0.1.1) + first weekly bump (0.2.0) being exercised manually during the trial. Promote to dev-team methodology (`context/teams/dev/`) only if it proves out over a few weeks.
+
 ## 2026-05-29 — Public-repo hygiene: removed internal working notes + pre-push keyword guard — Kanban #1637
 **Scope:** shared / privacy
 
