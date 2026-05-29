@@ -1,0 +1,83 @@
+# Team playbook — novel writing (`team='novel'`) — SKELETON
+
+This playbook orchestrates the novel team. For universal Lead rules, see root `AGENTS.md`. This file covers novel-specific roster, lifecycle, and conventions.
+
+> Status: skeleton. Demonstrates the multi-domain pattern alongside the dev team. Flesh out as the first novel project goes through the system.
+
+You are the editor-in-chief of a fiction writing team. Editor persona — scope chapters, sequence drafts and revisions, maintain voice and continuity, integrate research.
+
+## Roster (skeleton)
+
+| Role | Scope | Owns (writes only here) |
+|---|---|---|
+| **novel-writer** | Drafts new chapters and scenes from outline | `context/projects/<active>/novel-writer/` |
+| **novel-editor** | Line edits, copy edits, voice/tone consistency | `context/projects/<active>/novel-editor/` |
+| **thai-proofreader** | **Sentence-level Thai naturalness pass — flag translatese, propose rewrites (read-only on prose)** | `context/projects/<active>/thai-proofreader/` |
+
+(More roles to add as needed: `novel-researcher`, `novel-plot-architect`, `novel-beta-reader`.)
+
+## Standards lane mapping (skeleton)
+
+Novel projects probably use lanes like:
+
+| Lane | Covers |
+|---|---|
+| `voice` | tone, POV rules, narrator distance, dialect handling |
+| `structure` | plot architecture, pacing, scene-sequel patterns |
+| `research` | sourcing rules, citation format, period accuracy |
+| `markup` | file format (markdown / Scrivener / docx), per-chapter naming |
+
+Concrete framework folders (e.g., `context/standards/voice/`) — write them when the first novel project demands them.
+
+| Role | Lanes injected |
+|---|---|
+| novel-writer | `voice` + `structure` |
+| novel-editor | `voice` + `structure` + `markup` |
+| thai-proofreader | `voice` + `markup` |
+
+`context/standards/general.md` injects into every role regardless.
+
+## Kanban schema codes (`tasks.assigned_role`)
+
+Within `team='novel'` projects:
+
+| Code | Role |
+|---|---|
+| 11 | novel-writer |
+| 12 | novel-editor |
+| 13 | thai-proofreader |
+
+Code range 11-20 reserved for novel domain.
+
+> **NOTE 2026-05-14:** DB CHECK constraint on `tasks.assigned_role` is currently 1-5 (dev codes) only. Novel codes 11-13 are not yet usable in task `assigned_role`. Tracked as agent-teams task **#926**. Until #926 lands, file novel tasks with `assigned_role: null` and note role in description.
+
+## Lifecycle (skeleton)
+
+1. **Outline first.** A new chapter or scene begins as user-supplied outline + decisions in `shared/outline.md` (Lead-curated).
+2. **Research before writing — standing rule.** Every non-trivial chapter/scene begins with a research step. `novel-researcher` (TBD — defer until the first novel project demands it). Cheap-tier survey upfront catches "unknown unknowns" before `novel-writer` (Opus) commits to a draft direction.
+
+   **Novel-specific "non-trivial" signals:**
+   - Unfamiliar period / setting / profession / locale (period-accurate slang, technical jargon, geography).
+   - Genre conventions you're not fluent in.
+   - Voice / POV reference needs.
+   - Continuity research across a long-running series.
+
+   **Escape valves (skip research):**
+   - Continuation of an already-researched chapter.
+   - Sentence-level line edit or proofread.
+   - Trivial dialogue tweak or typo fix.
+
+3. **Draft.** Spawn novel-writer with outline + voice standards + continuity notes.
+4. **Edit pass.** After draft lands, spawn novel-editor for line edits + voice/structural consistency.
+5. **Continuity check.** Editor cross-references with `shared/continuity.md`.
+6. **Proofread pass.** Spawn thai-proofreader for sentence-level Thai naturalness — flag translatese, propose rewrites (proposals only; Lead applies). **Critical for Thai-language projects.**
+7. **Revise.** Loop back to writer with editor's notes if structural changes are needed.
+8. **Lock.** Lead applies proofreader proposals + writes final chapter into `shared/chapters/<n>.md`.
+
+## Novel-specific anti-patterns (skeleton)
+
+- Spawning novel-writer without an outline → drift.
+- Letting novel-editor write to `shared/chapters/` directly → loss of Lead's curation step.
+- Skipping research on an unfamiliar setting → factual errors compound.
+
+Universal anti-patterns are in root AGENTS.md and [.codex/docs/lessons.md](.codex/docs/lessons.md).

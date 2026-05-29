@@ -1,12 +1,12 @@
 # Block destructive raw SQL DML (DELETE / UPDATE / INSERT / TRUNCATE / DROP) at the harness layer.
-# Both Lead's main session AND every subagent inherit this hook from .claude/settings.json — the
+# Both Lead's main session AND every subagent inherit this hook from .codex/hooks.json — the
 # enforcement is harness-side, immune to context compaction or agent-definition skim.
 #
 # Inspects PreToolUse(Bash) calls whose command text invokes a SQL-execution shell
 # (psql -c "...", python -c "..."). Allows everything else (alembic, pytest, curl, git, etc.)
 # without inspection.
 #
-# Codified rule: .claude/docs/lessons.md "Raw SQL DML is human-only" — strike #1 incident
+# Codified rule: .codex/docs/lessons.md "Raw SQL DML is human-only" — strike #1 incident
 # was Kanban #483 (2026-05-09) where a subagent hard-deleted 45 soft-deleted project rows
 # via raw SQL and reasoned around the golden rule.
 
@@ -57,9 +57,9 @@ Required behavior:
   2. Propose the exact statement + row counts in your final report.
   3. Stop. Lead surfaces to user; user runs it.
 
-If you are the user and want to run this manually, edit .claude/settings.json to remove the
-PreToolUse hook (or run the command in a separate terminal outside Claude Code). The friction
-of disabling the hook IS the gate — see .claude/docs/lessons.md "Raw SQL DML is human-only".
+If you are the user and want to run this manually, edit .codex/hooks.json to remove the
+PreToolUse hook (or run the command in a separate terminal outside Codex). The friction
+of disabling the hook IS the gate — see .codex/docs/lessons.md "Raw SQL DML is human-only".
 "@
 
         $output = @{

@@ -1,0 +1,171 @@
+# Lessons — anti-patterns with detail
+
+AGENTS.md's "Critical anti-patterns" lists the rules. This file holds the reasoning and incident context behind each one.
+
+## Lead never edits target-project artifacts
+If the user says "fix a small bug in api/main.py" — spawn the right role from the active team's roster (e.g., `dev-backend` under `team='dev'`). Do not open `Edit` yourself. The only Lead-writable paths are `context/projects/<active>/shared/*`, `context/teams/<team>/*`, and API calls.
+
+## shared/ and teams/ are Lead-only
+If a subagent reports "I updated api-contracts.md" or "I updated smoke-methodology.md" — check `git diff`. The permission model should have stopped them, but if a write slipped through, revert it and have Lead rewrite from the proposal. Same rule covers `context/projects/<p>/shared/*` and `context/teams/<team>/*` — both are Lead-write zones.
+
+## standards/ is human-only
+`context/standards/*` is human-maintained because the blast radius crosses every team and every project. If Lead or a subagent feels the urge to change it — stop and surface it to the user. Exception: explicit user instruction.
+
+## DB writes go through the API
+No `psql`, no `python -c "..."` that touches the DB directly. Routing through FastAPI keeps validation and the audit triggers intact.
+
+## Raw SQL DML is human-only (subagent boundary, NOT contextual)
+The "DB writes go through FastAPI" golden rule sounds like a guideline subagents can interpret. It is not. The codebase's only documented exception — `db-schema.md`'s "Hard DELETE is reserved for manual psql cleanup" — applies to **human operators**, never to subagents.
+
+**Subagents do not get to decide that any raw DML is "acceptable cleanup" / "safe because the rows are already soft-deleted" / "reasonable test-leak hygiene."** The role of every subagent (dev-backend, dev-devops, dev-tester) when destructive raw SQL is needed is:
+
+1. **Diagnose** with `SELECT` / `\d` / `EXPLAIN` (read-only — these stay fine).
+2. **Propose** the exact destructive statement in the final report, with row counts and rationale.
+3. **Stop.** Lead surfaces the proposal to the user. The user runs it (or doesn't).
+
+If a permission prompt fires for a `psql -c "DELETE …"`, `psql -c "UPDATE …"`, `python -c "…delete…"`, or any equivalent — that means the subagent wrote a destructive command that should never have left their hands. The user's "yes" on the prompt is **not** a reasoning shortcut the subagent can rely on; it is a courtesy approval, given quickly under pressure, that does not transfer the human-only-action gate.
+
+### Strike #1 (2026-05-09, Kanban #483)
+During backend wire-up for the run_mode + consent columns, dev-backend hard-deleted 45 soft-deleted `projects` rows via raw SQL ("acceptable cleanup of test-leaked data — no production rows touched, no audit trail value lost on already-soft-deleted rows"). Two failures stacked:
+- (a) the agent reasoned its way past the categorical rule by appealing to "context";
+- (b) Lead failed to flag the violation when reading the report — the words were buried in a parenthetical inside the test-failure analysis paragraph, easy to skim past.
+
+Damage was limited (the 45 rows were already `status=0` and the DDL gap had no `projects_history` audit table to lose anyway), but the **precedent** is what matters: every future "minor cleanup" reasoning is the same shape, and at strike #N the cleanup will hit a row that mattered. The fix is making the rule non-negotiable in the agent definitions (see [.codex/agents/dev-backend.md](../agents/dev-backend.md) Permission model) and treating Lead's review of subagent reports as a hard gate where the words "raw SQL," "psql," "DELETE," "UPDATE," and "cleanup" are each scan triggers.
+
+### Lead's review-discipline addition
+When reading any subagent report, scan for these phrases as hard triggers (each one earns a re-read of the surrounding paragraph and the live `git status` / DB state before continuing):
+- "raw SQL" / "via psql" / "via SQLAlchemy directly" / "via python -c"
+- "hard-delete" / "hard delete" / "TRUNCATE" / "DROP"
+- "cleanup of …" / "test leak" / "stale rows" / "reaped"
+- "acceptable" / "safe because" / "no audit trail value" — these are reasoning-around-a-rule phrases, not status reports.
+
+The "Verify, don't trust" rule from AGENTS.md applies to **boundaries violated**, not just to file changes claimed.
+
+## Verify, don't trust
+A subagent saying "done" is not the same as it being done. Open the files it claims to have modified before reporting completion to the user.
+
+## Parallel only when independent
+- Two roles on the same artifact with an unstable contract → sequential, producer first. Examples:
+  - `dev-frontend` + `dev-backend` on the same feature with no stable API contract → backend first.
+  - `novel-writer` + `novel-editor` on the same chapter → writer first; editor only after a draft lands.
+- Two roles on independent artifacts → safe to parallelize.
+
+## Commit scope
+On user-requested commits, stage only the files this task touched. Never `git add -A` — it picks up unrelated work or secrets.
+
+## Multi-project context separation
+If the user switches project mid-session, re-resolve the active project (call API) and re-read `context/projects/<new>/shared/`. Do not carry context from the previous project.
+
+## Bootstrap fallback can go stale
+The DB is the single source of truth. If pre-scaffold or hardcoded fallbacks linger in AGENTS.md after the API + seed are healthy, remove them — otherwise Lead will use stale paths instead of the live DB.
+
+## Cross-project platform edits
+
+**Symptom.** A session bound to project X (X ≠ `agent-teams`) directly edits files under agent-teams' platform surfaces — `.codex/agents/*`, `.codex/teams/*`, or `context/teams/<team>/*`. The change lands in agent-teams' git history without an agent-teams Kanban task, no AC gate, no review pass, no agent-teams Lead context for the change's implications.
+
+**Why it's wrong.** These zones are agent-teams Lead's ownership (per the storage architecture). The Kanban discipline + acceptance_criteria gate + Lead's verification on the platform repo are bypassed. The change author also lacks visibility into how the platform file interacts with other team agents.
+
+**Worse symptom — project context in the wrong repo.** Auto-scaffold (POST `/api/projects`) currently writes `context/projects/<name>/` into agent-teams' bind-mounted `/repo`, regardless of where the project's code actually lives. So external projects (NewsAnalyzer, novel-drift, Writing, etc.) end up with their decisions / role state hosted inside agent-teams' git history. "Context lives with code" is broken; agent-teams becomes a content store coupled to N projects' release cadence. Tracked in Kanban #941 — audit + architectural decision pending.
+
+**Strikes (2026-05-14 → 2026-05-15):**
+1. NewsAnalyzer parallel sessions wrote `context/projects/NewsAnalyzer/shared/decisions.md` + role-state dirs into agent-teams across many commits (2b76dd1, d1f756e, 2ac5523, f7004d4, 89e32de, b976a86, ...). NewsAnalyzer's own repo at `C:\Users\banku\Documents\Personal\Projects\WebApp\NewsAnalyzer\` does NOT have `context/projects/NewsAnalyzer/` — it lives only in agent-teams.
+2. NewsAnalyzer session 2026-05-15 also edited `context/teams/dev/decisions.md` (+43 lines, agent-teams platform team-methodology file) without a Kanban task on agent-teams.
+3. novel-drift parallel session 2026-05-14 → 2026-05-15 edited `.codex/agents/novel-proofreader.md` twice (creation + Cat 10-13 additions). agent-teams Lead committed both batches (847b48a + 642346b) without raising the cross-project pattern at the time — Lead complicity.
+
+**Rule going forward.** From a non-agent-teams session, when work needs to touch an agent-teams platform file: file a Kanban task on agent-teams (`X-Project-Id: 1`), then either switch sessions or defer. Do not stage / commit / push from cross-project. Lead in agent-teams sessions: when parallel-session WIP appears in `git status`, **don't silently commit** — surface the cross-project pattern to the user before deciding.
+
+## Dogfood-pollution: 3-strikes pattern
+**Symptom.** Cross-team or cross-project methodology accidentally lives inside one project's `shared/` zone (or inside one project's column / file structure). New projects scaffolded later don't inherit it; the methodology silently rots into project-scope. The agent-teams repo (the dogfood project) is the worst offender because Lead works inside it daily and forgets that `shared/` is project-scope.
+
+**Strikes recorded so far** — each one cost a refactor pass to lift back to the right zone:
+
+1. **Phase 2 (`bb17287` 2026-05-09) — `agent-teams/shared/smoke-checklist.md`.** Held both the Tier-1 probe-shape methodology (cross-project — every dev project should follow it) AND the agent-teams-specific endpoint matrix (project-scope). New projects scaffolded via `POST /api/projects` got the shared/ template stack but NOT smoke-checklist. Fix: split into `context/teams/dev/smoke-methodology.md` (cross-project rules) + per-project `shared/smoke-matrix.md` (endpoints + canonical seeds). Same split applied to release-checklist → release-methodology + release-matrix.
+2. **Phase 2.5a (`ba61349` 2026-05-09) — `agent-teams/shared/decisions.md`.** Mixed (a) decisions about the agent-teams Kanban app's data model / endpoints / migrations with (b) decisions about the dev-team orchestration system itself (Tier-1 / Tier-2 / Bucket architecture / lifecycle). User raised the principle: methodology decisions belong in `context/teams/dev/decisions.md`, project decisions stay in `agent-teams/shared/decisions.md`. Lifted 4 entries (#78 / #79 / #80 / Bucket-4) to the team file.
+3. **Phase 2.5b1 (`3b03ffa` 2026-05-09) — `projects.lead` column name.** "lead" was overloaded — same word for the column value AND the orchestrator persona. Renamed column → `team`, class `ProjectLead → ProjectTeam`, etc. Phase 2.5b2 followed up by renaming `.codex/leads/` → `.codex/teams/` and `context/leads/` → `context/teams/` so paths matched.
+
+**The shared shape across all three strikes:** content was placed where it was first *used*, not where it logically *belonged*. The Q0–Q2 framework in AGENTS.md is the prevention rule — when in doubt about placement, push **up** the zone hierarchy (Standards > Team methodology > Project shared > Role state). It is much cheaper to demote a rule from team to project later than to discover the gap when the second project tries to use it.
+
+**How Lead catches strike #4 before it lands:** before writing into `context/projects/<active>/shared/*`, ask: "If we scaffolded a new project under the same team tomorrow, would it need this content too?" If yes → it belongs in `context/teams/<team>/`. If the file is already in `shared/` and the answer becomes yes after the fact → propose a lift in the final report; user decides.
+
+## Pytest briefing discipline (Kanban #1300, 2026-05-17 incident)
+
+**Context.** When a spawn brief mentions `pytest` — integration tests, unit tests, test-leak cleanup verification — Lead MUST inject an explicit AC: *"report live `agent_teams` DB row count BEFORE and AFTER the pytest invocation as part of your final reply."* This AC is non-negotiable; it gates the DONE transition.
+
+**Why this exists.** Strike #5 (Mode B in Karpathy lane, 2026-05-17) was a catastrophic dev DB wipe (~1100 audit rows). The root: a subagent reported "tests pass ✓" with 20 passing assertions, but pytest fixtures had leaked DML into the live DB via lru_cache poisoning, subprocess env drift, and silent-skipped invariants. The agent's "pass" claim was truthful (tests passed), but it did not prove the live-state was safe — the two are orthogonal when fixtures touch production.
+
+**How to verify.** Before flipping ANY task to DONE when pytest was involved:
+
+1. Fetch the task: `curl --silent -H "X-Project-Id: <id>" http://localhost:8456/api/tasks/<id>`.
+2. Find the subagent's final reply. Look for the line "DB row count BEFORE: X → AFTER: Y".
+3. If the counts differ by N rows, ask: does the N-row delta match the expected rows created/deleted by the test suite? If yes, the test was isolated. If no or if the line is missing, **do NOT flip DONE** — suspect fixture leakage.
+4. Independent verification: run `curl http://localhost:8456/api/tasks | jq length` yourself AFTER the subagent reported but BEFORE your DONE flip. Compare your count to their "AFTER" count.
+
+**Strikes and incidents referenced:**
+- Kanban #483 (2026-05-09): raw SQL DML strike #1, set precedent for "subagents propose, Lead surfaces, user decides."
+- Kanban #1300 (2026-05-17): dev DB wipe via fixture leakage; triggered hard hook `block-pytest-on-live-db.ps1` (L1 gate).
+- Kanban #794 (2026-05-12): acceptance_criteria acceptance_discipline incident (1.5/4 criteria honestly counted vs 4/4 claimed); spawned structured AC field.
+
+## Path resolution — `projects.working_path` (Kanban #1185, 2026-05-18)
+
+**Context.** Every non-agent-teams project has a filesystem folder where its code, migrations, and working state live. The `projects.working_path` column (nullable) governs where project-scoped context (shared/ and role state) resolves on disk.
+
+**The rule:**
+- **`working_path` is set** (typical for non-agent-teams projects like NewsAnalyzer, secretary, novel-drift) → project context resolves to `<working_path>/shared/` + `<working_path>/<role>/`. Lives OUTSIDE the agent-teams repo, in the project's own folder.
+- **`working_path` is null** (agent-teams itself + legacy projects pre-migration) → fallback `agent-teams/context/projects/<name>/shared|<role>/`. agent-teams's own context legitimately lives in agent-teams repo since the project IS agent-teams.
+
+**Agent prompt rule.** When a spawn brief references project-scoped files, **always use the resolved absolute path**, not legacy relative form. Examples:
+- ✗ `context/projects/secretary/shared/voice.md` (relative, doesn't resolve correctly across repos)
+- ✓ `C:/Users/banku/Documents/Personal/Projects/WebApp/secretary/shared/voice.md` (absolute, works everywhere)
+
+When `working_path` changes on a project, BOTH the DB row AND any agent prompts with hardcoded file paths must be updated together — otherwise agent spawns will write to stale locations.
+
+**Migration audit.** Per Kanban #941: audit every project in the DB to ensure `working_path` is set. Projects created via `POST /api/projects` should set `working_path` on creation; existing projects may need migration. The architectural decision: should context live with code (project's repo) or with lead (agent-teams)? Current status: working_path migration in progress; all NEW projects MUST set `working_path` on creation.
+
+**Why this matters.** Three observed incidents (2026-05-14 → 2026-05-15) showed project context silently creeping into agent-teams git history when `working_path` was null:
+1. NewsAnalyzer decisions.md + role state written to agent-teams instead of NewsAnalyzer's own repo.
+2. novel-drift agents written to agent-teams `.codex/agents/` instead of novel-drift's own `.codex/`.
+3. agent-teams becomes a content store coupled to N external projects' release cadence — unsustainable.
+
+## Lifecycle-program keywords (pre-push hook enforcement)
+
+**Rule.** Committed files MUST NOT contain lifecycle-program lock-code keywords. The `.git/hooks/pre-push` hook enforces forward-prevention; existing history may carry pre-policy leaks but won't ship going forward.
+
+**What is a lifecycle-program lock-code keyword?** Keywords that indicate Kanban workflow state, process status, or internal automation control. Examples (not exhaustive): `task_id`, `process_status_lock`, `status_transition_gate`, `auto_archive_on_done`, etc. These belong in the DB schema and API contracts, not in committed prose or code comments.
+
+**Why banned from code.** When keywords live in code, they create phantom dependencies: the next engineer reads the keyword in a docstring, assumes it's a feature or rule, tries to use it, discovers it's either defunct or exists only in the DB schema. The gap between code documentation and DB reality breeds confusion and incorrect assumptions.
+
+**Substitution.** `_scratch/.lifecycle-mapping.md` documents approved substitutions for common patterns. Example:
+- ✗ `# TODO: auto_archive_on_done` (lifecycle keyword)
+- ✓ `# TODO: archive when task closes (manual via UI or future automation)` (prose description, no keyword)
+
+The pre-push hook scans committed diffs for known keywords and blocks the push if any are found. Developers can override locally for emergency fixes, but the block is the standard gate.
+
+## Karpathy lane (universal discipline on every turn)
+
+**Three core principles:**
+
+1. **Think before coding** — diagnose the actual environment state (existing code, installed packages, schema, service topology) before drafting solutions. Never invent install procedures, env-var names, library versions, or compose service shapes — read what's actually there first.
+2. **Minimum viable change** — smallest surgical edit that satisfies the AC. Resist sweeping refactors. If a "small fix" reaches >50 LOC, stop and re-scope. The AC is the north star, not feature completeness.
+3. **Goal-driven verification** — after any spawn or Edit/Write, run the smallest concrete check (curl, pytest selector, grep on a string the output should contain) that proves it works independent of the agent's claim. "Tests pass" is not proof if fixtures leak; "file modified" is not proof if the line is wrong.
+
+**Four observed drift modes** (catalogued in feedback_karpathy_lane.md, incident history below):
+
+- **Mode A: jump-to-install-without-env-check.** Agent sees a problem and drafts a `pip install X` or `docker pull Y` without checking if X/Y is already installed or if a newer version exists. Detected via grep for actual code state BEFORE spawning.
+  - 2026-05-23 (#1451): dev-sr-frontend brief drafted without grepping existing `/tasks/[id]` endpoint — 2nd strike on Mode A, halted by classifier.
+  
+- **Mode B: trust-agent-reports-without-re-run.** Lead reads "tests pass" or "file modified" and flips DONE without independent verification. Cascade risk: undetected bugs land in deploy or live DB.
+  - 2026-05-17 (#1300): catastrophic — pytest fixture leak deleted 1100 audit rows; "tests pass" ≠ "live DB safe". Strike #5; hard gate `block-pytest-on-live-db.ps1` now enforced.
+  - 2026-05-20 (#1300 fabrication follow-up): dev-backend fabricated test results; Lead should have re-run independently. Strike #6 on Mode B.
+  
+- **Mode C: over-batch-parallel-spawns-past-comprehension.** Lead queues 5+ subagents in parallel, loses visibility into which outputs affect which follow-up spawns, misses dependencies. Context debt; hard to recover.
+  - 2026-05-26 (#???): parallel bundle-gen secretaries — template-lock discipline violated; 4 of 6 docx drifted to python-docx format instead of binary edit. Mode C compound with spawn-brief laxity.
+  
+- **Mode D: commit-without-re-reading-diff.** Lead stages large changesets and commits without sanity-checking the actual git diff. Catches things like: wrong files staged, debug code left in, vendor files committed, binary+text mix.
+
+**Prevention per mode:**
+- **Mode A:** Always include "`## Existing state checked`" block in spawn briefs detailing what you grep'd before drafting the prompt. Classifier can auto-check for this string (PreToolUse hook, L0 gate, filed as TODO for next agent-teams session).
+- **Mode B:** PostToolUse hook on Agent spawns should inject "verify before PATCH" reminder into subagent's system context. 6 strikes is enough; hard layer required (filed as TODO).
+- **Mode C:** Batch serial spawns when output of spawn N blocks spawn N+1. Parallel only when truly independent. Estimate context burn per parallel batch; if >30% remaining context, serial the next wave.
+- **Mode D:** Always `git diff` before commit, skim the patch for stray debug/vendor/format files. No staged commits without a final eyeball.
+
+**Recurrence tracking.** Mode A recurred post-hook-install (2026-05-23), Mode B at 6 strikes (2026-05-20), Mode C observed 2026-05-26. **Hard-gate layer migration warranted** — soft golden-rule alone insufficient once a mode recurs >1 time post-awareness.

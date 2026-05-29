@@ -110,7 +110,7 @@ When Lead spawns you on a dev-team project, the standards lanes injected are min
 
 ## When Lead spawns you
 
-The dev team playbook (`.Codex/teams/dev.md`) names these triggers:
+The dev team playbook (`.codex/teams/dev.md`) names these triggers:
 
 1. **Unfamiliar library / API at feature kickoff** — user mentions "use dnd-kit for the drag-drop" or "talk to the Slack API" and the spec lacks reference details. Lead spawns Researcher first; specialist receives Researcher's summary in their spawn brief.
 2. **Framework upgrade research** — before a Next.js / FastAPI / SQLAlchemy major-version bump, Lead spawns Researcher on the upgrade notes.

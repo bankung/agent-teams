@@ -4,26 +4,26 @@
 # ALLOW-or-pass-through hook only. This hook never denies — that responsibility
 # belongs to block-raw-sql-dml.ps1 (and other deny-side hooks). When the path
 # does not match a safe-zone prefix, the hook exits 0 with no output, letting
-# Claude Code fall back to its default prompt behavior.
+# Codex falls back to its default prompt behavior.
 #
 # Safe zones (project-root-relative):
 #   - api/
 #   - web/
 #   - context/projects/   (every sub-project + role folders)
 #   - _scratch/
-#   - .claude/hooks/
+#   - .codex/hooks/
 #
 # NOT auto-approved (still prompt):
 #   - context/standards/   (humans-only zone)
 #   - context/teams/       (Lead-only zone — preserve guardrail)
-#   - .claude/agents/      (subagent definitions — explicit review)
-#   - .claude/settings.json
-#   - CLAUDE.md
+#   - .codex/agents/      (subagent definitions — explicit review)
+#   - .codex/hooks.json
+#   - AGENTS.md
 #
 # Path-traversal guard: any '..' segment forces a manual review ("ask") instead
 # of auto-approve.
 #
-# Enabled per-project via .claude/settings.json on the 2 full-auto projects only.
+# Enabled per-project via .codex/hooks.json on the 2 full-auto projects only.
 # Must NOT be wired in for agent-teams itself.
 
 $payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
@@ -50,7 +50,11 @@ if ($filePath -match '\.\.') {
 # Normalize: backslashes -> forward slashes, strip project-root prefix if present.
 $normalized = $filePath -replace '\\', '/'
 
-$projectDir = $env:CLAUDE_PROJECT_DIR
+$projectDir = if ($env:CODEX_PROJECT_DIR) {
+    $env:CODEX_PROJECT_DIR
+} else {
+    (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+}
 if ($projectDir) {
     $projectDirNorm = ($projectDir -replace '\\', '/').TrimEnd('/')
     if ($normalized.StartsWith($projectDirNorm + '/', [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -68,7 +72,7 @@ $safePrefixes = @(
     'web/',
     'context/projects/',
     '_scratch/',
-    '.claude/hooks/'
+    '.codex/hooks/'
 )
 
 foreach ($prefix in $safePrefixes) {
@@ -85,5 +89,5 @@ foreach ($prefix in $safePrefixes) {
     }
 }
 
-# No match — pass through; Claude Code prompts as normal.
+# No match — pass through; Codex prompts as normal.
 exit 0

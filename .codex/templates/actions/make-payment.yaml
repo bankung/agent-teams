@@ -1,0 +1,23 @@
+name: make-payment
+version: "1.0.0"
+description: >
+  Initiate and confirm a payment — invoice settlement, wire transfer, or
+  vendor payment. Operator-only action; never auto-executed.
+default_task_type: chore
+default_task_kind: human
+default_priority: 1
+ac_outline:
+  - "Invoice / payment request verified (amount, currency, recipient, bank details)"
+  - "Payment initiated through the correct channel (bank portal, accounting tool)"
+  - "Transaction reference number recorded"
+  - "Payee notified with reference number (if required)"
+  - "Accounting entry created or matched in ledger"
+hints:
+  - "dry_run: true — this template is a coordination placeholder; the operator executes the actual transfer manually"
+  - "Triple-check bank account number and routing code before initiating"
+  - "Screenshot the transaction confirmation page before closing"
+  - "Record the reference number in the linked Kanban task notes immediately"
+suggested_attachments:
+  - "Invoice or payment request PDF"
+  - "Approved purchase order (if applicable)"
+  - "Transaction confirmation screenshot"

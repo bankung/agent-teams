@@ -1,0 +1,22 @@
+name: publish-content
+version: "1.0.0"
+description: >
+  Publish a reviewed piece of content (article, post, release note) to its
+  target channel and verify it is live and correctly formatted.
+default_task_type: chore
+default_task_kind: human
+default_priority: 2
+ac_outline:
+  - "Content passes final review before publish (see review-draft template)"
+  - "Published to the correct channel with the intended publish date/time"
+  - "Tags, categories, and metadata filled correctly"
+  - "Live URL verified and content renders without formatting errors"
+  - "Internal stakeholders notified of publish (if required)"
+hints:
+  - "Run a final spell-check in the publishing tool before hitting Publish"
+  - "Check that scheduled publish time matches the intended timezone"
+  - "Cache-bust or purge CDN if changes are not visible immediately"
+suggested_attachments:
+  - "Reviewed draft URL"
+  - "Target channel / CMS link"
+  - "Publish confirmation URL"

@@ -1,8 +1,8 @@
 # Auto-approves localhost curl from dev-tester subagent (any port).
 #
-# Scoped via .claude/agents/dev-tester.md frontmatter (PreToolUse on Bash).
+# Scoped via .codex/agents/dev-tester.md frontmatter (PreToolUse on Bash).
 # Other roles (Lead, dev-backend, dev-frontend, dev-devops, dev-reviewer)
-# do NOT inherit this hook — they fall through to settings.json's normal
+# do NOT inherit this hook — they fall through to Codex's normal
 # allow/ask flow.
 #
 # Decision matrix:
@@ -35,7 +35,7 @@ if ($isLocalhost) {
         hookSpecificOutput = @{
             hookEventName            = "PreToolUse"
             permissionDecision       = "allow"
-            permissionDecisionReason = "localhost curl auto-approved for dev-tester (.claude/hooks/tester-curl-allow.ps1)"
+            permissionDecisionReason = "localhost curl auto-approved for dev-tester (.codex/hooks/tester-curl-allow.ps1)"
         }
     } | ConvertTo-Json -Compress -Depth 4
     Write-Output $output

@@ -1,16 +1,98 @@
 {
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File 'c:\\Users\\banku\\Documents\\Personal\\Projects\\GitHub\\agent-teams\\.codex\\hooks\\block-raw-sql-dml.ps1'",
-            "timeout": 5
-          }
-        ]
-      }
-    ]
-  }
+    "hooks":  {
+                  "PostToolUse":  [
+                                      {
+                                          "hooks":  [
+                                                        {
+                                                            "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File \u0027C:\\Users\\banku\\Documents\\Personal\\Projects\\GitHub\\agent-teams\\.codex\\hooks\\agent-verify-before-patch.ps1\u0027",
+                                                            "timeout":  3,
+                                                            "type":  "command"
+                                                        }
+                                                    ],
+                                          "matcher":  "Agent"
+                                      },
+                                      {
+                                          "hooks":  [
+                                                        {
+                                                            "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File \u0027C:\\Users\\banku\\Documents\\Personal\\Projects\\GitHub\\agent-teams\\.codex\\hooks\\posttooluse-bash-hygiene.ps1\u0027",
+                                                            "timeout":  5,
+                                                            "type":  "command"
+                                                        }
+                                                    ],
+                                          "matcher":  "Bash"
+                                      }
+                                  ],
+                  "PreToolUse":  [
+                                     {
+                                         "hooks":  [
+                                                       {
+                                                           "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File \u0027C:\\Users\\banku\\Documents\\Personal\\Projects\\GitHub\\agent-teams\\.codex\\hooks\\approval-policies-gate.ps1\u0027",
+                                                           "timeout":  5,
+                                                           "type":  "command"
+                                                       }
+                                                   ],
+                                         "matcher":  "WebFetch"
+                                     },
+                                     {
+                                         "hooks":  [
+                                                       {
+                                                           "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File \u0027C:\\Users\\banku\\Documents\\Personal\\Projects\\GitHub\\agent-teams\\.codex\\hooks\\approval-policies-gate.ps1\u0027",
+                                                           "timeout":  5,
+                                                           "type":  "command"
+                                                       }
+                                                   ],
+                                         "matcher":  "mcp__Claude_in_Chrome__.*"
+                                     },
+                                     {
+                                         "hooks":  [
+                                                       {
+                                                           "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File \u0027C:\\Users\\banku\\Documents\\Personal\\Projects\\GitHub\\agent-teams\\.codex\\hooks\\approval-policies-gate.ps1\u0027",
+                                                           "timeout":  5,
+                                                           "type":  "command"
+                                                       },
+                                                       {
+                                                           "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File \u0027C:\\Users\\banku\\Documents\\Personal\\Projects\\GitHub\\agent-teams\\.codex\\hooks\\block-raw-sql-dml.ps1\u0027",
+                                                           "timeout":  5,
+                                                           "type":  "command"
+                                                       },
+                                                       {
+                                                           "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File \u0027C:\\Users\\banku\\Documents\\Personal\\Projects\\GitHub\\agent-teams\\.codex\\hooks\\block-curl-delete.ps1\u0027",
+                                                           "timeout":  5,
+                                                           "type":  "command"
+                                                       },
+                                                       {
+                                                           "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File \u0027C:\\Users\\banku\\Documents\\Personal\\Projects\\GitHub\\agent-teams\\.codex\\hooks\\block-bitdefender-triggers.ps1\u0027",
+                                                           "timeout":  5,
+                                                           "type":  "command"
+                                                       },
+                                                       {
+                                                           "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File \u0027C:\\Users\\banku\\Documents\\Personal\\Projects\\GitHub\\agent-teams\\.codex\\hooks\\block-pytest-on-live-db.ps1\u0027",
+                                                           "timeout":  5,
+                                                           "type":  "command"
+                                                       }
+                                                   ],
+                                         "matcher":  "Bash"
+                                     },
+                                     {
+                                         "hooks":  [
+                                                       {
+                                                           "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File \u0027C:\\Users\\banku\\Documents\\Personal\\Projects\\GitHub\\agent-teams\\.codex\\hooks\\block-bitdefender-triggers.ps1\u0027",
+                                                           "timeout":  5,
+                                                           "type":  "command"
+                                                       }
+                                                   ],
+                                         "matcher":  "PowerShell"
+                                     },
+                                     {
+                                         "hooks":  [
+                                                       {
+                                                           "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File \u0027C:\\Users\\banku\\Documents\\Personal\\Projects\\GitHub\\agent-teams\\.codex\\hooks\\block-spawn-on-killed-project.ps1\u0027",
+                                                           "timeout":  5,
+                                                           "type":  "command"
+                                                       }
+                                                   ],
+                                         "matcher":  "Agent"
+                                     }
+                                 ]
+              }
 }

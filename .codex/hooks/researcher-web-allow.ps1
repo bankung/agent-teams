@@ -1,8 +1,8 @@
 # Auto-approves WebFetch (https-only) + WebSearch from dev-researcher subagent.
 #
-# Scoped via .claude/agents/dev-researcher.md frontmatter (PreToolUse on WebFetch + WebSearch).
+# Scoped via .codex/agents/dev-researcher.md frontmatter (PreToolUse on WebFetch + WebSearch).
 # Other roles (Lead, dev-backend, dev-frontend, dev-devops, dev-tester, dev-reviewer,
-# dev-documentor) do NOT inherit this hook — they fall through to settings.json's
+# dev-documentor) do NOT inherit this hook — they fall through to Codex's
 # normal allow/ask flow.
 #
 # Decision matrix:
@@ -10,7 +10,7 @@
 #   WebFetch + non-https URL   -> deny  (http://, file://, ftp://, anything else)
 #   WebSearch (any query)      -> allow (output is URL list, no content; the
 #                                       subsequent WebFetch goes through this hook)
-#   anything else              -> neutral (exit 0, no JSON; settings.json normal flow)
+#   anything else              -> neutral (exit 0, no JSON; normal Codex flow)
 #
 # Why https-only: researcher's role-purpose is fetching public web docs, which
 # are universally https today. http:// / file:// / ftp:// are either insecure,
@@ -33,7 +33,7 @@ if ($toolName -eq 'WebSearch') {
         hookSpecificOutput = @{
             hookEventName            = "PreToolUse"
             permissionDecision       = "allow"
-            permissionDecisionReason = "WebSearch auto-approved for dev-researcher (.claude/hooks/researcher-web-allow.ps1)"
+            permissionDecisionReason = "WebSearch auto-approved for dev-researcher (.codex/hooks/researcher-web-allow.ps1)"
         }
     } | ConvertTo-Json -Compress -Depth 4
     Write-Output $output
@@ -49,7 +49,7 @@ if ($toolName -eq 'WebFetch') {
             hookSpecificOutput = @{
                 hookEventName            = "PreToolUse"
                 permissionDecision       = "allow"
-                permissionDecisionReason = "https WebFetch auto-approved for dev-researcher (.claude/hooks/researcher-web-allow.ps1)"
+                permissionDecisionReason = "https WebFetch auto-approved for dev-researcher (.codex/hooks/researcher-web-allow.ps1)"
             }
         } | ConvertTo-Json -Compress -Depth 4
         Write-Output $output
