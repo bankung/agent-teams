@@ -33,10 +33,16 @@ Open your browser to **http://localhost:5431**
    - [DEMO] Draft 3 LinkedIn post variations about AI productivity
    - [DEMO] Summarize sample_sales.csv: top categories + 30-day trend
 
-3. Click **Run** on any task.
-4. Watch the task drawer — agents do the work in front of you.
-5. If a yellow "awaiting your input" banner appears, click it,
-   answer the question, click **Resume**.
+3. Click **Run** on any task to hand it to the headless engine — you'll see it pick up the task and post its progress in the task drawer.
+4. If a yellow "awaiting your input" banner appears, click it, answer the question, click **Resume**.
+
+> **Note:** The headless engine is in active development. It posts a plan and status updates, but full autonomous end-to-end execution (writing code, running tests) isn't live yet via the browser button. To see agents actually do real work today, use the Claude Code path below.
+
+## Real end-to-end work — use Claude Code or Codex
+
+The browser board is great for creating, managing, and tracking tasks. For agents to actually execute work (write code, run tests, make commits), drive them from a terminal session:
+
+→ **[CLAUDE-CODE-START.md](CLAUDE-CODE-START.md)** — open this repo in Claude Code or OpenAI Codex, tell the Lead which project to work on, and it orchestrates the specialists end-to-end. This is the production path today.
 
 ## Create your own project
 
@@ -44,7 +50,7 @@ Open your browser to **http://localhost:5431**
 2. Give it a name (e.g., "my-first-project").
 3. Pick a domain (dev / content / data / general).
 4. Create your first task (e.g., "write a React button component").
-5. Click **Run** and watch the agents work.
+5. Track progress on the board; for real execution, open a Claude Code session pointed at this project (see [CLAUDE-CODE-START.md](CLAUDE-CODE-START.md)).
 
 ## When things look stuck
 
@@ -72,6 +78,6 @@ Then restart your Claude Code session.
 ## For more
 
 - **Power features:** see [USAGE-POWER.md](USAGE-POWER.md) — queuing, auto-mode, parallel agents, mobile remote access, multi-project workflows.
-- **Claude Code (advanced):** see [CLAUDE-CODE-START.md](CLAUDE-CODE-START.md) — direct agent control from your terminal.
+- **Claude Code (recommended for real work):** see [CLAUDE-CODE-START.md](CLAUDE-CODE-START.md) — direct agent control from your terminal.
 - **Technical details:** see `README.md` (Docker, config, API).
 - **Bug reports:** open an issue or email bankung99@gmail.com.

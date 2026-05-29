@@ -44,7 +44,7 @@ This binding is critical — it tells Lead which agents to spawn, which standard
 Once you're in a Claude Code session bound to a project, you can:
 
 - **Queue multiple tasks** — add tasks to the Kanban in parallel, Lead picks them up in order
-- **Auto-mode pickup** — flip a task's `run_mode` from manual to `auto_pickup` in the Kanban; headless agent runs it while you sleep
+- **Auto-mode pickup** — flip a task's `run_mode` from manual to `auto_pickup` in the Kanban; the headless engine picks it up with no terminal open — note this engine is **in active development** (it posts a plan and status updates; full autonomous execution isn't live yet)
 - **Parallel spawns** — request "backend and frontend work on this together" and watch agents execute in parallel
 - **Multi-project** — switch to a different project mid-session; Lead re-bootstraps and picks up the new project's context
 

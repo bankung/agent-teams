@@ -6,7 +6,7 @@ Five advanced capabilities that unlock faster workflows.
 
 **What it does:** Add N tasks to the Kanban in rapid succession; Lead picks them up and queues them automatically.
 
-**When to use:** You have 3–5 distinct pieces of work to hand off (backend API, frontend UI, test coverage, etc.). Instead of waiting for each agent to finish, queue them all, then the headless engine runs them in order.
+**When to use:** You have 3–5 distinct pieces of work to hand off (backend API, frontend UI, test coverage, etc.). Queue them all on the board, then work through them — either driven from a Claude Code / Codex session (the path that executes for real today), or by flipping `run_mode=auto_pickup` to hand them to the headless engine (see feature #2 for that engine's current status).
 
 **Example:**
 ```
@@ -15,35 +15,40 @@ In the Kanban UI, create 3 tasks:
   2. Frontend: Build login form + validation
   3. Tester: E2E test login flow
 
-Click "Run" on each (or set run_mode=auto_pickup on all).
-Lead + agents work in parallel; you check back in 20 minutes.
+Option A (works today): Open a Claude Code session, tell Lead "work through
+the queued tasks" — Lead picks them up in order, one at a time.
+Option B (in development): Click "Run" on each (or set run_mode=auto_pickup)
+to hand them to the headless engine; see feature #2 for current limitations.
 ```
 
 **Gotcha:** Tasks don't parallelize UNLESS you explicitly request it (see feature #3). Queued tasks run sequentially by default — agent 1 finishes, then agent 2 picks up its task.
 
 ---
 
-## 2. Auto-mode (headless agent pickup)
+## 2. Auto-mode (headless agent pickup) — in active development
 
-**What it does:** Flip a task from `run_mode=manual` to `run_mode=auto_pickup` in the Kanban drawer. The headless `langgraph` container picks it up, runs through the full agent loop, and updates the task — no Claude Code session needed.
+**What it does:** Flip a task from `run_mode=manual` to `run_mode=auto_pickup` in the Kanban drawer. The headless `langgraph` container picks it up and runs through a supervisor → specialist graph — no Claude Code session needed.
 
-**When to use:** Overnight runs, routine maintenance, or any task you trust the agent to handle without approval prompts on every file write.
+**Status:** This engine is **in active development**. Today it posts a plan and status updates to the task, and checkpoints its state in Postgres so runs are resumable. Full autonomous end-to-end execution (writing code, running tests, making commits) is not live yet. For real end-to-end work, use the Claude Code / Codex path (feature #3, or [CLAUDE-CODE-START.md](CLAUDE-CODE-START.md)).
+
+**When to use (once mature):** Overnight runs, routine maintenance, or any task you trust the agent to handle without approval prompts on every file write.
 
 **Example:**
 ```
 In the Kanban board, open a task drawer.
 Click the "Run" button (or manually set run_mode=auto_pickup).
-Close the terminal. The langgraph service polls and executes.
-Check back in the morning — task status updated to DONE (or REVIEW if human input needed).
+Close the terminal. The langgraph service polls and posts progress.
+If the engine needs your input, a "question" task appears in the UI —
+answer it and click Resume; the agent picks up from its checkpoint.
 ```
 
-**Gotcha:** Auto-mode runs the headless LangGraph engine, not a Claude Code session. The agent still prompts for approval on sensitive writes, but the prompt lands as a "question" task in the Kanban rather than a blocking CLI prompt. You then answer the question in the UI, and the agent resumes from a checkpoint.
+**Gotcha:** Auto-mode runs the headless LangGraph engine, not a Claude Code session. Approval prompts land as "question" tasks in the Kanban rather than blocking CLI prompts, which is convenient — but because the execution layer is still being built out, treat results as drafts to review rather than finished work.
 
 ---
 
 ## 3. Parallel agent spawns
 
-**What it does:** Ask Lead to spawn multiple specialist agents on the same task at the same time (e.g., backend + frontend + reviewer all working on one feature).
+**What it does:** Ask Lead to spawn multiple specialist agents on the same task at the same time (e.g., backend + frontend + reviewer all working on one feature). This runs via an interactive Claude Code or Codex session — it is the path that executes for real today.
 
 **When to use:** You have a task with clear role boundaries (API design, UI, tests) and want them done together, not sequentially.
 
