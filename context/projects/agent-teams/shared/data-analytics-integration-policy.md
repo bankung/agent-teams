@@ -22,7 +22,7 @@ This is the same v1 posture as the SEO + SEM teams; the integration-policy conce
 
 ## Credential storage — where secrets actually live
 
-**Rule 0 — secrets NEVER in chat / Kanban / git.** Per the standing hidden-agenda + lock-code-hygiene discipline + `feedback_recommend_not_execute.md`: a subagent that needs a credential value asks the operator inline; the operator pastes it into an environment variable; the subagent reads `$env:VAR_NAME` and never echoes it back into output. Logs / Kanban-task descriptions / spec docs reference credential NAMES only (`ANALYTICS_GA4_SERVICE_ACCOUNT_JSON_PATH`), never values.
+**Rule 0 — secrets NEVER in chat / Kanban / git.** Per the standing secret-hygiene discipline + `feedback_recommend_not_execute.md`: a subagent that needs a credential value asks the operator inline; the operator pastes it into an environment variable; the subagent reads `$env:VAR_NAME` and never echoes it back into output. Logs / Kanban-task descriptions / spec docs reference credential NAMES only (`ANALYTICS_GA4_SERVICE_ACCOUNT_JSON_PATH`), never values.
 
 **Rule 1 — credentials live in one of three places, ranked by risk:**
 

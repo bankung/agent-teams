@@ -674,7 +674,7 @@ Restart Docker Desktop. `vmmemWSL` will plateau at 3 GB instead of expanding to 
 - **Phase 3** — Compose footprint slim. `next dev` → `next build && next start` profile; pipeline `--reload` off in `prod` profile; consolidate any remaining Redis duplication; drop Claude Code CLI from worker image if worker becomes non-AI (depends on Phase 4 outcome).
 - **Phase 4** — `claude -p` subprocess → direct Anthropic / Gemini API. Gated by Kanban #1100 (Gemini Flash-Lite bench result). Motivated by recurring credential-refresh pain (#1036). APScheduler in-process to retire the worker container is bundled in Phase 4.
 
-**Phase 5 (Vercel + Neon + Fly.io) — explicitly out of scope this round.** Defer to the mobile/arena timeline.
+**Phase 5 (Vercel + Neon + Fly.io) — explicitly out of scope this round.** Defer to the mobile timeline.
 
 **Acceptance criteria (from #1226):**
 

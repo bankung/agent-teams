@@ -209,7 +209,7 @@ What operator MEANS by "safe" vs what the category map encodes — likely to dri
 
 ## Cross-references
 
-- `agent-teams/shared/session-review-2026-05-17.md` W4 — origin of this design
+- Originated in the 2026-05-17 session review (W4).
 - `langgraph/tools/permission_gate.py` — existing tool-tier gate (Gate 1)
 - `langgraph/hitl.py` — HITL infrastructure (#950) that Gate 2 queues into
 - `api/src/services/cost_tracker.py` — cost estimate source (#944)

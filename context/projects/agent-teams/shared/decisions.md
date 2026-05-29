@@ -16,6 +16,16 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-29 — Public-repo hygiene: removed internal working notes + pre-push keyword guard — Kanban #1637
+**Scope:** shared / privacy
+
+**Decision:** Removed a few dated internal working notes and genericized some incidental references that carried early-stage private planning detail not intended for a public repository. Chose edit-forward remediation (remove/genericize at HEAD + add a prevention hook) over a git-history rewrite + force-push — the rewrite would break active worktrees/clones and offers diminishing returns (rewrite is not a full guarantee against caches/forks).
+
+**Implications:**
+- Internal/early-stage planning notes stay in the DB + local-only zones, never in tracked repo files.
+- A pre-push keyword guard now blocks pushes that would reintroduce the flagged terms into tracked files.
+- Prior content remains in git history; a future history-rewrite stays available if ever warranted.
+
 ## 2026-05-28 — api suite determinism: triage closed, 0051 downgrade regression fixed, concurrent-invocation lock added — Kanban #1599
 **Scope:** qa / backend / shared
 
@@ -257,7 +267,7 @@ L1 catches shell invocations; L2 makes silent failures loud; L3 closes the lru_c
 
 **Integration with #944:** Task close (process_status → 5) auto-inserts cost transaction (`kind=cost`, `category=llm_<provider>`, `source=estimated`, `source_ref=task-{id}-close`). Idempotent via same `estimated_cost_usd is None` precondition. Skipped when cost=0 (ollama / unmetered).
 
-**Reasoning:** Per-project cost tracking (#944) gave one side; revenue + expense + ledger view needs the other side. Arena vision (autonomous earning) needs P&L per project to evaluate which experiments make money. Migration 0032.
+**Reasoning:** Per-project cost tracking (#944) gave one side; revenue + expense + ledger view needs the other side. Per-project P&L lets the operator evaluate which projects are worth continued investment. Migration 0032.
 
 **Implications:**
 - Cross-project leakage guarded: X-Project-Id mismatch → 404 on /pl + /export; 400 on transactions POST body project_id mismatch
