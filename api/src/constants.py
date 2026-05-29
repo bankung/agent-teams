@@ -82,8 +82,9 @@ class ProjectTeam:
     SEO = "seo"
     DATA_ANALYTICS = "data-analytics"
     SEM = "sem"
+    NETOPS = "netops"
 
-    ALL = (DEV, NOVEL, GENERAL, CONTENT, SEO, DATA_ANALYTICS, SEM)
+    ALL = (DEV, NOVEL, GENERAL, CONTENT, SEO, DATA_ANALYTICS, SEM, NETOPS)
 
 
 # Per-team scaffold roster — the SINGLE source for which dedicated agents own a
@@ -147,6 +148,7 @@ TEAM_ROSTERS: dict[str, tuple[str, ...]] = {
         "meta-ads-specialist",
         "platform-ads-coordinator",
     ),
+    ProjectTeam.NETOPS: ("netops-monitoring-reader",),
     ProjectTeam.DATA_ANALYTICS: (
         "bi-analyst",
         "sql-optimizer",
