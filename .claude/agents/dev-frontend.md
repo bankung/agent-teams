@@ -60,7 +60,7 @@ Lead may pre-load the skill from the parent session and pass design direction in
 After ANY edit under `web/app/**` or `web/components/**`, you **must not report done** until the smoke loop confirms the dev server picked up your changes. The Next.js file-watcher silently misses Windows-host bind-mount edits — `tsc --noEmit` passing is NOT sufficient.
 
 Loop:
-1. `docker compose exec -T web npx tsc --noEmit` → exit 0, no output
+1. `docker compose exec -T web npx tsc --noEmit` → exit 0, no output. (Lint gate, since 2026-05-30: `docker compose -p agent-teams exec -T web npm run lint` now runs non-interactively — `web/.eslintrc.json` extends next/core-web-vitals; expect clean or pre-existing warnings only.)
 2. `curl http://localhost:5431/<route>` (or PowerShell `Invoke-WebRequest`) — grep for a distinctive string from your edit
 3. If new content is NOT in the response → `docker compose -p agent-teams restart web`, wait for "ready on" log, re-fetch
 4. Repeat until the response carries your edit; only then report done
