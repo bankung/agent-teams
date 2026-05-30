@@ -26,12 +26,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  HttpError,
   getIntegrations,
   setIntegrationEnabled,
   type Integration,
   type PlatformSecurity,
 } from "@/lib/api";
+import { extractErrorMessage } from "@/lib/errors";
 import { Icon } from "./Icon";
 
 // ---------------------------------------------------------------------------
@@ -269,13 +269,7 @@ export function PlatformSettingsModal() {
       setPlatformSecurity(platform_security);
       setLoadState("ready");
     } catch (err: unknown) {
-      setLoadError(
-        err instanceof HttpError
-          ? err.message
-          : err instanceof Error
-            ? err.message
-            : "Failed to load integrations",
-      );
+      setLoadError(extractErrorMessage(err, "Failed to load integrations"));
       setLoadState("error");
     }
   }, []);
@@ -325,13 +319,7 @@ export function PlatformSettingsModal() {
         setIntegrations((prev) =>
           prev.map((it) => (it.id === id ? original : it)),
         );
-        setToggleError(
-          err instanceof HttpError
-            ? `${original.label}: ${err.message}`
-            : err instanceof Error
-              ? `${original.label}: ${err.message}`
-              : `${original.label}: toggle failed`,
-        );
+        setToggleError(`${original.label}: ${extractErrorMessage(err, "toggle failed")}`);
       } finally {
         setBusyIds((prev) => {
           const nextSet = new Set(prev);

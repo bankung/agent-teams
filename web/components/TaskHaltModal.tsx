@@ -13,6 +13,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { ModalShell } from "./ModalShell";
+
 type Props = {
   open: boolean;
   submitting: boolean;
@@ -34,18 +36,11 @@ export function TaskHaltModal({
   useEffect(() => {
     if (!open) return;
     requestAnimationFrame(() => fieldRef.current?.focus());
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !submitting) onCancel();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, submitting, onCancel]);
+  }, [open]);
 
   useEffect(() => {
     if (!open) setReason("");
   }, [open]);
-
-  if (!open) return null;
 
   const reasonValid = reason.trim().length >= 1;
   const canSubmit = !submitting && reasonValid;
@@ -57,20 +52,13 @@ export function TaskHaltModal({
   }
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="task-halt-title"
-      data-task-halt-modal
-      className="fixed inset-0 z-50 flex items-stretch justify-center bg-zinc-900/40 dark:bg-zinc-950/70 sm:items-center sm:px-4"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget && !submitting) onCancel();
-      }}
+    <ModalShell
+      open={open}
+      onClose={() => { if (!submitting) onCancel(); }}
+      labelledBy="task-halt-title"
+      backdropProps={{ "data-task-halt-modal": true }}
     >
-      <form
-        onSubmit={onSubmit}
-        className="flex w-full max-w-none flex-col overflow-y-auto rounded-none border-0 bg-white p-4 dark:bg-zinc-900 sm:h-auto sm:max-w-md sm:overflow-visible sm:rounded sm:border sm:border-zinc-200 sm:dark:border-zinc-800"
-      >
+      <form onSubmit={onSubmit}>
         <h2
           id="task-halt-title"
           className="text-sm font-semibold uppercase tracking-wide text-zinc-900 dark:text-zinc-100"
@@ -129,6 +117,6 @@ export function TaskHaltModal({
           </button>
         </div>
       </form>
-    </div>
+    </ModalShell>
   );
 }

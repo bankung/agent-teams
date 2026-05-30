@@ -18,10 +18,10 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 import {
-  HttpError,
   updateProject,
   type ProjectRead,
 } from "@/lib/api";
+import { extractErrorMessage } from "@/lib/errors";
 
 type Props = {
   project: ProjectRead;
@@ -80,13 +80,7 @@ export function ProjectSettingsPanel({ project }: Props) {
       // Refresh the server component so subsequent reads see the new value.
       router.refresh();
     } catch (err: unknown) {
-      const msg =
-        err instanceof HttpError
-          ? err.message
-          : err instanceof Error
-            ? err.message
-            : "Save failed";
-      setError(msg);
+      setError(extractErrorMessage(err, "Save failed"));
     } finally {
       setSaving(false);
     }

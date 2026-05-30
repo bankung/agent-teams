@@ -16,7 +16,6 @@ import {
 import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 
 import {
-  HttpError,
   patchTask,
   reorderTask,
   type ProjectRead,
@@ -25,6 +24,7 @@ import {
 } from "@/lib/api";
 import { TaskStatus, type TaskStatusValue } from "@/lib/constants";
 import { readEnabledRoles } from "@/lib/enabledRoles";
+import { extractErrorMessage } from "@/lib/errors";
 import { sortDoneLane, sortLaneTasks } from "@/lib/sortLaneTasks";
 import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
 import { BoardColumn } from "@/components/BoardColumn";
@@ -313,7 +313,7 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
             setTasks((prev) =>
               prev.map((t) => (t.id === taskId ? original : t)),
             );
-            const msg = err instanceof Error ? err.message : "Update failed";
+            const msg = extractErrorMessage(err, "Update failed");
             pushToast(`Task #${taskId}: ${msg}`);
           });
         return;
@@ -340,12 +340,7 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
           setTasks((prev) => prev.map((t) => (t.id === taskId ? server : t)));
         })
         .catch((err: unknown) => {
-          const msg =
-            err instanceof HttpError
-              ? err.message
-              : err instanceof Error
-                ? err.message
-                : "Reorder failed";
+          const msg = extractErrorMessage(err, "Reorder failed");
           pushToast(`Task #${taskId}: ${msg}`);
         });
     },

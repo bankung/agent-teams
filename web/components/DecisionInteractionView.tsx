@@ -21,6 +21,7 @@ import {
   type OptionItem,
   type TaskRead,
 } from "@/lib/api";
+import { extractErrorMessage } from "@/lib/errors";
 import { OptionCard } from "./OptionCard";
 
 type Props = {
@@ -168,8 +169,7 @@ function DecisionPendingForm({
       setRationale("");
       onPatch(updated);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Decide failed";
-      onError(`Task #${task.id}: ${msg}`);
+      onError(`Task #${task.id}: ${extractErrorMessage(err, "Decide failed")}`);
     } finally {
       setSubmitting(false);
     }

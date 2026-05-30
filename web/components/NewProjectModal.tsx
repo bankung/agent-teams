@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { createProject, getTeams, HttpError, type Team } from "@/lib/api";
+import { createProject, getTeams, type Team } from "@/lib/api";
 import { ProjectTeam, type ProjectTeamValue } from "@/lib/constants";
+import { extractErrorMessage } from "@/lib/errors";
 
 // Inline info-icon popover (click-toggle). No external library — uses
 // Tailwind positioning + outside-click dismiss. Reused for team + working_path.
@@ -151,11 +152,7 @@ export function NewProjectModal() {
       setWorkingRepo("");
       setTeam(ProjectTeam.DEV);
     } catch (err: unknown) {
-      if (err instanceof HttpError) {
-        setError(err.message);
-      } else {
-        setError(err instanceof Error ? err.message : "Create failed");
-      }
+      setError(extractErrorMessage(err, "Create failed"));
     } finally {
       setSubmitting(false);
     }

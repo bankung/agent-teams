@@ -26,6 +26,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { push as pushApi, type PushSubscriptionRead } from "@/lib/api";
+import { extractErrorMessage } from "@/lib/errors";
 import {
   getCurrentSubscription,
   isPushSupported,
@@ -67,11 +68,7 @@ export function PushNotificationsPanel() {
       // Don't change the master status on a list-fetch failure — the user's
       // own subscribe / unsubscribe still works; only the device list shows
       // stale. Surface as a non-blocking inline message.
-      setErrorMessage(
-        err instanceof Error
-          ? `Could not load subscription list: ${err.message}`
-          : "Could not load subscription list",
-      );
+      setErrorMessage(`Could not load subscription list: ${extractErrorMessage(err, "unknown error")}`);
     }
   }, []);
 
@@ -137,7 +134,7 @@ export function PushNotificationsPanel() {
       } catch (err) {
         setStatus("error");
         setErrorMessage(
-          err instanceof Error ? err.message : "Unsubscribe failed",
+          extractErrorMessage(err, "Unsubscribe failed"),
         );
       }
       return;
@@ -169,7 +166,7 @@ export function PushNotificationsPanel() {
       } else {
         setStatus("error");
         setErrorMessage(
-          err instanceof Error ? err.message : "Subscribe failed",
+          extractErrorMessage(err, "Subscribe failed"),
         );
       }
     }

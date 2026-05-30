@@ -20,6 +20,7 @@
 import { useEffect, useState } from "react";
 
 import { templates, type ActionTemplateRead } from "@/lib/api";
+import { extractErrorMessage } from "@/lib/errors";
 
 type Props = {
   selectedId: string | null;
@@ -45,7 +46,7 @@ export function ActionTemplatePicker({
       .catch((err: unknown) => {
         if (!cancelled) {
           setItems([]);
-          setLoadError(err instanceof Error ? err.message : "Failed to load");
+          setLoadError(extractErrorMessage(err, "Failed to load"));
         }
       });
     return () => {

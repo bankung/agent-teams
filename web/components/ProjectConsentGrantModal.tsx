@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { grantConsent } from "@/lib/api";
+import { extractErrorMessage } from "@/lib/errors";
 
 type Props = {
   project: { id: number; name: string };
@@ -52,7 +53,7 @@ export function ProjectConsentGrantModal({ project }: Props) {
       setOpen(false);
       setTyped("");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Grant failed");
+      setError(extractErrorMessage(err, "Grant failed"));
     } finally {
       setSubmitting(false);
     }

@@ -2,6 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { extractErrorMessage } from "@/lib/errors";
+import { ModalShell } from "./ModalShell";
+
 // Kanban #1212 GOV4 — extra-friction modal for the "Terminate" action on an
 // GOV3 audit flag (single-flag mode) or a batch of flags (mass mode).
 //
@@ -60,13 +63,7 @@ export function TerminateFlagModal({
   useEffect(() => {
     if (!open) return;
     requestAnimationFrame(() => firstInputRef.current?.focus());
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !submitting) close();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, submitting]);
+  }, [open]);
 
   function close() {
     if (submitting) return;
@@ -97,30 +94,23 @@ export function TerminateFlagModal({
       setReason("");
       setTypedConfirm("");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "terminate failed");
+      setError(extractErrorMessage(err, "terminate failed"));
     } finally {
       setSubmitting(false);
     }
   }
 
-  if (!open) return null;
-
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="terminate-flag-title"
-      className="fixed inset-0 z-50 flex items-stretch justify-center bg-zinc-900/40 dark:bg-zinc-950/70 sm:items-center sm:px-4"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) close();
+    <ModalShell
+      open={open}
+      onClose={close}
+      labelledBy="terminate-flag-title"
+      backdropProps={{
+        "data-terminate-flag-modal": true,
+        "data-terminate-flag-mode": isMass ? "mass" : "single",
       }}
-      data-terminate-flag-modal
-      data-terminate-flag-mode={isMass ? "mass" : "single"}
     >
-      <form
-        onSubmit={handleSubmit}
-        className="flex w-full max-w-none flex-col overflow-y-auto rounded-none border-0 bg-white p-4 dark:bg-zinc-900 sm:h-auto sm:max-w-md sm:overflow-visible sm:rounded sm:border sm:border-zinc-200 sm:dark:border-zinc-800"
-      >
+      <form onSubmit={handleSubmit}>
         <h2
           id="terminate-flag-title"
           className="text-sm font-semibold uppercase tracking-wide text-red-700 dark:text-red-400"
@@ -254,6 +244,6 @@ export function TerminateFlagModal({
           </button>
         </div>
       </form>
-    </div>
+    </ModalShell>
   );
 }

@@ -4,11 +4,11 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import {
-  HttpError,
   pauseProject,
   unpauseProject,
   type ProjectRead,
 } from "@/lib/api";
+import { extractErrorMessage } from "@/lib/errors";
 
 // Kanban #1211 / #1238 GOV3 (FE) — soft-pause confirmation modal. Single
 // component handles BOTH pause + unpause flows via the `mode` prop. Lighter
@@ -113,11 +113,7 @@ export function PauseProjectModal({
       onExternalClose?.();
       setReason("");
     } catch (err: unknown) {
-      if (err instanceof HttpError) {
-        setError(err.message);
-      } else {
-        setError(err instanceof Error ? err.message : `${mode} failed`);
-      }
+      setError(extractErrorMessage(err, `${mode} failed`));
     } finally {
       setSubmitting(false);
     }

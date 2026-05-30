@@ -40,6 +40,7 @@ import {
   type TaskRead,
 } from "@/lib/api";
 import { TaskStatus } from "@/lib/constants";
+import { extractErrorMessage } from "@/lib/errors";
 import { TaskActionButtons } from "./TaskActionButtons";
 import { TaskHaltModal } from "./TaskHaltModal";
 import { TaskRejectModal } from "./TaskRejectModal";
@@ -222,7 +223,7 @@ export function TaskFocusView({ task: initialTask, project, actionHint }: Props)
       }
       onSuccessRedirect("Task approved");
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Approve failed";
+      const msg = extractErrorMessage(err, "Approve failed");
       setInlineError(msg);
     } finally {
       setSubmitting(false);
@@ -251,7 +252,7 @@ export function TaskFocusView({ task: initialTask, project, actionHint }: Props)
       }
       onSuccessRedirect(`Chose: ${option.label}`);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Decision failed";
+      const msg = extractErrorMessage(err, "Decision failed");
       setInlineError(msg);
     } finally {
       setSubmitting(false);
@@ -288,7 +289,7 @@ export function TaskFocusView({ task: initialTask, project, actionHint }: Props)
       setRejectOpen(false);
       onSuccessRedirect("Task rejected");
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Reject failed";
+      const msg = extractErrorMessage(err, "Reject failed");
       setInlineError(msg);
     } finally {
       setSubmitting(false);
@@ -309,7 +310,7 @@ export function TaskFocusView({ task: initialTask, project, actionHint }: Props)
       setHaltOpen(false);
       onSuccessRedirect("Task halted");
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Halt failed";
+      const msg = extractErrorMessage(err, "Halt failed");
       setInlineError(msg);
     } finally {
       setSubmitting(false);

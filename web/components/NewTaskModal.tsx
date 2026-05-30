@@ -11,15 +11,19 @@ import {
   type TaskCreateBody,
 } from "@/lib/api";
 import {
+  PRIORITY_OPTIONS,
+  REASON_MIN_CHARS,
+  ROLE_OPTIONS,
   TaskPriority,
-  TaskRole,
   TaskStatus,
   type TaskPriorityValue,
   type TaskRoleValue,
   type TaskStatusValue,
 } from "@/lib/constants";
 import { filterRoleOptions } from "@/lib/enabledRoles";
+import { extractErrorMessage } from "@/lib/errors";
 import { ActionTemplatePicker } from "./ActionTemplatePicker";
+import { PauseOverrideBlock } from "./PauseOverrideBlock";
 import { HandoffTemplatePicker } from "./HandoffTemplatePicker";
 import { Icon } from "./Icon";
 
@@ -48,26 +52,6 @@ const LANE_OPTIONS: LaneOption[] = [
   { value: TaskStatus.DONE, label: "Done" },
 ];
 
-type PriorityOption = { value: TaskPriorityValue; label: string };
-
-const PRIORITY_OPTIONS: PriorityOption[] = [
-  { value: TaskPriority.URGENT, label: "Urgent" },
-  { value: TaskPriority.HIGH, label: "High" },
-  { value: TaskPriority.NORMAL, label: "Normal" },
-  { value: TaskPriority.LOW, label: "Low" },
-];
-
-type RoleOption = { value: "" | TaskRoleValue; label: string };
-
-const ROLE_OPTIONS: RoleOption[] = [
-  { value: "", label: "— unassigned —" },
-  { value: TaskRole.FRONTEND, label: "Frontend" },
-  { value: TaskRole.BACKEND, label: "Backend" },
-  { value: TaskRole.DEVOPS, label: "DevOps" },
-  { value: TaskRole.QA, label: "QA" },
-  { value: TaskRole.REVIEWER, label: "Reviewer" },
-  { value: TaskRole.SECURITY_REVIEWER, label: "Security Reviewer" },
-];
 
 type Props = {
   projectId: number;
@@ -84,9 +68,6 @@ type Props = {
   onPushToast?: (text: string) => void;
 };
 
-// #1238 GOV3 — minimum length for the per-task pause-override reason. Mirrors
-// the BE schema (api/src/schemas/task.py — Field(min_length=10)).
-const ALLOW_DURING_PAUSE_REASON_MIN_CHARS = 10;
 
 export function NewTaskModal({
   projectId,
@@ -191,7 +172,7 @@ export function NewTaskModal({
   const overrideReasonValid =
     !isProjectPaused ||
     !allowDuringPause ||
-    trimmedOverrideReason.length >= ALLOW_DURING_PAUSE_REASON_MIN_CHARS;
+    trimmedOverrideReason.length >= REASON_MIN_CHARS;
   const canSubmit =
     !submitting && titleValid && blockedByValid && overrideReasonValid;
 
@@ -253,7 +234,7 @@ export function NewTaskModal({
           setError(err.message);
         }
       } else {
-        setError(err instanceof Error ? err.message : "Create failed");
+        setError(extractErrorMessage(err, "Create failed"));
       }
     } finally {
       setSubmitting(false);
@@ -443,65 +424,19 @@ export function NewTaskModal({
               disabled={submitting}
             />
 
-            {/* #1238 GOV3 — paused-project override. Only rendered when the
-                operator is filing a task against a currently-paused project;
-                hidden entirely otherwise so the form chrome stays minimal.
-                When checked, reveals a reason textarea (>=10 chars) that the
-                BE requires alongside allow_during_pause=true. */}
+            {/* #1238 GOV3 — paused-project override (E3: extracted to PauseOverrideBlock). */}
             {isProjectPaused && (
-              <div
-                className="mt-3 rounded border border-amber-300 bg-amber-50 px-2 py-1.5 dark:border-amber-600 dark:bg-amber-950/40"
-                data-new-task-pause-override
-              >
-                <label className="flex items-start gap-2 text-xs font-medium text-amber-900 dark:text-amber-200">
-                  <input
-                    type="checkbox"
-                    checked={allowDuringPause}
-                    onChange={(e) => {
-                      setAllowDuringPause(e.target.checked);
-                      if (error !== null) setError(null);
-                    }}
-                    disabled={submitting}
-                    className="mt-0.5 h-4 w-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500 dark:border-amber-600 dark:bg-zinc-950"
-                    data-new-task-pause-override-toggle
-                  />
-                  <span className="flex-1">
-                    Allow this task during pause{" "}
-                    <span className="font-normal opacity-80">
-                      (project is paused — POST will 423 without this)
-                    </span>
-                  </span>
-                </label>
-                {allowDuringPause && (
-                  <label className="mt-2 block text-xs font-medium text-amber-900 dark:text-amber-200">
-                    Reason{" "}
-                    <span className="font-normal opacity-80">
-                      (≥{ALLOW_DURING_PAUSE_REASON_MIN_CHARS} chars)
-                    </span>{" "}
-                    <span className="text-red-600 dark:text-red-400">*</span>
-                    <textarea
-                      value={allowDuringPauseReason}
-                      onChange={(e) => {
-                        setAllowDuringPauseReason(e.target.value);
-                        if (error !== null) setError(null);
-                      }}
-                      rows={2}
-                      placeholder="Why is this task required despite the pause? Captured into projects_audit (action='pause_override')."
-                      disabled={submitting}
-                      aria-invalid={
-                        allowDuringPauseReason.length > 0 &&
-                        !overrideReasonValid
-                      }
-                      className="mt-1 block w-full rounded border border-amber-300 bg-white px-2 py-1 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-amber-500 focus:outline-none disabled:opacity-50 dark:border-amber-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500"
-                      data-new-task-pause-override-reason
-                    />
-                    <span className="mt-0.5 block text-[10px] tabular-nums opacity-80">
-                      {trimmedOverrideReason.length}/
-                      {ALLOW_DURING_PAUSE_REASON_MIN_CHARS}
-                    </span>
-                  </label>
-                )}
-              </div>
+              <PauseOverrideBlock
+                allowDuringPause={allowDuringPause}
+                setAllowDuringPause={setAllowDuringPause}
+                allowDuringPauseReason={allowDuringPauseReason}
+                setAllowDuringPauseReason={setAllowDuringPauseReason}
+                disabled={submitting}
+                onClearError={() => { if (error !== null) setError(null); }}
+                trimmedOverrideReason={trimmedOverrideReason}
+                overrideReasonValid={overrideReasonValid}
+                dataPrefix="new-task"
+              />
             )}
 
             {error !== null && (

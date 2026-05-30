@@ -4,11 +4,11 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import {
-  HttpError,
   killProject,
   reviveProject,
   type ProjectRead,
 } from "@/lib/api";
+import { extractErrorMessage } from "@/lib/errors";
 
 // Kanban #1209 GOV1 (D5) — hard kill switch confirmation modal. Single
 // component handles BOTH kill + revive flows via the `mode` prop:
@@ -156,11 +156,7 @@ export function KillProjectModal({
       setForceMode(false);
       setForceConfirmStage(false);
     } catch (err: unknown) {
-      if (err instanceof HttpError) {
-        setError(err.message);
-      } else {
-        setError(err instanceof Error ? err.message : `${mode} failed`);
-      }
+      setError(extractErrorMessage(err, `${mode} failed`));
     } finally {
       setSubmitting(false);
     }
