@@ -14,7 +14,6 @@ The contract is intentionally narrower than `git commit`:
 
 from __future__ import annotations
 
-import asyncio
 import re
 
 from pydantic import Field
@@ -102,13 +101,12 @@ class GitCommitTool(Tool):
                 )
 
         # Stage. Use `git add --` to be sure paths aren't parsed as flags.
-        try:
-            add_out = await run_git(
-                ["add", "--", *input_obj.paths],
-                cwd=context.repo_root,
-                timeout_sec=self.timeout_sec,
-            )
-        except asyncio.TimeoutError:
+        add_out = await run_git(
+            ["add", "--", *input_obj.paths],
+            cwd=context.repo_root,
+            timeout_sec=self.timeout_sec,
+        )
+        if add_out.timed_out:
             return ToolResult(
                 success=False,
                 error_code="timeout",
@@ -126,13 +124,12 @@ class GitCommitTool(Tool):
 
         # Commit. `--only --` restricts to the listed paths so any incidentally
         # staged file outside `paths` isn't pulled in.
-        try:
-            commit_out = await run_git(
-                ["commit", "--only", "-m", input_obj.message, "--", *input_obj.paths],
-                cwd=context.repo_root,
-                timeout_sec=self.timeout_sec,
-            )
-        except asyncio.TimeoutError:
+        commit_out = await run_git(
+            ["commit", "--only", "-m", input_obj.message, "--", *input_obj.paths],
+            cwd=context.repo_root,
+            timeout_sec=self.timeout_sec,
+        )
+        if commit_out.timed_out:
             return ToolResult(
                 success=False,
                 error_code="timeout",

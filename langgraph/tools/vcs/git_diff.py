@@ -7,8 +7,6 @@ caller (specialist node) is expected to reason about size.
 
 from __future__ import annotations
 
-import asyncio
-
 from pydantic import Field
 
 from ..base import InvokeContext, Tier, Tool, ToolInput, ToolResult
@@ -45,9 +43,8 @@ class GitDiffTool(Tool):
         if input_obj.paths is not None:
             args.append("--")
             args.extend(input_obj.paths)
-        try:
-            out = await run_git(args, cwd=context.repo_root, timeout_sec=self.timeout_sec)
-        except asyncio.TimeoutError:
+        out = await run_git(args, cwd=context.repo_root, timeout_sec=self.timeout_sec)
+        if out.timed_out:
             return ToolResult(
                 success=False,
                 error_code="timeout",

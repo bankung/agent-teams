@@ -19,8 +19,15 @@ feature-flagged OFF, see `tools/http/__init__.py`). Permission gate in
 #979; audit trail in #980; sandbox enforcement in #981.
 """
 
-from .base import InvokeContext, Tier, Tool, ToolInput, ToolResult
-from .iteration_limit import MAX_TOOL_LOOP_ITERATIONS, TOOL_LOOP_HALT_REASON
+from .base import (
+    InvokeContext,
+    MAX_TOOL_LOOP_ITERATIONS,
+    TOOL_LOOP_HALT_REASON,
+    Tier,
+    Tool,
+    ToolInput,
+    ToolResult,
+)
 from .permission_gate import PermissionDecision, check_permission
 from .registry import GLOBAL_REGISTRY, ToolNotFoundError, ToolRegistry
 from .sandbox import (
