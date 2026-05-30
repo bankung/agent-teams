@@ -21,8 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.constants import RecordStatus
-from src.db import get_or_404, get_session
+from src.db import get_active_project_or_404, get_or_404, get_session
 from src.models.project import Project
 from src.models.transaction import Transaction
 from src.schemas.transaction import (
@@ -58,19 +57,12 @@ async def _resolve_project_or_404(
 ) -> Project:
     """Look up the project. 404 if missing OR soft-deleted (status != ACTIVE).
 
-    Mirrors webhooks.py::_resolve_project_or_404 (Kanban #1374 S1). Added in
-    #1403 M2 — soft-deleted projects must not silently serve or accept
-    transaction rows.
+    Thin wrapper around db.get_active_project_or_404 that preserves the
+    source-text-locked detail string (Kanban #1682 Phase 1 dedup).
     """
-    stmt = (
-        select(Project)
-        .where(Project.id == project_id)
-        .where(Project.status == RecordStatus.ACTIVE)
+    return await get_active_project_or_404(
+        session, project_id, detail=_DETAIL_PROJECT_NOT_FOUND
     )
-    project = (await session.execute(stmt)).scalar_one_or_none()
-    if project is None:
-        raise HTTPException(status_code=404, detail=_DETAIL_PROJECT_NOT_FOUND)
-    return project
 
 
 @router.get("", response_model=list[TransactionRead])

@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from src.constants import RecordStatus
 from src.settings import get_settings
 
 ModelT = TypeVar("ModelT")
@@ -90,3 +91,30 @@ async def get_or_404(
     if obj is None:
         raise HTTPException(status_code=404, detail=detail)
     return obj
+
+
+async def get_active_project_or_404(
+    session: AsyncSession,
+    project_id: int,
+    *,
+    detail: str | None = None,
+) -> Any:
+    """Fetch the project row; 404 on missing OR soft-deleted (status != ACTIVE).
+
+    Extracted from the three inline copies in kill_switch.py / transactions.py /
+    webhooks.py (Kanban #1682 Phase 1 dedup). Each call site passes its own
+    `detail` string so source-text-locked wire responses remain unchanged.
+
+    `detail` defaults to `"Project id={project_id} not found"`.
+    """
+    from src.models.project import Project  # late import — avoids circular at db.py level
+
+    resolved_detail = detail if detail is not None else f"Project id={project_id} not found"
+    stmt = select(Project).where(
+        Project.id == project_id,
+        Project.status == RecordStatus.ACTIVE,
+    )
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail=resolved_detail)
+    return row

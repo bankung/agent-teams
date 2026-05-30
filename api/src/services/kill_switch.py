@@ -53,6 +53,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.constants import RecordStatus, TaskStatus
+from src.db import get_active_project_or_404
 from src.models.project import Project
 from src.models.projects_audit import ProjectsAudit
 from src.models.task import Task
@@ -358,23 +359,14 @@ async def revive_project(
     }
 
 
+# Backward-compat alias — pause_switch.py imports this name from kill_switch.
+# The implementation now lives in db.get_active_project_or_404 (Kanban #1682).
 async def _get_active_project_or_404(
     session: AsyncSession, project_id: int
 ) -> Project:
     """Fetch the project row; 404 on missing OR soft-deleted.
 
-    Mirrors the `get_or_404(... status=RecordStatus.ACTIVE)` pattern in
-    `routers/projects.py::get_project_by_id`. Inlined here (rather than
-    calling `get_or_404`) so the service layer has no router dependency.
+    Delegates to db.get_active_project_or_404 — kept here so pause_switch.py
+    can continue to import it from this module without change.
     """
-    stmt = select(Project).where(
-        Project.id == project_id,
-        Project.status == RecordStatus.ACTIVE,
-    )
-    row = (await session.execute(stmt)).scalar_one_or_none()
-    if row is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Project id={project_id} not found",
-        )
-    return row
+    return await get_active_project_or_404(session, project_id)

@@ -60,7 +60,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.constants import RecordStatus
-from src.db import get_session
+from src.db import get_active_project_or_404, get_session
 from src.models.credential import CredentialAccessLog, ProjectCredential
 from src.models.project import Project
 from src.models.transaction import Transaction
@@ -110,21 +110,14 @@ async def _resolve_project_or_404(
 ) -> Project:
     """Look up the project. 404 if missing OR soft-deleted (status != ACTIVE).
 
-    Mirrors ingest.py::_resolve_webhook_project — soft-deleted projects must
-    not silently accept webhook deliveries.
+    Thin wrapper around db.get_active_project_or_404 that preserves the
+    source-text-locked detail string (Kanban #1682 Phase 1 dedup).
     """
-    stmt = (
-        select(Project)
-        .where(Project.id == project_id)
-        .where(Project.status == RecordStatus.ACTIVE)
+    return await get_active_project_or_404(
+        session,
+        project_id,
+        detail=_DETAIL_PROJECT_NOT_FOUND_TEMPLATE.format(project_id=project_id),
     )
-    project = (await session.execute(stmt)).scalar_one_or_none()
-    if project is None:
-        raise HTTPException(
-            status_code=404,
-            detail=_DETAIL_PROJECT_NOT_FOUND_TEMPLATE.format(project_id=project_id),
-        )
-    return project
 
 
 async def _load_active_secret_credential(

@@ -11,6 +11,7 @@ returns the row regardless of soft-delete status (per standards/postgresql/soft-
 from __future__ import annotations
 
 import logging
+import types as _types
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
@@ -147,6 +148,85 @@ _SORT_ORDER_MIN_GAP = 1e-9
 def _opt_int_str(v: int | None) -> str:
     """None → 'null' (JSON), int → str. For wire-contract detail strings."""
     return "null" if v is None else str(v)
+
+
+def _translate_task_integrity_error(exc: "IntegrityError", context: str) -> str:
+    """Translate well-known PG constraint names to stable HTTP 400 detail strings.
+
+    Shared by create_task and update_task IntegrityError handlers (Kanban #1682
+    Phase 1 dedup). The `context` arg ("creation" or "update") fills the fallback
+    phrase — all other branches are identical. Strings are source-text-locked by
+    test_post_task_400_detail_strings_are_pinned_in_router_source and
+    test_patch_task_400_detail_strings_are_pinned_in_router_source; keep in sync.
+
+    NOTE: the `tasks_project_id_fkey` FK branch (create-only) and the project_id
+    literal (`"project_id {payload.project_id} does not exist"`) stay inline in
+    create_task so the source-text-lock scan finds them verbatim.
+    """
+    orig_text = str(exc.orig)
+    if "ck_tasks_process_status_valid" in orig_text:
+        return "process_status violates ck_tasks_process_status_valid"
+    elif "ck_tasks_priority_valid" in orig_text:
+        return "priority violates ck_tasks_priority_valid"
+    elif "ck_tasks_status_valid" in orig_text:
+        return "status violates ck_tasks_status_valid"
+    elif "ck_tasks_task_kind_valid" in orig_text:
+        return "task_kind violates ck_tasks_task_kind_valid"
+    elif "ck_tasks_task_type_valid" in orig_text:
+        return "task_type violates ck_tasks_task_type_valid"
+    elif "ck_tasks_interaction_kind_valid" in orig_text:
+        return "interaction_kind violates ck_tasks_interaction_kind_valid"
+    elif "ck_tasks_template_recurrence_complete" in orig_text:
+        return (
+            "template fields incomplete violates "
+            "ck_tasks_template_recurrence_complete"
+        )
+    elif "ck_tasks_scheduled_xor_template" in orig_text:
+        return _DETAIL_SCHEDULED_XOR_TEMPLATE
+    elif "ck_tasks_pause_reason_length" in orig_text:
+        return (
+            "allow_during_pause=true requires allow_during_pause_reason "
+            "(>=10 chars) violates ck_tasks_pause_reason_length"
+        )
+    # Fallback — context distinguishes "creation" vs "update" in the wire detail.
+    # Literals below are source-text-locked (see test_post/patch_400_detail_strings).
+    if context == "update":
+        return "Task update violates a database constraint"
+    return "Task creation violates a database constraint"
+
+
+def _apply_jsonb_serialization(payload: object, updates: dict) -> None:
+    """Serialize Pydantic JSONB fields to JSON-safe dicts in-place (#801 pattern).
+
+    Applies model_dump(mode='json') coercion for the four JSONB columns that
+    require it before being stored. Guards mirror the update_task PATCH shape
+    (field present in updates AND value not None). Called from update_task and
+    from create_task for the unconditional fields (subagent_models,
+    question_payload). Kanban #1682 Phase 1 dedup.
+    """
+    if (
+        "acceptance_criteria" in updates
+        and updates["acceptance_criteria"] is not None
+        and getattr(payload, "acceptance_criteria", None) is not None
+    ):
+        updates["acceptance_criteria"] = [
+            c.model_dump(mode="json") for c in payload.acceptance_criteria  # type: ignore[union-attr]
+        ]
+    if "subagent_models" in updates:
+        updates["subagent_models"] = [
+            e.model_dump(mode="json") for e in payload.subagent_models  # type: ignore[union-attr]
+        ]
+    if (
+        "question_payload" in updates
+        and updates["question_payload"] is not None
+        and getattr(payload, "question_payload", None) is not None
+    ):
+        updates["question_payload"] = payload.question_payload.model_dump(mode="json")  # type: ignore[union-attr]
+    if (
+        "resume_context" in updates
+        and updates["resume_context"] is not None
+    ):
+        updates["resume_context"] = payload.model_dump(mode="json")["resume_context"]  # type: ignore[union-attr]
 
 
 def _fire_hitl_push(task_id: int, title: str, question_payload: dict | None) -> None:
@@ -778,12 +858,15 @@ async def reorder_task(
             # both anchors. The smaller is after_anchor.sort_order; the larger
             # is before_anchor.sort_order. Average. (Server does NOT validate
             # they are currently adjacent — trust client.)
-            assert before_anchor.sort_order is not None  # materialized above
-            assert after_anchor.sort_order is not None
+            if before_anchor.sort_order is None:  # materialized above
+                raise RuntimeError("before_anchor.sort_order unexpectedly None")
+            if after_anchor.sort_order is None:
+                raise RuntimeError("after_anchor.sort_order unexpectedly None")
             return (after_anchor.sort_order + before_anchor.sort_order) / 2.0
         elif before_anchor is not None:
             # Place just above (smaller than) before_anchor.
-            assert before_anchor.sort_order is not None
+            if before_anchor.sort_order is None:
+                raise RuntimeError("before_anchor.sort_order unexpectedly None")
             # Find the largest sort_order strictly less than before_anchor's
             # in the same lane (excluding the moved task itself).
             smaller_stmt = (
@@ -803,8 +886,10 @@ async def reorder_task(
                 return (largest_smaller + before_anchor.sort_order) / 2.0
         else:
             # after_anchor only — place just below (larger than) it.
-            assert after_anchor is not None
-            assert after_anchor.sort_order is not None
+            if after_anchor is None:
+                raise RuntimeError("after_anchor unexpectedly None in else branch")
+            if after_anchor.sort_order is None:
+                raise RuntimeError("after_anchor.sort_order unexpectedly None")
             larger_stmt = (
                 select(func.min(Task.sort_order))
                 .where(
@@ -1140,7 +1225,8 @@ async def create_task(
         status_change_reason=payload.status_change_reason,
     )
 
-    # #801 — model_dump(mode='json') coerces datetime → str for JSONB writes; pattern reused for sibling fields below. See standards/sqlalchemy/orm.md.
+    # #801 — model_dump(mode='json') coerces Pydantic objects to JSON-safe dicts
+    # for JSONB columns. See standards/sqlalchemy/orm.md.
     payload_dict = payload.model_dump()
     # Kanban #1194 (AC4): the budget-gate override pair is request-only metadata
     # — not Task columns. Strip BEFORE the Task(**payload_dict) construction
@@ -1215,9 +1301,10 @@ async def create_task(
     # destructive work, only auto-headless is gated.
     if moderation_matches:
         payload_dict["requires_human_review"] = True
-    # #801 pattern — serialize AcceptanceCriterion objects to JSON-safe dicts.
-    # Skip when _action_template is set: the pre-fill block above already built
-    # the correct serialized list (template entries + optional caller entries).
+    # #801 — JSONB serialization for JSONB columns. acceptance_criteria and
+    # resume_context require the _action_template guard (the pre-fill block
+    # already built the correct serialized form when a template was active).
+    # subagent_models and question_payload have no template dependency.
     if _action_template is None and payload_dict.get("acceptance_criteria") is not None:
         payload_dict["acceptance_criteria"] = [
             c.model_dump(mode="json") for c in payload.acceptance_criteria
@@ -1229,9 +1316,7 @@ async def create_task(
     # same #801 pattern
     if payload_dict.get("question_payload") is not None:
         payload_dict["question_payload"] = payload.question_payload.model_dump(mode="json")
-    # #801 pattern — when _action_template is set, resume_context was already
-    # merged and set by the pre-fill block above; only re-serialize from
-    # payload when there is no template (original path).
+    # #801 pattern — resume_context: re-serialize from payload when no template.
     if _action_template is None and payload_dict.get("resume_context") is not None:
         payload_dict["resume_context"] = payload.model_dump(mode="json")["resume_context"]
 
@@ -1277,35 +1362,13 @@ async def create_task(
         await session.rollback()
         # Translate well-known constraint names to stable details; mirror update_task M5.
         # Strings pinned by test_post_task_400_detail_strings_are_pinned_in_router_source — keep the test in sync.
+        # FK branch (create-only) handled inline so the source-text-lock scan
+        # finds `"project_id {payload.project_id} does not exist"` verbatim.
         orig_text = str(exc.orig)
         if "tasks_project_id_fkey" in orig_text:
             detail = f"project_id {payload.project_id} does not exist"
-        elif "ck_tasks_process_status_valid" in orig_text:
-            detail = "process_status violates ck_tasks_process_status_valid"
-        elif "ck_tasks_priority_valid" in orig_text:
-            detail = "priority violates ck_tasks_priority_valid"
-        elif "ck_tasks_status_valid" in orig_text:
-            detail = "status violates ck_tasks_status_valid"
-        elif "ck_tasks_task_kind_valid" in orig_text:
-            detail = "task_kind violates ck_tasks_task_kind_valid"
-        elif "ck_tasks_task_type_valid" in orig_text:
-            detail = "task_type violates ck_tasks_task_type_valid"
-        elif "ck_tasks_interaction_kind_valid" in orig_text:
-            detail = "interaction_kind violates ck_tasks_interaction_kind_valid"
-        elif "ck_tasks_template_recurrence_complete" in orig_text:
-            detail = (
-                "template fields incomplete violates "
-                "ck_tasks_template_recurrence_complete"
-            )
-        elif "ck_tasks_scheduled_xor_template" in orig_text:
-            detail = _DETAIL_SCHEDULED_XOR_TEMPLATE
-        elif "ck_tasks_pause_reason_length" in orig_text:
-            detail = (
-                "allow_during_pause=true requires allow_during_pause_reason "
-                "(>=10 chars) violates ck_tasks_pause_reason_length"
-            )
         else:
-            detail = "Task creation violates a database constraint"
+            detail = _translate_task_integrity_error(exc, context="creation")
         raise HTTPException(status_code=400, detail=detail) from exc
     await session.refresh(task)
 
@@ -1347,32 +1410,9 @@ async def update_task(
 
     updates = payload.model_dump(exclude_unset=True)
 
-    # same #801 pattern (explicit-null PATCH skips re-dumping)
-    if (
-        "acceptance_criteria" in updates
-        and updates["acceptance_criteria"] is not None
-        and payload.acceptance_criteria is not None
-    ):
-        updates["acceptance_criteria"] = [
-            c.model_dump(mode="json") for c in payload.acceptance_criteria
-        ]
-    # same #801 pattern
-    if "subagent_models" in updates:
-        updates["subagent_models"] = [
-            e.model_dump(mode="json") for e in payload.subagent_models
-        ]
-    # same #801 pattern
-    if (
-        "question_payload" in updates
-        and updates["question_payload"] is not None
-        and payload.question_payload is not None
-    ):
-        updates["question_payload"] = payload.question_payload.model_dump(mode="json")
-    if (
-        "resume_context" in updates
-        and updates["resume_context"] is not None
-    ):
-        updates["resume_context"] = payload.model_dump(mode="json")["resume_context"]
+    # #801 — model_dump(mode='json') coercion for JSONB columns. Kanban #1682
+    # Phase 1 dedup: extracted to _apply_jsonb_serialization (defined above).
+    _apply_jsonb_serialization(payload, updates)
 
     # Kanban #832: pop action-only fields before writing to ORM.
     # These are not DB columns — they trigger interaction logic below.
@@ -1827,12 +1867,12 @@ async def update_task(
                 else task.status_change_reason
             )
 
-            class _Snap:
-                title = task.title
-                description = task.description
-                status_change_reason = resolved_reason
-
-            est = estimate_task_cost(_Snap(), runs)
+            _snap = _types.SimpleNamespace(
+                title=task.title,
+                description=task.description,
+                status_change_reason=resolved_reason,
+            )
+            est = estimate_task_cost(_snap, runs)
             updates.setdefault("estimated_input_tokens", est["tokens_in"])
             updates.setdefault("estimated_output_tokens", est["tokens_out"])
             updates.setdefault("estimated_cost_usd", est["cost_usd"])
@@ -1967,29 +2007,8 @@ async def update_task(
         # Translate well-known CHECK names to stable details; fall through for
         # unknown constraints so the failure is still surfaced (without leaking
         # raw PG text into the wire response).
-        orig_text = str(exc.orig)
         # Strings pinned by test_patch_task_400_detail_strings_are_pinned_in_router_source — keep the test in sync.
-        if "ck_tasks_process_status_valid" in orig_text:
-            detail = "process_status violates ck_tasks_process_status_valid"
-        elif "ck_tasks_priority_valid" in orig_text:
-            detail = "priority violates ck_tasks_priority_valid"
-        elif "ck_tasks_status_valid" in orig_text:
-            detail = "status violates ck_tasks_status_valid"
-        elif "ck_tasks_task_kind_valid" in orig_text:
-            detail = "task_kind violates ck_tasks_task_kind_valid"
-        elif "ck_tasks_task_type_valid" in orig_text:
-            detail = "task_type violates ck_tasks_task_type_valid"
-        elif "ck_tasks_interaction_kind_valid" in orig_text:
-            detail = "interaction_kind violates ck_tasks_interaction_kind_valid"
-        elif "ck_tasks_template_recurrence_complete" in orig_text:
-            detail = (
-                "template fields incomplete violates "
-                "ck_tasks_template_recurrence_complete"
-            )
-        elif "ck_tasks_scheduled_xor_template" in orig_text:
-            detail = _DETAIL_SCHEDULED_XOR_TEMPLATE
-        else:
-            detail = "Task update violates a database constraint"
+        detail = _translate_task_integrity_error(exc, context="update")
         raise HTTPException(status_code=400, detail=detail) from exc
 
     # Kanban #832: auto-unblock dependents when a question/decision task is marked DONE.
