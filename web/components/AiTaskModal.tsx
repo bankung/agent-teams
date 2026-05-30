@@ -27,6 +27,7 @@ import { ActionTemplatePicker } from "./ActionTemplatePicker";
 import { PauseOverrideBlock } from "./PauseOverrideBlock";
 import { HandoffTemplatePicker } from "./HandoffTemplatePicker";
 import { Icon } from "./Icon";
+import { ModalShell } from "./ModalShell";
 
 // Trigger button + dialog for the AI-task flow (Kanban #857).
 //
@@ -140,13 +141,7 @@ export function AiTaskModal({
     // Focus the appropriate first field for the current phase.
     if (phase === "input") textInputRef.current?.focus();
     else titleInputRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !parsing && !creating) closeModal();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, phase, parsing, creating]);
+  }, [open, phase]);
 
   function resetAll() {
     setPhase("input");
@@ -356,22 +351,16 @@ export function AiTaskModal({
         <Icon name="ai-agent" size={14} />
         <span>AI task</span>
       </button>
-      {open && (
-        // #954 — mobile: full-screen sheet (both phases); desktop restores centered max-w-md card
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="ai-task-title"
-          className="fixed inset-0 z-50 flex items-stretch justify-center bg-zinc-900/40 dark:bg-zinc-950/70 sm:items-center sm:px-4"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) closeModal();
-          }}
-          data-ai-task-modal
-        >
+      {/* #954 — mobile: full-screen sheet (both phases); desktop restores centered max-w-md card */}
+      <ModalShell
+        open={open}
+        onClose={() => { if (!parsing && !creating) closeModal(); }}
+        labelledBy="ai-task-title"
+        backdropProps={{ "data-ai-task-modal": true }}
+      >
           {phase === "input" ? (
             <form
               onSubmit={onParse}
-              className="flex w-full max-w-none flex-col overflow-y-auto rounded-none border-0 bg-white p-4 dark:bg-zinc-900 sm:h-auto sm:max-w-md sm:overflow-visible sm:rounded sm:border sm:border-zinc-200 sm:dark:border-zinc-800"
               data-ai-task-phase="input"
             >
               <h2
@@ -489,7 +478,6 @@ export function AiTaskModal({
           ) : (
             <form
               onSubmit={onConfirm}
-              className="flex w-full max-w-none flex-col overflow-y-auto rounded-none border-0 bg-white p-4 dark:bg-zinc-900 sm:h-auto sm:max-w-md sm:overflow-visible sm:rounded sm:border sm:border-zinc-200 sm:dark:border-zinc-800"
               data-ai-task-phase="preview"
             >
               <h2
@@ -709,8 +697,7 @@ export function AiTaskModal({
               </div>
             </form>
           )}
-        </div>
-      )}
+      </ModalShell>
     </>
   );
 }

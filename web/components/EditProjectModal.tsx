@@ -11,6 +11,7 @@ import {
 } from "@/lib/api";
 import { extractErrorMessage } from "@/lib/errors";
 import { Icon } from "./Icon";
+import { ModalShell } from "./ModalShell";
 
 // Edit-project modal (Kanban #943 FE). Sibling to NewProjectModal — modal
 // chrome (ESC / backdrop / focus first input / #954 mobile sheet pattern) is
@@ -164,16 +165,7 @@ export function EditProjectModal({ project }: Props) {
     requestAnimationFrame(() => firstInputRef.current?.focus());
   }, [open, project]);
 
-  // ESC closes (when not submitting). Mirrors NewProjectModal.
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !submitting) closeModal();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, submitting]);
+  // ESC handled by ModalShell — no local listener needed.
 
   function closeModal() {
     if (submitting) return;
@@ -321,23 +313,20 @@ export function EditProjectModal({ project }: Props) {
       >
         <Icon name="agent-config" size={14} />
       </button>
-      {open && (
-        // #954 — mobile full-screen sheet; sm restores centered max-w-lg card
-        // (denser form than NewProjectModal — more fields incl. sources list).
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="edit-project-title"
-          className="fixed inset-0 z-50 flex items-stretch justify-center bg-zinc-900/40 dark:bg-zinc-950/70 sm:items-center sm:px-4"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) closeModal();
-          }}
-          data-edit-project-modal
-          data-edit-project-name={project.name}
-        >
+      {/* #954 — mobile full-screen sheet; sm restores centered max-w-lg card
+          (denser form than NewProjectModal — more fields incl. sources list). */}
+      <ModalShell
+        open={open}
+        onClose={closeModal}
+        labelledBy="edit-project-title"
+        maxWidth="lg"
+        backdropProps={{
+          "data-edit-project-modal": true,
+          "data-edit-project-name": project.name,
+        }}
+      >
           <form
             onSubmit={onSubmit}
-            className="flex w-full max-w-none flex-col overflow-y-auto rounded-none border-0 bg-white p-4 dark:bg-zinc-900 sm:h-auto sm:max-w-lg sm:overflow-visible sm:rounded sm:border sm:border-zinc-200 sm:dark:border-zinc-800"
           >
             <h2
               id="edit-project-title"
@@ -624,8 +613,7 @@ export function EditProjectModal({ project }: Props) {
               </button>
             </div>
           </form>
-        </div>
-      )}
+      </ModalShell>
     </>
   );
 }

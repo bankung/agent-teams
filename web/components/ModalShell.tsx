@@ -21,6 +21,15 @@
 
 import { useCallback, useEffect, useRef } from "react";
 
+// Tailwind max-width tokens for the sm:max-w-* panel constraint.
+// Callers pass the token; ModalShell maps it to the full class so Tailwind's
+// static analyser can see all class strings at build time.
+const MAX_WIDTH_CLASS: Record<string, string> = {
+  sm: "sm:max-w-sm",
+  md: "sm:max-w-md",
+  lg: "sm:max-w-lg",
+};
+
 type Props = {
   open: boolean;
   // Called on ESC + backdrop-mousedown. Callers must guard against closing
@@ -28,6 +37,13 @@ type Props = {
   onClose: () => void;
   // aria-labelledby value — must match the id on the heading inside children.
   labelledBy: string;
+  // Controls sm:max-w-* on the panel. Defaults to 'md' (matches existing
+  // migrated modals). Use 'lg' for denser forms (EditProjectModal,
+  // PlatformSettingsModal) and 'sm' for compact confirmations.
+  maxWidth?: "sm" | "md" | "lg";
+  // Optional: appended to the panel className for one-off overrides (e.g.
+  // PlatformSettingsModal adds sm:max-h-[85vh]).
+  panelExtraClassName?: string;
   // Optional: forwarded to the outer backdrop for data-* test attributes.
   backdropProps?: Record<string, unknown>;
   children: React.ReactNode;
@@ -37,6 +53,8 @@ export function ModalShell({
   open,
   onClose,
   labelledBy,
+  maxWidth = "md",
+  panelExtraClassName,
   backdropProps,
   children,
 }: Props) {
@@ -57,6 +75,8 @@ export function ModalShell({
 
   if (!open) return null;
 
+  const panelMaxW = MAX_WIDTH_CLASS[maxWidth] ?? MAX_WIDTH_CLASS.md;
+
   return (
     // Backdrop — no role/aria-modal here (a11y fix: those go on the panel below)
     <div
@@ -71,7 +91,7 @@ export function ModalShell({
         role="dialog"
         aria-modal="true"
         aria-labelledby={labelledBy}
-        className="flex w-full max-w-none flex-col overflow-y-auto rounded-none border-0 bg-white p-4 dark:bg-zinc-900 sm:h-auto sm:max-w-md sm:overflow-visible sm:rounded sm:border sm:border-zinc-200 sm:dark:border-zinc-800"
+        className={`flex w-full max-w-none flex-col overflow-y-auto rounded-none border-0 bg-white p-4 dark:bg-zinc-900 sm:h-auto ${panelMaxW} sm:overflow-visible sm:rounded sm:border sm:border-zinc-200 sm:dark:border-zinc-800${panelExtraClassName ? ` ${panelExtraClassName}` : ""}`}
       >
         {children}
       </div>
