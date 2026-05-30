@@ -55,11 +55,6 @@ class IntegrationEntry(TypedDict):
     setup: IntegrationSetup
 
 
-# Integration ids that are configured WITHOUT any env var (local-only services).
-# `is_configured()` short-circuits to True for these regardless of env state.
-_ALWAYS_CONFIGURED_IDS: Final[frozenset[str]] = frozenset({"llm_ollama"})
-
-
 # ---------------------------------------------------------------------------
 # The registry. One entry per OPTIONAL integration group. Ordered by category
 # then rough setup difficulty so the FE can render groups top-to-bottom.
@@ -108,7 +103,7 @@ INTEGRATIONS_REGISTRY: Final[tuple[IntegrationEntry, ...]] = (
         "label": "Ollama (local)",
         "category": "llm",
         # No env var required — a local Ollama server needs no API key.
-        # is_configured() returns True unconditionally for this id.
+        # is_configured() returns True via all([]) == True (empty required set).
         "env_vars": [],
         "setup": {
             "steps": [
@@ -352,13 +347,10 @@ def env_var_presence(entry: IntegrationEntry) -> list[dict[str, object]]:
 def is_configured(entry: IntegrationEntry) -> bool:
     """True iff every REQUIRED env var of `entry` is present and non-empty.
 
-    `llm_ollama` (and any other id in _ALWAYS_CONFIGURED_IDS) returns True
-    unconditionally — a local service needs no key. An entry with no required
-    env vars is also configured (the same outcome via the all([]) == True
-    short-circuit, kept explicit for clarity).
+    For integrations with no required env vars (e.g. `llm_ollama`, which runs
+    locally and needs no API key), `all([]) == True` makes this return True
+    unconditionally — no special-case needed.
     """
-    if entry["id"] in _ALWAYS_CONFIGURED_IDS:
-        return True
     return all(
         _env_present(spec["name"]) for spec in entry["env_vars"] if spec["required"]
     )

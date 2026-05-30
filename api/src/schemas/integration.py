@@ -53,7 +53,7 @@ class IntegrationRead(BaseModel):
     enabled: bool
     configured: bool
     env_vars: list[EnvVarStatus]
-    setup: IntegrationSetup
+    setup: IntegrationSetup  # always present — every registry entry carries setup guidance
 
 
 class PlatformSecurity(BaseModel):
