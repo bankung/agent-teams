@@ -16,6 +16,15 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-30 — Cost display G1: surface ESTIMATED cost (not metered) — Kanban #1688
+**Scope:** backend + frontend
+
+**Decision:** The dashboard + project "Usage" panel now surfaces an **estimated** cost — `SUM(tasks.estimated_cost_usd)` exposed as a new per-project `estimated_cost` aggregate on `GET /api/projects/stats` — shown ALONGSIDE the metered cost (`cost_usage`, from `session_runs`). The estimate is clearly LABELED "Estimated" + "heuristic estimate — metered cost coming soon", visually distinct from "Metered". It must NOT be read as actual spend.
+
+**Reasoning:** The cost infra (pricing `cost_tracker.py`, `tasks.estimated_cost_usd` + token cols, `compute_cost`, `session_runs`, `/stats`, `/pnl`, display) all EXISTED but showed ~$0 because `session_runs` are rarely fed real token counts — and in **Mode A the platform does not make the LLM calls** (Claude Code does) so it cannot auto-meter. `tasks.estimated_cost_usd` IS populated (heuristic) on each done-flip, so surfacing it (honestly labeled) gives a real-ish number now without faking metering. Phased per operator: G1 = estimates now; **G2 (#1689) = real metering** (instrument in-platform LLM calls — langgraph/ai_task_parser/compact — + a Mode-A usage-reporting path; ties #1652).
+
+**Implications:** Estimated vs metered are two distinct UI figures (don't conflate). `estimated_cost.total_cost_usd` is serialized as a **Decimal STRING** (same as `cost_usage.total_cost_usd`) — parse via `parseUsd()` before arithmetic. (A type-vs-runtime mismatch — FE typed it `number`, BE sent string → would have string-concatenated — was caught in pre-commit spot-verify; tsc missed it because the type lied.)
+
 ## 2026-05-29 — Platform "Integrations" settings popup — Kanban #1655
 **Scope:** backend + frontend + devops
 

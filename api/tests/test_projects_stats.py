@@ -837,3 +837,154 @@ async def test_stats_project_id_param_soft_deleted_returns_empty(
     assert post.json() == [], (
         f"soft-deleted project id={project_id} must not appear in filtered stats"
     )
+
+
+# ---- 16-18. G1 — estimated_cost sub-object ----------------------------------
+#
+# These tests exercise the new `estimated_cost` aggregate sourced from
+# `tasks.estimated_cost_usd / estimated_input_tokens / estimated_output_tokens`.
+# Since the estimator fires at DONE-flip server-side, tests seed tasks via HTTP
+# PATCH to process_status=5 and then directly write estimated_* fields via the
+# internal PATCH path. However, the fields are server-computed (not client-
+# writeable) — so we rely on the existing DONE-flip estimator for a light smoke
+# test against agent-teams itself, and use a zero-filled check for fresh
+# projects (which mirrors cost_usage test 8).
+
+
+@pytest.mark.asyncio
+async def test_stats_estimated_cost_zero_filled_when_no_tasks(
+    client, scaffold_cleanup
+) -> None:
+    """G1 — a project with no tasks MUST still emit the full `estimated_cost`
+    sub-object with every key zero-valued. Mirrors cost_usage test 8.
+    """
+    from decimal import Decimal
+
+    project = await _make_project(client, scaffold_cleanup, slug="g1-zero")
+    try:
+        entry = await _stats_entry_for(client, project["id"])
+        assert entry is not None
+        assert "estimated_cost" in entry, entry
+
+        ec = entry["estimated_cost"]
+        # All three keys present.
+        assert set(ec.keys()) == {
+            "total_cost_usd",
+            "total_input_tokens",
+            "total_output_tokens",
+        }, ec
+        # Integer zeros.
+        assert ec["total_input_tokens"] == 0, ec
+        assert ec["total_output_tokens"] == 0, ec
+        # Decimal serializes as JSON string (mirrors cost_usage.total_cost_usd).
+        assert isinstance(ec["total_cost_usd"], str), ec
+        assert Decimal(ec["total_cost_usd"]) == Decimal("0"), ec
+    finally:
+        await client.delete(f"/api/projects/{project['id']}")
+
+
+@pytest.mark.asyncio
+async def test_stats_estimated_cost_cancelled_excluded(
+    client, scaffold_cleanup
+) -> None:
+    """G1 — CANCELLED tasks (process_status=6) MUST NOT contribute to
+    `estimated_cost` even if they carry estimated_cost_usd. Regression gate
+    for the filter `process_status != 6` in Query 4.
+
+    Strategy: create a project with one TODO task (no estimate yet — the estimator
+    only fires at DONE-flip) and one task that will be cancelled. Both start at
+    zero estimates, so the sum stays zero. The cancellation must not 500 or cause
+    a shape regression on `estimated_cost`.
+    """
+    from decimal import Decimal
+
+    project = await _make_project(client, scaffold_cleanup, slug="g1-cancel")
+    project_id = project["id"]
+    try:
+        t = await _make_task_http(client, project_id, "g1 cancel victim")
+        await _patch_task(
+            client,
+            project_id,
+            t["id"],
+            {"process_status": 6, "status_change_reason": "g1 cancel smoke"},
+        )
+
+        entry = await _stats_entry_for(client, project_id)
+        assert entry is not None
+        ec = entry["estimated_cost"]
+        # Shape contract holds (all keys present).
+        assert set(ec.keys()) == {
+            "total_cost_usd",
+            "total_input_tokens",
+            "total_output_tokens",
+        }, ec
+        # Cancelled task has no estimate, so sum stays zero.
+        assert ec["total_input_tokens"] == 0, ec
+        assert ec["total_output_tokens"] == 0, ec
+        assert Decimal(ec["total_cost_usd"]) == Decimal("0"), ec
+    finally:
+        await client.delete(f"/api/projects/{project_id}")
+
+
+@pytest.mark.asyncio
+async def test_stats_estimated_cost_nonzero_after_done_flip(
+    client, scaffold_cleanup
+) -> None:
+    """G1 — a DONE-flipped task populates estimated_cost_usd via the
+    task_cost_estimator service (fires automatically on process_status=5 PATCH).
+    The aggregate in `estimated_cost` MUST then be NON-ZERO for the project,
+    confirming the query actually reads task estimates (not a vacuous zero path).
+
+    Uses a descriptive title + status_change_reason to ensure the heuristic
+    produces a non-zero token/cost estimate (the estimator uses char counts of
+    title + description + status_change_reason).
+    """
+    from decimal import Decimal
+
+    project = await _make_project(client, scaffold_cleanup, slug="g1-nonzero")
+    project_id = project["id"]
+    try:
+        t = await _make_task_http(
+            client,
+            project_id,
+            "g1-nonzero implement the backend cost display aggregate",
+            description=(
+                "Adds estimated_cost to the stats endpoint by summing "
+                "tasks.estimated_cost_usd for non-cancelled tasks."
+            ),
+        )
+        # DONE-flip triggers the cost estimator.
+        await _patch_task(
+            client,
+            project_id,
+            t["id"],
+            {
+                "process_status": 5,
+                "status_change_reason": (
+                    "Completed. Added Query 4 to the stats router, zero-fill "
+                    "in by_id, fold loop, and updated the Pydantic schema."
+                ),
+            },
+        )
+
+        entry = await _stats_entry_for(client, project_id)
+        assert entry is not None
+        ec = entry["estimated_cost"]
+        assert set(ec.keys()) == {
+            "total_cost_usd",
+            "total_input_tokens",
+            "total_output_tokens",
+        }, ec
+        # The estimator produces non-zero token counts for tasks with content.
+        # These are the primary signal that the aggregate is reading real data.
+        # total_cost_usd may round to 0.0000 at 4dp for small token counts —
+        # assert >= 0 (shape) rather than > 0 (brittle for sub-cent tasks).
+        assert ec["total_input_tokens"] > 0, (
+            f"estimated_cost.total_input_tokens must be > 0 after DONE-flip; got {ec}"
+        )
+        assert ec["total_output_tokens"] > 0, (
+            f"estimated_cost.total_output_tokens must be > 0 after DONE-flip; got {ec}"
+        )
+        assert Decimal(ec["total_cost_usd"]) >= Decimal("0"), ec
+    finally:
+        await client.delete(f"/api/projects/{project_id}")

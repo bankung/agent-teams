@@ -661,6 +661,32 @@ class ProjectStatsRunModeBreakdown(BaseModel):
     auto_headless: int = 0
 
 
+class ProjectStatsEstimatedCost(BaseModel):
+    """Per-project heuristic cost/token aggregates rolled up from `tasks` (G1).
+
+    Sums `estimated_cost_usd` / `estimated_input_tokens` / `estimated_output_tokens`
+    for every active (`status=1`) task whose `estimated_cost_usd IS NOT NULL` and
+    whose `process_status != 6` (CANCELLED). These values are server-computed at
+    DONE-flip by `services/task_cost_estimator.py` — never client-supplied.
+
+    Complements `cost_usage` (metered, from `session_runs`). The two aggregates
+    are intentionally separate: `cost_usage` tracks real API billing; this bucket
+    tracks the heuristic per-task estimate for projects where token columns are
+    not yet populated in `session_runs`.
+
+    All three keys ALWAYS emitted (zero-filled) even when no tasks have estimates —
+    mirrors the `cost_usage` / `counts` "no-coalescing" contract so the FE renders
+    the display widget without `||0` defaults.
+
+    `total_cost_usd` serializes as a JSON string by Pydantic v2 default
+    (e.g. `"1.2345"`), mirroring `ProjectStatsCostUsage.total_cost_usd` exactly.
+    """
+
+    total_cost_usd: Decimal = Decimal("0")
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+
+
 class ProjectStatsCostUsage(BaseModel):
     """Per-project cost/token aggregates rolled up from `session_runs` (Kanban #871).
 
@@ -710,6 +736,12 @@ class ProjectStatsEntry(BaseModel):
     `session_runs`. Always emitted (zero-filled when the project has no
     session_runs).
 
+    `estimated_cost` (G1): per-project heuristic cost/token aggregates from
+    `tasks.estimated_cost_usd / estimated_input_tokens / estimated_output_tokens`.
+    Always emitted (zero-filled when no tasks have estimates). Complements
+    `cost_usage` — surfaces DONE-flip estimates for projects whose
+    `session_runs` token columns are not yet populated.
+
     Soft-deleted tasks (`status=0`) excluded from BOTH `counts` /
     `run_mode_breakdown` AND `last_activity_at`. Cancelled tasks
     (`process_status=6`, Kanban #854) excluded ONLY from
@@ -725,6 +757,8 @@ class ProjectStatsEntry(BaseModel):
     counts: dict[str, int]
     last_activity_at: datetime | None
     cost_usage: ProjectStatsCostUsage
+    # G1: heuristic per-task estimate aggregate (always emitted, zero-filled)
+    estimated_cost: ProjectStatsEstimatedCost
 
 
 class ProjectGrantConsent(BaseModel):
