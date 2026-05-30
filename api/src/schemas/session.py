@@ -154,6 +154,12 @@ class SessionRunUpdate(BaseModel):
     # CTX-3: cost lookup inputs. Not persisted; consumed by compute_cost only.
     provider: str | None = Field(default=None, max_length=64)
     model: str | None = Field(default=None, max_length=64)
+    # G2 (#1689): cache token inputs for accurate prompt-cache cost.
+    # Names match compute_cost's params exactly. Anthropic API fields:
+    # usage.cache_read_input_tokens + usage.cache_creation_input_tokens.
+    # Not persisted; forwarded to compute_cost alongside input/output_tokens.
+    cache_read_input_tokens: int | None = Field(default=None, ge=0)
+    cache_creation_input_tokens: int | None = Field(default=None, ge=0)
 
 
 class SessionRunRead(BaseModel):
