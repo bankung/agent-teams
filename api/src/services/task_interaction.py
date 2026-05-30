@@ -134,7 +134,8 @@ def validate_decision_payload(
 
     options = question_payload.get("options") or []
     option_ids = [
-        opt["id"] if isinstance(opt, dict) else getattr(opt, "id", None)
+        opt if isinstance(opt, str)
+        else (opt["id"] if isinstance(opt, dict) else getattr(opt, "id", None))
         for opt in options
     ]
     if chosen_id not in option_ids:
