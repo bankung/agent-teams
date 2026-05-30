@@ -1,4 +1,10 @@
-# Competitive analysis — Hermes Agent v0.15.0 vs agent-teams
+# External-tool scan & competitive analysis — agent-teams
+
+> Running log of external tools/projects worth watching for borrow-candidates (yours-first lens — mine for fits, don't pivot). Entries below: **Hermes Agent v0.15.0** (full comparison) · **SkillOpt / Microsoft** (future-improvement reference).
+
+---
+
+## Hermes Agent v0.15.0 vs agent-teams
 
 **As-of:** 2026-05-30 · **decay_class:** time-sensitive (re-verify version-specific claims before relying on them)
 **Source:** operator-shared news article → verified against primary source by workflow `hermes-v0150-vs-agent-teams` (run `wf_5745c1f7-449`). Hermes facts confirmed against GitHub release tag `v2026.5.28` + raw `RELEASE_v0.15.0.md`.
@@ -48,3 +54,20 @@ Hermes v0.15.0 "The Velocity Release" signals the agent field converging on exac
 ## Caveat — vendor self-reported metrics
 
 All Hermes numbers (16,083→3,821 LOC / −76%, 47% fewer calls, 701→258ms, ~90s→~20ms / 4,500×) were confirmed **only as "the article matches Nous's own release notes"** — NOT independently reproduced. Cite them as **Nous's claims**, not measured fact. (Same posture applied to the SkyClaw / Skywork benchmark claims reviewed the same day.)
+
+---
+
+# SkillOpt (Microsoft) — auto-optimize natural-language skills
+
+**Logged:** 2026-05-30 · **decay_class:** review-on-touch · **Status:** future-improvement reference, NOT adopted.
+**Source:** https://github.com/microsoft/SkillOpt — official Microsoft, MIT, ~2.9k stars, arXiv paper. Verified via GitHub repo + project page.
+
+**What it is:** a text-space optimizer that treats a natural-language skill (a `skill.md`) as a *trainable parameter*. Loop: run the frozen agent on scored task batches → an optimizer LLM proposes structured edits to the skill text → accept the edit ONLY when validation score improves (gated) → repeat with epoch / batch / learning-rate analogs → emit a deployable `best_skill.md`. No model weights touched. Backends: Azure OpenAI / OpenAI / Anthropic / self-hosted Qwen.
+
+**Why relevant to agent-teams:** our `.claude/agents/*.md`, `.claude/skills/`, and team playbooks ARE hand-maintained natural-language skills — exactly the artifact SkillOpt auto-tunes. It's a concrete mechanism for a **self-improving / learning-loop layer**: agents that measurably get better over time without retraining the base model (quality compounding = a durable edge).
+
+**Gap / prerequisite (the real work):** SkillOpt needs a benchmark with ground-truth scores. Our task ACs are **HITL-verified, not auto-scored**, so the missing piece is an **eval/scoring harness over Kanban tasks** (gated validation derived from AC + `audit_report` + dev-reviewer). Our AC + audit + verifier are the *seed* of this, not the finished thing. It also optimizes one skill per benchmark (per-skill eval sets needed) and is token-expensive (repeated batch rollouts).
+
+**Borrow = direction, not the tool (yet):** don't plug SkillOpt in now. The high-value borrow is building a small **task-eval/scoring harness** first — which ties directly to the gated-verifier borrow-candidate above (Hermes #3/#4 → backlog #1239 / #1261). Once that exists, a SkillOpt-style loop can auto-tune our agent-defs as a later, separable step.
+
+**Caveat:** the headline "52/52 wins across 6 benchmarks / 7 models" is the **paper's own reported result** — cite as the authors' claim, not independently reproduced (same posture as the Hermes / SkyClaw metrics above).
