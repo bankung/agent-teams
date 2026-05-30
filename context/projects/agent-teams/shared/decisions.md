@@ -16,6 +16,19 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-29 — Platform "Integrations" settings popup — Kanban #1655
+**Scope:** backend + frontend + devops
+
+**Decision:** New global surface `/api/settings/integrations` (GET list + PATCH `/{id}` toggle) + `PlatformSettingsModal` (gear in Board header) listing OPTIONAL integrations, each OFF by default. Option A (operator-chosen): keys **stay in .env** — NO key entry/storage via the UI/API. The DB table `platform_integration_settings` (migration `0052_integration_settings`) stores ONLY the per-integration `enabled` toggle; `configured`/`present` are computed LIVE from `os.environ` at request time and returned as presence BOOLEANS (the `IntegrationRead` model physically cannot carry a secret value). Registry of 11 optional integrations is static Python (`services/integrations_registry.py`); CORE keys (DATABASE_URL, REPO_ROOT, CREDENTIALS_MASTER_KEY, LANGGRAPH_PROJECT_ID) are deliberately excluded (platform won't boot without them — never toggleable).
+
+**Reasoning:** Feature keys were ALREADY optional in code (degrade gracefully), so this is a visibility+guidance layer, not a re-architecture. Live-compute avoids a stored-secret surface entirely + no cache-invalidation. Static registry keeps the catalog under code review, not operator data.
+
+**Implications:**
+- The toggle persists operator INTENT + drives the verify/guidance UX — it is **NOT a live consumer kill-switch** this round (consumers still gate on env presence as today). In-UI encrypted key entry (Option B) is a deferred follow-up.
+- **`configured` reflects the API container's `os.environ`.** Keys consumed only by the `langgraph` container (e.g. `ANTHROPIC_API_KEY` via the headless engine) may read as "Not configured" here even when the feature works — known limitation of single-container env read; acceptable for v1. Documented so the operator isn't surprised.
+- **Auth posture:** the endpoint is global/unauthenticated (parity with `/api/teams`); it exposes WHICH integrations are configured (presence only, never values). Acceptable for the single-operator local app; would be an info-disclosure concern on a multi-tenant deployment — revisit if the app ever goes multi-tenant.
+- Migration ids must stay ≤32 chars (`alembic_version.version_num` is VARCHAR(32)) — `0052_platform_integration_settings` (34) failed the version-stamp; shortened to `0052_integration_settings`. (Methodology note candidate for `lessons.md`.)
+
 ## 2026-05-29 — Weekly release cadence: dev branch + weekly merge-to-main + vMAJOR.MINOR.PATCH (trial) — Kanban #1646
 **Scope:** shared / process
 

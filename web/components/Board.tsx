@@ -42,6 +42,7 @@ import { NewTaskModal } from "@/components/NewTaskModal";
 import { PausedBanner } from "@/components/PausedBanner";
 import { PauseProjectModal } from "@/components/PauseProjectModal";
 import { ProjectConsentBanner } from "@/components/ProjectConsentBanner";
+import { PlatformSettingsModal } from "@/components/PlatformSettingsModal";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { SourcesBadge } from "@/components/SourcesBadge";
 import { TaskDetail } from "@/components/TaskDetail";
@@ -533,6 +534,10 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
 
             {/* ── FlagBellBadge — review notification, outside both groups ─ */}
             <FlagBellBadge />
+
+            {/* ── PlatformSettingsModal — #1655 integrations gear, outside
+                both groups (platform-wide, not per-project) ────────────── */}
+            <PlatformSettingsModal />
 
             {/* ── ThemePicker — user preference, outside both groups ────── */}
             <ThemePicker />

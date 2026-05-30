@@ -41,6 +41,7 @@ from src.routers.pl import pnl_router
 from src.routers import projects as projects_router
 from src.routers import scaffold as scaffold_router
 from src.routers import sessions as sessions_router
+from src.routers import settings as settings_router
 from src.routers import tasks as tasks_router
 from src.routers import teams as teams_router
 from src.routers import tool_calls as tool_calls_router
@@ -350,6 +351,10 @@ def create_app() -> FastAPI:
     # Kanban #1604 — email tools (Gmail trash + OAuth + 3-layer safety gate).
     # #1608 will append Outlook routes to the same router file.
     app.include_router(tools_email_router.router, prefix="/api")
+    # Kanban #1655 — platform Integrations settings popup (global, no
+    # X-Project-Id). Enable toggles persist; configured/present computed live
+    # from os.environ. Keys stay in .env — no key entry/storage via this API.
+    app.include_router(settings_router.router, prefix="/api")
 
     return app
 

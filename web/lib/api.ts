@@ -1503,3 +1503,92 @@ export const handoffTemplates = {
     return jsonFetch<HandoffTemplateRead[]>(path);
   },
 };
+
+// ============================================================================
+// Kanban #1655 — Platform Integrations settings (PlatformSettingsModal).
+//
+// Global, operator-level surface (NO X-Project-Id header — integrations are
+// platform-wide, not per-project). Each integration is OFF by default; the
+// UI shows status + setup guidance only. Keys live in .env — the contract
+// returns env-var PRESENCE (`present: bool`) but NEVER a value, so the FE
+// can render "configured / not configured" without ever touching a secret.
+//
+// Contract (locked with dev-sr-backend, built in parallel):
+//   GET   /api/settings/integrations         -> { integrations: Integration[] }
+//   PATCH /api/settings/integrations/{id}     body { enabled: bool }
+//                                             -> updated Integration
+// ============================================================================
+
+// IntegrationEnvVar — one .env variable an integration depends on. `present`
+// reflects whether the BE saw a non-empty value in the environment; the value
+// itself is NEVER serialized (presence-only by design).
+export type IntegrationEnvVar = {
+  name: string;
+  required: boolean;
+  present: boolean;
+};
+
+// IntegrationSetupLink — a doc / dashboard link rendered as an external anchor
+// (target=_blank rel=noopener) in the setup panel.
+export type IntegrationSetupLink = {
+  label: string;
+  url: string;
+};
+
+// IntegrationSetup — guidance shown when an integration is enabled but not yet
+// configured: ordered steps + reference links.
+export type IntegrationSetup = {
+  steps: string[];
+  links: IntegrationSetupLink[];
+};
+
+// Integration — one row in the integrations list.
+//   enabled    — operator opt-in toggle state (default false).
+//   configured — BE verdict: all REQUIRED env_vars present. Drives the badge.
+//   env_vars   — the .env names (+ required flag + presence) the setup panel
+//                lists. Presence-only; no values.
+export type Integration = {
+  id: string;
+  label: string;
+  category: string;
+  enabled: boolean;
+  configured: boolean;
+  env_vars: IntegrationEnvVar[];
+  setup: IntegrationSetup;
+};
+
+// PlatformSecurity — Kanban #1658. Read-only platform crypto status.
+// vault_key_configured is a PRESENCE BOOLEAN; the key value is never serialized.
+export type PlatformSecurity = {
+  vault_key_configured: boolean;
+};
+
+// IntegrationsResponse — full GET /api/settings/integrations envelope.
+export type IntegrationsResponse = {
+  integrations: Integration[];
+  platform_security: PlatformSecurity;
+};
+
+// getIntegrations — GET /api/settings/integrations. Global (no X-Project-Id).
+// Returns the full envelope (integrations list + platform_security block).
+export async function getIntegrations(): Promise<IntegrationsResponse> {
+  return jsonFetch<IntegrationsResponse>(`/api/settings/integrations`);
+}
+
+// setIntegrationEnabled — PATCH /api/settings/integrations/{id} body
+// { enabled }. Returns the updated Integration (with refreshed `configured` +
+// `env_vars` presence so the FE can re-render the setup panel from the
+// response). Global endpoint (no X-Project-Id).
+export async function setIntegrationEnabled(
+  id: string,
+  enabled: boolean,
+): Promise<Integration> {
+  return jsonFetch<Integration>(
+    `/api/settings/integrations/${encodeURIComponent(id)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    },
+  );
+}

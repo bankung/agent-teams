@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from src.models.base import Base
 # Import all model modules so their tables register on Base.metadata
 from src.models import credential as _credential  # noqa: F401
+from src.models import integration_setting as _integration_setting  # noqa: F401
 from src.models import project as _project  # noqa: F401
 from src.models import session as _session  # noqa: F401
 from src.models import task as _task  # noqa: F401
