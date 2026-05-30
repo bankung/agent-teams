@@ -9,6 +9,7 @@ import {
   type ProjectRead,
 } from "@/lib/api";
 import { extractErrorMessage } from "@/lib/errors";
+import { ModalShell } from "./ModalShell";
 
 // Kanban #1209 GOV1 (D5) — hard kill switch confirmation modal. Single
 // component handles BOTH kill + revive flows via the `mode` prop:
@@ -92,13 +93,7 @@ export function KillProjectModal({
   useEffect(() => {
     if (!open) return;
     requestAnimationFrame(() => firstInputRef.current?.focus());
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !submitting) closeModal();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, submitting]);
+  }, [open]);
 
   // Reset force-confirm stage whenever the user toggles the checkbox so a
   // sneaky path of (check → click → uncheck → submit) can't skip the
@@ -184,21 +179,17 @@ export function KillProjectModal({
           {triggerLabel ?? defaultTriggerLabel}
         </button>
       )}
-      {open && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="kill-project-title"
-          className="fixed inset-0 z-50 flex items-stretch justify-center bg-zinc-900/40 dark:bg-zinc-950/70 sm:items-center sm:px-4"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) closeModal();
-          }}
-          data-kill-project-modal={mode}
-          data-kill-project-name={project.name}
-        >
+      <ModalShell
+        open={open}
+        onClose={closeModal}
+        labelledBy="kill-project-title"
+        backdropProps={{
+          "data-kill-project-modal": mode,
+          "data-kill-project-name": project.name,
+        }}
+      >
           <form
             onSubmit={onSubmit}
-            className="flex w-full max-w-none flex-col overflow-y-auto rounded-none border-0 bg-white p-4 dark:bg-zinc-900 sm:h-auto sm:max-w-md sm:overflow-visible sm:rounded sm:border sm:border-zinc-200 sm:dark:border-zinc-800"
           >
             <h2
               id="kill-project-title"
@@ -342,8 +333,7 @@ export function KillProjectModal({
               </button>
             </div>
           </form>
-        </div>
-      )}
+      </ModalShell>
     </>
   );
 }

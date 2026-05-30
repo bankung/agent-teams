@@ -19,6 +19,7 @@ from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Text
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.sql import func
 
 from src.models.base import Base
 
@@ -40,6 +41,10 @@ class PlatformIntegrationSetting(Base):
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
+        onupdate=func.now(),  # Python-side hook; fires on ORM UPDATE statements.
+        # The router also sets updated_at explicitly on both INSERT and UPDATE
+        # paths — this is a safety net for any future ORM mutation that bypasses
+        # the router. Both are harmless when coexisting (explicit set still wins).
     )
 
     def __repr__(self) -> str:  # pragma: no cover

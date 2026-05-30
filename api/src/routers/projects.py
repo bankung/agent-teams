@@ -52,6 +52,7 @@ from src.schemas.project import (
     ProjectRead,
     ProjectStatsCostUsage,
     ProjectStatsEntry,
+    ProjectStatsEstimatedCost,
     ProjectStatsRunModeBreakdown,
     ProjectUpdate,
     ReviveProjectRequest,
@@ -163,15 +164,18 @@ async def list_projects_stats(
     process_status — it tells the user how their project's work is
     distributed across execution modes, not which tasks are still alive.
 
-    Query strategy (three-query stitch): one SELECT for the project list,
+    Query strategy (four-query stitch): one SELECT for the project list,
     one SELECT against `tasks` GROUP BY (project_id, process_status, run_mode)
-    with `MAX(updated_at)` aggregate, and one SELECT against `session_runs`
+    with `MAX(updated_at)` aggregate, one SELECT against `session_runs`
     JOIN `sessions` GROUP BY project_id summing cost/token totals (Kanban
-    #871). Soft-deleted tasks (`status=0`) and soft-deleted projects excluded
-    at SQL; `session_runs` / `sessions` carry no soft-delete column (per
+    #871), and one SELECT against `tasks` GROUP BY project_id summing
+    `estimated_cost_usd / estimated_input_tokens / estimated_output_tokens`
+    (G1 — non-cancelled tasks with non-null estimated_cost_usd). Soft-deleted
+    tasks (`status=0`) and soft-deleted projects excluded at SQL;
+    `session_runs` / `sessions` carry no soft-delete column (per
     db-schema.md: NO audit trigger on those tables) so no filter is needed
     on the cost join. Python loop stitches the buckets onto the project
-    rows. No N+1: exactly three queries regardless of project count.
+    rows. No N+1: exactly four queries regardless of project count.
     """
     # Query 1 — project list in canonical order.
     projects_stmt = (
@@ -238,7 +242,38 @@ async def list_projects_stats(
         cost_stmt = cost_stmt.where(SessionModel.project_id == project_id)
     cost_rows = (await session.execute(cost_stmt)).all()
 
-    # Stitch: per-project all-zero buckets; fold agg_rows + cost_rows
+    # Query 4 (G1) — per-project heuristic cost aggregate from tasks.
+    # Filter: active tasks (status=1), non-cancelled (process_status != 6),
+    # and estimated_cost_usd IS NOT NULL (only DONE-flip rows have estimates).
+    # COALESCE handles NULLs in the token columns (estimated_* may be NULL
+    # independently of estimated_cost_usd if the estimator partially failed).
+    est_cost_stmt = (
+        select(
+            Task.project_id,
+            func.coalesce(func.sum(Task.estimated_cost_usd), 0).label(
+                "sum_estimated_cost_usd"
+            ),
+            func.coalesce(func.sum(Task.estimated_input_tokens), 0).label(
+                "sum_estimated_input_tokens"
+            ),
+            func.coalesce(func.sum(Task.estimated_output_tokens), 0).label(
+                "sum_estimated_output_tokens"
+            ),
+        )
+        .join(Project, Project.id == Task.project_id)
+        .where(
+            Project.status == RecordStatus.ACTIVE,
+            Task.status == RecordStatus.ACTIVE,
+            Task.process_status != TaskStatus.CANCELLED,  # exclude process_status=6
+            Task.estimated_cost_usd.is_not(None),  # only rows with an estimate
+        )
+        .group_by(Task.project_id)
+    )
+    if project_id is not None:
+        est_cost_stmt = est_cost_stmt.where(Task.project_id == project_id)
+    est_cost_rows = (await session.execute(est_cost_stmt)).all()
+
+    # Stitch: per-project all-zero buckets; fold agg_rows + cost_rows + est_cost_rows
     by_id: dict[int, dict] = {
         p.id: {
             "counts": {str(code): 0 for code in TaskStatus.ALL},
@@ -252,6 +287,12 @@ async def list_projects_stats(
                 "total_cost_usd": Decimal("0"),
                 "budget_warning_count": 0,
                 "session_run_count": 0,
+            },
+            # G1 — zero-filled default; mirrors cost_usage "always-emit-all-keys" contract
+            "estimated_cost": {
+                "total_cost_usd": Decimal("0"),
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
             },
         }
         for p in projects
@@ -304,6 +345,22 @@ async def list_projects_stats(
         cu["budget_warning_count"] = int(budget_warning_count)
         cu["session_run_count"] = int(session_run_count)
 
+    # Fold the G1 estimated cost aggregate (paranoia-tier skip mirrors cost_rows fold above).
+    for (
+        project_id,
+        sum_estimated_cost_usd,
+        sum_estimated_input_tokens,
+        sum_estimated_output_tokens,
+    ) in est_cost_rows:
+        bucket = by_id.get(project_id)
+        if bucket is None:
+            continue
+        ec = bucket["estimated_cost"]
+        # SQL-side COALESCE(SUM(...), 0) on Numeric column → Decimal, never None.
+        ec["total_cost_usd"] = sum_estimated_cost_usd
+        ec["total_input_tokens"] = int(sum_estimated_input_tokens)
+        ec["total_output_tokens"] = int(sum_estimated_output_tokens)
+
     return [
         ProjectStatsEntry(
             id=p.id,
@@ -315,6 +372,7 @@ async def list_projects_stats(
             counts=by_id[p.id]["counts"],
             last_activity_at=by_id[p.id]["last_activity_at"],
             cost_usage=ProjectStatsCostUsage(**by_id[p.id]["cost_usage"]),
+            estimated_cost=ProjectStatsEstimatedCost(**by_id[p.id]["estimated_cost"]),
         )
         for p in projects
     ]

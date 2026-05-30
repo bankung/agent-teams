@@ -154,8 +154,13 @@ async def toggle_integration(
         session.add(row)
     else:
         row.enabled = payload.enabled
-        row.updated_at = func.now()
+        row.updated_at = func.now()  # explicit; onupdate on model is a safety net only
 
+    logger.info(
+        "Integration toggle: integration_id=%r enabled=%s",
+        integration_id,
+        payload.enabled,
+    )
     await session.commit()
     await session.refresh(row)
 

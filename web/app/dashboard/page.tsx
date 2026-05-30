@@ -220,6 +220,10 @@ function CompactProjectCard({
   const hasUsage = cu.session_run_count > 0;
   const cost = parseUsd(cu.total_cost_usd);
   const hasBudgetWarning = cu.budget_warning_count > 0;
+  // G1 — heuristic estimate from task-level roll-up; absent until BE slice lands.
+  const ec = entry.estimated_cost ?? null;
+  // G1 — total_cost_usd is a Decimal STRING from BE; parse before arithmetic (#871 convention).
+  const estimatedCost = ec != null ? parseUsd(ec.total_cost_usd) : null;
 
   // Kanban #951 AC #5 — pick the most-constraining cap from the project's
   // 3 nullable budget columns. Returns null when all three are null, in which
@@ -292,45 +296,65 @@ function CompactProjectCard({
 
       <div
         data-cost-strip
-        className="flex items-center gap-1.5 text-[11px] tabular-nums"
+        className="flex flex-col gap-0.5 text-[11px] tabular-nums"
         aria-label={`Cost and token usage for ${entry.name}`}
       >
-        {hasUsage ? (
-          <>
+        {/* G1 — Estimated row: shown when estimated_cost present from BE */}
+        {estimatedCost != null && (
+          <div className="flex items-center gap-1.5">
             <span
-              className={
-                hasBudgetWarning
-                  ? "font-semibold text-amber-700 dark:text-amber-300"
-                  : "font-semibold text-zinc-700 dark:text-zinc-300"
-              }
-              title={`$${cost.toFixed(4)} USD across ${cu.session_run_count} session run${cu.session_run_count === 1 ? "" : "s"}`}
+              className="font-semibold text-blue-600 dark:text-blue-400"
+              title={`$${estimatedCost.toFixed(4)} heuristic estimate from task budgets — metered actual cost coming soon`}
             >
-              {formatUsd(cost)}
-            </span>
-            <span aria-hidden className="text-zinc-300 dark:text-zinc-700">
-              ·
+              Estimated: {formatUsd(estimatedCost)}
             </span>
             <span
-              className="text-zinc-500 dark:text-zinc-400"
-              title={`${cu.total_input_tokens.toLocaleString("en-US")} in / ${cu.total_output_tokens.toLocaleString("en-US")} out`}
+              className="text-zinc-400 dark:text-zinc-500"
+              title="Heuristic estimate derived from per-task token budgets — metered actual cost coming soon"
             >
-              {formatTokens(cu.total_input_tokens)} in /{" "}
-              {formatTokens(cu.total_output_tokens)} out
+              (est.)
             </span>
-            {hasBudgetWarning ? (
-              <span
-                className="ml-auto inline-flex items-center rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
-                title={`${cu.budget_warning_count} run${cu.budget_warning_count === 1 ? "" : "s"} flagged budget-warned`}
-              >
-                ⚠ {cu.budget_warning_count}
-              </span>
-            ) : null}
-          </>
-        ) : (
-          <span className="text-zinc-400 dark:text-zinc-600" title="No session runs recorded yet">
-            — no usage
-          </span>
+          </div>
         )}
+        {/* Metered row: session-run actual cost */}
+        <div className="flex items-center gap-1.5">
+          {hasUsage ? (
+            <>
+              <span
+                className={
+                  hasBudgetWarning
+                    ? "font-semibold text-amber-700 dark:text-amber-300"
+                    : "font-semibold text-zinc-700 dark:text-zinc-300"
+                }
+                title={`$${cost.toFixed(4)} USD across ${cu.session_run_count} session run${cu.session_run_count === 1 ? "" : "s"}`}
+              >
+                Metered: {formatUsd(cost)}
+              </span>
+              <span aria-hidden className="text-zinc-300 dark:text-zinc-700">
+                ·
+              </span>
+              <span
+                className="text-zinc-500 dark:text-zinc-400"
+                title={`${cu.total_input_tokens.toLocaleString("en-US")} in / ${cu.total_output_tokens.toLocaleString("en-US")} out`}
+              >
+                {formatTokens(cu.total_input_tokens)} in /{" "}
+                {formatTokens(cu.total_output_tokens)} out
+              </span>
+              {hasBudgetWarning ? (
+                <span
+                  className="ml-auto inline-flex items-center rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+                  title={`${cu.budget_warning_count} run${cu.budget_warning_count === 1 ? "" : "s"} flagged budget-warned`}
+                >
+                  ⚠ {cu.budget_warning_count}
+                </span>
+              ) : null}
+            </>
+          ) : (
+            <span className="text-zinc-400 dark:text-zinc-600" title="No session runs recorded yet">
+              {estimatedCost != null ? "Metered: $0.00" : "— no usage"}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Budget bar (Kanban #951 AC #5). Sibling to the cost strip; rendered

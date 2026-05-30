@@ -6,6 +6,12 @@ Covers the happy path of:
   (3) GET /api/decisions returns the decided task in the retro feed
   (4) PATCH DONE on a decision task without chosen_id → 422 (AC2 gate)
 
+Kanban #1695 — string-option fix coverage:
+  (5) validate_decision_payload: string options + matching chosen_id → no raise
+  (6) validate_decision_payload: string options + non-matching chosen_id → ValueError
+  (7) validate_decision_payload: string options + missing chosen_id → ValueError
+  (8) validate_decision_payload: dict options + matching chosen_id → no raise (regression)
+
 These are first-pass contract-smoke tests only.  The comprehensive edge-case
 suite is delegated to dev-tester.
 """
@@ -185,3 +191,56 @@ async def test_patch_done_without_chosen_id_raises_422(client, scaffold_cleanup)
     detail = resp.json()["detail"]
     # Error must mention chosen_id so the operator understands what to fix.
     assert "chosen_id" in detail, detail
+
+
+# ---------------------------------------------------------------------------
+# (5-8) Unit tests for validate_decision_payload — Kanban #1695 string-option fix
+# ---------------------------------------------------------------------------
+
+from src.services.task_interaction import validate_decision_payload  # noqa: E402
+
+
+def test_validate_decision_payload_string_options_matching_chosen_id() -> None:
+    """String options + chosen_id that IS in the list → no exception (#1695)."""
+    payload = {
+        "question": "Pick one",
+        "options": ["accept", "retry_with_operator_input", "reject"],
+        "chosen_id": "accept",
+    }
+    # Must not raise.
+    validate_decision_payload(payload)
+
+
+def test_validate_decision_payload_string_options_mismatched_chosen_id() -> None:
+    """String options + chosen_id NOT in the list → ValueError (mismatch guard intact)."""
+    payload = {
+        "question": "Pick one",
+        "options": ["accept", "retry_with_operator_input", "reject"],
+        "chosen_id": "nope",
+    }
+    with pytest.raises(ValueError, match="nope"):
+        validate_decision_payload(payload)
+
+
+def test_validate_decision_payload_string_options_missing_chosen_id() -> None:
+    """String options + no chosen_id → ValueError (non-null invariant intact)."""
+    payload = {
+        "question": "Pick one",
+        "options": ["accept", "retry_with_operator_input", "reject"],
+    }
+    with pytest.raises(ValueError, match="chosen_id"):
+        validate_decision_payload(payload)
+
+
+def test_validate_decision_payload_dict_options_regression() -> None:
+    """Dict options [{'id': ...}] + matching chosen_id → no exception (regression guard)."""
+    payload = {
+        "question": "Pick one",
+        "options": [
+            {"id": "a", "label": "Option A"},
+            {"id": "b", "label": "Option B"},
+        ],
+        "chosen_id": "a",
+    }
+    # Must not raise.
+    validate_decision_payload(payload)

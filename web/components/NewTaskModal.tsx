@@ -26,6 +26,7 @@ import { ActionTemplatePicker } from "./ActionTemplatePicker";
 import { PauseOverrideBlock } from "./PauseOverrideBlock";
 import { HandoffTemplatePicker } from "./HandoffTemplatePicker";
 import { Icon } from "./Icon";
+import { ModalShell } from "./ModalShell";
 
 // Trigger button + dialog for POST /api/tasks (Kanban #855 FE).
 // Visual pattern mirrors NewProjectModal: zinc-bordered panel, focus on first
@@ -112,13 +113,7 @@ export function NewTaskModal({
   useEffect(() => {
     if (!open) return;
     titleInputRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !submitting) closeModal();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, submitting]);
+  }, [open]);
 
   function closeModal() {
     if (submitting) return;
@@ -253,21 +248,15 @@ export function NewTaskModal({
         <Icon name="add-task" size={14} aria-hidden />
         <span>New task</span>
       </button>
-      {open && (
-        // #954 — mobile: full-screen sheet (no padding, edge-to-edge); desktop restores centered max-w-md card
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="new-task-title"
-          className="fixed inset-0 z-50 flex items-stretch justify-center bg-zinc-900/40 dark:bg-zinc-950/70 sm:items-center sm:px-4"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) closeModal();
-          }}
-          data-new-task-modal
-        >
+      {/* #954 — mobile: full-screen sheet (no padding, edge-to-edge); desktop restores centered max-w-md card */}
+      <ModalShell
+        open={open}
+        onClose={() => { if (!submitting) closeModal(); }}
+        labelledBy="new-task-title"
+        backdropProps={{ "data-new-task-modal": true }}
+      >
           <form
             onSubmit={onSubmit}
-            className="flex w-full max-w-none flex-col overflow-y-auto rounded-none border-0 bg-white p-4 dark:bg-zinc-900 sm:h-auto sm:max-w-md sm:overflow-visible sm:rounded sm:border sm:border-zinc-200 sm:dark:border-zinc-800"
           >
             <h2
               id="new-task-title"
@@ -470,8 +459,7 @@ export function NewTaskModal({
               </button>
             </div>
           </form>
-        </div>
-      )}
+      </ModalShell>
     </>
   );
 }

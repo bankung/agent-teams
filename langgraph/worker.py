@@ -388,9 +388,14 @@ async def _poll_once(
             # payload above; pass it back in. No answer_history present —
             # validate_answer only checks the answer against the payload,
             # not against history.
+            # Kanban #1695: carry interaction_kind ('decision' when the pause
+            # had options) so the finalize PATCH sets chosen_id on an
+            # auto-approved DECISION — otherwise the #1007 done-flip validator
+            # 422s and the give-up path (Fix B) fires on every poll.
             synthetic_task = {
                 "id": task_id,
                 "question_payload": body["question_payload"],
+                "interaction_kind": body.get("interaction_kind"),
                 "resume_context": None,
             }
             await _resume_hitl_task(
@@ -806,6 +811,12 @@ async def _resume_hitl_task(
     """
     task_id = task["id"]
     question_payload = task.get("question_payload")
+    # interaction_kind discriminates decision tasks (which require chosen_id on
+    # the DONE flip — Kanban #1007 / #1695) from plain question tasks. TaskRead
+    # always carries this field; default to 'question' if a synthetic caller
+    # (auto-approve policy path) omitted it — only 'decision' triggers the
+    # chosen_id merge, so the default is the safe / no-op branch.
+    interaction_kind = task.get("interaction_kind") or "question"
     # Capture the answered_at NOW so we can stamp the cursor on the PATCH.
     # _last_valid_answer was just called inside _needs_resume; re-derive here
     # so this helper stays callable independently for testing.
@@ -930,6 +941,24 @@ async def _resume_hitl_task(
                 task.get("resume_context"), answered_at
             ),
         }
+        # Kanban #1695 (Fix A) — a DECISION task can only flip to DONE with
+        # chosen_id set: the api's #1007 done-flip validator (tasks.py ~1822,
+        # services/task_interaction.py::validate_decision_payload) rejects the
+        # PATCH 422 otherwise, and the bundled cursor never persists →
+        # _needs_resume re-resumes forever (#1081, #1094 stuck since ~2026-05-16).
+        # `validated` is the chosen option string (validate_answer matched it
+        # against question_payload.options, so it IS a valid option id —
+        # mirrors the /decide #1007 contract: chosen_id lives in
+        # question_payload, chosen_at is UTC Z-suffix). PRESERVE the existing
+        # payload (question / options / answer_history); only question tasks
+        # (interaction_kind != 'decision') skip the merge — they have no
+        # chosen_id requirement.
+        if interaction_kind == "decision":
+            body["question_payload"] = {
+                **(question_payload or {}),
+                "chosen_id": validated,
+                "chosen_at": _now_iso(),
+            }
     elif halt is None and not fresh_interrupt and sanitized_fired:
         # L23 override: would have been DONE, but sanitizer fired — halt for
         # human review instead of forwarding the echoed SQL.
@@ -957,7 +986,47 @@ async def _resume_hitl_task(
             ),
         }
 
-    await _patch_task(client, cfg, headers, task_id, body)
+    resp = await _patch_task(client, cfg, headers, task_id, body)
+    if resp is None:
+        # Kanban #1695 (Fix B) — the finalize PATCH was rejected (e.g. 422 from
+        # the #1007 decision-done validator, or any other api-side rejection).
+        # The cursor stamped in `body.resume_context` rode along on that SAME
+        # rejected PATCH, so it never persisted → _needs_resume would re-resume
+        # this task every poll (10s) FOREVER (the #1081 / #1094 loop).
+        #
+        # Defense-in-depth: issue ONE structured give-up PATCH that BOTH
+        #   (a) advances resume_context.last_consumed_answered_at (decoupled
+        #       from DONE success) so _needs_resume returns False next poll, AND
+        #   (b) sets halt_reason='resume_finalize_failed' (not in
+        #       {question, decision}) so the failure is VISIBLE on the board as
+        #       BLOCKED rather than silently looping.
+        # _patch_task already logged the rejection (status + body); add a
+        # task-scoped error line so the loop cause is greppable.
+        logger.error(
+            "hitl resume: task %d finalize PATCH rejected; issuing give-up "
+            "PATCH (halt_reason='resume_finalize_failed', cursor advanced) to "
+            "break the re-resume loop. rejected_body=%r",
+            task_id,
+            body,
+        )
+        await _patch_task(
+            client,
+            cfg,
+            headers,
+            task_id,
+            {
+                "process_status": STATUS_BLOCKED,
+                "halt_reason": "resume_finalize_failed",
+                "status_change_reason": (
+                    "resume finalize PATCH was rejected by the api; halted for "
+                    "human review (see worker logs for the rejected body)."
+                )[:_REASON_MAX],
+                "resume_context": _stamped_resume_context(
+                    task.get("resume_context"), answered_at
+                ),
+            },
+        )
+        return
     logger.info(
         "hitl resume: task %d resumed; halt=%s",
         task_id,

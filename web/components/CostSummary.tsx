@@ -120,12 +120,22 @@ export function CostSummary({
   let totalOutput = 0;
   let totalRuns = 0;
   let totalWarnings = 0;
+  let totalEstimatedCost = 0;
+  let totalEstimatedInput = 0;
+  let totalEstimatedOutput = 0;
+  let hasEstimated = false;
   for (const entry of stats) {
     totalCost += parseUsd(entry.cost_usage.total_cost_usd);
     totalInput += entry.cost_usage.total_input_tokens;
     totalOutput += entry.cost_usage.total_output_tokens;
     totalRuns += entry.cost_usage.session_run_count;
     totalWarnings += entry.cost_usage.budget_warning_count;
+    if (entry.estimated_cost != null) {
+      hasEstimated = true;
+      totalEstimatedCost += parseUsd(entry.estimated_cost.total_cost_usd);
+      totalEstimatedInput += entry.estimated_cost.total_input_tokens;
+      totalEstimatedOutput += entry.estimated_cost.total_output_tokens;
+    }
   }
 
   const noUsage = totalRuns === 0;
@@ -191,63 +201,113 @@ export function CostSummary({
 
       {expanded && (
         <>
-          {noUsage ? (
+          {noUsage && !hasEstimated ? (
             <p className="text-sm text-zinc-500 dark:text-zinc-400">
               No usage tracked yet.
             </p>
           ) : (
             <>
-              {/* #954 — single column on mobile (375px iPhone); 3-col tile row restored at sm */}
-              <div
-                className="grid grid-cols-1 gap-3 sm:grid-cols-3"
-                role="list"
-                aria-label="Cost and token totals"
-              >
-                <div
-                  role="listitem"
-                  className="flex flex-col items-start gap-1 rounded-md border border-amber-100 bg-white/70 px-3 py-3 dark:border-amber-900/30 dark:bg-zinc-950/40"
-                  title={`$${totalCost.toFixed(4)} USD`}
-                >
-                  <span className="text-3xl font-semibold tabular-nums leading-none text-amber-700 dark:text-amber-300">
-                    {formatUsd(totalCost)}
-                  </span>
-                  <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                    Total cost
-                  </span>
+              {/* G1 — Estimated cost row (heuristic from task estimates).
+                  Shown when the BE slice has landed and estimated_cost is present.
+                  Clearly labeled to distinguish from metered session-run cost. */}
+              {hasEstimated && (
+                <div className="mb-3 rounded-md border border-blue-100 bg-blue-50/40 px-3 py-3 dark:border-blue-900/30 dark:bg-blue-950/10">
+                  <div className="mb-1.5 flex items-center gap-2">
+                    <span className="text-[11px] font-medium uppercase tracking-wide text-blue-600 dark:text-blue-400">
+                      Estimated
+                    </span>
+                    <span
+                      className="cursor-default text-[10px] text-zinc-400 dark:text-zinc-500"
+                      title="Heuristic estimate derived from per-task token budgets — metered actual cost coming soon"
+                    >
+                      heuristic estimate — metered cost coming soon
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+                    <span
+                      className="text-2xl font-semibold tabular-nums leading-none text-blue-700 dark:text-blue-300"
+                      title={`$${totalEstimatedCost.toFixed(4)} USD (heuristic estimate)`}
+                    >
+                      {formatUsd(totalEstimatedCost)}
+                    </span>
+                    <span className="text-xs text-zinc-500 dark:text-zinc-400 tabular-nums">
+                      {formatInt(totalEstimatedInput)} in / {formatInt(totalEstimatedOutput)} out tokens
+                    </span>
+                  </div>
                 </div>
-                <div
-                  role="listitem"
-                  className="flex flex-col items-start gap-1 rounded-md border border-amber-100 bg-white/70 px-3 py-3 dark:border-amber-900/30 dark:bg-zinc-950/40"
-                  title={`${totalInput.toLocaleString("en-US")} input tokens`}
-                >
-                  <span className="text-3xl font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100">
-                    {formatInt(totalInput)}
-                  </span>
-                  <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                    Input tokens
-                  </span>
-                </div>
-                <div
-                  role="listitem"
-                  className="flex flex-col items-start gap-1 rounded-md border border-amber-100 bg-white/70 px-3 py-3 dark:border-amber-900/30 dark:bg-zinc-950/40"
-                  title={`${totalOutput.toLocaleString("en-US")} output tokens`}
-                >
-                  <span className="text-3xl font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100">
-                    {formatInt(totalOutput)}
-                  </span>
-                  <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                    Output tokens
-                  </span>
-                </div>
-              </div>
-              <div className="mt-4 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs text-zinc-600 dark:text-zinc-400">
-                <span>
-                  <span className="font-semibold text-zinc-900 dark:text-zinc-100 tabular-nums">
-                    {totalRuns}
-                  </span>{" "}
-                  session run{totalRuns === 1 ? "" : "s"} tracked
-                </span>
-              </div>
+              )}
+
+              {/* Metered cost row (session_runs-based; ~$0 until session_runs are fed) */}
+              {!noUsage && (
+                <>
+                  {/* #954 — single column on mobile (375px iPhone); 3-col tile row restored at sm */}
+                  <div className="mb-1.5 flex items-center gap-2">
+                    <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                      Metered
+                    </span>
+                    <span className="text-[10px] text-zinc-400 dark:text-zinc-500">
+                      actual session-run spend
+                    </span>
+                  </div>
+                  <div
+                    className="grid grid-cols-1 gap-3 sm:grid-cols-3"
+                    role="list"
+                    aria-label="Metered cost and token totals"
+                  >
+                    <div
+                      role="listitem"
+                      className="flex flex-col items-start gap-1 rounded-md border border-amber-100 bg-white/70 px-3 py-3 dark:border-amber-900/30 dark:bg-zinc-950/40"
+                      title={`$${totalCost.toFixed(4)} USD`}
+                    >
+                      <span className="text-3xl font-semibold tabular-nums leading-none text-amber-700 dark:text-amber-300">
+                        {formatUsd(totalCost)}
+                      </span>
+                      <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                        Total cost
+                      </span>
+                    </div>
+                    <div
+                      role="listitem"
+                      className="flex flex-col items-start gap-1 rounded-md border border-amber-100 bg-white/70 px-3 py-3 dark:border-amber-900/30 dark:bg-zinc-950/40"
+                      title={`${totalInput.toLocaleString("en-US")} input tokens`}
+                    >
+                      <span className="text-3xl font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100">
+                        {formatInt(totalInput)}
+                      </span>
+                      <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                        Input tokens
+                      </span>
+                    </div>
+                    <div
+                      role="listitem"
+                      className="flex flex-col items-start gap-1 rounded-md border border-amber-100 bg-white/70 px-3 py-3 dark:border-amber-900/30 dark:bg-zinc-950/40"
+                      title={`${totalOutput.toLocaleString("en-US")} output tokens`}
+                    >
+                      <span className="text-3xl font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100">
+                        {formatInt(totalOutput)}
+                      </span>
+                      <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                        Output tokens
+                      </span>
+                    </div>
+                  </div>
+                  <div className="mt-4 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs text-zinc-600 dark:text-zinc-400">
+                    <span>
+                      <span className="font-semibold text-zinc-900 dark:text-zinc-100 tabular-nums">
+                        {totalRuns}
+                      </span>{" "}
+                      session run{totalRuns === 1 ? "" : "s"} tracked
+                    </span>
+                  </div>
+                </>
+              )}
+
+              {/* When metered has no runs yet but estimated is present, show a muted note */}
+              {noUsage && hasEstimated && (
+                <p className="mt-1 text-xs text-zinc-400 dark:text-zinc-600">
+                  Metered: $0.00 — no session runs recorded yet.
+                </p>
+              )}
             </>
           )}
         </>

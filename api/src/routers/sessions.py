@@ -404,9 +404,13 @@ async def update_session_run(
     # them (not persisted columns), and DROP any client-supplied
     # total_cost_usd (server overwrites). When all 4 cost-inputs present,
     # compute via cost_tracker and stamp the column.
+    # G2 (#1689): also pop the cache token fields (not persisted) and forward
+    # them to compute_cost so cached-input cost uses the correct multipliers.
     provider = updates.pop("provider", None)
     model = updates.pop("model", None)
     updates.pop("total_cost_usd", None)  # server-managed; client value ignored.
+    cache_read_input_tokens = updates.pop("cache_read_input_tokens", None) or 0
+    cache_creation_input_tokens = updates.pop("cache_creation_input_tokens", None) or 0
 
     input_tokens = updates.get("total_input_tokens")
     output_tokens = updates.get("total_output_tokens")
@@ -418,7 +422,12 @@ async def update_session_run(
     ):
         try:
             updates["total_cost_usd"] = compute_cost(
-                provider, model, input_tokens, output_tokens
+                provider,
+                model,
+                input_tokens,
+                output_tokens,
+                cache_read_input_tokens=cache_read_input_tokens,
+                cache_creation_input_tokens=cache_creation_input_tokens,
             )
         except ValueError as exc:
             # Unknown (provider, model). Don't fail the PATCH — log + leave column.

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 
 import { grantConsent } from "@/lib/api";
 import { extractErrorMessage } from "@/lib/errors";
+import { ModalShell } from "./ModalShell";
 
 type Props = {
   project: { id: number; name: string };
@@ -22,17 +23,11 @@ export function ProjectConsentGrantModal({ project }: Props) {
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  // Focus the input on open + Escape to close (focus trap kept minimal: only one
-  // tabbable form, browser default tab order is fine).
+  // Focus the input on open.
   useEffect(() => {
     if (!open) return;
     inputRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !submitting) closeModal();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, submitting]);
+  }, [open]);
 
   const closeModal = () => {
     if (submitting) return;
@@ -69,21 +64,15 @@ export function ProjectConsentGrantModal({ project }: Props) {
       >
         Enable headless auto-run
       </button>
-      {open && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="consent-grant-title"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/40 px-4 dark:bg-zinc-950/70"
-          onMouseDown={(e) => {
-            // Backdrop click closes; clicks inside the panel must not bubble here.
-            if (e.target === e.currentTarget) closeModal();
-          }}
-          data-consent-grant-modal
-        >
+      <ModalShell
+        open={open}
+        onClose={closeModal}
+        labelledBy="consent-grant-title"
+        maxWidth="sm"
+        backdropProps={{ "data-consent-grant-modal": true }}
+      >
           <form
             onSubmit={onSubmit}
-            className="w-full max-w-sm rounded border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900"
           >
             <h2
               id="consent-grant-title"
@@ -140,8 +129,7 @@ export function ProjectConsentGrantModal({ project }: Props) {
               </button>
             </div>
           </form>
-        </div>
-      )}
+      </ModalShell>
     </>
   );
 }

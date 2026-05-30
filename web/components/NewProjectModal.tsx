@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { createProject, getTeams, type Team } from "@/lib/api";
 import { ProjectTeam, type ProjectTeamValue } from "@/lib/constants";
 import { extractErrorMessage } from "@/lib/errors";
+import { ModalShell } from "./ModalShell";
 
 // Inline info-icon popover (click-toggle). No external library — uses
 // Tailwind positioning + outside-click dismiss. Reused for team + working_path.
@@ -97,13 +98,7 @@ export function NewProjectModal() {
   useEffect(() => {
     if (!open) return;
     nameInputRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !submitting) closeModal();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, submitting]);
+  }, [open]);
 
   function closeModal() {
     if (submitting) return;
@@ -169,21 +164,15 @@ export function NewProjectModal() {
       >
         + New project
       </button>
-      {open && (
-        // #954 — mobile: full-screen sheet; desktop restores centered max-w-md card
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="new-project-title"
-          className="fixed inset-0 z-50 flex items-stretch justify-center bg-zinc-900/40 dark:bg-zinc-950/70 sm:items-center sm:px-4"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) closeModal();
-          }}
-          data-new-project-modal
-        >
+      {/* #954 — mobile: full-screen sheet; desktop restores centered max-w-md card */}
+      <ModalShell
+        open={open}
+        onClose={closeModal}
+        labelledBy="new-project-title"
+        backdropProps={{ "data-new-project-modal": true }}
+      >
           <form
             onSubmit={onSubmit}
-            className="flex w-full max-w-none flex-col overflow-y-auto rounded-none border-0 bg-white p-4 dark:bg-zinc-900 sm:h-auto sm:max-w-md sm:overflow-visible sm:rounded sm:border sm:border-zinc-200 sm:dark:border-zinc-800"
           >
             <h2
               id="new-project-title"
@@ -340,8 +329,7 @@ export function NewProjectModal() {
               </button>
             </div>
           </form>
-        </div>
-      )}
+      </ModalShell>
     </>
   );
 }

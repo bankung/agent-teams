@@ -33,6 +33,7 @@ import {
 } from "@/lib/api";
 import { extractErrorMessage } from "@/lib/errors";
 import { Icon } from "./Icon";
+import { ModalShell } from "./ModalShell";
 
 // ---------------------------------------------------------------------------
 // IntegrationToggle — small accessible on/off switch. Direct-flip semantics
@@ -125,8 +126,8 @@ function SetupPanel({ integration }: { integration: Integration }) {
 
       {steps.length > 0 && (
         <ol className="ml-4 list-decimal space-y-1 text-xs text-zinc-700 dark:text-zinc-300">
-          {steps.map((step, i) => (
-            <li key={i}>{step}</li>
+          {steps.map((step) => (
+            <li key={step}>{step}</li>
           ))}
         </ol>
       )}
@@ -291,15 +292,7 @@ export function PlatformSettingsModal() {
     requestAnimationFrame(() => closeRef.current?.focus());
   }, [open, load]);
 
-  // ESC closes (mirrors EditProjectModal).
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open]);
+  // ESC handled by ModalShell.
 
   // Optimistic toggle with rollback on PATCH error. The PATCH response carries
   // refreshed `configured` + env-var presence, so we replace the row with the
@@ -374,18 +367,15 @@ export function PlatformSettingsModal() {
         <Icon name="agent-config" size={14} />
       </button>
 
-      {open && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="platform-settings-title"
-          className="fixed inset-0 z-50 flex items-stretch justify-center bg-zinc-900/40 dark:bg-zinc-950/70 sm:items-center sm:px-4"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setOpen(false);
-          }}
-          data-platform-settings-modal
-        >
-          <div className="flex w-full max-w-none flex-col overflow-y-auto rounded-none border-0 bg-white p-4 dark:bg-zinc-900 sm:h-auto sm:max-h-[85vh] sm:max-w-lg sm:rounded sm:border sm:border-zinc-200 sm:dark:border-zinc-800">
+      <ModalShell
+        open={open}
+        onClose={() => setOpen(false)}
+        labelledBy="platform-settings-title"
+        maxWidth="lg"
+        panelExtraClassName="sm:max-h-[85vh]"
+        backdropProps={{ "data-platform-settings-modal": true }}
+      >
+          <div>
             <div className="flex items-start justify-between gap-3">
               <div className="flex flex-col gap-1">
                 <h2
@@ -533,8 +523,7 @@ export function PlatformSettingsModal() {
                 ))}
             </div>
           </div>
-        </div>
-      )}
+      </ModalShell>
     </>
   );
 }

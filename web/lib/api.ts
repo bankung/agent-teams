@@ -352,6 +352,16 @@ export type ProjectStatsCostUsage = {
   session_run_count: number;
 };
 
+// G1 — heuristic estimate from task-level estimated_cost_usd roll-up.
+// total_cost_usd is a Decimal STRING (same Pydantic serialization as
+// cost_usage.total_cost_usd — #871). Parse via parseUsd() before arithmetic.
+// Optional: absent on older API versions — FE degrades gracefully.
+export type ProjectStatsEstimatedCost = {
+  total_cost_usd: string;
+  total_input_tokens: number;
+  total_output_tokens: number;
+};
+
 // #769/#871 — stats row; counts["1".."6"] always present; cost_usage zero-filled
 export type ProjectStatsEntry = {
   id: number;
@@ -361,6 +371,8 @@ export type ProjectStatsEntry = {
   counts: Record<"1" | "2" | "3" | "4" | "5" | "6", number>; // #854 — "6"=CANCELLED added 2026-05-13; dashboard LANES tuple iterates 1..5 only (cancelled count display = #870).
   last_activity_at: string | null;
   cost_usage: ProjectStatsCostUsage;
+  // G1 — heuristic task-estimate roll-up; optional until BE slice lands.
+  estimated_cost?: ProjectStatsEstimatedCost;
 };
 
 export async function getProjectsStats(opts?: {

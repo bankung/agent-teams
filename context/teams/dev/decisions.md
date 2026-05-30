@@ -21,6 +21,19 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-05-30 — Agent tier-audit artifact relocated here from bin/tier-presets/ — Kanban #1685
+**Scope:** team-playbook / methodology / agent tiering
+**Proposed by:** lead (code-minimization / hygiene combo #1685 + #1657)
+
+The one-time agent tier-audit (Kanban #1360, generated 2026-05-21) lived as `bin/tier-presets/AUDIT.md` — a 37-row table mapping every `.claude/agents/*.md` to its MAX vs L2 (Pro-pilot) tier with downgrade-risk notes. That's methodology content (which roles run on which model tier + why), not a build artifact, so it didn't belong under `bin/`. Summary preserved here; the original file was removed.
+
+**Tiering decision captured (from the audit):**
+- **MAX preset** = operator's full baseline (no downgrades).
+- **L2 (Pro pilot) preset** = routine roles → Sonnet; `dev-sr-*` + strategists (`bi-analyst`, `seo-strategist`, `sem-campaign-lead`) → Opus; `dev-documentor` / `general-researcher` → Haiku.
+- Roles already at L2 (no change): dev-backend/frontend/devops/tester/reviewer/spec-reviewer/security-reviewer/analyst, project-auditor, content-editor/hook-doctor/seo-optimizer/veracity-checker, thai-proofreader (MAX), etc.
+- L2 downgrades flagged with risk notes: `general` (implicit-Opus → Sonnet), `content-writer` (Opus → Sonnet — revert for high-stakes content), `thai-proofreader` (Sonnet → Haiku — spot-check the first batch).
+- **Canonical applied record = the diffs under `bin/tier-presets/l2/`** (the actual frontmatter changes). This entry is the rationale; that directory is the source of truth for what L2 alters.
+
 ## 2026-05-29 — Team/agent onboarding runbook + netops as the validating instance — Kanban #1643
 **Scope:** team-playbook / methodology / platform-onboarding
 **Proposed by:** lead (netops diagnosis-team PoC)
