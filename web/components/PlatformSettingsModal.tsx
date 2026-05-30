@@ -170,19 +170,28 @@ function SetupPanel({ integration }: { integration: Integration }) {
 
       {links.length > 0 && (
         <div className="flex flex-wrap gap-2">
-          {links.map((link) => (
-            <a
-              key={link.url}
-              href={link.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              data-integration-link={link.url}
-              className="inline-flex items-center gap-1 rounded border border-zinc-300 bg-white px-2 py-1 text-[11px] font-medium text-zinc-700 hover:border-zinc-400 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
-            >
-              {link.label}
-              <span aria-hidden>↗</span>
-            </a>
-          ))}
+          {links.map((link) =>
+            link.url.startsWith("https://") || link.url.startsWith("http://") ? (
+              <a
+                key={link.url}
+                href={link.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                data-integration-link={link.url}
+                className="inline-flex items-center gap-1 rounded border border-zinc-300 bg-white px-2 py-1 text-[11px] font-medium text-zinc-700 hover:border-zinc-400 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
+              >
+                {link.label}
+                <span aria-hidden>↗</span>
+              </a>
+            ) : (
+              <span
+                key={link.url}
+                className="inline-flex items-center gap-1 rounded border border-zinc-300 bg-white px-2 py-1 text-[11px] font-medium text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+              >
+                {link.label}
+              </span>
+            )
+          )}
         </div>
       )}
 

@@ -24,8 +24,9 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
@@ -38,6 +39,7 @@ from src.schemas.integration import (
     IntegrationToggleRequest,
     PlatformSecurity,
 )
+from src.middleware.rate_limit import limiter
 from src.services.integrations_registry import (
     INTEGRATIONS_REGISTRY,
     env_var_presence,
@@ -89,7 +91,9 @@ def _build_read(entry, enabled: bool) -> IntegrationRead:
 
 
 @router.get("/integrations", response_model=IntegrationListResponse)
+@limiter.limit("30/minute")
 async def list_integrations(
+    request: Request,  # required by slowapi key_func
     session: AsyncSession = Depends(get_session),
 ) -> IntegrationListResponse:
     """List every optional integration with its enable + configured status.
@@ -121,8 +125,10 @@ async def list_integrations(
     "/integrations/{integration_id}",
     response_model=IntegrationRead,
 )
+@limiter.limit("20/minute")
 async def toggle_integration(
-    integration_id: str,
+    request: Request,  # required by slowapi key_func
+    integration_id: Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[a-z0-9_]+$")],
     payload: IntegrationToggleRequest,
     session: AsyncSession = Depends(get_session),
 ) -> IntegrationRead:
