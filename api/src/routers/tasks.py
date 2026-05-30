@@ -200,9 +200,8 @@ def _apply_jsonb_serialization(payload: object, updates: dict) -> None:
 
     Applies model_dump(mode='json') coercion for the four JSONB columns that
     require it before being stored. Guards mirror the update_task PATCH shape
-    (field present in updates AND value not None). Called from update_task and
-    from create_task for the unconditional fields (subagent_models,
-    question_payload). Kanban #1682 Phase 1 dedup.
+    (field present in updates AND value not None). Called from update_task only
+    (create_task serializes inline). Kanban #1682 Phase 1 dedup.
     """
     if (
         "acceptance_criteria" in updates

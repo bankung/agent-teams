@@ -68,7 +68,11 @@ export function PushNotificationsPanel() {
       // Don't change the master status on a list-fetch failure — the user's
       // own subscribe / unsubscribe still works; only the device list shows
       // stale. Surface as a non-blocking inline message.
-      setErrorMessage(`Could not load subscription list: ${extractErrorMessage(err, "unknown error")}`);
+      setErrorMessage(
+        err instanceof Error
+          ? `Could not load subscription list: ${err.message}`
+          : "Could not load subscription list",
+      );
     }
   }, []);
 
