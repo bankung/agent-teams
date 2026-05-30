@@ -14,7 +14,8 @@
 
 import { useState } from "react";
 
-import { HttpError, patchTask, type TaskRead } from "@/lib/api";
+import { patchTask, type TaskRead } from "@/lib/api";
+import { extractErrorMessage } from "@/lib/errors";
 
 type Props = {
   task: TaskRead;
@@ -44,13 +45,7 @@ export function TaskMuteToggle({ task, projectId, onPatch, onError }: Props) {
     } catch (err: unknown) {
       // Revert to original state.
       onPatch({ ...task, nudge_disabled: muted });
-      const msg =
-        err instanceof HttpError
-          ? err.message
-          : err instanceof Error
-            ? err.message
-            : "Update failed";
-      onError(`Task #${task.id}: ${msg}`);
+      onError(`Task #${task.id}: ${extractErrorMessage(err, "Update failed")}`);
     } finally {
       setSubmitting(false);
     }

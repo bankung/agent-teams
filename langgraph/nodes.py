@@ -38,13 +38,13 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from audit import record_tool_invocation
+from config import resolve_api_base, resolve_project_id, utc_now
 from hitl import request_user_input  # noqa: F401 — re-exported for specialist authors
 from llm import (
     build_cached_system_content,
@@ -67,10 +67,6 @@ from tools import (
 )
 
 logger = logging.getLogger("langgraph.nodes")
-
-# Compose-internal hostname for the Kanban API. Mirrors worker.py's default.
-# Env-var override (LANGGRAPH_KANBAN_API_BASE) honoured at call time.
-_DEFAULT_API_BASE = "http://api:8456"
 
 # Role codes mirror api/src/constants.py::TaskRole. Duplicated intentionally —
 # the langgraph container does not import the api package (separate
@@ -186,7 +182,7 @@ async def backend_specialist_node(state: AgentState) -> dict:
     # Project id sourced from LANGGRAPH_PROJECT_ID — the engine container is
     # bound to a single project. A future multi-project engine would fetch
     # task → project_id via the api.
-    project_id = _project_id_from_env()
+    project_id = resolve_project_id()
     tools_config = await _fetch_tools_config(project_id)
     working_path, repo_root = _resolve_paths(project_id)
 
@@ -553,25 +549,9 @@ def _stringify_content(content: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _api_base() -> str:
-    """Lazy lookup of the api base URL (mirrors worker.py / audit.py)."""
-    return (
-        os.getenv("LANGGRAPH_KANBAN_API_BASE", _DEFAULT_API_BASE).strip().rstrip("/")
-    )
-
-
-def _project_id_from_env() -> int | None:
-    """Resolve LANGGRAPH_PROJECT_ID (the project this engine is bound to).
-
-    Used as the fallback when the task row's project_id isn't in state.
-    The worker injects task_id into state, but project_id isn't part of
-    AgentState. The engine container is bound to ONE project, so the
-    env-var is authoritative.
-    """
-    raw = os.getenv("LANGGRAPH_PROJECT_ID", "").strip()
-    if not raw or not raw.isdigit():
-        return None
-    return int(raw)
+# API base URL and project-id resolution delegated to config.py.
+# _api_base() → config.resolve_api_base()
+# _project_id_from_env() → config.resolve_project_id()
 
 
 async def _fetch_tools_config(project_id: int | None) -> dict[str, Any] | None:
@@ -583,7 +563,7 @@ async def _fetch_tools_config(project_id: int | None) -> dict[str, Any] | None:
     if project_id is None:
         logger.info("specialist_node: no project_id — tools_config=None")
         return None
-    url = f"{_api_base()}/api/projects/{project_id}"
+    url = f"{resolve_api_base()}/api/projects/{project_id}"
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(url)
@@ -633,35 +613,36 @@ def _resolve_paths(project_id: int | None) -> tuple[str | None, str | None]:
     return working_path, repo_root
 
 
-def _stub_specialist(role_name: str) -> dict:
-    """Helper for the not-yet-implemented specialists. Keeps the graph
-    well-formed (every conditional-edge target exists and returns) so #852 can
-    smoke-test routing for every role code before #853 fills these in.
+def make_stub_node(role_name: str):
+    """Factory — returns a LangGraph node function for a not-yet-implemented
+    specialist.  Keeps the graph well-formed (every conditional-edge target
+    exists and returns) so #852 can smoke-test routing for every role code
+    before #853 fills these in.
+
+    The returned function is identical in behavior to the four individual
+    wrapper functions that previously existed; the response text is
+    byte-identical.
     """
     msg = (
         f"{role_name} specialist not implemented yet "
         "(Kanban #850 ships backend only; full multi-provider rollout in #853)"
     )
-    return {
-        "messages": [AIMessage(content=msg)],
-        "final_result": msg,
-    }
+
+    def _stub_node(state: AgentState) -> dict:  # noqa: ARG001
+        return {
+            "messages": [AIMessage(content=msg)],
+            "final_result": msg,
+        }
+
+    _stub_node.__name__ = f"{role_name}_specialist_node"
+    _stub_node.__qualname__ = f"{role_name}_specialist_node"
+    return _stub_node
 
 
-def frontend_specialist_node(state: AgentState) -> dict:
-    return _stub_specialist("frontend")
-
-
-def devops_specialist_node(state: AgentState) -> dict:
-    return _stub_specialist("devops")
-
-
-def tester_specialist_node(state: AgentState) -> dict:
-    return _stub_specialist("tester")
-
-
-def reviewer_specialist_node(state: AgentState) -> dict:
-    return _stub_specialist("reviewer")
+frontend_specialist_node = make_stub_node("frontend")
+devops_specialist_node = make_stub_node("devops")
+tester_specialist_node = make_stub_node("tester")
+reviewer_specialist_node = make_stub_node("reviewer")
 
 
 def general_node(state: AgentState) -> dict:
@@ -829,9 +810,7 @@ _AUDITOR_LLM_SYSTEM_PROMPT = (
 )
 
 
-def _iso_now_utc() -> str:
-    """UTC ISO-8601 with `Z` suffix — matches Kanban API timestamp shape."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+# UTC timestamp helper delegated to config.utc_now() — see config.py.
 
 
 def _heuristic_clean(state: AgentState) -> bool:
@@ -879,7 +858,7 @@ def _build_pass_report(*, llm_skipped: bool, retry_count: int, evidence: list[st
         "action_taken": "auto_pass" if llm_skipped else "llm_pass",
         "escalation_payload": None,
         "llm_skipped": llm_skipped,
-        "audited_at": _iso_now_utc(),
+        "audited_at": utc_now(),
         "retry_count_at_audit": retry_count,
     }
 
@@ -948,7 +927,7 @@ def _normalise_llm_verdict(parsed: dict[str, Any], retry_count: int) -> dict[str
         "action_taken": action,
         "escalation_payload": escalation_payload,
         "llm_skipped": False,
-        "audited_at": _iso_now_utc(),
+        "audited_at": utc_now(),
         "retry_count_at_audit": retry_count,
     }
 
@@ -1067,7 +1046,7 @@ async def auditor_node(state: AgentState) -> dict[str, Any]:
                 "options": ["accept", "retry_with_adjustment", "reject"],
             },
             "llm_skipped": False,
-            "audited_at": _iso_now_utc(),
+            "audited_at": utc_now(),
             "retry_count_at_audit": retry_count,
         }
     else:
@@ -1192,7 +1171,7 @@ def _apply_escalation_resume(
     normalised = (answer or "").strip().lower()
     audit_verdict_field = "escalate"  # carry the original verdict in the report
     report = dict(report)  # copy so we can mutate action_taken
-    audited_at = _iso_now_utc()
+    audited_at = utc_now()
     report["audited_at"] = audited_at
 
     if normalised == "accept":

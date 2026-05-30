@@ -7,8 +7,6 @@ the branch header so the LLM knows which branch it's on.
 
 from __future__ import annotations
 
-import asyncio
-
 from ..base import InvokeContext, Tier, Tool, ToolInput, ToolResult
 from ..registry import GLOBAL_REGISTRY
 from ._run_git import run_git
@@ -30,13 +28,12 @@ class GitStatusTool(Tool):
     async def _run(
         self, input_obj: ToolInput, context: InvokeContext
     ) -> ToolResult:
-        try:
-            out = await run_git(
-                ["status", "--porcelain=v1", "-b"],
-                cwd=context.repo_root,
-                timeout_sec=self.timeout_sec,
-            )
-        except asyncio.TimeoutError:
+        out = await run_git(
+            ["status", "--porcelain=v1", "-b"],
+            cwd=context.repo_root,
+            timeout_sec=self.timeout_sec,
+        )
+        if out.timed_out:
             return ToolResult(
                 success=False,
                 error_code="timeout",

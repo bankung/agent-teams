@@ -28,16 +28,13 @@ transport flakiness.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 import httpx
 
-logger = logging.getLogger("langgraph.audit")
+from config import resolve_api_base, resolve_project_id
 
-# Same env-var as the worker; same default. The compose-internal hostname
-# resolves to the api service from inside the langgraph container.
-DEFAULT_API_BASE = "http://api:8456"
+logger = logging.getLogger("langgraph.audit")
 
 # Module-level httpx timeout for audit POSTs. Smaller than the worker's 30s
 # because audit calls are tiny + frequent — we want them snappy or failed.
@@ -53,30 +50,16 @@ _KNOWN_RESULT_KEYS: frozenset[str] = frozenset(
 )
 
 
-def _api_base() -> str:
-    """Resolve the kanban API base URL at call time (env-var honoured).
-
-    Lazy lookup (not a module-level constant) so tests can monkeypatch
-    LANGGRAPH_KANBAN_API_BASE per-invocation without re-importing.
-    """
-    return (
-        os.getenv("LANGGRAPH_KANBAN_API_BASE", DEFAULT_API_BASE)
-        .strip()
-        .rstrip("/")
-    )
-
-
 def _project_id_header() -> dict[str, str]:
     """Build the X-Project-Id header from the worker's env-var.
 
-    Mirrors `worker.WorkerConfig`: `LANGGRAPH_PROJECT_ID` is the source
-    of truth for which project this engine is bound to. Missing / empty
-    → empty dict (the api endpoint returns 400, which the caller logs).
+    Wraps config.resolve_project_id(). Missing / empty → empty dict
+    (the api endpoint returns 400, which the caller logs).
     """
-    pid = os.getenv("LANGGRAPH_PROJECT_ID", "").strip()
-    if not pid:
+    pid = resolve_project_id()
+    if pid is None:
         return {}
-    return {"X-Project-Id": pid}
+    return {"X-Project-Id": str(pid)}
 
 
 async def record_tool_invocation(
@@ -168,7 +151,7 @@ async def _post_audit_row(task_id: int, payload: dict[str, Any]) -> None:
     the row is durable. Anything else (transport error, non-2xx) is
     logged at WARNING and the function returns; the loop continues.
     """
-    url = f"{_api_base()}/api/tasks/{task_id}/tool-calls"
+    url = f"{resolve_api_base()}/api/tasks/{task_id}/tool-calls"
     headers = {
         **_project_id_header(),
         "Content-Type": "application/json",

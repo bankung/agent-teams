@@ -17,6 +17,7 @@
 import { useState } from "react";
 
 import { push as pushApi, type PushSubscriptionRead, type PushKindsEnabled } from "@/lib/api";
+import { extractErrorMessage } from "@/lib/errors";
 import { Switch } from "@/components/Switch";
 
 // Friendly label for the 4 kinds. Order matches the locked KindsEnabled
@@ -82,8 +83,7 @@ export function PushSubscriptionRow({ subscription, onUpdate, onRemove }: Props)
       // Revert + surface. Slice B's PATCH endpoint may not have shipped yet
       // (404 / 405) — message reflects that case clearly.
       setKinds(previous);
-      const detail = err instanceof Error ? err.message : "Update failed";
-      setError(detail);
+      setError(extractErrorMessage(err, "Update failed"));
     }
   }
 
@@ -100,8 +100,7 @@ export function PushSubscriptionRow({ subscription, onUpdate, onRemove }: Props)
       await pushApi.unsubscribe(subscription.id);
       onRemove(subscription.id);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : "Unsubscribe failed";
-      setError(detail);
+      setError(extractErrorMessage(err, "Unsubscribe failed"));
       setRemoving(false);
     }
   }

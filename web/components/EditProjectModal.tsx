@@ -4,12 +4,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import {
-  HttpError,
   updateProject,
   type ProjectRead,
   type ProjectUpdateBody,
   type Source,
 } from "@/lib/api";
+import { extractErrorMessage } from "@/lib/errors";
 import { Icon } from "./Icon";
 
 // Edit-project modal (Kanban #943 FE). Sibling to NewProjectModal — modal
@@ -289,11 +289,7 @@ export function EditProjectModal({ project }: Props) {
       router.refresh();
       setOpen(false);
     } catch (err: unknown) {
-      if (err instanceof HttpError) {
-        setError(err.message);
-      } else {
-        setError(err instanceof Error ? err.message : "Update failed");
-      }
+      setError(extractErrorMessage(err, "Update failed"));
     } finally {
       setSubmitting(false);
     }

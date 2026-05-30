@@ -31,6 +31,20 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# ---------------------------------------------------------------------------
+# Tool-loop iteration limit (inlined from tools/iteration_limit.py — Phase 1
+# minimization). Locked Kanban #949 Q3 → A. Per-project override deferred.
+# ---------------------------------------------------------------------------
+
+# Locked at 5 for V1. The specialist node loops at most this many times —
+# each iteration is one model.invoke() round. On the (N+1)-th iteration the
+# loop exits early and returns halt_reason=TOOL_LOOP_HALT_REASON.
+MAX_TOOL_LOOP_ITERATIONS: int = 5
+
+# Halt reason emitted by nodes.backend_specialist_node when the limit fires.
+# Verbatim — pinned by test_specialist_audit_writer_iter_limit_halt.
+TOOL_LOOP_HALT_REASON: str = f"tool_loop_max_iterations: {MAX_TOOL_LOOP_ITERATIONS}"
+
 
 class Tier(str, Enum):
     """Permission tier — classifies a tool's blast radius.

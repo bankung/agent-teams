@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { listProjects, type ProjectRead } from "@/lib/api";
+import { extractErrorMessage } from "@/lib/errors";
 
 type Props = { current: string };
 
@@ -24,7 +25,7 @@ export function ProjectSwitcher({ current }: Props) {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setLoadError(err instanceof Error ? err.message : "Failed to load");
+        setLoadError(extractErrorMessage(err, "Failed to load"));
       });
     return () => {
       cancelled = true;

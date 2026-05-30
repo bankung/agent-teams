@@ -16,6 +16,7 @@ import {
   type ToolCallRead,
   type ToolCallTier,
 } from "@/lib/api";
+import { extractErrorMessage } from "@/lib/errors";
 import { formatRelative } from "@/lib/time";
 import { Icon } from "./Icon";
 
@@ -81,7 +82,7 @@ export function TaskToolCalls({ projectId, taskId }: Props) {
         if (cancelled) return;
         // 404 (endpoint not deployed yet / no tool_calls row) → treat as empty.
         // Anything else surfaces as an inline message inside the expanded section.
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = extractErrorMessage(err, String(err));
         if (/404/.test(msg)) {
           setProbedEmpty(true);
         } else {
@@ -133,7 +134,7 @@ export function TaskToolCalls({ projectId, taskId }: Props) {
           setRows(data);
         }
       } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(extractErrorMessage(err, String(err)));
       } finally {
         setLoading(false);
       }

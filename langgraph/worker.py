@@ -43,7 +43,6 @@ import asyncio
 import logging
 import os
 import time
-from datetime import datetime, timezone
 from types import ModuleType
 from typing import Any
 
@@ -51,6 +50,7 @@ import httpx
 
 from agent_context_sanitizer import sanitize_for_agent_context
 from approval_evaluator import evaluate_policy
+import config as _config
 from content_safety import sanitize_agent_action, scan_task_content
 from hitl import (
     CheckpointMissingError,
@@ -66,7 +66,8 @@ logger = logging.getLogger("langgraph.worker")
 
 # Defaults — overridable via env-vars resolved at startup by WorkerConfig.
 DEFAULT_POLL_INTERVAL_SEC = 30
-DEFAULT_API_BASE = "http://api:8456"  # compose-internal hostname; host-dev overrides via env
+# Re-export so tests that import DEFAULT_API_BASE from worker continue to work.
+DEFAULT_API_BASE: str = _config.DEFAULT_API_BASE
 
 # Kanban process_status codes (mirror api/src/constants.py::TaskStatus).
 # We intentionally re-declare instead of importing to keep the langgraph
@@ -98,9 +99,7 @@ class WorkerConfig:
             )
         self.project_id: int = int(proj)
 
-        self.api_base: str = (
-            os.getenv("LANGGRAPH_KANBAN_API_BASE", DEFAULT_API_BASE).strip().rstrip("/")
-        )
+        self.api_base: str = _config.resolve_api_base()
         if not self.api_base:
             raise RuntimeError(
                 "LANGGRAPH_KANBAN_API_BASE resolved to empty string; "
@@ -618,8 +617,11 @@ async def _patch_task(
 
 
 def _now_iso() -> str:
-    """UTC ISO-8601 timestamp the API accepts on PATCH (started_at, completed_at)."""
-    return datetime.now(timezone.utc).isoformat()
+    """UTC ISO-8601 timestamp the API accepts on PATCH (started_at, completed_at).
+
+    Delegates to config.utc_now() which emits the 'Z'-suffix form.
+    """
+    return _config.utc_now()
 
 
 # ---------------------------------------------------------------------------

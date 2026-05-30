@@ -14,6 +14,7 @@ import {
 } from "@/lib/api";
 import { TaskKind, TaskRunMode, TaskStatus } from "@/lib/constants";
 import { computeBlockedByExclusionSet } from "@/lib/cycleExclusion";
+import { extractErrorMessage } from "@/lib/errors";
 import { DecisionInteractionView } from "./DecisionInteractionView";
 import { PendingBadge } from "./PendingBadge";
 import { RunModeBadge } from "./RunModeBadge";
@@ -181,7 +182,7 @@ export function TaskDetail({
       onPatch(updated);
       setPickerOpen(false);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Update failed";
+      const msg = extractErrorMessage(err, "Update failed");
       onError(`Task #${task.id}: ${msg}`);
     } finally {
       setSubmitting(false);
@@ -200,7 +201,7 @@ export function TaskDetail({
       setCancelReason("");
       onClose();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Cancel failed";
+      const msg = extractErrorMessage(err, "Cancel failed");
       onError(`Task #${task.id}: ${msg}`);
     } finally {
       setSubmitting(false);
@@ -224,7 +225,7 @@ export function TaskDetail({
       });
       onPatch(updated);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Run failed";
+      const msg = extractErrorMessage(err, "Run failed");
       onError(`Task #${task.id}: ${msg}`);
     } finally {
       setSubmitting(false);
@@ -655,7 +656,7 @@ function QuestionInteractionSection({
       setOtherMode(false);
       onPatch(updated);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Submit failed";
+      const msg = extractErrorMessage(err, "Submit failed");
       onError(`Task #${task.id}: ${msg}`);
     } finally {
       setSubmittingAnswer(false);
@@ -671,7 +672,7 @@ function QuestionInteractionSection({
       setInvalidateReason("");
       onPatch(updated);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Invalidate failed";
+      const msg = extractErrorMessage(err, "Invalidate failed");
       onError(`Task #${task.id} (entry ${idx}): ${msg}`);
     } finally {
       setSubmittingAnswer(false);

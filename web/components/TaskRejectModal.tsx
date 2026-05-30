@@ -18,6 +18,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { ModalShell } from "./ModalShell";
+
 type Props = {
   open: boolean;
   submitting: boolean;
@@ -36,24 +38,17 @@ export function TaskRejectModal({
   const [reason, setReason] = useState("");
   const fieldRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // Focus the reason field on open; ESC closes (unless submitting).
+  // Focus the reason field on open.
   useEffect(() => {
     if (!open) return;
     requestAnimationFrame(() => fieldRef.current?.focus());
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !submitting) onCancel();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, submitting, onCancel]);
+  }, [open]);
 
   // Clear the reason on close — open it again, blank slate (avoids stale
   // text leaking into a second attempt).
   useEffect(() => {
     if (!open) setReason("");
   }, [open]);
-
-  if (!open) return null;
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -62,20 +57,13 @@ export function TaskRejectModal({
   }
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="task-reject-title"
-      data-task-reject-modal
-      className="fixed inset-0 z-50 flex items-stretch justify-center bg-zinc-900/40 dark:bg-zinc-950/70 sm:items-center sm:px-4"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget && !submitting) onCancel();
-      }}
+    <ModalShell
+      open={open}
+      onClose={() => { if (!submitting) onCancel(); }}
+      labelledBy="task-reject-title"
+      backdropProps={{ "data-task-reject-modal": true }}
     >
-      <form
-        onSubmit={onSubmit}
-        className="flex w-full max-w-none flex-col overflow-y-auto rounded-none border-0 bg-white p-4 dark:bg-zinc-900 sm:h-auto sm:max-w-md sm:overflow-visible sm:rounded sm:border sm:border-zinc-200 sm:dark:border-zinc-800"
-      >
+      <form onSubmit={onSubmit}>
         <h2
           id="task-reject-title"
           className="text-sm font-semibold uppercase tracking-wide text-zinc-900 dark:text-zinc-100"
@@ -132,6 +120,6 @@ export function TaskRejectModal({
           </button>
         </div>
       </form>
-    </div>
+    </ModalShell>
   );
 }

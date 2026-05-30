@@ -26,6 +26,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { push as pushApi, type PushSubscriptionRead } from "@/lib/api";
+import { extractErrorMessage } from "@/lib/errors";
 import {
   getCurrentSubscription,
   isPushSupported,
@@ -137,7 +138,7 @@ export function PushNotificationsPanel() {
       } catch (err) {
         setStatus("error");
         setErrorMessage(
-          err instanceof Error ? err.message : "Unsubscribe failed",
+          extractErrorMessage(err, "Unsubscribe failed"),
         );
       }
       return;
@@ -169,7 +170,7 @@ export function PushNotificationsPanel() {
       } else {
         setStatus("error");
         setErrorMessage(
-          err instanceof Error ? err.message : "Subscribe failed",
+          extractErrorMessage(err, "Subscribe failed"),
         );
       }
     }

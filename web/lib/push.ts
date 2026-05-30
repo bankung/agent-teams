@@ -25,6 +25,7 @@ import {
   type PushSubscriptionRead,
   type PushSubscribeBody,
 } from "./api";
+import { extractErrorMessage } from "./errors";
 
 export class MissingVapidKeyError extends Error {
   constructor() {
@@ -122,7 +123,7 @@ async function ensureServiceWorker(): Promise<ServiceWorkerRegistration> {
     });
   } catch (err) {
     throw new PushNotSupportedError(
-      err instanceof Error ? err.message : "register() rejected",
+      extractErrorMessage(err, "register() rejected"),
     );
   }
   // `ready` resolves once a SW has reached `activated` state — guarantees

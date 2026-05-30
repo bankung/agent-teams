@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 import type { AuditFlagWithProject } from "@/lib/api";
+import { extractErrorMessage } from "@/lib/errors";
 
 // Kanban #1212 GOV4 (D4) — mass-action bar above the project-grouped flag
 // list on /review. Multi-select N flags + apply one of 3 mass actions:
@@ -59,7 +60,7 @@ export function MassActionBar({
       await onMassConfirm(confirming);
       setConfirming(null);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : `mass ${confirming} failed`);
+      setError(extractErrorMessage(err, `mass ${confirming} failed`));
     } finally {
       setSubmitting(false);
     }

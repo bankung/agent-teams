@@ -16,6 +16,31 @@ Template:
 **Implications:** <downstream coupling>
 -->
 
+## 2026-05-29 — Platform "Integrations" settings popup — Kanban #1655
+**Scope:** backend + frontend + devops
+
+**Decision:** New global surface `/api/settings/integrations` (GET list + PATCH `/{id}` toggle) + `PlatformSettingsModal` (gear in Board header) listing OPTIONAL integrations, each OFF by default. Option A (operator-chosen): keys **stay in .env** — NO key entry/storage via the UI/API. The DB table `platform_integration_settings` (migration `0052_integration_settings`) stores ONLY the per-integration `enabled` toggle; `configured`/`present` are computed LIVE from `os.environ` at request time and returned as presence BOOLEANS (the `IntegrationRead` model physically cannot carry a secret value). Registry of 11 optional integrations is static Python (`services/integrations_registry.py`); CORE keys (DATABASE_URL, REPO_ROOT, CREDENTIALS_MASTER_KEY, LANGGRAPH_PROJECT_ID) are deliberately excluded (platform won't boot without them — never toggleable).
+
+**Reasoning:** Feature keys were ALREADY optional in code (degrade gracefully), so this is a visibility+guidance layer, not a re-architecture. Live-compute avoids a stored-secret surface entirely + no cache-invalidation. Static registry keeps the catalog under code review, not operator data.
+
+**Implications:**
+- The toggle persists operator INTENT + drives the verify/guidance UX — it is **NOT a live consumer kill-switch** this round (consumers still gate on env presence as today). In-UI encrypted key entry (Option B) is a deferred follow-up.
+- **`configured` reflects the API container's `os.environ`.** Keys consumed only by the `langgraph` container (e.g. `ANTHROPIC_API_KEY` via the headless engine) may read as "Not configured" here even when the feature works — known limitation of single-container env read; acceptable for v1. Documented so the operator isn't surprised.
+- **Auth posture:** the endpoint is global/unauthenticated (parity with `/api/teams`); it exposes WHICH integrations are configured (presence only, never values). Acceptable for the single-operator local app; would be an info-disclosure concern on a multi-tenant deployment — revisit if the app ever goes multi-tenant.
+- Migration ids must stay ≤32 chars (`alembic_version.version_num` is VARCHAR(32)) — `0052_platform_integration_settings` (34) failed the version-stamp; shortened to `0052_integration_settings`. (Methodology note candidate for `lessons.md`.)
+
+## 2026-05-29 — Weekly release cadence: dev branch + weekly merge-to-main + vMAJOR.MINOR.PATCH (trial) — Kanban #1646
+**Scope:** shared / process
+
+**Decision:** Switch agent-teams from continuous-push-to-main to a weekly release cadence. Develop on `dev`; `main` is the published release (the curated weekly snapshot a recruiter/user sees), updated only by a weekly merge from `dev` (or a hotfix merge). Versioning `vMAJOR.MINOR.PATCH`: MAJOR starts 0, bumped only on operator command; MINOR = running number per normal (weekly) release (bump + reset PATCH=0); PATCH = hotfix number (resets per weekly release). Version of record = the annotated git tag (gh CLI not installed → tags are the mechanism; formal GitHub Releases once gh lands). Full runbook: `shared/release-workflow.md`. Weekly trigger = recurring template task #1647 (Fri 18:00 Asia/Bangkok).
+
+**Reasoning:** Team proposal — 1 publish/week. Chose dev-branch + weekly-merge-to-main (over continuous-main + weekly-tags) so `main` stays a clean, stable, curated line for the public/portfolio audience while churn lives on `dev`. Builds on the existing Tier-2 release-wrap-up gate. For THIS repo this supersedes the old solo-dev "always-main / no-branch" default.
+
+**Implications:**
+- All sessions/worktrees now push to `dev`, NOT `main` directly.
+- `main` HEAD always == the latest release tag; never force-push `main`.
+- Trial run: first release `v0.1.0` cut from main today (2026-05-29); hotfix (0.1.1) + first weekly bump (0.2.0) being exercised manually during the trial. Promote to dev-team methodology (`context/teams/dev/`) only if it proves out over a few weeks.
+
 ## 2026-05-29 — Public-repo hygiene: removed internal working notes + pre-push keyword guard — Kanban #1637
 **Scope:** shared / privacy
 

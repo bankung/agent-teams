@@ -36,7 +36,7 @@ Open your browser to **http://localhost:5431**
 3. Click **Run** on any task to hand it to the headless engine — you'll see it pick up the task and post its progress in the task drawer.
 4. If a yellow "awaiting your input" banner appears, click it, answer the question, click **Resume**.
 
-> **Note:** The headless engine is in active development. It posts a plan and status updates, but full autonomous end-to-end execution (writing code, running tests) isn't live yet via the browser button. To see agents actually do real work today, use the Claude Code path below.
+> **Status: In active development.** The headless engine posts a plan and status updates, but full autonomous end-to-end execution (writing code, running tests) isn't live yet via the browser button. To see agents actually do real work today, use the Claude Code path below.
 
 ## Real end-to-end work — use Claude Code or Codex
 

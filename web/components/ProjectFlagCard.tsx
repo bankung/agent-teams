@@ -24,6 +24,7 @@ import {
   type ResolveFlagResponse,
   type TaskRead,
 } from "@/lib/api";
+import { extractErrorMessage } from "@/lib/errors";
 import { AdjustFlagForm } from "./AdjustFlagForm";
 
 type Props = {
@@ -135,7 +136,7 @@ export function ProjectFlagCard({
       const result = await resolveFlag(flag.id, project.id, body);
       onResolved(result);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : `${action} failed`);
+      setError(extractErrorMessage(err, `${action} failed`));
     } finally {
       setSubmitting(false);
     }

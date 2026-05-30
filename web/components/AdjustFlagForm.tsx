@@ -7,6 +7,7 @@ import type {
   ResolveFlagAdjustments,
   ResolveFlagResponse,
 } from "@/lib/api";
+import { extractErrorMessage } from "@/lib/errors";
 
 // Kanban #1212 GOV4 — inline form for the "Adjust + Continue" action on an
 // GOV3 audit flag. Opens directly below the ProjectFlagCard's action row
@@ -225,7 +226,7 @@ export function AdjustFlagForm({ project, onSubmit, onCancel }: Props) {
     try {
       await onSubmit(built);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "adjust+continue failed");
+      setError(extractErrorMessage(err, "adjust+continue failed"));
     } finally {
       setSubmitting(false);
     }
