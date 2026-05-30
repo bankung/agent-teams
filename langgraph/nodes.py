@@ -692,9 +692,14 @@ def general_node(state: AgentState) -> dict:
             "final_result": f"User chose: {answer}",
         }
 
-    if brief.startswith("AUDITOR retry demo —"):
+    if (
+        os.environ.get("HITL_DEMO_ENABLED") == "1"
+        and brief.startswith("AUDITOR retry demo —")
+    ):
         # AC6 — recoverable retry demo. audit_retry_count is carried on state
         # by the auditor's AUTO_RESOLVE loop (state.py declares the field).
+        # Env-gated (Kanban #1680 — safety fix): same HITL_DEMO_ENABLED guard
+        # as the HITL demo branch — without the env var this block is skipped.
         retry_count = int(state.get("audit_retry_count") or 0)
         if retry_count == 0:
             return {
@@ -712,7 +717,10 @@ def general_node(state: AgentState) -> dict:
             "halt_reason": None,
         }
 
-    if brief.startswith("AUDITOR escalate demo —"):
+    if (
+        os.environ.get("HITL_DEMO_ENABLED") == "1"
+        and brief.startswith("AUDITOR escalate demo —")
+    ):
         # AC7 — escalate-to-HITL demo. On first pass (audit_retry_count=0)
         # emit halt_reason='ambiguous' so the auditor LLM classifies as
         # ESCALATE → request_user_input fires. On RESUME after the operator
@@ -720,6 +728,8 @@ def general_node(state: AgentState) -> dict:
         # clears halt_reason so the supervisor loops here with retry_count>=1;
         # emit a clean final_result so the second-pass auditor PASSes and the
         # task completes.
+        # Env-gated (Kanban #1680 — safety fix): same HITL_DEMO_ENABLED guard
+        # as the HITL demo branch — without the env var this block is skipped.
         retry_count = int(state.get("audit_retry_count") or 0)
         if retry_count == 0:
             return {
