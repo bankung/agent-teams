@@ -299,7 +299,18 @@ function CompactProjectCard({
         className="flex flex-col gap-0.5 text-[11px] tabular-nums"
         aria-label={`Cost and token usage for ${entry.name}`}
       >
-        {/* Sub row — Mode A · Subscription (session-run metered cost; ~$0 on flat plan) */}
+        {/* Mode A row — estimated cost from projected token usage at API rates (blue) */}
+        {estimatedCost != null && (
+          <div className="flex items-center gap-1.5">
+            <span
+              className="font-semibold text-blue-600 dark:text-blue-400"
+              title={`$${estimatedCost.toFixed(4)} heuristic estimate at API token rates — comparison baseline`}
+            >
+              Mode A (est): {formatUsd(estimatedCost)}
+            </span>
+          </div>
+        )}
+        {/* Mode B row — actual metered cost from headless (langgraph) API calls (amber) */}
         <div className="flex items-center gap-1.5">
           {hasUsage ? (
             <>
@@ -309,9 +320,9 @@ function CompactProjectCard({
                     ? "font-semibold text-amber-700 dark:text-amber-300"
                     : "font-semibold text-zinc-700 dark:text-zinc-300"
                 }
-                title={`$${cost.toFixed(4)} USD across ${cu.session_run_count} session run${cu.session_run_count === 1 ? "" : "s"} — flat plan, per-task marginal ≈ $0`}
+                title={`$${cost.toFixed(4)} USD across ${cu.session_run_count} session run${cu.session_run_count === 1 ? "" : "s"} — actual metered cost from headless API calls`}
               >
-                Sub: {formatUsd(cost)}
+                Mode B (actual): {formatUsd(cost)}
               </span>
               <span aria-hidden className="text-zinc-300 dark:text-zinc-700">
                 ·
@@ -333,22 +344,11 @@ function CompactProjectCard({
               ) : null}
             </>
           ) : (
-            <span className="text-zinc-400 dark:text-zinc-600" title="Flat plan — no session runs recorded yet">
-              {estimatedCost != null ? "Sub: $0.00" : "— no usage"}
+            <span className="text-zinc-400 dark:text-zinc-600" title="No headless runs recorded yet">
+              {estimatedCost != null ? "Mode B (actual): $0.00" : "— no usage"}
             </span>
           )}
         </div>
-        {/* API est row — Mode B · API (estimate): heuristic at API token rates */}
-        {estimatedCost != null && (
-          <div className="flex items-center gap-1.5">
-            <span
-              className="font-semibold text-blue-600 dark:text-blue-400"
-              title={`$${estimatedCost.toFixed(4)} heuristic estimate at API token rates`}
-            >
-              API est: {formatUsd(estimatedCost)}
-            </span>
-          </div>
-        )}
       </div>
 
       {/* Budget bar (Kanban #951 AC #5). Sibling to the cost strip; rendered
