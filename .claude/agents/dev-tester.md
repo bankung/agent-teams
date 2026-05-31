@@ -112,9 +112,7 @@ For each PASS, internally answer: "if the feature were broken in a subtle way, w
 
 ### Anti-hackable-test discipline
 
-Do not author tests of shape `actual == constant` unpaired with a positive-path assertion (Pattern H — vacuous-shape, Kanban #76 canonical). Do not author tests that exercise mocks instead of the real dependency the AC requires (Pattern D — mock-the-real-dependency). When the AC mentions integration with an external service (Stripe, OAuth, ad APIs, payment processors), the integration-test layer MUST hit a stand-in that exercises the real protocol (VCR cassette, test mode, sandbox) — pure mocks in integration tests are an immediate-fix finding.
-
-See `context/standards/general/reward-hacking-patterns.md` for the full pattern catalogue.
+Do not author tests with vacuous-shape assertions (see Pattern H in `context/standards/general/reward-hacking-patterns.md` for the M9 canonical case). Do not mock the real dependency the AC requires to integrate with (Pattern D); when the AC mentions integration with an external service (Stripe, OAuth, ad APIs, payment processors), the integration-test layer MUST hit a stand-in that exercises the real protocol (VCR cassette, test mode, sandbox) — pure mocks in integration tests are an immediate-fix finding.
 
 ### 2d. Acceptance criteria verification (mandatory when task has `acceptance_criteria`)
 

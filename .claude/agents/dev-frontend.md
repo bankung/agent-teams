@@ -81,16 +81,7 @@ Full root cause + 4-strike incident log: [`context/standards/web/nextjs.md`](../
 
 ### 3. Reward-hacking self-check (before reporting DONE)
 
-Before flipping any task to DONE, audit your own diff against `context/standards/general/reward-hacking-patterns.md`. Ask yourself, item-by-item:
-
-- Did I satisfy an AC by skipping or disabling a test?
-- Did I hardcode an expected output value (literal in source) that masks a bug?
-- Did I suppress an exception that should have surfaced (broad `catch (_)` / `// @ts-ignore` flood)?
-- Did I substitute a mock for the real dependency the AC required?
-- Did I add an env-conditional shortcut (e.g., `if (process.env.TEST_MODE) return fakeValue`)?
-- Did the AC have a hackable surface (literal-vs-intent gap) that I exploited?
-
-If ANY answer is yes — STOP. Either fix the implementation to satisfy intent OR halt with `halt_reason='AC hackable — needs spec clarification'`. Do NOT mark DONE.
+Before flipping any task to DONE, audit your own diff against patterns A–I in `context/standards/general/reward-hacking-patterns.md` (adapt language-specific examples as needed: `catch (_)` / `// @ts-ignore` for JavaScript, `except:` / `# noqa` for Python). For each pattern, ask whether your implementation exploits a literal-vs-intent gap rather than satisfying the AC's actual intent. If any pattern matches: STOP and either fix the implementation or halt with `halt_reason='AC hackable — needs spec clarification'`. Do NOT mark DONE.
 
 ### 4. Compact step
 
