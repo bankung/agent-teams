@@ -957,3 +957,139 @@ async def test_token_store_get_absent_returns_none(
     token_store._CACHE.pop(("gmail", _SEED_PROJ), None)
     result = await token_store.get("gmail", _SEED_PROJ, db_session)
     assert result is None
+
+
+# ===========================================================================
+# 19. list_message_ids URL-encoding — Kanban #1721 regression lock
+#
+# Exercises the REAL list_message_ids builder via an httpx MockTransport so
+# the URL-construction path is not short-circuited by monkeypatching the
+# function itself. Asserts that special characters in the query are
+# percent-encoded and that internal double-quotes are KQL-escaped (doubled).
+# ===========================================================================
+
+def _make_mock_transport(captured: list) -> "httpx.MockTransport":
+    """Return an httpx MockTransport that captures the outgoing request URL and
+    returns a minimal valid Graph messages response (empty value list, no
+    nextLink so the loop terminates after one page).
+    """
+    import json as _json
+
+    import httpx
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        body = _json.dumps({"value": []})
+        return httpx.Response(200, content=body.encode(), headers={"content-type": "application/json"})
+
+    return httpx.MockTransport(_handler)
+
+
+def _call_list_message_ids_with_mock(query: str, creds: dict) -> tuple[list, list]:
+    """Call list_message_ids with a patched httpx.Client that uses MockTransport.
+
+    Returns (result_ids, captured_requests).
+    """
+    import httpx
+
+    from src.tools.email import outlook_client
+
+    captured: list[httpx.Request] = []
+    transport = _make_mock_transport(captured)
+
+    original_client_init = httpx.Client.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        kwargs["transport"] = transport
+        original_client_init(self, *args, **kwargs)
+
+    import unittest.mock as _mock
+
+    with _mock.patch.object(httpx.Client, "__init__", _patched_init):
+        # _acquire_silent checks token freshness — set _acquired_at to now so no refresh.
+        import time
+        creds["_acquired_at"] = time.time()
+        result = outlook_client.list_message_ids(creds, query)
+
+    return result, captured
+
+
+def test_list_message_ids_special_chars_are_percent_encoded() -> None:
+    """Special chars in query (space, double-quote, &, #) must be percent-encoded
+    in the outgoing request URL so Graph receives a valid $search value.
+
+    AC#2: the REAL builder is exercised — list_message_ids is NOT monkeypatched.
+
+    Checks:
+      - $search value in the URL is percent-encoded (no raw space/&/# at top level).
+      - Internal double-quote in query is KQL-escaped (doubled → %22%22 encoded).
+      - No stray top-level `&` from query content splits into extra params.
+      - No `#` fragment truncation.
+    """
+    import urllib.parse
+
+    query = 'subject:hello world & "test" #tag'
+    creds = _fake_outlook_creds()
+
+    _, captured = _call_list_message_ids_with_mock(query, creds)
+    assert len(captured) == 1, "expected exactly one HTTP request (one page)"
+
+    req = captured[0]
+    raw_url = str(req.url)
+
+    # The $search param must appear as a query-string key (not be split by unencoded &).
+    assert "%24search=" in raw_url or "$search=" in raw_url, (
+        f"$search param missing from URL: {raw_url}"
+    )
+
+    # Decode the $search value and verify internal double-quote is doubled (KQL escape).
+    parsed = urllib.parse.urlparse(raw_url)
+    qs = urllib.parse.parse_qs(parsed.query)
+    search_values = qs.get("$search", [])
+    assert len(search_values) == 1, (
+        f"Expected exactly one $search param value, got {search_values!r} in {raw_url}"
+    )
+    search_val = search_values[0]
+    # KQL phrase: should be wrapped in outer quotes with internal double-quotes doubled.
+    # e.g. '"subject:hello world & ""test"" #tag"'
+    assert '""' in search_val, (
+        f"Internal double-quote was not KQL-escaped (doubled) in search value: {search_val!r}"
+    )
+
+    # No fragment: # must not truncate the URL.
+    assert parsed.fragment == "", (
+        f"URL has a fragment (# was not encoded): fragment={parsed.fragment!r}"
+    )
+
+
+def test_list_message_ids_canonical_kql_query_well_formed() -> None:
+    """AC#3 cross-provider parity: the docstring canonical KQL query
+    `from:foo@bar.com AND received>=2025-01-01` (contains spaces, @, >=, -)
+    produces a well-formed $search request.
+    """
+    import urllib.parse
+
+    query = "from:foo@bar.com AND received>=2025-01-01"
+    creds = _fake_outlook_creds()
+
+    _, captured = _call_list_message_ids_with_mock(query, creds)
+    assert len(captured) == 1
+
+    req = captured[0]
+    raw_url = str(req.url)
+
+    parsed = urllib.parse.urlparse(raw_url)
+    qs = urllib.parse.parse_qs(parsed.query)
+
+    # $search must be present as a single param (not split by the space).
+    assert "$search" in qs, f"$search missing from parsed QS: {qs!r} (url={raw_url})"
+    assert len(qs["$search"]) == 1
+
+    # The value should start/end with the outer KQL phrase quotes.
+    search_val = qs["$search"][0]
+    assert search_val.startswith('"') and search_val.endswith('"'), (
+        f"$search value not wrapped in KQL phrase quotes: {search_val!r}"
+    )
+
+    # No fragment.
+    assert parsed.fragment == "", f"URL fragment present: {parsed.fragment!r}"

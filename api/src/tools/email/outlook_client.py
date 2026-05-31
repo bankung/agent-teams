@@ -248,6 +248,7 @@ def _graph_request_with_retry(
     *,
     headers: dict[str, str],
     json_body: dict[str, Any] | None = None,
+    params: dict[str, Any] | None = None,
 ) -> httpx.Response:
     """Issue a Graph REST call with 429-aware retry.
 
@@ -260,11 +261,14 @@ def _graph_request_with_retry(
       - Non-429 responses (including 5xx) are returned directly; let the caller
         decide. Graph's 5xx are infrequent and usually transient but we don't
         auto-retry them here (Karpathy cut — add later if observed).
+      - `params`: if provided, passed to httpx.Client.request so httpx handles
+        percent-encoding. Used for the FIRST page only; @odata.nextLink pages
+        pass a fully-formed URL with no extra params.
     """
     last_response: httpx.Response | None = None
     for attempt in range(_MAX_RETRY_ATTEMPTS):
         with httpx.Client(timeout=30.0) as client:
-            resp = client.request(method, url, headers=headers, json=json_body)
+            resp = client.request(method, url, headers=headers, json=json_body, params=params)
         if resp.status_code != 429:
             return resp
         last_response = resp
@@ -315,21 +319,37 @@ def list_message_ids(creds: dict[str, Any], query: str, max_results: int = 500) 
     # Graph accepts $top up to 1000 per page; we use min(max_results, 1000)
     # as the page size and follow @odata.nextLink to paginate.
     page_size = min(max_results, 1000)
-    url: str | None = (
-        f"{_GRAPH_BASE}/me/messages"
-        f"?$search=\"{query}\""
-        f"&$select=id"
-        f"&$top={page_size}"
-    )
-    while url and len(ids) < max_results:
-        resp = _graph_request_with_retry("GET", url, headers=headers)
+    # KQL phrase-escape: internal double-quotes are doubled per KQL spec.
+    # httpx `params=` handles percent-encoding of the full value so spaces,
+    # `&`, `#`, and other special chars don't break the URL structure.
+    escaped_query = query.replace('"', '""')
+    first_page_params: dict[str, Any] = {
+        "$search": f'"{escaped_query}"',
+        "$select": "id",
+        "$top": page_size,
+    }
+    first_page_url = f"{_GRAPH_BASE}/me/messages"
+    # url=None after first page means we use @odata.nextLink (already fully formed).
+    next_link: str | None = None
+    is_first_page = True
+    while len(ids) < max_results:
+        if is_first_page:
+            resp = _graph_request_with_retry(
+                "GET", first_page_url, headers=headers, params=first_page_params
+            )
+            is_first_page = False
+        elif next_link:
+            # @odata.nextLink is a fully-formed URL — pass as-is, no extra params.
+            resp = _graph_request_with_retry("GET", next_link, headers=headers)
+        else:
+            break
         resp.raise_for_status()
         data = resp.json()
         for msg in data.get("value", []) or []:
             ids.append(msg["id"])
             if len(ids) >= max_results:
                 break
-        url = data.get("@odata.nextLink")
+        next_link = data.get("@odata.nextLink")
     return ids
 
 
