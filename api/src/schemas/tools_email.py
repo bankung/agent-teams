@@ -145,10 +145,11 @@ class OutlookTrashRequest(BaseModel):
     NOT identical to Gmail's syntax. Operator is expected to know the format
     (we don't translate). Example: `from:foo@bar.com AND received>=2025-01-01`.
 
-    NOTE: `query` is not implemented yet — only `message_ids` mode works in
-    Phase 3. The field is present for future-compat with the Gmail surface but
-    the route handler will 501 if `query` is set. This keeps the wire shape
-    parallel + leaves room for the upgrade without a breaking change.
+    NOTE: `query` mode IS implemented via Microsoft Graph `$search` (KQL) —
+    shipped in #1711 (mirrors the Gmail query flow). Before the query string
+    hits Graph it is KQL-quote-escaped and URL-encoded (#1721). The `$search`
+    KQL syntax is NOT identical to Gmail's; the operator supplies the correct
+    format (we do not translate between the two).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -158,8 +159,9 @@ class OutlookTrashRequest(BaseModel):
         min_length=1,
         max_length=2000,
         description=(
-            "Microsoft Graph $search query — Phase 3 NOT IMPLEMENTED; "
-            "use message_ids. Reserved for future use."
+            "Microsoft Graph $search KQL query — implemented (#1711). "
+            "Value is KQL-quote-escaped + URL-encoded before hitting Graph (#1721). "
+            "Syntax is NOT identical to Gmail. XOR with message_ids."
         ),
     )
     message_ids: list[str] | None = Field(

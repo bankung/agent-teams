@@ -407,3 +407,83 @@ async def test_pnl_no_failure_returns_empty_failed_project_ids(client, scaffold_
 
     assert "failed_project_ids" in body, "field must be present in response"
     assert body["failed_project_ids"] == [], "no failures → empty list, not null"
+
+
+# ---------------------------------------------------------------------------
+# Kanban #1382 — N+1 → single-fetch regression (output identity check)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pnl_n1_refactor_two_projects_mixed_currencies_output_identity(
+    client, scaffold_cleanup
+):
+    """Regression for Kanban #1382: single-fetch refactor must produce identical output
+    to the per-project query loop.
+
+    Two projects (USD, THB) with multiple transactions each (incl. a
+    mixed-currency project) — verify:
+    - correct per-row revenue/net/transaction_count values
+    - rows are ordered alphabetically by project name (deterministic)
+    - grand_total_net_first_currency_only is null (two different currency_defaults)
+    - mixed_currency flag is set correctly
+    """
+    # Name prefix chosen so alphabetical order is deterministic: "aaa" < "zzz".
+    project_usd = await _make_project(client, scaffold_cleanup, "n1-aaa-usd", currency="USD")
+    project_thb = await _make_project(client, scaffold_cleanup, "n1-zzz-thb", currency="THB")
+
+    since_dt = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    # USD project: 2 revenue + 1 cost
+    await _add_txn(client, project_usd, amount_minor=10000, kind="revenue", currency="USD",
+                   occurred_at=since_dt + timedelta(days=1))
+    await _add_txn(client, project_usd, amount_minor=5000, kind="revenue", currency="USD",
+                   occurred_at=since_dt + timedelta(days=2))
+    await _add_txn(client, project_usd, amount_minor=2000, kind="cost", currency="USD",
+                   occurred_at=since_dt + timedelta(days=3))
+
+    # THB project: 1 revenue THB + 1 revenue USD (mixed currency within project)
+    await _add_txn(client, project_thb, amount_minor=100000, kind="revenue", currency="THB",
+                   occurred_at=since_dt + timedelta(days=1))
+    await _add_txn(client, project_thb, amount_minor=3000, kind="revenue", currency="USD",
+                   occurred_at=since_dt + timedelta(days=2))
+
+    resp = await client.get(
+        "/api/pnl",
+        params={
+            "period": "monthly",
+            "since": since_dt.isoformat(),
+            "until": (since_dt + timedelta(days=30)).isoformat(),
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # -- USD project row --
+    usd_row = next(r for r in body["rows"] if r["project_id"] == project_usd)
+    # 100.00 + 50.00 revenue, 20.00 cost → net = 130.00
+    assert Decimal(usd_row["revenue"]) == Decimal("150.0000")
+    assert Decimal(usd_row["cost"]) == Decimal("20.0000")
+    assert Decimal(usd_row["net"]) == Decimal("130.0000")
+    assert usd_row["transaction_count"] == 3
+    assert usd_row["mixed_currency"] is False  # all USD
+
+    # -- THB project row --
+    thb_row = next(r for r in body["rows"] if r["project_id"] == project_thb)
+    # transaction_count rolls up only the first-observed currency (THB); the USD
+    # bucket is present but excluded from the top-level count per compute_pl semantics.
+    assert thb_row["transaction_count"] == 1
+    assert thb_row["bucket_count"] == 2        # one THB bucket + one USD bucket
+    assert thb_row["mixed_currency"] is True   # THB + USD txns in same project
+
+    # -- Grand total null: two different currency_defaults --
+    assert body["grand_total_net_first_currency_only"] is None
+
+    # -- Row ordering: "n1-aaa-*" must come before "n1-zzz-*" (alphabetical) --
+    row_names = [r["project_name"] for r in body["rows"]]
+    aaa_idx = next(i for i, n in enumerate(row_names) if project_usd == body["rows"][i]["project_id"])
+    zzz_idx = next(i for i, n in enumerate(row_names) if project_thb == body["rows"][i]["project_id"])
+    assert aaa_idx < zzz_idx, "rows must be ordered alphabetically by project name"
+
+    # -- failed_project_ids must be empty (no compute_pl failures) --
+    assert body["failed_project_ids"] == []

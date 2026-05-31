@@ -15,6 +15,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Literal
@@ -292,20 +293,28 @@ async def get_cross_project_pl(
 
     projects = list((await session.execute(proj_stmt)).scalars().all())
 
-    # N+1 acceptable at current project counts; refactor when projects > ~100
-    # (kanban followup — reshape to single SQL GROUP BY project_id, kind,
-    # currency, period_label + aggregation).
-    rows: list[PLCrossProjectRow] = []
-    failed_project_ids: list[int] = []
-    for p in projects:
-        txn_stmt = (
+    # Single transaction fetch for all projects in scope (Kanban #1382 — N+1 fix).
+    # Replaces the previous per-project query inside the loop.
+    project_ids = [p.id for p in projects]
+    if project_ids:
+        all_txns_stmt = (
             select(Transaction)
-            .where(Transaction.project_id == p.id)
+            .where(Transaction.project_id.in_(project_ids))
             .where(Transaction.occurred_at >= since)
             .where(Transaction.occurred_at < until)
             .order_by(Transaction.occurred_at.asc())
         )
-        txns = list((await session.execute(txn_stmt)).scalars().all())
+        all_txns = list((await session.execute(all_txns_stmt)).scalars().all())
+    else:
+        all_txns = []
+    by_project: defaultdict[int, list[Transaction]] = defaultdict(list)
+    for txn in all_txns:
+        by_project[txn.project_id].append(txn)
+
+    rows: list[PLCrossProjectRow] = []
+    failed_project_ids: list[int] = []
+    for p in projects:
+        txns = by_project.get(p.id, [])
         try:
             summary = compute_pl(
                 txns, period, project_currency_default=(p.currency_default or "USD")
