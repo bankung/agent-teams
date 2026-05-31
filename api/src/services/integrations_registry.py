@@ -10,8 +10,7 @@ DESIGN — secrets never live here, and never live in the DB:
   - `configured` (are the required env vars present?) is computed LIVE from
     os.environ by `is_configured()` / `env_var_presence()` at request time — it
     is NEVER stored. The router returns presence BOOLEANS, never the values.
-  - The DB (`platform_integration_settings`) stores ONLY the operator's
-    enable/disable toggle, keyed by the `id` field below.
+  - There is no DB toggle. Runtime enable/disable is controlled via .env only.
 
 CORE keys (DATABASE_URL, REPO_ROOT, CREDENTIALS_MASTER_KEY, LANGGRAPH_PROJECT_ID)
 are platform infrastructure — the platform cannot run without them — so they are

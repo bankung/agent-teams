@@ -1,88 +1,31 @@
 "use client";
 
-// PlatformSettingsModal — Kanban #1655 FE.
+// PlatformSettingsModal — Kanban #1655 FE (v0.3.2 read-only redesign).
 //
-// Platform-wide "Integrations" popup. Lists OPTIONAL integrations (each OFF by
-// default). Toggling one ON triggers VERIFY:
-//   - integration's required key(s) configured  -> "Ready" badge.
-//   - NOT configured                             -> inline setup panel with
-//     ordered steps + doc links + the EXACT .env var NAMES to add (+ a
-//     "restart required" note).
+// Platform-wide "Integrations" popup. READ-ONLY: no toggle, no PATCH. Status
+// badge is driven by `configured` (all required env_vars present). On-demand
+// (?) button per row toggles an inline expander showing setup guidance — steps,
+// env var names (+ presence dot + required/optional tag), and doc links — so
+// the operator can see how to obtain + set each key without cluttering the list.
 //
-// There is NO key-entry field — keys live in .env; this UI shows STATUS +
-// GUIDANCE only. The contract (api.ts getIntegrations / setIntegrationEnabled)
-// returns env-var PRESENCE (`present: bool`), never a value, so this component
-// can render "configured / not configured" without ever touching a secret.
-// We deliberately render only `env_var.name` (+ required flag + presence dot)
-// and never any value.
+// Keys live in .env; this UI shows STATUS + GUIDANCE only. The contract
+// (api.ts getIntegrations) returns env-var PRESENCE (`present: bool`), never a
+// value, so this component never touches a secret.
 //
 // Modal chrome (dialog role + backdrop + ESC close + mobile full-screen sheet /
 // sm-centered card + 44px tap targets) is copy-adapted from EditProjectModal
-// (#943). The Switch component (#1288) is a confirmation-trigger pattern (click
-// opens a modal) — NOT a direct state toggle — so we build a small accessible
-// inline toggle here (role="switch" + aria-checked) that flips on click with
-// optimistic UI + rollback on PATCH error.
+// (#943). Preserves ModalShell `scrollable` prop (v0.3.1 scroll fix).
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import {
   getIntegrations,
-  setIntegrationEnabled,
   type Integration,
   type PlatformSecurity,
 } from "@/lib/api";
 import { extractErrorMessage } from "@/lib/errors";
 import { Icon } from "./Icon";
 import { ModalShell } from "./ModalShell";
-
-// ---------------------------------------------------------------------------
-// IntegrationToggle — small accessible on/off switch. Direct-flip semantics
-// (unlike the project-control Switch which opens a modal). Disabled while a
-// PATCH is in flight for that row so the operator can't double-fire.
-// ---------------------------------------------------------------------------
-function IntegrationToggle({
-  checked,
-  busy,
-  onToggle,
-  ariaLabel,
-  dataId,
-}: {
-  checked: boolean;
-  busy: boolean;
-  onToggle: () => void;
-  ariaLabel: string;
-  dataId: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={ariaLabel}
-      disabled={busy}
-      onClick={onToggle}
-      data-integration-toggle={dataId}
-      className="inline-flex shrink-0 items-center justify-center rounded-full p-2 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 sm:p-0 disabled:cursor-not-allowed disabled:opacity-50"
-    >
-      {/* Track */}
-      <span
-        aria-hidden
-        className={`relative inline-flex h-4 w-7 shrink-0 rounded-full transition-colors ${
-          checked
-            ? "bg-emerald-500 dark:bg-emerald-400"
-            : "bg-zinc-300 dark:bg-zinc-600"
-        }`}
-      >
-        {/* Thumb */}
-        <span
-          className={`absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${
-            checked ? "translate-x-3.5" : "translate-x-0.5"
-          }`}
-        />
-      </span>
-    </button>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // StatusBadge — Configured (emerald/Ready) vs Not configured (amber).
@@ -108,20 +51,28 @@ function StatusBadge({ configured }: { configured: boolean }) {
 }
 
 // ---------------------------------------------------------------------------
-// SetupPanel — guidance shown when an integration is enabled but not yet
-// configured. Lists ordered steps, external doc links, and the EXACT .env var
-// names (required ones flagged) plus a "restart required" note. Never renders
-// any value — presence-only.
+// SetupExpander — inline help panel, toggled by the (?) button on each row.
+// Shows ordered steps, env var names (presence dot + required/optional tag),
+// and doc/dashboard links. Never renders any value — presence-only.
 // ---------------------------------------------------------------------------
-function SetupPanel({ integration }: { integration: Integration }) {
+function SetupExpander({
+  integration,
+  panelId,
+}: {
+  integration: Integration;
+  panelId: string;
+}) {
   const { steps, links } = integration.setup;
   return (
     <div
+      id={panelId}
+      role="region"
+      aria-label={`Setup guidance for ${integration.label}`}
       data-integration-setup={integration.id}
-      className="mt-2 flex flex-col gap-3 rounded border border-amber-200 bg-amber-50/50 p-3 dark:border-amber-900/60 dark:bg-amber-950/20"
+      className="mt-2 flex flex-col gap-3 rounded border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-800/60"
     >
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300">
-        Setup required
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-600 dark:text-zinc-400">
+        Setup guidance
       </p>
 
       {steps.length > 0 && (
@@ -159,7 +110,7 @@ function SetupPanel({ integration }: { integration: Integration }) {
                     required
                   </span>
                 ) : (
-                  <span className="rounded bg-zinc-100 px-1 text-[9px] font-semibold uppercase tracking-wide text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                  <span className="rounded bg-zinc-100 px-1 text-[9px] font-semibold uppercase tracking-wide text-zinc-500 dark:bg-zinc-700 dark:text-zinc-400">
                     optional
                   </span>
                 )}
@@ -196,7 +147,7 @@ function SetupPanel({ integration }: { integration: Integration }) {
         </div>
       )}
 
-      <p className="text-[11px] italic text-amber-700 dark:text-amber-400">
+      <p className="text-[11px] italic text-zinc-500 dark:text-zinc-400">
         Restart required after editing <code className="font-mono not-italic">.env</code>.
       </p>
     </div>
@@ -204,18 +155,13 @@ function SetupPanel({ integration }: { integration: Integration }) {
 }
 
 // ---------------------------------------------------------------------------
-// IntegrationCard — one integration row.
+// IntegrationCard — one integration row: label + status badge + (?) button.
+// The (?) button toggles the SetupExpander inline below the row header.
 // ---------------------------------------------------------------------------
-function IntegrationCard({
-  integration,
-  busy,
-  onToggle,
-}: {
-  integration: Integration;
-  busy: boolean;
-  onToggle: (next: boolean) => void;
-}) {
-  const showSetup = integration.enabled && !integration.configured;
+function IntegrationCard({ integration }: { integration: Integration }) {
+  const [expanded, setExpanded] = useState(false);
+  const panelId = useId();
+
   return (
     <li
       data-integration-card={integration.id}
@@ -228,26 +174,26 @@ function IntegrationCard({
           </span>
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge configured={integration.configured} />
-            {integration.enabled && integration.configured && (
-              <span className="text-[10px] font-medium uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
-                Enabled
-              </span>
-            )}
           </div>
         </div>
-        <IntegrationToggle
-          checked={integration.enabled}
-          busy={busy}
-          onToggle={() => onToggle(!integration.enabled)}
-          dataId={integration.id}
-          ariaLabel={
-            integration.enabled
-              ? `Disable ${integration.label}`
-              : `Enable ${integration.label}`
-          }
-        />
+
+        {/* (?) help button — toggles inline setup expander */}
+        <button
+          type="button"
+          aria-label={`${expanded ? "Hide" : "Show"} setup guidance for ${integration.label}`}
+          aria-expanded={expanded}
+          aria-controls={panelId}
+          onClick={() => setExpanded((v) => !v)}
+          data-integration-help={integration.id}
+          className="inline-flex shrink-0 items-center justify-center rounded-full border border-zinc-300 bg-white text-[11px] font-semibold text-zinc-500 hover:border-zinc-400 hover:text-zinc-700 min-h-[44px] min-w-[44px] sm:min-h-[22px] sm:min-w-[22px] sm:h-[22px] sm:w-[22px] dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:border-zinc-600 dark:hover:text-zinc-200"
+        >
+          ?
+        </button>
       </div>
-      {showSetup && <SetupPanel integration={integration} />}
+
+      {expanded && (
+        <SetupExpander integration={integration} panelId={panelId} />
+      )}
     </li>
   );
 }
@@ -263,11 +209,6 @@ export function PlatformSettingsModal() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [platformSecurity, setPlatformSecurity] = useState<PlatformSecurity | null>(null);
-  // Per-row in-flight PATCH guard (set of integration ids).
-  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
-  // Non-blocking toggle-error banner (rollback already happened by the time
-  // this shows). Cleared on next successful toggle / re-open.
-  const [toggleError, setToggleError] = useState<string | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
 
   const load = useCallback(async () => {
@@ -284,54 +225,14 @@ export function PlatformSettingsModal() {
     }
   }, []);
 
-  // Fetch on open. Reset transient state on close.
+  // Fetch on open. Reset state on close.
   useEffect(() => {
     if (!open) return;
-    setToggleError(null);
     void load();
     requestAnimationFrame(() => closeRef.current?.focus());
   }, [open, load]);
 
   // ESC handled by ModalShell.
-
-  // Optimistic toggle with rollback on PATCH error. The PATCH response carries
-  // refreshed `configured` + env-var presence, so we replace the row with the
-  // server's view on success (the inline setup panel re-renders from it).
-  const onToggle = useCallback(
-    async (id: string, next: boolean) => {
-      const original = integrations.find((it) => it.id === id);
-      if (!original) return;
-      // Guard against double-fire while a PATCH is already in flight.
-      if (busyIds.has(id)) return;
-
-      setToggleError(null);
-      setBusyIds((prev) => new Set(prev).add(id));
-      // Optimistic flip.
-      setIntegrations((prev) =>
-        prev.map((it) => (it.id === id ? { ...it, enabled: next } : it)),
-      );
-
-      try {
-        const updated = await setIntegrationEnabled(id, next);
-        setIntegrations((prev) =>
-          prev.map((it) => (it.id === id ? updated : it)),
-        );
-      } catch (err: unknown) {
-        // Rollback to the pre-toggle row.
-        setIntegrations((prev) =>
-          prev.map((it) => (it.id === id ? original : it)),
-        );
-        setToggleError(`${original.label}: ${extractErrorMessage(err, "toggle failed")}`);
-      } finally {
-        setBusyIds((prev) => {
-          const nextSet = new Set(prev);
-          nextSet.delete(id);
-          return nextSet;
-        });
-      }
-    },
-    [integrations, busyIds],
-  );
 
   // Group integrations by category, preserving first-seen category order so
   // the BE controls section ordering. Within a category, list order is
@@ -385,8 +286,9 @@ export function PlatformSettingsModal() {
                   Integrations
                 </h2>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                  Optional platform integrations. Enable one to verify its keys.
-                  Keys live in <code className="font-mono">.env</code> — this panel shows status only.
+                  Platform integration status. Keys live in{" "}
+                  <code className="font-mono">.env</code> — this panel shows status only.
+                  Click <strong className="font-semibold">?</strong> on any row to see setup guidance.
                 </p>
               </div>
               <button
@@ -400,17 +302,6 @@ export function PlatformSettingsModal() {
                 ✕
               </button>
             </div>
-
-            {/* Non-blocking toggle-error banner (rollback already applied). */}
-            {toggleError !== null && (
-              <p
-                role="alert"
-                className="mt-3 rounded border border-red-300 bg-red-50 px-2 py-1.5 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300"
-                data-platform-settings-toggle-error
-              >
-                {toggleError}
-              </p>
-            )}
 
             <div className="mt-3 flex flex-col gap-4">
               {/* Platform security — Kanban #1658. Always shown (not a toggle).
@@ -514,8 +405,6 @@ export function PlatformSettingsModal() {
                         <IntegrationCard
                           key={it.id}
                           integration={it}
-                          busy={busyIds.has(it.id)}
-                          onToggle={(next) => void onToggle(it.id, next)}
                         />
                       ))}
                     </ul>
