@@ -548,6 +548,8 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
           <CostSummary
             stats={projectStats}
             ariaLabel={`Usage for ${project.name}`}
+            defaultCollapsed={true}
+            storageKey={`project.${project.id}.panels.usage.expanded`}
           />
           {/* Kanban #1329 (M6 FE) — per-project P&L card. Sources
               /api/projects/{id}/pl; period selector + localStorage default. */}
@@ -555,6 +557,8 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
             <PnlSummaryCard
               projectId={project.id}
               projectName={project.name}
+              defaultCollapsed={true}
+              storageKey={`project.${project.id}.panels.pnl.expanded`}
             />
           )}
         </div>

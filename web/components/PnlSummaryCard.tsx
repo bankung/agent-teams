@@ -25,7 +25,7 @@
 //   PLSummary.currency is the first observed currency. We compute the bucket
 //   currency cardinality client-side; >1 unique currency → render "(mixed)".
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
 import {
@@ -42,12 +42,80 @@ import {
   type RangeKey,
 } from "@/lib/plRangePresets";
 
+// ----- Collapse helpers (mirrors CostSummary pattern) ------------------------
+
+function readPnlExpanded(key: string, defaultCollapsed: boolean): boolean {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return !defaultCollapsed;
+    return JSON.parse(raw) !== false;
+  } catch {
+    return !defaultCollapsed;
+  }
+}
+
+function writePnlExpanded(key: string, next: boolean): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(next));
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key,
+        newValue: JSON.stringify(next),
+        storageArea: localStorage,
+      }),
+    );
+  } catch {
+    // localStorage blocked — silently ignore.
+  }
+}
+
+// Chevron icons (local copies mirror CostSummary; no shared icon lib in scope)
+function ChevronDownIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <polyline points="4 6 8 10 12 6" />
+    </svg>
+  );
+}
+
+function ChevronRightIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <polyline points="6 4 10 8 6 12" />
+    </svg>
+  );
+}
+
 // ----- Component -------------------------------------------------------------
 
 type Props = {
   projectId: number;
   projectName: string;
   defaultCurrency?: string;
+  /** When true the card starts collapsed; user can expand via chevron. */
+  defaultCollapsed?: boolean;
+  /** localStorage key for per-project collapse state persistence. Required when defaultCollapsed=true. */
+  storageKey?: string;
 };
 
 type LoadState =
@@ -60,6 +128,8 @@ export function PnlSummaryCard({
   projectId,
   projectName,
   defaultCurrency = "USD",
+  defaultCollapsed = false,
+  storageKey,
 }: Props) {
   // SSR / first-paint fallback is the brief's default "last_30d" so the
   // initial render is stable. Hydration effect upgrades to the stored value
@@ -73,6 +143,31 @@ export function PnlSummaryCard({
   // Promotes "last fetched in-flight" → renderable; lets us ignore stale
   // responses if the user flips the dropdown faster than the BE responds.
   const reqIdRef = useRef(0);
+
+  // Collapse state — mirrors CostSummary pattern.
+  const collapsible = defaultCollapsed && storageKey != null;
+  // Default expanded=true so SSR + first paint avoid hydration mismatch.
+  const [expanded, setExpanded] = useState(!defaultCollapsed);
+
+  useEffect(() => {
+    if (!collapsible || !storageKey) return;
+    setExpanded(readPnlExpanded(storageKey, defaultCollapsed));
+    function onStorage(e: StorageEvent) {
+      if (e.key !== storageKey) return;
+      setExpanded(
+        e.newValue !== null ? JSON.parse(e.newValue) !== false : !defaultCollapsed,
+      );
+    }
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [collapsible, storageKey, defaultCollapsed]);
+
+  const toggle = useCallback(() => {
+    if (!collapsible || !storageKey) return;
+    const next = !expanded;
+    setExpanded(next);
+    writePnlExpanded(storageKey, next);
+  }, [collapsible, storageKey, expanded]);
 
   // Restore stored default on mount.
   useEffect(() => {
@@ -145,6 +240,17 @@ export function PnlSummaryCard({
   const headerCurrency =
     state.kind === "ok" ? state.data.currency : defaultCurrency;
 
+  // Compact net summary for collapsed header (only when data is available).
+  const collapsedSummary = useMemo(() => {
+    if (state.kind !== "ok" || !render) return null;
+    const netStr = formatMoney(state.data.net, state.data.currency);
+    const pctStr =
+      render.marginPct !== null && render.marginPct !== undefined
+        ? ` (${formatSignedPercent(render.marginPct)})`
+        : "";
+    return `net ${netStr}${pctStr}`;
+  }, [state, render]);
+
   return (
     <section
       data-pnl-summary-card
@@ -152,132 +258,181 @@ export function PnlSummaryCard({
       aria-label={`P&L summary for ${projectName}`}
       className="mb-5 rounded-lg border border-emerald-200/60 bg-emerald-50/40 p-5 dark:border-emerald-900/40 dark:bg-emerald-950/10"
     >
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <h2 className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-          P&amp;L — {currentLabel}
-        </h2>
-        <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
-          {headerCurrency.toUpperCase()}
-          {render?.mixed ? (
-            <span
-              className="ml-1 inline-flex items-center rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
-              title="Multiple currencies observed in window — totals use first-observed currency only"
-            >
-              mixed
-            </span>
-          ) : null}
-        </span>
-        <label className="ml-auto flex items-center gap-2 text-[11px] text-zinc-500 dark:text-zinc-400">
-          <span className="sr-only">Period</span>
-          <select
-            value={rangeKey}
-            onChange={onChangeRange}
-            className="rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-xs px-2 py-1 text-zinc-700 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-zinc-400"
-            aria-label="P&L period range"
+      <div className="flex flex-wrap items-center gap-2" style={{ marginBottom: expanded ? "0.75rem" : 0 }}>
+        {collapsible ? (
+          <button
+            type="button"
+            onClick={toggle}
+            aria-expanded={expanded}
+            className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
           >
-            {options.map((opt) => (
-              <option key={opt.key} value={opt.key} disabled={opt.disabled}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </label>
+            {expanded ? <ChevronDownIcon /> : <ChevronRightIcon />}
+            P&amp;L
+          </button>
+        ) : (
+          <h2 className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+            P&amp;L — {currentLabel}
+          </h2>
+        )}
+        {/* Compact inline net summary shown only when collapsible + collapsed */}
+        {collapsible && !expanded && collapsedSummary && (
+          <span className="text-xs text-zinc-600 dark:text-zinc-400 tabular-nums">
+            P&amp;L · {collapsedSummary}
+          </span>
+        )}
+        {collapsible && !expanded && !collapsedSummary && (
+          <span className="text-xs text-zinc-500 dark:text-zinc-400">
+            {currentLabel}
+          </span>
+        )}
+        {expanded && collapsible && (
+          <>
+            <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+              — {currentLabel}
+            </span>
+            <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+              {headerCurrency.toUpperCase()}
+              {render?.mixed ? (
+                <span
+                  className="ml-1 inline-flex items-center rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+                  title="Multiple currencies observed in window — totals use first-observed currency only"
+                >
+                  mixed
+                </span>
+              ) : null}
+            </span>
+          </>
+        )}
+        {!collapsible && (
+          <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+            {headerCurrency.toUpperCase()}
+            {render?.mixed ? (
+              <span
+                className="ml-1 inline-flex items-center rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+                title="Multiple currencies observed in window — totals use first-observed currency only"
+              >
+                mixed
+              </span>
+            ) : null}
+          </span>
+        )}
+        {expanded && (
+          <label className="ml-auto flex items-center gap-2 text-[11px] text-zinc-500 dark:text-zinc-400">
+            <span className="sr-only">Period</span>
+            <select
+              value={rangeKey}
+              onChange={onChangeRange}
+              className="rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-xs px-2 py-1 text-zinc-700 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-zinc-400"
+              aria-label="P&L period range"
+            >
+              {options.map((opt) => (
+                <option key={opt.key} value={opt.key} disabled={opt.disabled}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
 
-      {state.kind === "loading" || state.kind === "idle" ? (
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading P&amp;L…</p>
-      ) : state.kind === "error" ? (
-        <p className="text-sm text-red-700 dark:text-red-300">
-          P&amp;L unavailable — {state.message}
-        </p>
-      ) : state.data.transaction_count === 0 ? (
-        <div className="text-sm text-zinc-600 dark:text-zinc-400">
-          <p>No transactions yet in this window.</p>
-          <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-500">
-            POST a manual record via <code>/api/transactions</code> or configure
-            a Stripe / PayPal webhook in{" "}
-            <Link
-              href={`/p/${projectName}/settings`}
-              className="text-emerald-700 underline hover:text-emerald-800 dark:text-emerald-300 dark:hover:text-emerald-200"
-            >
-              project settings
-            </Link>
-            .
-          </p>
-        </div>
-      ) : (
+      {expanded && (
         <>
-          <div
-            className="grid grid-cols-2 gap-3 sm:grid-cols-4"
-            role="list"
-            aria-label="P&L totals"
-          >
-            <div
-              role="listitem"
-              className="flex flex-col items-start gap-1 rounded-md border border-emerald-100 bg-white/70 px-3 py-3 dark:border-emerald-900/30 dark:bg-zinc-950/40"
-              title={`Revenue: ${state.data.revenue} ${state.data.currency}`}
-            >
-              <span className="text-2xl font-semibold tabular-nums leading-none text-emerald-700 dark:text-emerald-300">
-                {formatMoney(state.data.revenue, state.data.currency)}
-              </span>
-              <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                Revenue
-              </span>
+          {state.kind === "loading" || state.kind === "idle" ? (
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading P&amp;L…</p>
+          ) : state.kind === "error" ? (
+            <p className="text-sm text-red-700 dark:text-red-300">
+              P&amp;L unavailable — {state.message}
+            </p>
+          ) : state.data.transaction_count === 0 ? (
+            <div className="text-sm text-zinc-600 dark:text-zinc-400">
+              <p>No transactions yet in this window.</p>
+              <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-500">
+                POST a manual record via <code>/api/transactions</code> or configure
+                a Stripe / PayPal webhook in{" "}
+                <Link
+                  href={`/p/${projectName}/settings`}
+                  className="text-emerald-700 underline hover:text-emerald-800 dark:text-emerald-300 dark:hover:text-emerald-200"
+                >
+                  project settings
+                </Link>
+                .
+              </p>
             </div>
-            <div
-              role="listitem"
-              className="flex flex-col items-start gap-1 rounded-md border border-emerald-100 bg-white/70 px-3 py-3 dark:border-emerald-900/30 dark:bg-zinc-950/40"
-              title="Expenses = cost + operating expense (excludes refunds)"
-            >
-              <span className="text-2xl font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100">
-                {formatMoney(render?.expenses ?? 0, state.data.currency)}
-              </span>
-              <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                Expenses
-              </span>
-            </div>
-            <div
-              role="listitem"
-              className="flex flex-col items-start gap-1 rounded-md border border-emerald-100 bg-white/70 px-3 py-3 dark:border-emerald-900/30 dark:bg-zinc-950/40"
-              title="Refunds issued on prior sales"
-            >
-              <span className="text-2xl font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100">
-                {formatMoney(render?.refunds ?? 0, state.data.currency)}
-              </span>
-              <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                Refunds
-              </span>
-            </div>
-            <div
-              role="listitem"
-              className="flex flex-col items-start gap-1 rounded-md border border-emerald-100 bg-white/70 px-3 py-3 dark:border-emerald-900/30 dark:bg-zinc-950/40"
-              title="Net = revenue − expenses − refunds. transfer excluded."
-            >
-              <span
-                className={`text-2xl font-semibold tabular-nums leading-none ${render?.netColor ?? "text-zinc-900 dark:text-zinc-100"}`}
+          ) : (
+            <>
+              <div
+                className="grid grid-cols-2 gap-3 sm:grid-cols-4"
+                role="list"
+                aria-label="P&L totals"
               >
-                {formatMoney(state.data.net, state.data.currency)}
-              </span>
-              <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                Net{" "}
-                {render?.marginPct !== null && render?.marginPct !== undefined ? (
-                  <span
-                    className={`ml-1 normal-case tracking-normal ${render.netColor}`}
-                  >
-                    ({formatSignedPercent(render.marginPct)})
+                <div
+                  role="listitem"
+                  className="flex flex-col items-start gap-1 rounded-md border border-emerald-100 bg-white/70 px-3 py-3 dark:border-emerald-900/30 dark:bg-zinc-950/40"
+                  title={`Revenue: ${state.data.revenue} ${state.data.currency}`}
+                >
+                  <span className="text-2xl font-semibold tabular-nums leading-none text-emerald-700 dark:text-emerald-300">
+                    {formatMoney(state.data.revenue, state.data.currency)}
                   </span>
-                ) : null}
-              </span>
-            </div>
-          </div>
-          <div className="mt-4 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs text-zinc-600 dark:text-zinc-400">
-            <span>
-              <span className="font-semibold text-zinc-900 dark:text-zinc-100 tabular-nums">
-                {state.data.transaction_count}
-              </span>{" "}
-              transaction{state.data.transaction_count === 1 ? "" : "s"}
-            </span>
-          </div>
+                  <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                    Revenue
+                  </span>
+                </div>
+                <div
+                  role="listitem"
+                  className="flex flex-col items-start gap-1 rounded-md border border-emerald-100 bg-white/70 px-3 py-3 dark:border-emerald-900/30 dark:bg-zinc-950/40"
+                  title="Expenses = cost + operating expense (excludes refunds)"
+                >
+                  <span className="text-2xl font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100">
+                    {formatMoney(render?.expenses ?? 0, state.data.currency)}
+                  </span>
+                  <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                    Expenses
+                  </span>
+                </div>
+                <div
+                  role="listitem"
+                  className="flex flex-col items-start gap-1 rounded-md border border-emerald-100 bg-white/70 px-3 py-3 dark:border-emerald-900/30 dark:bg-zinc-950/40"
+                  title="Refunds issued on prior sales"
+                >
+                  <span className="text-2xl font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100">
+                    {formatMoney(render?.refunds ?? 0, state.data.currency)}
+                  </span>
+                  <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                    Refunds
+                  </span>
+                </div>
+                <div
+                  role="listitem"
+                  className="flex flex-col items-start gap-1 rounded-md border border-emerald-100 bg-white/70 px-3 py-3 dark:border-emerald-900/30 dark:bg-zinc-950/40"
+                  title="Net = revenue − expenses − refunds. transfer excluded."
+                >
+                  <span
+                    className={`text-2xl font-semibold tabular-nums leading-none ${render?.netColor ?? "text-zinc-900 dark:text-zinc-100"}`}
+                  >
+                    {formatMoney(state.data.net, state.data.currency)}
+                  </span>
+                  <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                    Net{" "}
+                    {render?.marginPct !== null && render?.marginPct !== undefined ? (
+                      <span
+                        className={`ml-1 normal-case tracking-normal ${render.netColor}`}
+                      >
+                        ({formatSignedPercent(render.marginPct)})
+                      </span>
+                    ) : null}
+                  </span>
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs text-zinc-600 dark:text-zinc-400">
+                <span>
+                  <span className="font-semibold text-zinc-900 dark:text-zinc-100 tabular-nums">
+                    {state.data.transaction_count}
+                  </span>{" "}
+                  transaction{state.data.transaction_count === 1 ? "" : "s"}
+                </span>
+              </div>
+            </>
+          )}
         </>
       )}
     </section>

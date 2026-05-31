@@ -173,7 +173,7 @@ export function CostSummary({
       aria-label={ariaLabel}
       className="mb-5 rounded-lg border border-amber-200/60 bg-amber-50/40 p-5 dark:border-amber-900/40 dark:bg-amber-950/10"
     >
-      <div className="mb-3 flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap" style={{ marginBottom: expanded ? "0.75rem" : 0 }}>
         {collapsible ? (
           <button
             type="button"
@@ -188,6 +188,20 @@ export function CostSummary({
           <h2 className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
             Usage
           </h2>
+        )}
+        {/* Compact inline summary shown only when collapsible + collapsed */}
+        {collapsible && !expanded && (
+          <span className="text-xs text-zinc-600 dark:text-zinc-400 tabular-nums">
+            {hasEstimated && (
+              <span title="Mode A estimated cost">A·est {formatUsd(totalEstimatedCost)}</span>
+            )}
+            {hasEstimated && !noUsage && <span className="mx-1 text-zinc-400">·</span>}
+            {!noUsage && (
+              <span title="Mode B actual cost">B·actual {formatUsd(totalCost)}</span>
+            )}
+            {(hasEstimated || !noUsage) && <span className="mx-1 text-zinc-400">·</span>}
+            <span>{totalRuns} run{totalRuns === 1 ? "" : "s"}</span>
+          </span>
         )}
         {totalWarnings > 0 ? (
           <span
