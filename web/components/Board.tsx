@@ -81,6 +81,11 @@ const COLUMN_PS: Record<string, TaskStatusValue> = Object.fromEntries(
   COLUMNS.flatMap((col) => col.statuses.map((s) => [col.key, s] as const)),
 );
 
+// #1726 — recurrence noise: templates (is_template=true) and scheduled-fire
+// instances (title prefix "[schedule:") are excluded from the visible board.
+const isScheduledNoise = (t: TaskRead) =>
+  t.is_template || t.title.startsWith("[schedule:");
+
 function groupByStatus(tasks: TaskRead[]) {
   const groups = new Map<TaskStatusValue, TaskRead[]>();
   for (const s of ALL_STATUSES) groups.set(s, []);
@@ -252,10 +257,16 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
       }),
     [tasks],
   );
-  const visibleTasks = useMemo(
-    () => (showAudit ? tasks : tasks.filter((t) => t.task_type !== "audit")),
-    [tasks, showAudit],
+  // #1726 — scheduled/template task count (computed against full list so the
+  // chip shows the real number even when the board is otherwise filtered).
+  const scheduledTaskCount = useMemo(
+    () => tasks.filter(isScheduledNoise).length,
+    [tasks],
   );
+  const visibleTasks = useMemo(() => {
+    const base = showAudit ? tasks : tasks.filter((t) => t.task_type !== "audit");
+    return base.filter((t) => !isScheduledNoise(t));
+  }, [tasks, showAudit]);
 
   const grouped = useMemo(() => groupByStatus(visibleTasks), [visibleTasks]);
 
@@ -417,6 +428,21 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
                   {auditTaskCount}
                 </span>
               </button>
+            </>
+          )}
+          {/* #1726 — scheduled/template noise chip. Display-only; always hidden
+              when count=0 so it adds no chrome for projects without recurrence. */}
+          {scheduledTaskCount > 0 && (
+            <>
+              <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
+                ·
+              </span>
+              <span className="inline-flex items-center gap-1 rounded-full border border-zinc-200 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:border-zinc-700 dark:text-zinc-400 min-h-[36px] sm:min-h-0">
+                <span>scheduled</span>
+                <span className="rounded bg-white/60 px-1 text-[10px] tabular-nums text-zinc-600 dark:bg-zinc-900/40 dark:text-zinc-300">
+                  {scheduledTaskCount}
+                </span>
+              </span>
             </>
           )}
           <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
