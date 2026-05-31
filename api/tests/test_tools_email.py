@@ -12,7 +12,11 @@ Covers all 8 endpoints:
   POST /api/tools/email/outlook/trash           (outlook_trash)
 
 Mocking philosophy:
-  - token_store._STORE is patched directly for creds injection.
+  - token_store._CACHE (the write-through read cache) is seeded directly for
+    creds injection in gate/auth tests — these exercise router gate logic, not
+    DB persistence, so a cache hit is the cheapest faithful injection. The
+    DB-round-trip persistence path has its own dedicated test below
+    (test_token_store_persistence_round_trip_*).
   - gate._DAILY_UNITS is patched to simulate cap exhaustion.
   - gmail_client.trash_messages / outlook_client.trash_messages are
     monkeypatched to return fake (trashed, errors) without real network.
@@ -30,11 +34,19 @@ import importlib
 from unittest.mock import MagicMock, patch
 
 import pytest
+import pytest_asyncio
 
-# Project-id used in all tests. Picked to avoid colliding with real seed data;
-# in-memory stores (token_store._STORE, gate._DAILY_UNITS) are keyed by
+# Project-id used in MOST tests. Picked to avoid colliding with real seed data;
+# in-memory stores (token_store._CACHE, gate._DAILY_UNITS) are keyed by
 # project_id so isolation is guaranteed as long as we clean up after each test.
+# NOTE: 9999 is NOT a real projects row — fine for cache-seeded gate tests
+# (no FK touched) but the DB-persistence round-trip test uses a real seeded
+# project id (see _SEED_PROJ) so the email_oauth_tokens.project_id FK holds.
 _PROJ = 9999
+
+# A real project id present after seed — the persistence round-trip test writes
+# email_oauth_tokens rows whose project_id FK must reference an existing project.
+_SEED_PROJ = 1
 
 # Shared base URL prefix for all email-tool endpoints.
 _BASE = "/api/tools/email"
@@ -88,14 +100,15 @@ def _clean_email_stores():
 
     This isolates tests from each other without touching production state.
     Cleans:
-      - token_store._STORE keys for _PROJ
+      - token_store._CACHE keys for _PROJ and _SEED_PROJ
       - gate._DAILY_UNITS keys for _PROJ
     """
     from src.tools.email import gate, token_store
 
-    # Pre-test: remove any stale entries for our test project.
+    # Pre-test: remove any stale cache entries for our test projects.
     for provider in ("gmail", "outlook"):
-        token_store._STORE.pop((provider, _PROJ), None)
+        token_store._CACHE.pop((provider, _PROJ), None)
+        token_store._CACHE.pop((provider, _SEED_PROJ), None)
     today = datetime.datetime.now(datetime.UTC).date().isoformat()
     gate._DAILY_UNITS.pop((_PROJ, today), None)
 
@@ -103,7 +116,8 @@ def _clean_email_stores():
 
     # Post-test: same cleanup.
     for provider in ("gmail", "outlook"):
-        token_store._STORE.pop((provider, _PROJ), None)
+        token_store._CACHE.pop((provider, _PROJ), None)
+        token_store._CACHE.pop((provider, _SEED_PROJ), None)
     gate._DAILY_UNITS.pop((_PROJ, today), None)
 
 
@@ -127,7 +141,7 @@ async def test_gmail_auth_status_authenticated(client) -> None:
     from src.tools.email import token_store
 
     creds = _fake_gmail_creds()
-    token_store.put("gmail", _PROJ, creds)
+    token_store._CACHE[("gmail", _PROJ)] = creds
 
     resp = await client.get(f"{_BASE}/auth/gmail/status", headers=_HDR)
     assert resp.status_code == 200
@@ -158,7 +172,7 @@ async def test_outlook_auth_status_authenticated(client) -> None:
     from src.tools.email import token_store
 
     creds = _fake_outlook_creds()
-    token_store.put("outlook", _PROJ, creds)
+    token_store._CACHE[("outlook", _PROJ)] = creds
 
     resp = await client.get(f"{_BASE}/auth/outlook/status", headers=_HDR)
     assert resp.status_code == 200
@@ -387,7 +401,7 @@ async def test_gmail_trash_daily_cap_blocks(client, monkeypatch) -> None:
     from src.tools.email import gate, token_store
 
     creds = _fake_gmail_creds()
-    token_store.put("gmail", _PROJ, creds)
+    token_store._CACHE[("gmail", _PROJ)] = creds
 
     # Set cap to 100 units. One trash for 1 id = 20 units. Pre-fill to 90.
     monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "100")
@@ -412,7 +426,7 @@ async def test_gmail_trash_daily_cap_allows_when_under(client, monkeypatch) -> N
     from src.tools.email import gate, token_store, gmail_client
 
     creds = _fake_gmail_creds()
-    token_store.put("gmail", _PROJ, creds)
+    token_store._CACHE[("gmail", _PROJ)] = creds
 
     # Cap = 1000; nothing consumed → well within limit.
     monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "1000")
@@ -503,7 +517,7 @@ async def test_outlook_trash_query_mode_resolves_and_trashes(client, monkeypatch
     from src.tools.email import token_store, outlook_client
 
     creds = _fake_outlook_creds()
-    token_store.put("outlook", _PROJ, creds)
+    token_store._CACHE[("outlook", _PROJ)] = creds
 
     monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "1000")
     monkeypatch.setattr(
@@ -553,7 +567,7 @@ async def test_outlook_trash_query_mode_list_units_charged(client, monkeypatch) 
     from src.tools.email import gate, token_store
 
     creds = _fake_outlook_creds()
-    token_store.put("outlook", _PROJ, creds)
+    token_store._CACHE[("outlook", _PROJ)] = creds
 
     monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "100")
     today = datetime.datetime.now(datetime.UTC).date().isoformat()
@@ -578,7 +592,7 @@ async def test_outlook_trash_query_mode_bulk_gate_honored(client, monkeypatch) -
     from src.tools.email import token_store, outlook_client
 
     creds = _fake_outlook_creds()
-    token_store.put("outlook", _PROJ, creds)
+    token_store._CACHE[("outlook", _PROJ)] = creds
 
     monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "1000")
     monkeypatch.setenv("EMAIL_TOOLS_BULK_THRESHOLD", "2")
@@ -675,7 +689,7 @@ async def test_outlook_trash_daily_cap_blocks(client, monkeypatch) -> None:
     from src.tools.email import gate, token_store
 
     creds = _fake_outlook_creds()
-    token_store.put("outlook", _PROJ, creds)
+    token_store._CACHE[("outlook", _PROJ)] = creds
 
     # Outlook = 10 units/msg. Cap=50. Pre-fill 45. 1 msg = 10 units → over cap.
     monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "50")
@@ -698,7 +712,7 @@ async def test_outlook_trash_daily_cap_allows_when_under(client, monkeypatch) ->
     from src.tools.email import gate, token_store, outlook_client
 
     creds = _fake_outlook_creds()
-    token_store.put("outlook", _PROJ, creds)
+    token_store._CACHE[("outlook", _PROJ)] = creds
 
     monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "1000")
     monkeypatch.setattr(outlook_client, "trash_messages", lambda c, ids: (list(ids), []))
@@ -746,3 +760,200 @@ async def test_outlook_trash_missing_project_id_header(client) -> None:
     )
     assert resp.status_code == 400
     assert "X-Project-Id" in resp.json()["detail"]
+
+
+# ===========================================================================
+# 18. token_store DB persistence round-trip (Kanban durability phase) — KEY test
+#
+# Proves the durability contract: put encrypts + writes a DB row, and a fresh
+# process (simulated by CLEARING the in-memory cache) still returns the SAME
+# usable creds via decrypt + deserialize from the DB. Exercised for BOTH the
+# gmail (google Credentials) and outlook (token dict) shapes.
+# ===========================================================================
+
+
+@pytest_asyncio.fixture
+async def _clean_oauth_rows(db_session):
+    """Delete email_oauth_tokens rows for _SEED_PROJ before AND after each
+    persistence test so the DB-backed round-trip tests don't leak rows into
+    each other (the test DB persists for the whole session).
+    """
+    from sqlalchemy import delete
+
+    from src.models.email_oauth_token import EmailOAuthToken
+
+    async def _purge():
+        await db_session.execute(
+            delete(EmailOAuthToken).where(EmailOAuthToken.project_id == _SEED_PROJ)
+        )
+        await db_session.commit()
+
+    await _purge()
+    yield
+    await _purge()
+
+
+@pytest.fixture
+def _fernet_key(monkeypatch):
+    """Set a fresh CREDENTIALS_MASTER_KEY + reset the cached Fernet so the
+    token_store encrypt/decrypt path uses a known key within this test.
+
+    Direct internal access to credentials_crypto._fernet — test-surface
+    pollution helpers are an anti-pattern (mirrors test_credentials_crypto.py).
+    """
+    from cryptography.fernet import Fernet
+
+    from src.services import credentials_crypto
+
+    monkeypatch.setenv("CREDENTIALS_MASTER_KEY", Fernet.generate_key().decode())
+    credentials_crypto._fernet = None
+    yield
+    credentials_crypto._fernet = None
+
+
+def _real_gmail_creds():
+    """A REAL google Credentials object (not a MagicMock) so to_json() /
+    from_authorized_user_info() round-trip exercises the true serialization path.
+    """
+    import datetime as _dt
+
+    from google.oauth2.credentials import Credentials
+
+    creds = Credentials(
+        token="access-token-abc",
+        refresh_token="refresh-token-xyz",
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id="client-id-123",
+        client_secret="client-secret-456",
+        scopes=["https://mail.google.com/"],
+    )
+    creds.expiry = _dt.datetime(2099, 1, 1, 0, 0, 0)
+    return creds
+
+
+@pytest.mark.asyncio
+async def test_token_store_persistence_round_trip_gmail(
+    db_session, _fernet_key, _clean_oauth_rows
+) -> None:
+    """put(gmail) -> clear cache (simulate restart) -> get returns SAME usable creds.
+
+    POSITIVE: the rebuilt object is a real Credentials carrying the identical
+    token / refresh_token / scopes / expiry.
+    NEGATIVE locked: the rebuilt object is NOT the original in-memory instance
+    (it came from the DB decrypt path, not the cache) AND the stored DB blob is
+    encrypted (does NOT contain the plaintext token).
+    """
+    from google.oauth2.credentials import Credentials
+    from sqlalchemy import select
+
+    from src.models.email_oauth_token import EmailOAuthToken
+    from src.tools.email import token_store
+
+    creds = _real_gmail_creds()
+    await token_store.put("gmail", _SEED_PROJ, creds, db_session)
+
+    # The DB blob must be encrypted — plaintext token must NOT appear in ciphertext.
+    row = (
+        await db_session.execute(
+            select(EmailOAuthToken.encrypted_creds).where(
+                EmailOAuthToken.provider == "gmail",
+                EmailOAuthToken.project_id == _SEED_PROJ,
+            )
+        )
+    ).scalar_one()
+    assert b"access-token-abc" not in row, "creds blob must be Fernet-encrypted"
+
+    # Simulate a fresh process: clear the write-through cache so get() is forced
+    # to read+decrypt+deserialize from the DB row.
+    token_store._CACHE.pop(("gmail", _SEED_PROJ), None)
+    assert ("gmail", _SEED_PROJ) not in token_store._CACHE
+
+    recovered = await token_store.get("gmail", _SEED_PROJ, db_session)
+
+    # POSITIVE: same usable creds reconstructed from the DB.
+    assert isinstance(recovered, Credentials)
+    assert recovered.token == "access-token-abc"
+    assert recovered.refresh_token == "refresh-token-xyz"
+    assert recovered.scopes == ["https://mail.google.com/"]
+    assert recovered.expiry == datetime.datetime(2099, 1, 1, 0, 0, 0)
+    # NEGATIVE: it is NOT the original in-memory instance — it came from the DB.
+    assert recovered is not creds
+
+
+@pytest.mark.asyncio
+async def test_token_store_persistence_round_trip_outlook(
+    db_session, _fernet_key, _clean_oauth_rows
+) -> None:
+    """put(outlook) -> clear cache (simulate restart) -> get returns SAME token dict.
+
+    POSITIVE: the rebuilt dict equals the original token dict (access_token,
+    refresh_token, claims all preserved).
+    NEGATIVE locked: the stored DB blob is encrypted (does NOT contain the
+    plaintext access_token).
+    """
+    from sqlalchemy import select
+
+    from src.models.email_oauth_token import EmailOAuthToken
+    from src.tools.email import token_store
+
+    creds = _fake_outlook_creds()  # plain JSON-serializable token dict
+    await token_store.put("outlook", _SEED_PROJ, creds, db_session)
+
+    row = (
+        await db_session.execute(
+            select(EmailOAuthToken.encrypted_creds).where(
+                EmailOAuthToken.provider == "outlook",
+                EmailOAuthToken.project_id == _SEED_PROJ,
+            )
+        )
+    ).scalar_one()
+    assert b"fake-access-token" not in row, "creds blob must be Fernet-encrypted"
+
+    # Simulate restart: clear cache → force DB read.
+    token_store._CACHE.pop(("outlook", _SEED_PROJ), None)
+    assert ("outlook", _SEED_PROJ) not in token_store._CACHE
+
+    recovered = await token_store.get("outlook", _SEED_PROJ, db_session)
+
+    # POSITIVE: same usable token dict reconstructed from the DB.
+    assert isinstance(recovered, dict)
+    assert recovered["access_token"] == "fake-access-token"
+    assert recovered["refresh_token"] == "fake-refresh-token"
+    assert recovered["id_token_claims"]["preferred_username"] == "test@outlook.com"
+
+
+@pytest.mark.asyncio
+async def test_token_store_put_overwrites_on_reauth(
+    db_session, _fernet_key, _clean_oauth_rows
+) -> None:
+    """A second put() for the same (provider, project_id) UPSERTs — re-auth
+    overwrites the stored row rather than erroring on the PK conflict.
+
+    POSITIVE: after re-put + cache clear, get() returns the NEW token.
+    NEGATIVE locked: it does NOT return the stale first token.
+    """
+    from src.tools.email import token_store
+
+    first = _fake_outlook_creds()
+    await token_store.put("outlook", _SEED_PROJ, first, db_session)
+
+    second = _fake_outlook_creds()
+    second["access_token"] = "second-access-token"
+    await token_store.put("outlook", _SEED_PROJ, second, db_session)
+
+    token_store._CACHE.pop(("outlook", _SEED_PROJ), None)
+    recovered = await token_store.get("outlook", _SEED_PROJ, db_session)
+    assert recovered["access_token"] == "second-access-token"
+    assert recovered["access_token"] != "fake-access-token"
+
+
+@pytest.mark.asyncio
+async def test_token_store_get_absent_returns_none(
+    db_session, _clean_oauth_rows
+) -> None:
+    """get() for a (provider, project_id) with no row + empty cache → None."""
+    from src.tools.email import token_store
+
+    token_store._CACHE.pop(("gmail", _SEED_PROJ), None)
+    result = await token_store.get("gmail", _SEED_PROJ, db_session)
+    assert result is None

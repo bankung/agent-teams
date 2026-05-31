@@ -28,8 +28,10 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
+from src.db import get_session
 from src.schemas.tools_email import (
     AuthStatusResponse,
     GmailAuthStartResponse,
@@ -82,6 +84,7 @@ async def gmail_auth_start(
 async def gmail_auth_callback(
     code: str = Query(..., min_length=1, max_length=2048),
     state: str = Query(..., min_length=1, max_length=512),
+    session: AsyncSession = Depends(get_session),
 ) -> GmailCallbackResponse:
     """Exchange the OAuth code for credentials and store them.
 
@@ -103,7 +106,7 @@ async def gmail_auth_callback(
             detail="oauth_callback_failed; restart at POST /api/tools/email/auth/gmail/start",
         ) from exc
 
-    token_store.put("gmail", project_id, creds)
+    await token_store.put("gmail", project_id, creds, session)
     summary = gmail_client.creds_summary(creds)
     return GmailCallbackResponse(
         project_id=project_id,
@@ -115,9 +118,10 @@ async def gmail_auth_callback(
 @router.get("/auth/gmail/status", response_model=AuthStatusResponse)
 async def gmail_auth_status(
     session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
 ) -> AuthStatusResponse:
     """Return current auth status for Gmail on this project."""
-    st = token_store.status("gmail", session_project_id)
+    st = await token_store.status("gmail", session_project_id, session)
     return AuthStatusResponse(**st)
 
 
@@ -126,9 +130,9 @@ async def gmail_auth_status(
 # ---------------------------------------------------------------------------
 
 
-def _require_creds(session_project_id: int):
+async def _require_creds(session_project_id: int, session: AsyncSession):
     """Fetch Gmail creds or raise 401. Local helper — keeps the trash route lean."""
-    creds = token_store.get("gmail", session_project_id)
+    creds = await token_store.get("gmail", session_project_id, session)
     if creds is None:
         raise HTTPException(
             status_code=401,
@@ -178,6 +182,7 @@ async def gmail_trash(
     body: GmailTrashRequest,
     force: bool = Query(default=False, description="Bypass the bulk-threshold gate."),
     session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
 ) -> GmailTrashResponse:
     """Trash Gmail messages by query OR explicit ids.
 
@@ -210,10 +215,10 @@ async def gmail_trash(
         _bulk_check_or_400(len(ids), force)
 
         # Auth check after bulk gate.
-        creds = _require_creds(session_project_id)
+        creds = await _require_creds(session_project_id, session)
     else:
         # query mode: auth must come first because the list call requires creds.
-        creds = _require_creds(session_project_id)
+        creds = await _require_creds(session_project_id, session)
 
         # Pay list units before we know the count — this is honest accounting.
         _cap_check_or_429(session_project_id, _LIST_UNITS_PER_CALL, "list")
@@ -315,6 +320,7 @@ async def outlook_auth_start(
 async def outlook_auth_callback(
     code: str = Query(..., min_length=1, max_length=2048),
     state: str = Query(..., min_length=1, max_length=512),
+    session: AsyncSession = Depends(get_session),
 ) -> OutlookCallbackResponse:
     """Exchange the OAuth code for tokens and store them.
 
@@ -349,7 +355,7 @@ async def outlook_auth_callback(
             ),
         ) from exc
 
-    token_store.put("outlook", project_id, creds)
+    await token_store.put("outlook", project_id, creds, session)
     gate.log_audit(
         "outlook", project_id, "auth_callback", _OUTLOOK_CALLBACK_UNITS, success=True,
     )
@@ -364,9 +370,10 @@ async def outlook_auth_callback(
 @router.get("/auth/outlook/status", response_model=AuthStatusResponse)
 async def outlook_auth_status(
     session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
 ) -> AuthStatusResponse:
     """Return current auth status for Outlook on this project."""
-    st = token_store.status("outlook", session_project_id)
+    st = await token_store.status("outlook", session_project_id, session)
     return AuthStatusResponse(**st)
 
 
@@ -375,9 +382,9 @@ async def outlook_auth_status(
 # ---------------------------------------------------------------------------
 
 
-def _require_outlook_creds(session_project_id: int):
+async def _require_outlook_creds(session_project_id: int, session: AsyncSession):
     """Fetch Outlook creds or raise 401."""
-    creds = token_store.get("outlook", session_project_id)
+    creds = await token_store.get("outlook", session_project_id, session)
     if creds is None:
         raise HTTPException(
             status_code=401,
@@ -411,6 +418,7 @@ async def outlook_trash(
     body: OutlookTrashRequest,
     force: bool = Query(default=False, description="Bypass the bulk-threshold gate."),
     session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
 ) -> OutlookTrashResponse:
     """Move Outlook messages to Deleted Items by query OR explicit ids.
 
@@ -439,10 +447,10 @@ async def outlook_trash(
         _bulk_check_or_400(len(ids), force)
 
         # Auth check after bulk gate.
-        creds = _require_outlook_creds(session_project_id)
+        creds = await _require_outlook_creds(session_project_id, session)
     else:
         # query mode: auth must come first because the list call requires creds.
-        creds = _require_outlook_creds(session_project_id)
+        creds = await _require_outlook_creds(session_project_id, session)
 
         # Pay list units before we know the count — honest accounting.
         _outlook_cap_check_or_429(session_project_id, _OUTLOOK_LIST_UNITS_PER_CALL, "list")
