@@ -41,7 +41,7 @@ Re-running on the same target is idempotent — existing files are reported as `
 |---|---|---|
 | `-Name` | yes | Project name. Pattern `^[a-zA-Z0-9_-]{1,64}$`. Looked up via `GET /api/projects/by-name/<name>`; created on 404. |
 | `-WorkingPath` | yes | Absolute Windows path where the harness lands. Created if missing. |
-| `-Team` | yes | `dev`, `novel`, `general`, `content`, `seo`, `data-analytics`, or `sem` — picks the agent roster + standards subset shipped in the manifest. |
+| `-Team` | yes | `dev`, `novel`, `general`, `content`, `netops`, `seo`, `data-analytics`, or `sem` — picks the agent roster + standards subset shipped in the manifest. |
 | `-ApiUrl` | no | Default `http://localhost:8456`. Override for a non-local agent-teams instance. |
 | `-Force` | no | Reserved for future overwrite mode; currently a no-op. |
 | `-Verbose` | no | Lists every `copied` / `skipped` rel_path under the summary block. |
@@ -137,6 +137,7 @@ Every project picks **one team** at creation time (`projects.team`). Each team i
 | `novel` | novel writing (skeleton — demonstrates the multi-domain pattern) | [.claude/teams/novel.md](.claude/teams/novel.md) | `novel-*` |
 | `general` | multi-domain fallback | [.claude/teams/general.md](.claude/teams/general.md) | `general-*` |
 | `content` | content production | [.claude/teams/content.md](.claude/teams/content.md) | `content-*` |
+| `netops` | network operations & infrastructure | [.claude/teams/netops.md](.claude/teams/netops.md) | `netops-*` |
 | `seo` | SEO strategy & technical audit | [.claude/teams/seo.md](.claude/teams/seo.md) | `seo-*` |
 | `data-analytics` | BI / analytics | [.claude/teams/data-analytics.md](.claude/teams/data-analytics.md) | `data-analytics-*` |
 | `sem` | paid media (Google Ads, Meta, etc.) | [.claude/teams/sem.md](.claude/teams/sem.md) | `sem-*` |
@@ -224,7 +225,7 @@ CLAUDE.md is loaded automatically — Claude is ready to act as Lead.
 
 ### Security-sensitive env vars
 
-All entries below are part of the 2026-05-17 hardening sprint (21/27 prevention layers shipped). Full incident postmortem + per-layer details: `context/projects/agent-teams/shared/incidents/2026-05-17-resume-handoff.md`.
+All entries below are part of the 2026-05-17 hardening sprint (22/27 prevention layers shipped). Full incident postmortem + per-layer details: `context/projects/agent-teams/shared/incidents/2026-05-17-resume-handoff.md`.
 
 | Var | Default | Effect |
 |---|---|---|
