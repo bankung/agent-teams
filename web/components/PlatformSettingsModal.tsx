@@ -372,7 +372,7 @@ export function PlatformSettingsModal() {
         onClose={() => setOpen(false)}
         labelledBy="platform-settings-title"
         maxWidth="lg"
-        panelExtraClassName="sm:max-h-[85vh]"
+        scrollable
         backdropProps={{ "data-platform-settings-modal": true }}
       >
           <div>
