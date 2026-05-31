@@ -1062,6 +1062,67 @@ def test_list_message_ids_special_chars_are_percent_encoded() -> None:
     )
 
 
+def test_list_message_ids_pagination_two_pages() -> None:
+    """@odata.nextLink pagination: two pages, ids from both collected, loop terminates.
+
+    Page 1: returns ids ["ID-PAGE1-A", "ID-PAGE1-B"] + an @odata.nextLink.
+    Page 2: returns ids ["ID-PAGE2-A"] + no nextLink → loop ends.
+
+    Asserts:
+      (a) loop terminates (exactly 2 HTTP requests).
+      (b) all 3 ids from both pages are returned.
+      (c) the nextLink URL is requested verbatim (no re-encoding / extra params).
+    """
+    import json as _json
+    import httpx
+    import unittest.mock as _mock
+    from src.tools.email import outlook_client
+
+    NEXT_LINK = "https://graph.microsoft.com/v1.0/me/messages?$skiptoken=ABCDEF&$top=1000"
+
+    call_count = [0]
+    captured: list[httpx.Request] = []
+
+    def _two_page_handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        call_count[0] += 1
+        if call_count[0] == 1:
+            body = _json.dumps({
+                "value": [{"id": "ID-PAGE1-A"}, {"id": "ID-PAGE1-B"}],
+                "@odata.nextLink": NEXT_LINK,
+            })
+        else:
+            body = _json.dumps({"value": [{"id": "ID-PAGE2-A"}]})
+        return httpx.Response(200, content=body.encode(), headers={"content-type": "application/json"})
+
+    transport = httpx.MockTransport(_two_page_handler)
+
+    original_client_init = httpx.Client.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        kwargs["transport"] = transport
+        original_client_init(self, *args, **kwargs)
+
+    creds = _fake_outlook_creds()
+    import time
+    creds["_acquired_at"] = time.time()
+
+    with _mock.patch.object(httpx.Client, "__init__", _patched_init):
+        result = outlook_client.list_message_ids(creds, "subject:test")
+
+    # (a) exactly 2 HTTP requests — loop terminated after page 2.
+    assert call_count[0] == 2, f"expected 2 requests, got {call_count[0]}"
+
+    # (b) all ids from both pages collected.
+    assert result == ["ID-PAGE1-A", "ID-PAGE1-B", "ID-PAGE2-A"], f"got {result!r}"
+
+    # (c) second request URL is the nextLink verbatim — no re-encoding or extra params.
+    second_req_url = str(captured[1].url)
+    assert second_req_url == NEXT_LINK, (
+        f"nextLink was not requested verbatim.\n  expected: {NEXT_LINK}\n  got:      {second_req_url}"
+    )
+
+
 def test_list_message_ids_canonical_kql_query_well_formed() -> None:
     """AC#3 cross-provider parity: the docstring canonical KQL query
     `from:foo@bar.com AND received>=2025-01-01` (contains spaces, @, >=, -)

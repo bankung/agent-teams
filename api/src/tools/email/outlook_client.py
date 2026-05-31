@@ -339,6 +339,16 @@ def list_message_ids(creds: dict[str, Any], query: str, max_results: int = 500) 
             )
             is_first_page = False
         elif next_link:
+            # SSRF guard (OWASP A10): nextLink must stay on Graph — reject any
+            # tampered URL before it could redirect the Bearer token off-host.
+            if not next_link.startswith("https://graph.microsoft.com/"):
+                logger.error(
+                    "list_message_ids: unexpected nextLink host, aborting pagination: %s",
+                    next_link[:120],
+                )
+                raise ValueError(
+                    f"nextLink host is not graph.microsoft.com — aborting: {next_link[:120]}"
+                )
             # @odata.nextLink is a fully-formed URL — pass as-is, no extra params.
             resp = _graph_request_with_retry("GET", next_link, headers=headers)
         else:

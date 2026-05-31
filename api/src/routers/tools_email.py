@@ -225,7 +225,7 @@ async def gmail_trash(
         try:
             ids = await run_in_threadpool(
                 gmail_client.list_message_ids,
-                creds, body.query or "", _MAX_LIST_RESULTS,
+                creds, body.query, _MAX_LIST_RESULTS,
             )
         except Exception as exc:
             gate.log_audit(
@@ -457,7 +457,7 @@ async def outlook_trash(
         try:
             ids = await run_in_threadpool(
                 outlook_client.list_message_ids,
-                creds, body.query or "", _MAX_LIST_RESULTS,
+                creds, body.query, _MAX_LIST_RESULTS,
             )
         except Exception as exc:
             gate.log_audit(
