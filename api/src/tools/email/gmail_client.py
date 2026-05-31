@@ -58,7 +58,7 @@ def _prune_pending() -> None:
     Called on each `auth_start` to bound memory. Cheap O(n) walk; n stays in
     single digits in operator-only usage.
     """
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.UTC)
     expired = [s for s, (_, _, ts) in _PENDING_FLOWS.items() if now - ts > _PENDING_TTL]
     for s in expired:
         _PENDING_FLOWS.pop(s, None)
@@ -116,7 +116,7 @@ def auth_start(project_id: int) -> str:
         include_granted_scopes="true",
         state=state,
     )
-    _PENDING_FLOWS[state] = (flow, project_id, datetime.datetime.utcnow())
+    _PENDING_FLOWS[state] = (flow, project_id, datetime.datetime.now(datetime.UTC))
     return auth_url
 
 

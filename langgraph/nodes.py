@@ -689,7 +689,7 @@ def general_node(state: AgentState) -> dict:
         })
         return {
             "messages": [AIMessage(content=f"HITL demo answered: {answer}")],
-            "final_result": f"User chose: {answer}",
+            "final_result": f"decision resolved: {answer}",
         }
 
     if (

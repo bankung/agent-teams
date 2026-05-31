@@ -96,7 +96,7 @@ def _clean_email_stores():
     # Pre-test: remove any stale entries for our test project.
     for provider in ("gmail", "outlook"):
         token_store._STORE.pop((provider, _PROJ), None)
-    today = datetime.datetime.utcnow().date().isoformat()
+    today = datetime.datetime.now(datetime.UTC).date().isoformat()
     gate._DAILY_UNITS.pop((_PROJ, today), None)
 
     yield
@@ -391,7 +391,7 @@ async def test_gmail_trash_daily_cap_blocks(client, monkeypatch) -> None:
 
     # Set cap to 100 units. One trash for 1 id = 20 units. Pre-fill to 90.
     monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "100")
-    today = datetime.datetime.utcnow().date().isoformat()
+    today = datetime.datetime.now(datetime.UTC).date().isoformat()
     gate._DAILY_UNITS[(_PROJ, today)] = 90  # 90 used; 10 left; need 20 → over cap
 
     resp = await client.post(
@@ -455,7 +455,7 @@ async def test_gmail_usage_reflects_increment(client, monkeypatch) -> None:
     from src.tools.email import gate
 
     monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "5000")
-    today = datetime.datetime.utcnow().date().isoformat()
+    today = datetime.datetime.now(datetime.UTC).date().isoformat()
     gate._DAILY_UNITS[(_PROJ, today)] = 120
 
     resp = await client.get(f"{_BASE}/gmail/usage", headers=_HDR)
@@ -586,7 +586,7 @@ async def test_outlook_trash_daily_cap_blocks(client, monkeypatch) -> None:
 
     # Outlook = 10 units/msg. Cap=50. Pre-fill 45. 1 msg = 10 units → over cap.
     monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "50")
-    today = datetime.datetime.utcnow().date().isoformat()
+    today = datetime.datetime.now(datetime.UTC).date().isoformat()
     gate._DAILY_UNITS[(_PROJ, today)] = 45
 
     resp = await client.post(

@@ -31,7 +31,7 @@ _AUDIT_PATH = Path(os.environ.get("EMAIL_TOOLS_AUDIT_PATH", "/repo/_scratch/emai
 
 
 def _today() -> str:
-    return datetime.datetime.utcnow().date().isoformat()
+    return datetime.datetime.now(datetime.UTC).date().isoformat()
 
 
 def check_and_increment(project_id: int, units: int) -> tuple[bool, dict]:
@@ -44,7 +44,7 @@ def check_and_increment(project_id: int, units: int) -> tuple[bool, dict]:
     key = (project_id, _today())
     current = _DAILY_UNITS.get(key, 0)
     reset = (
-        datetime.datetime.utcnow().date() + datetime.timedelta(days=1)
+        datetime.datetime.now(datetime.UTC).date() + datetime.timedelta(days=1)
     ).isoformat() + "T00:00:00Z"
     info = {"current_units": current, "cap": cap, "reset_at_utc_midnight": reset}
     if current + units > cap:
@@ -81,7 +81,7 @@ def log_audit(
     """
     _AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
     row = {
-        "ts": datetime.datetime.utcnow().isoformat() + "Z",
+        "ts": datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat() + "Z",
         "project_id": project_id,
         "provider": provider,
         "action": action,

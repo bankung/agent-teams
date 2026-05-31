@@ -91,7 +91,7 @@ export function TaskCard({ task, onOpenDetail, highlighted = false }: Props) {
       {...attributes}
       {...listeners}
       onClick={onOpenDetail ? () => onOpenDetail(task) : undefined}
-      aria-disabled={isAi}
+      data-disabled={isAi || undefined}
       aria-label={`Task ${task.id}: ${task.title}`}
       data-run-mode={task.run_mode}
       data-task-id={task.id}

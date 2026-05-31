@@ -207,6 +207,11 @@ async def test_resume_decision_finalize_sets_chosen_id() -> None:
         == "2026-05-29T10:00:00Z"
     )
 
+    # Batch C (#1695) — status_change_reason must reflect the resolution, not a
+    # misleading 'general fallback: halting for human review' string.
+    assert "prod" in body["status_change_reason"]
+    assert "halting" not in body["status_change_reason"]
+
 
 # ---------------------------------------------------------------------------
 # Test 2 (Fix B) — finalize PATCH rejected → give-up PATCH, no re-resume
