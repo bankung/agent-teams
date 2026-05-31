@@ -517,7 +517,11 @@ async def get_next_autorun(
     resume_rows = list((await session.execute(resume_stmt)).scalars().all())
 
     # --- pending_questions ---------------------------------------------------
-    # Active question/decision tasks not yet DONE — awaiting user input.
+    # Active question/decision tasks that are genuinely resumable — i.e. in
+    # BLOCKED state (the status the HITL interrupt sets, Kanban #833/#1695).
+    # Restricting to BLOCKED (rather than != DONE) excludes CANCELLED(6),
+    # DONE(5), and other non-resumable statuses that would otherwise clutter
+    # the resume walk. Fix: Kanban #1700.
     questions_stmt = (
         select(Task)
         .where(
@@ -527,7 +531,7 @@ async def get_next_autorun(
                 TaskInteractionKind.QUESTION,
                 TaskInteractionKind.DECISION,
             ]),
-            Task.process_status != TaskStatus.DONE,
+            Task.process_status == TaskStatus.BLOCKED,
         )
         .order_by(Task.created_at.asc())
     )

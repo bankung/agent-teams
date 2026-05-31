@@ -275,6 +275,7 @@ async def test_pending_questions_returns_question_and_decision_tasks(
     """pending_questions contains active question/decision tasks; work and DONE tasks excluded."""
     pid = await _make_fresh_project(client, scaffold_cleanup, "k833-f")
 
+    # HITL interrupt sets process_status=BLOCKED(4) on question/decision tasks
     q = await _make_task(
         client,
         pid,
@@ -284,6 +285,8 @@ async def test_pending_questions_returns_question_and_decision_tasks(
         run_mode="manual",
         task_kind="human",
     )
+    await _patch_task(client, pid, q["id"], process_status=4)
+
     d = await _make_task(
         client,
         pid,
@@ -293,7 +296,9 @@ async def test_pending_questions_returns_question_and_decision_tasks(
         run_mode="manual",
         task_kind="human",
     )
-    # work task — must be excluded
+    await _patch_task(client, pid, d["id"], process_status=4)
+
+    # work task — must be excluded (not a question/decision interaction_kind)
     await _make_task(
         client, pid, "work task", interaction_kind="work", run_mode="manual", task_kind="human"
     )
@@ -314,6 +319,55 @@ async def test_pending_questions_returns_question_and_decision_tasks(
     assert q["id"] in pq_ids, body
     assert d["id"] in pq_ids, body
     assert done_q["id"] not in pq_ids, body
+
+
+# ---------------------------------------------------------------------------
+# (f2) pending_questions excludes CANCELLED tasks; includes BLOCKED ones
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pending_questions_excludes_cancelled_includes_blocked(
+    client, scaffold_cleanup
+) -> None:
+    """Kanban #1700: CANCELLED(6) question/decision tasks must NOT appear in
+    pending_questions; only BLOCKED(4) tasks (the HITL-interrupt state) are
+    genuinely resumable and must be included."""
+    pid = await _make_fresh_project(client, scaffold_cleanup, "k833-f2")
+
+    # CANCELLED decision task — must be excluded (process_status=6)
+    cancelled_d = await _make_task(
+        client,
+        pid,
+        "cancelled decision",
+        interaction_kind="decision",
+        question_payload={"question": "Pick one?", "options": ["X", "Y"]},
+        run_mode="manual",
+        task_kind="human",
+    )
+    await _patch_task(client, pid, cancelled_d["id"], process_status=6)
+
+    # BLOCKED question task — must be included (process_status=4, HITL state)
+    blocked_q = await _make_task(
+        client,
+        pid,
+        "blocked question",
+        interaction_kind="question",
+        question_payload={"question": "What next?"},
+        run_mode="manual",
+        task_kind="human",
+    )
+    await _patch_task(client, pid, blocked_q["id"], process_status=4)
+
+    body = await _get_next_autorun(client, pid)
+    pq_ids = [t["id"] for t in body["pending_questions"]]
+
+    assert cancelled_d["id"] not in pq_ids, (
+        f"CANCELLED task {cancelled_d['id']} must not appear in pending_questions: {body}"
+    )
+    assert blocked_q["id"] in pq_ids, (
+        f"BLOCKED task {blocked_q['id']} must appear in pending_questions: {body}"
+    )
 
 
 # ---------------------------------------------------------------------------
