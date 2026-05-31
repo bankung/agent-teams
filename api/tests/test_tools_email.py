@@ -488,24 +488,117 @@ async def test_outlook_trash_xor_both_422(client) -> None:
 
 
 # ===========================================================================
-# 13. outlook/trash — query mode returns 501
+# 13. outlook/trash — query mode (Graph $search)
 # ===========================================================================
 
 @pytest.mark.asyncio
-async def test_outlook_trash_query_mode_501(client) -> None:
-    """POST /outlook/trash with query set → 501 (not implemented in Phase 3).
+async def test_outlook_trash_query_mode_resolves_and_trashes(client, monkeypatch) -> None:
+    """POST /outlook/trash with query → resolves ids via list_message_ids, moves them.
 
-    Note: the XOR validator accepts (query XOR message_ids) — this body is
-    valid Pydantic shape but the router logic returns 501.
+    Mocks outlook_client.list_message_ids to return two fake ids, and
+    outlook_client.trash_messages to succeed. Verifies:
+      - 200 status + correct trashed_count.
+      - list units charged (5) before trash units (20 = 10*2).
+    """
+    from src.tools.email import token_store, outlook_client
+
+    creds = _fake_outlook_creds()
+    token_store.put("outlook", _PROJ, creds)
+
+    monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "1000")
+    monkeypatch.setattr(
+        outlook_client, "list_message_ids",
+        lambda c, q, max_r: ["FAKE-ID-1", "FAKE-ID-2"],
+    )
+    monkeypatch.setattr(
+        outlook_client, "trash_messages",
+        lambda c, ids: (list(ids), []),
+    )
+
+    resp = await client.post(
+        f"{_BASE}/outlook/trash",
+        headers=_HDR,
+        json={"query": "from:spam@example.com"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["trashed_count"] == 2
+    assert set(body["trashed_ids"]) == {"FAKE-ID-1", "FAKE-ID-2"}
+    assert body["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_outlook_trash_query_mode_401_unauthenticated(client) -> None:
+    """POST /outlook/trash query mode without creds → 401.
+
+    Auth fires FIRST in query mode (before list). No creds injected.
     """
     resp = await client.post(
         f"{_BASE}/outlook/trash",
         headers=_HDR,
         json={"query": "from:spam@example.com"},
     )
-    assert resp.status_code == 501
+    assert resp.status_code == 401
+    assert "outlook not authenticated" in resp.json()["detail"].lower() or \
+        "authenticated" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_outlook_trash_query_mode_list_units_charged(client, monkeypatch) -> None:
+    """POST /outlook/trash query mode charges list units (5) before trash units.
+
+    Pre-fill cap to (cap - 4) so list units (5) alone exceed remaining.
+    Expect 429 on the list gate, NOT auth failure or trash gate.
+    """
+    from src.tools.email import gate, token_store
+
+    creds = _fake_outlook_creds()
+    token_store.put("outlook", _PROJ, creds)
+
+    monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "100")
+    today = datetime.datetime.now(datetime.UTC).date().isoformat()
+    gate._DAILY_UNITS[(_PROJ, today)] = 97  # 3 remaining; list needs 5 → over cap
+
+    resp = await client.post(
+        f"{_BASE}/outlook/trash",
+        headers=_HDR,
+        json={"query": "subject:newsletter"},
+    )
+    assert resp.status_code == 429
     body = resp.json()["detail"]
-    assert body["error"] == "query_mode_not_implemented"
+    assert body["error"] == "daily_cap_reached"
+
+
+@pytest.mark.asyncio
+async def test_outlook_trash_query_mode_bulk_gate_honored(client, monkeypatch) -> None:
+    """POST /outlook/trash query mode: bulk gate fires AFTER list (count unknown before).
+
+    list_message_ids returns 3 ids; threshold is 2 → bulk gate should reject.
+    """
+    from src.tools.email import token_store, outlook_client
+
+    creds = _fake_outlook_creds()
+    token_store.put("outlook", _PROJ, creds)
+
+    monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "1000")
+    monkeypatch.setenv("EMAIL_TOOLS_BULK_THRESHOLD", "2")
+    from src.tools.email import gate as gate_mod
+    importlib.reload(gate_mod)
+
+    monkeypatch.setattr(
+        outlook_client, "list_message_ids",
+        lambda c, q, max_r: ["ID-1", "ID-2", "ID-3"],  # 3 > threshold 2
+    )
+
+    resp = await client.post(
+        f"{_BASE}/outlook/trash",
+        headers=_HDR,
+        json={"query": "from:bulk@example.com"},
+    )
+    assert resp.status_code == 400
+    body = resp.json()["detail"]
+    assert body["error"] == "bulk_threshold"
+    assert body["count"] == 3
 
 
 # ===========================================================================

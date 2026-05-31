@@ -290,6 +290,7 @@ async def gmail_usage(
 # Outlook unit-cost constants — Lead-frozen (research note: Graph publishes no
 # per-operation cost; we mirror the same _DAILY_UNITS_CAP via scaled units).
 _OUTLOOK_TRASH_UNITS_PER_MESSAGE = 10  # half of Gmail's 20 — see outlook_client docstring.
+_OUTLOOK_LIST_UNITS_PER_CALL = 5  # mirrors Gmail's _LIST_UNITS_PER_CALL.
 _OUTLOOK_CALLBACK_UNITS = 1  # one AAD token-exchange call.
 
 
@@ -411,44 +412,64 @@ async def outlook_trash(
     force: bool = Query(default=False, description="Bypass the bulk-threshold gate."),
     session_project_id: int = Depends(require_project_id_header),
 ) -> OutlookTrashResponse:
-    """Move Outlook messages to Deleted Items by explicit ids.
+    """Move Outlook messages to Deleted Items by query OR explicit ids.
 
-    Phase 3 ships ids-only mode. `query` mode returns 501 — the field is
-    accepted for future-compat but Graph $search wiring is deferred. See
-    OutlookTrashRequest docstring.
+    Flow (FIX-6 #1609 — gate ordering):
+      message_ids mode:
+        1. Resolve ids from request body (no auth needed).
+        2. Bulk-threshold gate (Layer 3) — fires BEFORE auth; payload-safety rail.
+        3. Auth check — 401 if not authenticated.
+        4. Daily-cap gate (Layer 1) for 10 * count units.
+        5. Move loop; audit row written after upstream call (Layer 2).
 
-    Flow (FIX-6 #1609 — gate ordering, ids mode only in Phase 3):
-      1. 501 if body.query is set (query mode not implemented).
-      2. Resolve ids from request body (no auth needed).
-      3. Bulk-threshold gate (Layer 3) — fires BEFORE auth; payload-safety rail.
-      4. Auth check — 401 if not authenticated.
-      5. Daily-cap gate (Layer 1) for 10 * count units.
-      6. Move loop; audit row written after upstream call (Layer 2).
+      query mode (Graph $search — mirrors Gmail query flow):
+        1. Auth check — list call requires auth; gate fires after.
+        2. Resolve query -> ids via Graph $search (and pay list units).
+        3. Bulk-threshold gate (Layer 3) — must fire after list; count unknown before.
+        4. Daily-cap gate (Layer 1) for 10 * count units.
+        5. Move loop; audit row written after upstream call (Layer 2).
     """
-    # Phase 3: query-mode not implemented. Surface clearly so callers can plan.
-    # Check this BEFORE auth so the 501 is visible without OAuth setup.
-    if body.query is not None:
-        raise HTTPException(
-            status_code=501,
-            detail={
-                "error": "query_mode_not_implemented",
-                "hint": "use message_ids in Phase 3; query mode lands in a later phase.",
-            },
+    if body.message_ids is not None:
+        ids = list(body.message_ids)
+
+        if not ids:
+            return OutlookTrashResponse(trashed_count=0, trashed_ids=[], errors=[])
+
+        # FIX-6 (#1609): Layer 3 — bulk threshold fires BEFORE auth in message_ids mode.
+        _bulk_check_or_400(len(ids), force)
+
+        # Auth check after bulk gate.
+        creds = _require_outlook_creds(session_project_id)
+    else:
+        # query mode: auth must come first because the list call requires creds.
+        creds = _require_outlook_creds(session_project_id)
+
+        # Pay list units before we know the count — honest accounting.
+        _outlook_cap_check_or_429(session_project_id, _OUTLOOK_LIST_UNITS_PER_CALL, "list")
+        try:
+            ids = await run_in_threadpool(
+                outlook_client.list_message_ids,
+                creds, body.query or "", _MAX_LIST_RESULTS,
+            )
+        except Exception as exc:
+            gate.log_audit(
+                "outlook", session_project_id, "list", _OUTLOOK_LIST_UNITS_PER_CALL,
+                success=False, error_code=type(exc).__name__,
+            )
+            logger.warning("outlook list failed: %s", type(exc).__name__)
+            raise HTTPException(
+                status_code=502,
+                detail={"error": "outlook_list_failed", "class": type(exc).__name__},
+            ) from exc
+        gate.log_audit(
+            "outlook", session_project_id, "list", _OUTLOOK_LIST_UNITS_PER_CALL, success=True,
         )
 
-    if body.message_ids is None:  # pydantic XOR validator guarantees this; guard for -O safety.
-        raise HTTPException(status_code=500, detail="message_ids unexpectedly None after validation")
-    ids = list(body.message_ids)
+        if not ids:
+            return OutlookTrashResponse(trashed_count=0, trashed_ids=[], errors=[])
 
-    if not ids:
-        return OutlookTrashResponse(trashed_count=0, trashed_ids=[], errors=[])
-
-    # FIX-6 (#1609): Layer 3 — bulk threshold fires BEFORE auth in message_ids
-    # mode. Outlook only ships ids mode in Phase 3, so this is always pre-auth.
-    _bulk_check_or_400(len(ids), force)
-
-    # Auth check after bulk gate.
-    creds = _require_outlook_creds(session_project_id)
+        # Layer 3 — bulk threshold fires AFTER list in query mode (count unknown before).
+        _bulk_check_or_400(len(ids), force)
 
     # Layer 1 — daily-units cap for the trash workload.
     total_units = _OUTLOOK_TRASH_UNITS_PER_MESSAGE * len(ids)

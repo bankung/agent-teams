@@ -292,6 +292,47 @@ def _graph_request_with_retry(
     return last_response
 
 
+def list_message_ids(creds: dict[str, Any], query: str, max_results: int = 500) -> list[str]:
+    """Run Graph GET /me/messages with $search and return up to max_results ids.
+
+    Uses KQL via the `$search` query parameter. Graph REQUIRES the
+    `ConsistencyLevel: eventual` header for $search — omitting it yields 400.
+
+    Caller is responsible for cap enforcement BEFORE invoking. Cost: one Graph
+    list call, regardless of page count (we charge once per invocation).
+
+    Returns a flat list of message ids.
+    """
+    access_token = _acquire_silent(creds)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        # Required by Graph when using $search — without this header Graph
+        # returns HTTP 400 "request requires ConsistencyLevel header".
+        "ConsistencyLevel": "eventual",
+    }
+    ids: list[str] = []
+    # Graph accepts $top up to 1000 per page; we use min(max_results, 1000)
+    # as the page size and follow @odata.nextLink to paginate.
+    page_size = min(max_results, 1000)
+    url: str | None = (
+        f"{_GRAPH_BASE}/me/messages"
+        f"?$search=\"{query}\""
+        f"&$select=id"
+        f"&$top={page_size}"
+    )
+    while url and len(ids) < max_results:
+        resp = _graph_request_with_retry("GET", url, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        for msg in data.get("value", []) or []:
+            ids.append(msg["id"])
+            if len(ids) >= max_results:
+                break
+        url = data.get("@odata.nextLink")
+    return ids
+
+
 def trash_messages(creds: dict[str, Any], message_ids: list[str]) -> tuple[list[str], list[dict]]:
     """Move each message to Deleted Items. Returns (trashed_ids, errors).
 
