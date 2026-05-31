@@ -88,3 +88,9 @@ _private/
 # tracked via .gitkeep but ignore its contents (project_id is per-terminal).
 _runtime/*
 !_runtime/.gitkeep
+
+# --- Non-agent-teams project working dirs must NOT live in this PUBLIC repo (Kanban #1725, 2026-05-31) ---
+# Projects with a working_path keep shared/ + role-state OUTSIDE this repo.
+/context/projects/NewsAnalyzer/
+/context/projects/Writing/
+/context/projects/netops/
