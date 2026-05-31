@@ -1398,12 +1398,61 @@ async def update_task(
     payload: TaskUpdate,
     session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
+    if_unmodified_since: str | None = Header(default=None, alias="If-Unmodified-Since"),
 ) -> Task:
     task = await get_or_404(
         session, Task, detail=f"Task id={task_id} not found", id=task_id
     )
     # Kanban #695: cross-check the session-bound project against the row.
     assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+
+    # Kanban #1128: optimistic locking via If-Unmodified-Since header.
+    # If the header is present, compare the client's baseline against the
+    # current row's updated_at. A strictly newer row means a concurrent write
+    # landed between the client's GET and this PATCH — return 409 so the
+    # client can reload and re-apply their change on fresh data.
+    # If the header is absent, proceed as before (backward-compatible) and
+    # emit a debug log so header adoption can be tracked without flooding logs.
+    if if_unmodified_since is not None:
+        try:
+            # Parse ISO-8601; treat naive timestamps as UTC.
+            baseline_dt = datetime.fromisoformat(if_unmodified_since.replace("Z", "+00:00"))
+            if baseline_dt.tzinfo is None:
+                baseline_dt = baseline_dt.replace(tzinfo=timezone.utc)
+        except (ValueError, AttributeError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"If-Unmodified-Since header is not a valid ISO-8601 timestamp: {exc}",
+            ) from exc
+        # Ensure the DB value is tz-aware for comparison.
+        row_updated_at = task.updated_at
+        if row_updated_at.tzinfo is None:
+            row_updated_at = row_updated_at.replace(tzinfo=timezone.utc)
+        if row_updated_at > baseline_dt:
+            # Build a minimal diff hint: list top-level scalar fields that
+            # differ between the current row and the payload the client
+            # is trying to apply, so they know what changed.
+            _patch_fields = payload.model_dump(exclude_unset=True)
+            _changed_fields = [
+                f for f in _patch_fields
+                if hasattr(task, f) and getattr(task, f) != _patch_fields[f]
+            ]
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "conflict",
+                    "message": (
+                        f"task was modified since {baseline_dt.isoformat()}; reload"
+                    ),
+                    "current_updated_at": row_updated_at.isoformat(),
+                    "conflicting_fields": _changed_fields,
+                },
+            )
+    else:
+        logger.debug(
+            "task %s PATCH: If-Unmodified-Since header absent (no optimistic lock)",
+            task_id,
+        )
 
     # Kanban #955.B: capture pre-PATCH state for push-notification transition
     # detection. Must be captured before any mutation so the "was X before this
