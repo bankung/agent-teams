@@ -80,6 +80,43 @@ ROLE_REVIEWER = 5
 
 
 # ---------------------------------------------------------------------------
+# Conversation-history compaction (Kanban #1717)
+# ---------------------------------------------------------------------------
+#
+# The tool-use loop re-sends the FULL `messages` list to the model every
+# iteration. Each ToolMessage payload is capped at 100KB by the sandbox, so a
+# multi-step task accumulates context fast → degraded quality, higher cost,
+# eventual provider overflow. `_compact_messages` (below) trims the history at
+# the top of each loop iteration with a deterministic heuristic — NO LLM
+# summarization call in v1, NO tiktoken dependency.
+
+DEFAULT_CONTEXT_TOKEN_BUDGET: int = 60_000
+"""Fallback token budget when LANGGRAPH_CONTEXT_TOKEN_BUDGET is unset/invalid."""
+
+CONTEXT_RECENT_TURNS_KEPT: int = 3
+"""Most-recent N turns kept VERBATIM (never stubbed, never dropped). A "turn"
+is one AIMessage + its paired ToolMessage(s)."""
+
+
+def _resolve_context_token_budget() -> int:
+    """Read LANGGRAPH_CONTEXT_TOKEN_BUDGET → positive int, else the default.
+
+    Mirrors the worker.py env-int idiom: strip, validate as a positive
+    integer, fall back on anything malformed (empty, non-numeric, <= 0).
+    """
+    raw = os.getenv(
+        "LANGGRAPH_CONTEXT_TOKEN_BUDGET", str(DEFAULT_CONTEXT_TOKEN_BUDGET)
+    ).strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_CONTEXT_TOKEN_BUDGET
+    if value <= 0:
+        return DEFAULT_CONTEXT_TOKEN_BUDGET
+    return value
+
+
+# ---------------------------------------------------------------------------
 # Supervisor
 # ---------------------------------------------------------------------------
 
@@ -230,6 +267,158 @@ async def backend_specialist_node(state: AgentState) -> dict:
     return await _run_tool_use_loop(bound, initial_messages, ctx, tools_config)
 
 
+# ---------------------------------------------------------------------------
+# Compaction internals (Kanban #1717)
+# ---------------------------------------------------------------------------
+
+
+def _estimate_tokens(content: Any) -> int:
+    """Deterministic per-message token heuristic: `len(str(content)) // 4`.
+
+    Anthropic content can be a list of blocks; OpenAI/Ollama is a plain
+    string. `str(content)` stringifies either shape uniformly. No LLM call,
+    no tiktoken — the estimate only needs to be monotonic + cheap for the
+    budget comparison, not provider-exact.
+    """
+    return len(str(content)) // 4
+
+
+def _total_tokens(messages: list[Any]) -> int:
+    return sum(_estimate_tokens(getattr(m, "content", "")) for m in messages)
+
+
+def _split_turns(tail: list[Any]) -> tuple[list[Any], list[list[Any]]]:
+    """Partition the post-brief message tail into whole turns.
+
+    A turn = one AIMessage followed by its paired ToolMessage(s). Walking
+    left-to-right: an AIMessage opens a new turn; every following
+    ToolMessage (or any non-AIMessage) attaches to the open turn. Any
+    messages BEFORE the first AIMessage are returned as `preamble` and kept
+    verbatim (defensive — the production loop never produces this, but it
+    keeps a malformed list from silently dropping content).
+
+    Returns `(preamble, turns)` where each turn is a list whose first
+    element is the AIMessage and the rest are its paired ToolMessages.
+    """
+    preamble: list[Any] = []
+    turns: list[list[Any]] = []
+    for msg in tail:
+        if isinstance(msg, AIMessage):
+            turns.append([msg])
+        elif turns:
+            turns[-1].append(msg)
+        else:
+            # Stray message before any AIMessage — keep verbatim.
+            preamble.append(msg)
+    return preamble, turns
+
+
+def _stub_turn(turn: list[Any]) -> None:
+    """Replace each ToolMessage payload in an OLD turn with a short stub.
+
+    Mutates the ToolMessage objects in place (KEEP the object → preserves
+    the `tool_call_id` pairing with its parent AIMessage's tool_call). The
+    parent AIMessage is left untouched so its `.tool_calls` ids still match.
+    Stubbing an already-stubbed turn is a no-op-ish re-stub (idempotent
+    shape), so calling this twice is safe.
+    """
+    for msg in turn:
+        if not isinstance(msg, ToolMessage):
+            continue
+        original = msg.content
+        char_len = len(str(original))
+        msg.content = (
+            f"[elided: {msg.tool_call_id} result, {char_len} chars]"
+        )
+
+
+def _compact_messages(messages: list[Any], budget_tokens: int) -> list[Any]:
+    """Trim conversation history to fit `budget_tokens` (deterministic, v1).
+
+    Invariants (correctness is the whole point — Kanban #1717):
+      1. messages[0] (system) + messages[1] (original brief) kept VERBATIM.
+      2. The most-recent CONTEXT_RECENT_TURNS_KEPT turns kept VERBATIM.
+      3. Older turns over budget: each ToolMessage's `.content` replaced with
+         a `[elided: <id> result, <N> chars]` stub — the ToolMessage OBJECT
+         is kept so its `tool_call_id` still pairs with the parent AIMessage.
+      4. Still over budget: drop WHOLE oldest turns (AIMessage + ALL its
+         paired ToolMessages together, as a unit). Never drop system/brief.
+      5. After compaction every retained AIMessage tool_call has its
+         ToolMessage and vice-versa — NO orphans — because we only ever
+         operate on whole turns. OpenAI + Anthropic 400 on orphaned calls.
+
+    Returns a NEW list (head + retained turns); does not reorder. The turn
+    objects (and their ToolMessages, when stubbed) are mutated in place, so
+    the caller should reassign: `messages = _compact_messages(messages, b)`.
+    Under budget → returns an equivalent list with no stubbing/dropping.
+    """
+    # Head = system + brief, always verbatim. With fewer than 2 messages there
+    # is nothing to compact (degenerate test/edge case) — return as-is.
+    if len(messages) <= 2:
+        return list(messages)
+
+    head = messages[:2]
+    preamble, turns = _split_turns(messages[2:])
+
+    def _assemble() -> list[Any]:
+        out: list[Any] = list(head)
+        out.extend(preamble)
+        for t in turns:
+            out.extend(t)
+        return out
+
+    # Fast path: already under budget → no mutation, default path preserved.
+    if _total_tokens(_assemble()) <= budget_tokens:
+        return _assemble()
+
+    # The most-recent N turns are sacrosanct. Only turns before them are
+    # candidates for stubbing then dropping.
+    recent = CONTEXT_RECENT_TURNS_KEPT
+    old_count = max(0, len(turns) - recent)
+
+    # Phase 1: stub the ToolMessage payloads of the OLD turns (oldest first).
+    # M-1: maintain a running total instead of re-summing the full list each
+    # iteration (O(n) per stub → O(1) per stub with a delta). Kanban #1720.
+    running_tokens = _total_tokens(_assemble())
+    for i in range(old_count):
+        # Compute how much the stub will save BEFORE mutating the turn.
+        delta = sum(
+            _estimate_tokens(msg.content)
+            for msg in turns[i]
+            if isinstance(msg, ToolMessage)
+        )
+        _stub_turn(turns[i])
+        stub_cost = sum(
+            _estimate_tokens(msg.content)
+            for msg in turns[i]
+            if isinstance(msg, ToolMessage)
+        )
+        running_tokens = running_tokens - delta + stub_cost
+        if running_tokens <= budget_tokens:
+            return _assemble()
+
+    # Phase 2: still over budget → drop WHOLE oldest turns as units. Never
+    # drop into the recent-N window; never drop head/preamble.
+    while old_count > 0 and _total_tokens(_assemble()) > budget_tokens:
+        turns.pop(0)
+        old_count -= 1
+
+    # M-2: if the recent-N window alone still exceeds the budget, warn so
+    # a silent provider-overflow is visible in logs. The return value is
+    # unchanged — recent-N is always preserved per #1717 design. Kanban #1720.
+    final = _assemble()
+    final_tokens = _total_tokens(final)
+    if final_tokens > budget_tokens:
+        logger.warning(
+            "_compact_messages: recent-%d turns window (%d estimated tokens) "
+            "exceeds budget (%d tokens) — provider may overflow on small-context models",
+            CONTEXT_RECENT_TURNS_KEPT,
+            final_tokens,
+            budget_tokens,
+        )
+    return final
+
+
 async def _run_tool_use_loop(
     model: Any,
     messages: list[Any],
@@ -245,11 +434,24 @@ async def _run_tool_use_loop(
     """
     task_id = ctx.task_id
     last_response: Any = None
+    # Kanban #1717 — resolve the compaction budget once per loop (env is
+    # stable for the lifetime of one task).
+    context_budget = _resolve_context_token_budget()
 
     for iteration in range(MAX_TOOL_LOOP_ITERATIONS):
+        # Compact BEFORE invoking — trims older tool-result payloads so the
+        # full re-sent history stays within budget. Reassign: the call
+        # returns a new list (head + retained turns), preserving tool_call
+        # pairing by construction. See `_compact_messages`.
+        messages = _compact_messages(messages, context_budget)
         response = await _ainvoke_model(model, messages)
         last_response = response
         messages.append(response)
+        # response_start marks the index of `response` in messages. Used by
+        # both the HALT branch and the loop-budget-exhausted return to slice
+        # the whole current turn (response + ALL ToolMessages for this turn)
+        # so no tool_call id is left without a paired ToolMessage. Kanban #1720 fix H-2.
+        response_start = len(messages) - 1
 
         tool_calls = getattr(response, "tool_calls", None) or []
         if not tool_calls:
@@ -262,7 +464,7 @@ async def _run_tool_use_loop(
 
         # Each tool call gets its own ToolMessage in the next turn. On HALT
         # we return early; on REJECT or AUTO_ALLOW we keep going.
-        for tc in tool_calls:
+        for tc_idx, tc in enumerate(tool_calls):
             tc_name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
             tc_args = tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", {})
             tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", "unknown")
@@ -277,16 +479,35 @@ async def _run_tool_use_loop(
             )
 
             if outcome.halt_reason is not None:
-                # HALT path — append a ToolMessage so the conversation is
-                # well-formed in the checkpoint, then return early.
-                messages.append(
-                    ToolMessage(
-                        content=outcome.tool_result.model_dump_json(),
-                        tool_call_id=tc_id,
-                    )
+                # HALT path — append a ToolMessage for the halted call, then
+                # stub ALL remaining (unexecuted) tool_calls so the checkpoint
+                # is well-formed. OpenAI/Anthropic 400 on orphaned tool_call
+                # ids (no paired ToolMessage). Kanban #1720 fix H-1.
+                _stub_payload = json.dumps(
+                    {"success": False, "error_code": "halted_before_execution"}
                 )
+                halted_tm = ToolMessage(
+                    content=outcome.tool_result.model_dump_json(),
+                    tool_call_id=tc_id,
+                )
+                messages.append(halted_tm)
+                # Build stub ToolMessages for every call AFTER the current one.
+                for remaining_tc in tool_calls[tc_idx + 1 :]:
+                    remaining_id = (
+                        remaining_tc.get("id")
+                        if isinstance(remaining_tc, dict)
+                        else getattr(remaining_tc, "id", "unknown")
+                    )
+                    messages.append(
+                        ToolMessage(content=_stub_payload, tool_call_id=remaining_id)
+                    )
+                # Slice from response_start to capture: response + any
+                # ToolMessages for calls BEFORE the halt (already appended in
+                # earlier iterations of the inner loop) + the halted TM +
+                # post-halt stubs. This guarantees every tool_call id in
+                # response has a paired ToolMessage. Kanban #1720 fix H-2.
                 return {
-                    "messages": [response, messages[-1]],
+                    "messages": messages[response_start:],
                     "halt_reason": outcome.halt_reason,
                     "final_result": (
                         f"Halted for review: {outcome.halt_reason}"
@@ -301,11 +522,16 @@ async def _run_tool_use_loop(
             )
 
     # Loop budget exhausted.
+    # `last_response` had tool_calls (that's why the loop kept going) and its
+    # ToolMessages were appended during the final iteration's inner for-loop
+    # before the next outer iteration started. Return messages[response_start:]
+    # to include both last_response and all its paired ToolMessages, so no
+    # tool_call id is orphaned. Kanban #1720 fix H-2.
     logger.warning(
         "tool_loop_max_iterations exceeded: task_id=%s — halting", task_id
     )
     return {
-        "messages": [last_response] if last_response is not None else [],
+        "messages": messages[response_start:] if last_response is not None else [],
         "halt_reason": TOOL_LOOP_HALT_REASON,
         "final_result": f"Halted: {TOOL_LOOP_HALT_REASON}",
     }

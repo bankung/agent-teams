@@ -234,6 +234,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       # Kanban #891 — Ollama provider (free local LLM). Only consulted when
       # LANGGRAPH_LLM_PROVIDER=ollama. host.docker.internal reaches the host's
       # Ollama process on Mac + Win Docker Desktop; on Linux compose, add
@@ -246,6 +247,9 @@ services:
       LANGGRAPH_PROJECT_ID: ${LANGGRAPH_PROJECT_ID:-1}
       LANGGRAPH_POLL_INTERVAL_SEC: ${LANGGRAPH_POLL_INTERVAL_SEC:-30}
       LANGGRAPH_KANBAN_API_BASE: ${LANGGRAPH_KANBAN_API_BASE:-http://api:8456}
+      # Kanban #1717 — tool-use loop conversation-history compaction budget
+      # (deterministic; older tool-result payloads stubbed/dropped to fit).
+      LANGGRAPH_CONTEXT_TOKEN_BUDGET: ${LANGGRAPH_CONTEXT_TOKEN_BUDGET:-60000}
       # Kanban #1107 — WARN-2 fix. HITL_DEMO_ENABLED=1 unlocks the
       # `HITL demo —` title-prefix branch in langgraph/nodes.py:general_node.
       # Dev default 1 so #1073 smoke + onboarding demos keep working. PRODUCTION

@@ -382,6 +382,11 @@ def make_chat_model(model: str | None = None) -> BaseChatModel:
         api_key = _require_api_key(provider)
         from langchain_openai import ChatOpenAI
 
+        # OPENAI_BASE_URL enables OpenAI-compatible endpoints (e.g. Gemini).
+        # When unset/empty, construct identically to before — real-OpenAI default.
+        openai_base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+        if openai_base_url:
+            return ChatOpenAI(model=chosen_model, api_key=api_key, max_retries=1, base_url=openai_base_url)
         return ChatOpenAI(model=chosen_model, api_key=api_key, max_retries=1)
 
     # provider == "ollama" — resolve_provider() guarantees membership, so the

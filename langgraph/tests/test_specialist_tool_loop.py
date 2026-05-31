@@ -153,6 +153,17 @@ class _StubReadTool(Tool):
         return ToolResult(success=True, output=f"ran with foo={input_obj.foo}")
 
 
+class _StubWriteTool(Tool):
+    name = "stub_write"
+    description = "stub write-tier tool"
+    tier = Tier.WRITE
+    input_schema = _StubInput
+    timeout_sec = 5
+
+    async def _run(self, input_obj, context):
+        return ToolResult(success=True, output=f"wrote foo={input_obj.foo}")
+
+
 @pytest.fixture
 def stub_read_tool():
     """Register `stub_read` for the duration of one test. Auto-cleanup."""
@@ -163,6 +174,16 @@ def stub_read_tool():
     GLOBAL_REGISTRY._tools["stub_read"] = _StubReadTool()
     yield _StubReadTool
     GLOBAL_REGISTRY._tools.pop("stub_read", None)
+
+
+@pytest.fixture
+def stub_write_tool():
+    """Register `stub_write` (WRITE tier) for the duration of one test. Auto-cleanup."""
+    if "stub_write" in GLOBAL_REGISTRY._tools:
+        del GLOBAL_REGISTRY._tools["stub_write"]
+    GLOBAL_REGISTRY._tools["stub_write"] = _StubWriteTool()
+    yield _StubWriteTool
+    GLOBAL_REGISTRY._tools.pop("stub_write", None)
 
 
 # ---------------------------------------------------------------------------
@@ -368,3 +389,159 @@ def test_specialist_loop_terminates_on_first_no_tool_call_response(
     assert len(model.received_messages) == 1
     # Tool never ran.
     assert stub_read_tool.invocation_count == 0
+
+
+def test_halt_on_first_of_multi_call_no_orphans(
+    monkeypatch, stub_read_tool
+) -> None:
+    """Kanban #1720 fix H-1 — HALT fires on the FIRST tool_call of an AIMessage
+    that carries >=2 tool_calls.
+
+    Before the fix: only the halted call got a ToolMessage; the remaining
+    call ids were orphaned → checkpointed state caused OpenAI/Anthropic 400
+    on resume.
+
+    After the fix: every tool_call id in the response AIMessage must have a
+    paired ToolMessage in the returned state['messages'].
+    """
+    cfg = {
+        "tools_enabled": True,
+        "auto_allow_tiers": [],
+        "halt_tiers": ["read"],
+        "http_hosts": [],
+    }
+    _patch_tools_config(monkeypatch, cfg)
+    _patch_audit_recorder(monkeypatch)
+
+    # AIMessage with THREE tool_calls — HALT fires on the first one.
+    multi = AIMessage(content="batched halt test")
+    multi.tool_calls = [
+        {"name": "stub_read", "args": {"foo": "a"}, "id": "tc_halt_1"},
+        {"name": "stub_read", "args": {"foo": "b"}, "id": "tc_halt_2"},
+        {"name": "stub_read", "args": {"foo": "c"}, "id": "tc_halt_3"},
+    ]
+    model = _ScriptedModel([multi])
+    monkeypatch.setattr(nodes, "make_chat_model", lambda: model)
+
+    state = {"task_id": 77, "brief": "multi halt", "assigned_role": 2}
+    out = asyncio.run(nodes.backend_specialist_node(state))
+
+    # Loop did halt.
+    assert out.get("halt_reason") is not None
+
+    returned_messages = out["messages"]
+    # The response AIMessage must be present.
+    assert any(isinstance(m, AIMessage) for m in returned_messages)
+
+    # Every tool_call id in the AIMessage must have a paired ToolMessage.
+    call_ids: set[str] = set()
+    for m in returned_messages:
+        if isinstance(m, AIMessage):
+            for tc in getattr(m, "tool_calls", None) or []:
+                cid = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                if cid is not None:
+                    call_ids.add(cid)
+
+    tool_msg_ids: set[str] = {
+        m.tool_call_id for m in returned_messages if isinstance(m, ToolMessage)
+    }
+
+    assert call_ids == {"tc_halt_1", "tc_halt_2", "tc_halt_3"}, (
+        f"expected all 3 call ids, got: {call_ids}"
+    )
+    assert call_ids == tool_msg_ids, (
+        f"orphans detected — call_ids={call_ids}, tool_msg_ids={tool_msg_ids}"
+    )
+
+    # The 2nd and 3rd stubs must carry halted_before_execution.
+    stub_contents = {
+        m.tool_call_id: m.content
+        for m in returned_messages
+        if isinstance(m, ToolMessage) and m.tool_call_id != "tc_halt_1"
+    }
+    for cid, content in stub_contents.items():
+        assert "halted_before_execution" in content, (
+            f"expected stub content for {cid}, got: {content!r}"
+        )
+
+
+def test_halt_on_LATER_call_keeps_pre_halt_toolmsgs(
+    monkeypatch, stub_read_tool, stub_write_tool
+) -> None:
+    """Kanban #1720 fix H-2 — HALT fires on the SECOND tool_call of an AIMessage
+    that carries [read(auto_allow), write(halt)].
+
+    The pre-halt `read` call executes and its ToolMessage is appended to
+    `messages` before the inner loop reaches `write`. The HALT branch must
+    return the whole turn slice (response_start:) so both `read` AND `write`
+    tool_call ids have paired ToolMessages in the returned state.
+
+    This test MUST fail on the incomplete H-1 code (which used
+    messages[-num_appended:] and missed pre-halt executed TMs) and MUST
+    pass after the H-2 fix.
+    """
+    # auto_allow read, halt write.
+    cfg = {
+        "tools_enabled": True,
+        "auto_allow_tiers": ["read"],
+        "halt_tiers": ["write"],
+        "http_hosts": [],
+    }
+    _patch_tools_config(monkeypatch, cfg)
+    _patch_audit_recorder(monkeypatch)
+
+    # AIMessage with two tool_calls: read first (auto_allow → executes),
+    # write second (halt → loop exits early).
+    mixed = AIMessage(content="mixed auto+halt")
+    mixed.tool_calls = [
+        {"name": "stub_read", "args": {"foo": "x"}, "id": "tc_read_first"},
+        {"name": "stub_write", "args": {"foo": "y"}, "id": "tc_write_halt"},
+    ]
+    model = _ScriptedModel([mixed])
+    monkeypatch.setattr(nodes, "make_chat_model", lambda: model)
+
+    state = {"task_id": 88, "brief": "mixed halt", "assigned_role": 2}
+    out = asyncio.run(nodes.backend_specialist_node(state))
+
+    # Loop did halt on the write call.
+    assert out.get("halt_reason") is not None
+
+    returned_messages = out["messages"]
+
+    # Collect all tool_call ids from the AIMessage.
+    call_ids: set[str] = set()
+    for m in returned_messages:
+        if isinstance(m, AIMessage):
+            for tc in getattr(m, "tool_calls", None) or []:
+                cid = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                if cid is not None:
+                    call_ids.add(cid)
+
+    tool_msg_ids: set[str] = {
+        m.tool_call_id for m in returned_messages if isinstance(m, ToolMessage)
+    }
+
+    # Both call ids must be present — no orphan for the pre-halt read.
+    assert call_ids == {"tc_read_first", "tc_write_halt"}, (
+        f"expected both call ids, got: {call_ids}"
+    )
+    assert call_ids == tool_msg_ids, (
+        f"orphans detected — call_ids={call_ids}, tool_msg_ids={tool_msg_ids}"
+    )
+
+    # The read tool actually executed (auto_allow).
+    assert stub_read_tool.invocation_count == 1
+
+    # The read ToolMessage must NOT carry halted_before_execution.
+    read_tm = next(
+        m for m in returned_messages
+        if isinstance(m, ToolMessage) and m.tool_call_id == "tc_read_first"
+    )
+    assert "halted_before_execution" not in read_tm.content
+
+    # The write ToolMessage (the halted one) must carry the halt result, not a stub.
+    write_tm = next(
+        m for m in returned_messages
+        if isinstance(m, ToolMessage) and m.tool_call_id == "tc_write_halt"
+    )
+    assert "halted_before_execution" not in write_tm.content
