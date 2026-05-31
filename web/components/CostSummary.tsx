@@ -207,52 +207,23 @@ export function CostSummary({
             </p>
           ) : (
             <>
-              {/* G1 — Estimated cost row (heuristic from task estimates).
-                  Shown when the BE slice has landed and estimated_cost is present.
-                  Clearly labeled to distinguish from metered session-run cost. */}
-              {hasEstimated && (
-                <div className="mb-3 rounded-md border border-blue-100 bg-blue-50/40 px-3 py-3 dark:border-blue-900/30 dark:bg-blue-950/10">
-                  <div className="mb-1.5 flex items-center gap-2">
-                    <span className="text-[11px] font-medium uppercase tracking-wide text-blue-600 dark:text-blue-400">
-                      Estimated
-                    </span>
-                    <span
-                      className="cursor-default text-[10px] text-zinc-400 dark:text-zinc-500"
-                      title="Heuristic estimate derived from per-task token budgets — metered actual cost coming soon"
-                    >
-                      heuristic estimate — metered cost coming soon
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-                    <span
-                      className="text-2xl font-semibold tabular-nums leading-none text-blue-700 dark:text-blue-300"
-                      title={`$${totalEstimatedCost.toFixed(4)} USD (heuristic estimate)`}
-                    >
-                      {formatUsd(totalEstimatedCost)}
-                    </span>
-                    <span className="text-xs text-zinc-500 dark:text-zinc-400 tabular-nums">
-                      {formatInt(totalEstimatedInput)} in / {formatInt(totalEstimatedOutput)} out tokens
-                    </span>
-                  </div>
-                </div>
-              )}
-
-              {/* Metered cost row (session_runs-based; ~$0 until session_runs are fed) */}
-              {!noUsage && (
-                <>
-                  {/* #954 — single column on mobile (375px iPhone); 3-col tile row restored at sm */}
+                  {/* Mode A · Subscription — metered session-run cost (~$0 on flat plan).
+                  Rendered first: this is the operator's reality. */}
+              {!noUsage ? (
+                <div className="mb-3">
                   <div className="mb-1.5 flex items-center gap-2">
                     <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                      Metered
+                      Mode A · Subscription
                     </span>
                     <span className="text-[10px] text-zinc-400 dark:text-zinc-500">
-                      actual session-run spend
+                      your flat plan — per-task marginal ≈ $0 (not billed per token; metered runs feed in once G2 lands)
                     </span>
                   </div>
+                  {/* #954 — single column on mobile (375px iPhone); 3-col tile row restored at sm */}
                   <div
                     className="grid grid-cols-1 gap-3 sm:grid-cols-3"
                     role="list"
-                    aria-label="Metered cost and token totals"
+                    aria-label="Mode A Subscription cost and token totals"
                   >
                     <div
                       role="listitem"
@@ -299,14 +270,57 @@ export function CostSummary({
                       session run{totalRuns === 1 ? "" : "s"} tracked
                     </span>
                   </div>
-                </>
+                </div>
+              ) : (
+                /* When no session runs yet, show a muted placeholder for Mode A */
+                <div className="mb-3">
+                  <div className="mb-1.5 flex items-center gap-2">
+                    <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                      Mode A · Subscription
+                    </span>
+                    <span className="text-[10px] text-zinc-400 dark:text-zinc-500">
+                      your flat plan — per-task marginal ≈ $0 (not billed per token; metered runs feed in once G2 lands)
+                    </span>
+                  </div>
+                  <p className="text-xs text-zinc-400 dark:text-zinc-600">
+                    Mode A · Subscription: $0.00 — flat plan (no session runs recorded yet)
+                  </p>
+                </div>
               )}
 
-              {/* When metered has no runs yet but estimated is present, show a muted note */}
-              {noUsage && hasEstimated && (
-                <p className="mt-1 text-xs text-zinc-400 dark:text-zinc-600">
-                  Metered: $0.00 — no session runs recorded yet.
-                </p>
+              {/* Mode B · API (estimate) — heuristic from task budgets at API token rates.
+                  Shown when the BE slice has landed and estimated_cost is present.
+                  Rendered after Mode A: this is the comparison figure. */}
+              {hasEstimated && (
+                <>
+                  <div className="mb-3 rounded-md border border-blue-100 bg-blue-50/40 px-3 py-3 dark:border-blue-900/30 dark:bg-blue-950/10">
+                    <div className="mb-1.5 flex items-center gap-2">
+                      <span className="text-[11px] font-medium uppercase tracking-wide text-blue-600 dark:text-blue-400">
+                        Mode B · API (estimate)
+                      </span>
+                      <span
+                        className="cursor-default text-[10px] text-zinc-400 dark:text-zinc-500"
+                        title="Heuristic estimate derived from per-task token budgets at API token rates"
+                      >
+                        if you ran this on the API at token rates — heuristic estimate
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+                      <span
+                        className="text-2xl font-semibold tabular-nums leading-none text-blue-700 dark:text-blue-300"
+                        title={`$${totalEstimatedCost.toFixed(4)} USD (heuristic estimate at API token rates)`}
+                      >
+                        {formatUsd(totalEstimatedCost)}
+                      </span>
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400 tabular-nums">
+                        {formatInt(totalEstimatedInput)} in / {formatInt(totalEstimatedOutput)} out tokens
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-zinc-400 dark:text-zinc-500">
+                    Your subscription covers work that would cost ~{formatUsd(totalEstimatedCost)} on the API.
+                  </p>
+                </>
               )}
             </>
           )}
