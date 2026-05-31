@@ -41,11 +41,16 @@ for key, value in match_dict.items():
         return False
 ```
 
-Same pattern is mirrored in the hook (PowerShell evaluates known matchers; rules with foreign keys fall through to no-op).
+Same pattern is mirrored in the hook: it evaluates only the recognized Layer-B matchers (`tool_name` / `target_url_pattern` / `content_predicate`). **#1614:** a rule carrying NO recognized Layer-B key (a Layer-A-only rule, or an empty `match`) is SKIPPED — it does not match. Previously such a rule fell through to `return $true` and matched everything (the match-all bug, #1614 Scope 1).
 
-**The consequence:** a Pattern 5–shaped rule (keys: `tool_name`, `target_url_pattern`, `content_predicate`) presented to Layer A's evaluator will return `False` from every predicate match → the rule is skipped → falls to default `require_attention`. Symmetric: a Layer A–shaped rule (keys: `text_contains`, `amount_usd_lt`, …) presented to Layer B's hook is unknown → rule skipped → fallback per hook config.
+**The consequence:** a Pattern 5–shaped rule (keys: `tool_name`, `target_url_pattern`, `content_predicate`) presented to Layer A's evaluator will return `False` from every predicate match → the rule is skipped → falls to default `require_attention`. Symmetric on *matching*: a Layer A–shaped rule (keys: `text_contains`, `amount_usd_lt`, …) presented to Layer B's hook has no recognized Layer-B key → rule skipped.
 
-The two layers therefore coexist by **disjoint matcher namespaces + over-block-beats-under-approve fallback**. Never raises, never auto-approves on a key it doesn't understand, never silently breaks the other layer.
+The two layers coexist by **disjoint matcher namespaces**, but their **no-match default DIVERGES** (#1614, 2026-05-31):
+
+- **Layer A (worker)** — no rule matched → `require_attention` (over-block; the worker pauses for HITL).
+- **Layer B (hook)** — no Layer-B rule matched (incl. foreign-key-only / empty-match / null-or-empty `approval_policies`) → **`allow`** (default-allow: the gate has nothing to say, so it does not block; other harness layers still apply). The **one exception is Fail-Open-Ask** — genuine infra errors (API unreachable, malformed payload, missing/invalid `_runtime/lead_project_id.txt`) still fall to `ask`, never auto-approving on uncertainty.
+
+Neither layer raises, neither silently breaks the other.
 
 ## Rule-authoring guidance
 

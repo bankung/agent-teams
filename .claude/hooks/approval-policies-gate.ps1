@@ -18,7 +18,7 @@
 #   1. matched rule with action=auto_deny       → permissionDecision=deny
 #   2. matched rule with action=requires_attention → permissionDecision=ask
 #   3. matched rule with action=auto_approve    → permissionDecision=allow
-#   4. no rule matched                          → permissionDecision=ask
+#   4. no rule matched                          → permissionDecision=allow (#1614)
 #
 # Rule shape (extension of the existing approval_policies JSONB; backward-compatible
 # with the worker-side label-only consumer in services/approval_evaluator.py):
@@ -39,9 +39,10 @@
 #     ]
 #   }
 #
-# A rule matches when EVERY present matcher key is satisfied. A rule with no
-# matcher keys (empty `match` object) matches everything — operator should
-# avoid that shape unless they explicitly want a catch-all.
+# A rule matches when EVERY present Layer-B matcher key (tool_name /
+# target_url_pattern / content_predicate) is satisfied. A rule with NO Layer-B
+# matcher key (empty `match`, or a Layer-A-only rule with keys like
+# text_contains) does NOT match here — disjoint-namespace contract (#1614).
 #
 # Hook tool-call surface:
 #   - WebFetch                       → reads tool_input.url
@@ -149,12 +150,12 @@ if ($policyFile) {
 # matching policies → fall through to ask (same effect as zero rules).
 $policies = $projectJson.approval_policies
 if ($null -eq $policies) {
-    Emit-Decision -Decision 'ask' -Reason 'approval-policies-gate: project has no approval_policies set'
+    Emit-Decision -Decision 'allow' -Reason 'approval-policies-gate: project has no approval_policies set (#1614 default-allow)'
     exit 0
 }
 $rules = $policies.rules
 if ($null -eq $rules -or $rules.Count -eq 0) {
-    Emit-Decision -Decision 'ask' -Reason 'approval-policies-gate: approval_policies.rules empty'
+    Emit-Decision -Decision 'allow' -Reason 'approval-policies-gate: approval_policies.rules empty (#1614 default-allow)'
     exit 0
 }
 
@@ -193,13 +194,20 @@ function Test-Rule {
     $match = $Rule.match
     if ($null -eq $match) { return $false }    # malformed rule → never match
 
+    # #1614: track whether any recognized Layer-B key is present. A rule with
+    # none (empty match, or a Layer-A-only rule) must NOT match in this Layer-B
+    # hook — previously it fell through to `return $true` = match-all bug.
+    $sawLayerBKey = $false
+
     # tool_name (exact string equality).
     if ($match.PSObject.Properties.Name -contains 'tool_name') {
+        $sawLayerBKey = $true
         $want = [string]$match.tool_name
         if ($want -and $want -ne $ToolName) { return $false }
     }
     # target_url_pattern (regex on extracted URL).
     if ($match.PSObject.Properties.Name -contains 'target_url_pattern') {
+        $sawLayerBKey = $true
         $pat = [string]$match.target_url_pattern
         if ($pat) {
             if (-not $Url) { return $false }
@@ -213,6 +221,7 @@ function Test-Rule {
     }
     # content_predicate (regex on serialized tool_input).
     if ($match.PSObject.Properties.Name -contains 'content_predicate') {
+        $sawLayerBKey = $true
         $pat = [string]$match.content_predicate
         if ($pat) {
             try {
@@ -222,6 +231,8 @@ function Test-Rule {
             }
         }
     }
+    # #1614: no Layer-B key present → not addressed by this Layer-B hook.
+    if (-not $sawLayerBKey) { return $false }
     return $true
 }
 
@@ -254,6 +265,7 @@ foreach ($rule in $rules) {
     }
 }
 
-# No rule matched. Fall through to harness's own decision path.
-Emit-Decision -Decision 'ask' -Reason 'approval-policies-gate: no rule matched'
+# No rule matched. #1614: default-allow — the policy deliberately doesn't cover
+# this call. Infra errors still fail-open to ask via Fail-Open-Ask.
+Emit-Decision -Decision 'allow' -Reason 'approval-policies-gate: no rule matched (#1614 default-allow)'
 exit 0

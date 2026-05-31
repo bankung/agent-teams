@@ -57,6 +57,18 @@ $rulesPolicy | Set-Content -Path $rulesPolicyFile -Encoding utf8
 $emptyPolicyFile = Join-Path $tmpDir 'policy-empty.json'
 '{ "id": 1, "name": "agent-teams", "approval_policies": null }' | Set-Content -Path $emptyPolicyFile -Encoding utf8
 
+# Fixture 3b — #1614: a Layer-A-only rule (text_contains, NO Layer-B key) with
+# auto_deny. Must NOT match in this Layer-B hook → no-match → default-allow.
+$layerAPolicy = @{
+    approval_policies = @{
+        rules = @(
+            @{ name = 'layer-a-only-deny'; match = @{ text_contains = 'secret' }; action = 'auto_deny'; reason = 'layer-A worker concern, not for this Layer-B hook' }
+        )
+    }
+} | ConvertTo-Json -Depth 8
+$layerAPolicyFile = Join-Path $tmpDir 'policy-layer-a-only.json'
+$layerAPolicy | Set-Content -Path $layerAPolicyFile -Encoding utf8
+
 # Fixture 4 — invalid policy fixture path (simulates API-down).
 $missingPolicyFile = Join-Path $tmpDir 'policy-does-not-exist.json'   # NB: never written
 
@@ -136,18 +148,18 @@ $tests = @(
         Expected = 'ask'
     },
     @{
-        Name = 'C4 no rule matched falls through to ask'
+        Name = 'C4 #1614 Scope2: no rule matched -> default-allow'
         Input = '{"tool_name":"WebFetch","tool_input":{"url":"https://random-site.example/"}}'
         Policy = $rulesPolicyFile
         ProjectId = $projectIdFile
-        Expected = 'ask'
+        Expected = 'allow'
     },
     @{
-        Name = 'C5 empty approval_policies (null) falls through to ask'
+        Name = 'C5 #1614 Scope2: empty/null approval_policies -> default-allow'
         Input = '{"tool_name":"WebFetch","tool_input":{"url":"https://linkedin.com/posts/create"}}'
         Policy = $emptyPolicyFile
         ProjectId = $projectIdFile
-        Expected = 'ask'
+        Expected = 'allow'
     },
     @{
         Name = 'C6 policy fixture missing (simulates API down) — fail-open ask'
@@ -155,6 +167,13 @@ $tests = @(
         Policy = $missingPolicyFile
         ProjectId = $projectIdFile
         Expected = 'ask'
+    },
+    @{
+        Name = 'C7 #1614 Scope1: Layer-A-only deny rule does NOT match -> allow'
+        Input = '{"tool_name":"Bash","tool_input":{"command":"ls -la /tmp"}}'
+        Policy = $layerAPolicyFile
+        ProjectId = $projectIdFile
+        Expected = 'allow'
     }
 )
 
@@ -189,6 +208,6 @@ if ($failCount -gt 0) {
     Write-Output "$failCount test(s) FAILED."
     exit 1
 } else {
-    Write-Output "All 6 tests PASSED."
+    Write-Output "All $($tests.Count) tests PASSED."
     exit 0
 }
