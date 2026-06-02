@@ -351,6 +351,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/context-bloat-guard.ps1\"",
+            "timeout": 5
+          }
+        ]
       }
     ]
   }

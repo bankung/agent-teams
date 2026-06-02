@@ -115,6 +115,16 @@ Template for a new endpoint:
 **Errors:**
 - `404` — `{"detail":"Project id=<n> not found"}` when id does not exist OR row is soft-deleted (`status=0`). Source-text-locked in `routers/projects.py` + `tests/test_routes_smoke.py` per the #122 pattern. Byte-equal with PATCH `/api/projects/{id}`, DELETE `/api/projects/{id}`, POST `/grant-consent` 404 detail (single shared format).
 
+### GET /api/projects/{id}/progress-stats (Kanban #1292, 2026-06-02)
+**Purpose:** Read-only burndown + velocity series for one project, from the `tasks` table. Powers the per-project PROGRESS mini-charts in the Board header.
+**Auth:** `X-Project-Id` header REQUIRED and MUST equal the path `{id}` (mirrors `GET /api/projects/{id}/pl`).
+**Query:** `bucket` = `day` | `week` (default `week`, ISO week / Monday start); `days` = lookback int 1..365 (default 90).
+**Response 200:** `{project_id, bucket, window_days, burndown:[{t, remaining}], velocity:[{t, completed}], generated_at}`. Both series ascend by `t` (a `YYYY-MM-DD` bucket-start date) and are zero-filled (one entry per bucket, never skipped, equal length). Counts are plain integers (NOT the Decimal-as-string money convention). `generated_at` is ISO-8601 UTC with a `Z` suffix.
+- `burndown[i].remaining` = open as of bucket-end: `created_at <= bucket_end AND status=1 AND process_status != 6 AND (completed_at IS NULL OR completed_at > bucket_end)` — all-open backlog, no `created_at` lower bound (classic remaining-work; an ongoing project's line rises).
+- `velocity[i].completed` = `process_status=5 AND status=1 AND completed_at IN [bucket_start, bucket_end)`.
+**Errors:** `404` — project not found / soft-deleted (active-only; same detail format as `/{id}`); `400` — missing `X-Project-Id`; `422` — bad `bucket` or `days` outside 1..365.
+**Notes:** v1 reads `tasks` only (`completed_at`-based velocity; `tasks_history` exact-transition counting deferred). Single SELECT + Python bucketing (no N+1). FE helper: `getProjectProgressStats` in `web/lib/api.ts`. Velocity verified exact vs `date_trunc('week')` DONE counts.
+
 ### POST /api/projects
 **Purpose:** Create a project + auto-scaffold its `context/projects/<name>/` folder.
 **Auth:** none
