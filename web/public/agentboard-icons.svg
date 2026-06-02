@@ -215,6 +215,55 @@
 
 
   <!-- ═══════════════════════════════════════
+       #1781 — header redesign icon controls
+  ════════════════════════════════════════ -->
+
+  <!-- integrations: plug / connector (replaces the gear for the platform Integrations modal) -->
+  <symbol id="icon-integrations" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9 2v4"/>
+    <path d="M15 2v4"/>
+    <path d="M7 6h10v4a5 5 0 0 1-10 0Z"/>
+    <path d="M12 15v3a3 3 0 0 0 3 3h1"/>
+  </symbol>
+
+  <!-- clock: scheduled / recurring -->
+  <symbol id="icon-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="9"/>
+    <path d="M12 7v5l3.5 2"/>
+  </symbol>
+
+  <!-- shield-filter: audit-task lane filter toggle -->
+  <symbol id="icon-shield-filter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3 4 6v5c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6Z"/>
+    <path d="M9 10h6"/>
+    <path d="M10.5 13h3"/>
+  </symbol>
+
+  <!-- pause: two bars -->
+  <symbol id="icon-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="7" y="5" width="3.5" height="14" rx="1"/>
+    <rect x="13.5" y="5" width="3.5" height="14" rx="1"/>
+  </symbol>
+
+  <!-- power: terminate / stop -->
+  <symbol id="icon-power" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3v9"/>
+    <path d="M7 6a8 8 0 1 0 10 0"/>
+  </symbol>
+
+  <!-- plus: new -->
+  <symbol id="icon-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="12" y1="5" x2="12" y2="19"/>
+    <line x1="5" y1="12" x2="19" y2="12"/>
+  </symbol>
+
+  <!-- chevron-down: dropdown caret -->
+  <symbol id="icon-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="6 9 12 15 18 9"/>
+  </symbol>
+
+
+  <!-- ═══════════════════════════════════════
        V2 — APP ICONS (native sizes)
   ════════════════════════════════════════ -->
 

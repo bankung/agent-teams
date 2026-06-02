@@ -13,11 +13,18 @@ detail. (Decision 2026-05-07.)
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from src.constants import ProjectTeam, TaskRole
 from src.models.projects_audit import PROJECT_AUDIT_ACTIONS
@@ -759,6 +766,69 @@ class ProjectStatsEntry(BaseModel):
     cost_usage: ProjectStatsCostUsage
     # G1: heuristic per-task estimate aggregate (always emitted, zero-filled)
     estimated_cost: ProjectStatsEstimatedCost
+
+
+# ---------------------------------------------------------------------------
+# Kanban #1292 — GET /api/projects/{id}/progress-stats (burndown + velocity)
+# ---------------------------------------------------------------------------
+
+
+class BurndownPoint(BaseModel):
+    """One bucket in the burndown series.
+
+    `t` is the bucket's START date (YYYY-MM-DD). `remaining` is the count of
+    tasks still open as of the END of the bucket (created_at <= bucket_end AND
+    status=1 AND process_status != 6 AND (completed_at IS NULL OR
+    completed_at > bucket_end)). Counts are plain ints — NOT the
+    Decimal-as-string money convention.
+    """
+
+    t: str
+    remaining: int
+
+
+class VelocityPoint(BaseModel):
+    """One bucket in the velocity series.
+
+    `t` is the bucket's START date (YYYY-MM-DD). `completed` is the count of
+    tasks completed WITHIN the bucket (process_status=5 AND status=1 AND
+    completed_at in [bucket_start, bucket_end)). Plain int.
+    """
+
+    t: str
+    completed: int
+
+
+class ProgressStatsResponse(BaseModel):
+    """Response for GET /api/projects/{id}/progress-stats (Kanban #1292).
+
+    Burndown + velocity series computed from the `tasks` table over a lookback
+    window. Both series are ASCENDING by `t` and ZERO-FILLED (one entry per
+    bucket, never skipped) so the FE always has a continuous axis.
+
+    `bucket` is `"day"` | `"week"` (default `"week"`); `window_days` echoes the
+    validated `days` query param (1..365, default 90). Week buckets are ISO
+    weeks (Monday start); `t` is the bucket's start date.
+    """
+
+    project_id: int
+    bucket: Literal["day", "week"]
+    window_days: int
+    burndown: list[BurndownPoint]
+    velocity: list[VelocityPoint]
+    generated_at: datetime
+
+    @field_serializer("generated_at")
+    def _serialize_generated_at(self, v: datetime) -> str:
+        # Frozen contract wants ISO-8601 with a `Z` suffix (e.g.
+        # "2026-06-01T04:35:18Z"), not Pydantic's default "+00:00". Normalize to
+        # UTC, drop microseconds, render with `Z`. The endpoint always supplies a
+        # tz-aware UTC datetime, but coerce defensively for naive inputs.
+        if v.tzinfo is None:
+            v = v.replace(tzinfo=timezone.utc)
+        return v.astimezone(timezone.utc).replace(microsecond=0).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
 
 
 class ProjectGrantConsent(BaseModel):

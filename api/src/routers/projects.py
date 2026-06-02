@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import shutil
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -36,7 +36,7 @@ from src.constants import (  # TaskStatus.CANCELLED used by stats
     TaskRunMode,
     TaskStatus,
 )
-from src.db import get_or_404, get_session
+from src.db import get_active_project_or_404, get_or_404, get_session
 from src.middleware.rate_limit import _projects_post_limit, limiter
 from src.models.project import Project
 from src.models.session import Session as SessionModel
@@ -55,6 +55,7 @@ from src.schemas.project import (
     ProjectStatsEstimatedCost,
     ProjectStatsRunModeBreakdown,
     ProjectUpdate,
+    ProgressStatsResponse,
     ReviveProjectRequest,
     ReviveProjectResponse,
     UnpauseProjectRequest,
@@ -63,6 +64,7 @@ from src.services.budget_gate import reconcile_budget
 from src.services.kill_switch import kill_project, revive_project
 from src.services.pause_switch import pause_project, unpause_project
 from src.services.project_scaffold import scaffold_project_folder
+from src.services.session_project import require_project_id_header
 from src.services.zero_config_scaffold import (
     scaffold_orchestration,
     substitute_settings_json,
@@ -376,6 +378,147 @@ async def list_projects_stats(
         )
         for p in projects
     ]
+
+
+# ---------------------------------------------------------------------------
+# Kanban #1292 — GET /api/projects/{id}/progress-stats (burndown + velocity)
+# ---------------------------------------------------------------------------
+
+
+def _bucket_starts(window_start: date, today: date, bucket: str) -> list[date]:
+    """Walk [window_start, today] in buckets, returning each bucket's start date.
+
+    Week buckets use ISO weeks (Monday start) — the first bucket start is
+    snapped back to the Monday on/before `window_start` so a partial first week
+    still anchors on its real Monday. Day buckets start at `window_start`.
+    Always emits at least one bucket; the final bucket may extend past `today`.
+    """
+    starts: list[date] = []
+    if bucket == "week":
+        cur = window_start - timedelta(days=window_start.weekday())  # back to Monday
+        step = timedelta(days=7)
+    else:  # "day"
+        cur = window_start
+        step = timedelta(days=1)
+    while cur <= today:
+        starts.append(cur)
+        cur = cur + step
+    if not starts:  # window_start > today is impossible (days >= 1), but be safe
+        starts.append(window_start)
+    return starts
+
+
+@router.get("/{project_id}/progress-stats", response_model=ProgressStatsResponse)
+async def get_project_progress_stats(
+    project_id: int,
+    session_project_id: int = Depends(require_project_id_header),
+    bucket: str = Query(default="week"),
+    days: int = Query(default=90, ge=1, le=365),
+    session: AsyncSession = Depends(get_session),
+) -> ProgressStatsResponse:
+    """Burndown + velocity series for one project (Kanban #1292).
+
+    Mirrors the auth gate of the sibling `GET /api/projects/{id}/pl`: requires
+    `X-Project-Id` (400 if missing); the header MUST equal the path id (404 on
+    mismatch — the project is "invisible" from the bound session). 404 also on
+    a missing / soft-deleted project (active-only via `get_active_project_or_404`).
+
+    Query strategy mirrors `GET /stats`: ONE SELECT of the project's active
+    task rows (`created_at, completed_at, process_status`), then bucket in
+    Python — NO per-bucket query (no N+1).
+
+    Bucket boundaries are UTC. Week buckets use ISO weeks (Monday start);
+    `t` is the bucket's start date (YYYY-MM-DD). Both series ascend by `t` and
+    are zero-filled (one entry per bucket, never skipped) so the FE has a
+    continuous axis.
+
+    burndown[i].remaining = tasks still open as of the END of bucket i:
+      created_at <= bucket_end AND status=1 AND process_status != 6 AND
+      (completed_at IS NULL OR completed_at > bucket_end).
+    velocity[i].completed = tasks completed WITHIN bucket i:
+      process_status=5 AND status=1 AND completed_at in [bucket_start, bucket_end).
+
+    v1 reads the `tasks` table only — `completed_at` (set on the DONE-flip) is
+    accurate enough for velocity. Exact transition counting from
+    `tasks_history` JSONB snapshots is a deferred refinement.
+    """
+    # 422 on bad bucket — keep the explicit check (Query() is a plain str so we
+    # validate the enum here for a precise message). days range is enforced by
+    # Query(ge=1, le=365) → FastAPI 422 automatically.
+    if bucket not in ("day", "week"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"bucket must be 'day' or 'week' (got {bucket!r})",
+        )
+
+    # Auth gate — parity with /pl: header must match the path id.
+    if project_id != session_project_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Project id={project_id} not found",
+        )
+    # 404 on missing / soft-deleted (active-only). Same detail string as /pl + /by-name.
+    await get_active_project_or_404(
+        session, project_id, detail=f"Project id={project_id} not found"
+    )
+
+    now = datetime.now(timezone.utc)
+    today = now.date()
+    window_start = today - timedelta(days=days)
+
+    # Single SELECT of this project's ACTIVE task rows. process_status=6
+    # (CANCELLED) rows are NOT excluded at SQL — the velocity filter needs
+    # process_status=5 and the burndown filter excludes 6 in Python, so we
+    # fetch all active rows once and bucket in memory.
+    stmt = (
+        select(Task.created_at, Task.completed_at, Task.process_status)
+        .where(Task.project_id == project_id)
+        .where(Task.status == RecordStatus.ACTIVE)
+    )
+    rows = (await session.execute(stmt)).all()
+
+    starts = _bucket_starts(window_start, today, bucket)
+    step = timedelta(days=7 if bucket == "week" else 1)
+
+    burndown: list[dict] = []
+    velocity: list[dict] = []
+    for start in starts:
+        bucket_end_date = start + step  # exclusive upper boundary (date)
+        # Compare against the start-of-day UTC datetime of the boundary so a
+        # task's tz-aware created_at/completed_at compares cleanly.
+        bucket_start_dt = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
+        bucket_end_dt = datetime.combine(bucket_end_date, datetime.min.time(), tzinfo=timezone.utc)
+
+        remaining = 0
+        completed = 0
+        for created_at, completed_at, process_status in rows:
+            # Burndown: open as of bucket_end (exclusive boundary). Exclude CANCELLED.
+            if (
+                created_at <= bucket_end_dt
+                and process_status != TaskStatus.CANCELLED
+                and (completed_at is None or completed_at > bucket_end_dt)
+            ):
+                remaining += 1
+            # Velocity: DONE and completed within [bucket_start, bucket_end).
+            if (
+                process_status == TaskStatus.DONE
+                and completed_at is not None
+                and bucket_start_dt <= completed_at < bucket_end_dt
+            ):
+                completed += 1
+
+        t = start.isoformat()
+        burndown.append({"t": t, "remaining": remaining})
+        velocity.append({"t": t, "completed": completed})
+
+    return ProgressStatsResponse(
+        project_id=project_id,
+        bucket=bucket,
+        window_days=days,
+        burndown=burndown,
+        velocity=velocity,
+        generated_at=now,
+    )
 
 
 @router.get(

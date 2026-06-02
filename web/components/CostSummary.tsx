@@ -238,7 +238,7 @@ export function CostSummary({
                   </div>
                   <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
                     <span
-                      className="text-2xl font-semibold tabular-nums leading-none text-blue-700 dark:text-blue-300"
+                      className={`${collapsible ? "text-lg" : "text-2xl"} font-semibold tabular-nums leading-none text-blue-700 dark:text-blue-300`}
                       title={`$${totalEstimatedCost.toFixed(4)} USD (heuristic estimate at API token rates)`}
                     >
                       {formatUsd(totalEstimatedCost)}
@@ -270,10 +270,10 @@ export function CostSummary({
                   >
                     <div
                       role="listitem"
-                      className="flex flex-col items-start gap-1 rounded-md border border-amber-100 bg-white/70 px-3 py-3 dark:border-amber-900/30 dark:bg-zinc-950/40"
+                      className="flex min-w-0 flex-col items-start gap-1 rounded-md border border-amber-100 bg-white/70 px-3 py-3 dark:border-amber-900/30 dark:bg-zinc-950/40"
                       title={`$${totalCost.toFixed(4)} USD`}
                     >
-                      <span className="text-3xl font-semibold tabular-nums leading-none text-amber-700 dark:text-amber-300">
+                      <span className={`${collapsible ? "text-lg" : "text-3xl"} font-semibold tabular-nums leading-none text-amber-700 dark:text-amber-300`}>
                         {formatUsd(totalCost)}
                       </span>
                       <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
@@ -282,10 +282,10 @@ export function CostSummary({
                     </div>
                     <div
                       role="listitem"
-                      className="flex flex-col items-start gap-1 rounded-md border border-amber-100 bg-white/70 px-3 py-3 dark:border-amber-900/30 dark:bg-zinc-950/40"
+                      className="flex min-w-0 flex-col items-start gap-1 rounded-md border border-amber-100 bg-white/70 px-3 py-3 dark:border-amber-900/30 dark:bg-zinc-950/40"
                       title={`${totalInput.toLocaleString("en-US")} input tokens`}
                     >
-                      <span className="text-3xl font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100">
+                      <span className={`${collapsible ? "text-lg" : "text-3xl"} font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100`}>
                         {formatInt(totalInput)}
                       </span>
                       <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
@@ -294,10 +294,10 @@ export function CostSummary({
                     </div>
                     <div
                       role="listitem"
-                      className="flex flex-col items-start gap-1 rounded-md border border-amber-100 bg-white/70 px-3 py-3 dark:border-amber-900/30 dark:bg-zinc-950/40"
+                      className="flex min-w-0 flex-col items-start gap-1 rounded-md border border-amber-100 bg-white/70 px-3 py-3 dark:border-amber-900/30 dark:bg-zinc-950/40"
                       title={`${totalOutput.toLocaleString("en-US")} output tokens`}
                     >
-                      <span className="text-3xl font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100">
+                      <span className={`${collapsible ? "text-lg" : "text-3xl"} font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100`}>
                         {formatInt(totalOutput)}
                       </span>
                       <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">

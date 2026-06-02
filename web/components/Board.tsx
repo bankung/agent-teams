@@ -18,27 +18,27 @@ import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import {
   patchTask,
   reorderTask,
+  type ProgressStatsResponse,
   type ProjectRead,
   type ProjectStatsEntry,
   type TaskRead,
 } from "@/lib/api";
 import { TaskStatus, type TaskStatusValue } from "@/lib/constants";
-import { readEnabledRoles } from "@/lib/enabledRoles";
 import { extractErrorMessage } from "@/lib/errors";
 import { sortDoneLane, sortLaneTasks } from "@/lib/sortLaneTasks";
 import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
 import { BoardColumn } from "@/components/BoardColumn";
 import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
 import { Icon } from "@/components/Icon";
-import { AiTaskModal } from "@/components/AiTaskModal";
 import { AuditHistorySection } from "@/components/AuditHistorySection";
 import { CostSummary } from "@/components/CostSummary";
 import { FlagBellBadge } from "@/components/FlagBellBadge";
 import { PnlSummaryCard } from "@/components/PnlSummaryCard";
+import { ProgressChartsPanel } from "@/components/ProgressChartsPanel";
 import { FINANCE_PANELS_ENABLED } from "@/lib/featureFlags";
 import { KilledBanner } from "@/components/KilledBanner";
 import { KillProjectModal } from "@/components/KillProjectModal";
-import { NewTaskModal } from "@/components/NewTaskModal";
+import { NewTaskDropdown } from "@/components/NewTaskDropdown";
 import { PausedBanner } from "@/components/PausedBanner";
 import { PauseProjectModal } from "@/components/PauseProjectModal";
 import { ProjectConsentBanner } from "@/components/ProjectConsentBanner";
@@ -46,7 +46,6 @@ import { PlatformSettingsModal } from "@/components/PlatformSettingsModal";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { SourcesBadge } from "@/components/SourcesBadge";
 import { TaskDetail } from "@/components/TaskDetail";
-import { Switch } from "@/components/Switch";
 import { ThemePicker } from "@/components/ThemePicker";
 import { ToastStack, type ToastMessage } from "@/components/Toast";
 
@@ -57,6 +56,9 @@ type Props = {
   // Kanban #1289 — per-project usage panel. 0 entries = project has no stats
   // row yet; 1 entry = scoped stats from GET /api/projects/stats?project_id=<id>.
   projectStats: ProjectStatsEntry[];
+  // Kanban #1292 — SSR-fetched burndown + velocity series for the progress
+  // charts panel. Always present (the BE zero-fills every bucket).
+  progressStats: ProgressStatsResponse;
 };
 
 type Column = { statuses: TaskStatusValue[]; label: string; key: string };
@@ -111,7 +113,73 @@ function groupByStatus(tasks: TaskRead[]) {
 
 type ViewMode = "board" | "list";
 
-export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: Props) {
+// #1781 — compact header icon button with a visible tooltip + aria-label.
+// Used for the audit-filter / scheduled / pause / terminate controls so the
+// header collapses to a single nav row. `active` paints the on-state color;
+// `count` renders a small badge (hidden when undefined).
+function HeaderIconBtn({
+  icon,
+  label,
+  onClick,
+  active = false,
+  ariaPressed,
+  count,
+  tone = "neutral",
+  dataAttr,
+}: {
+  icon: string;
+  label: string;
+  onClick?: () => void;
+  active?: boolean;
+  ariaPressed?: boolean;
+  count?: number;
+  tone?: "neutral" | "amber" | "red";
+  dataAttr?: string;
+}) {
+  const toneActive =
+    tone === "amber"
+      ? "border-amber-400 bg-amber-100 text-amber-900 dark:border-amber-600 dark:bg-amber-950/40 dark:text-amber-200"
+      : tone === "red"
+        ? "border-red-400 bg-red-100 text-red-900 dark:border-red-700 dark:bg-red-950/40 dark:text-red-300"
+        : "border-zinc-400 bg-zinc-100 text-zinc-900 dark:border-zinc-500 dark:bg-zinc-800 dark:text-zinc-100";
+  const toneHover =
+    tone === "amber"
+      ? "hover:border-amber-300 hover:text-amber-700 dark:hover:text-amber-300"
+      : tone === "red"
+        ? "hover:border-red-300 hover:text-red-700 dark:hover:text-red-300"
+        : "hover:border-zinc-300 hover:text-zinc-900 dark:hover:text-zinc-100";
+  const dataProps = dataAttr ? { [dataAttr]: true } : {};
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      aria-pressed={ariaPressed}
+      className={`group relative inline-flex items-center gap-1 rounded-md border px-2 py-1.5 text-zinc-500 transition-colors min-h-[44px] sm:min-h-0 dark:text-zinc-400 ${
+        active
+          ? toneActive
+          : `border-zinc-200 bg-transparent dark:border-zinc-700 ${toneHover}`
+      }`}
+      {...dataProps}
+    >
+      <Icon name={icon} size={15} aria-hidden />
+      {count !== undefined && (
+        <span className="rounded bg-white/70 px-1 text-[10px] font-semibold tabular-nums text-zinc-600 dark:bg-zinc-900/50 dark:text-zinc-300">
+          {count}
+        </span>
+      )}
+      {/* Visible tooltip (sm+) — mobile relies on the 44px tap target + label. */}
+      <span
+        className="pointer-events-none absolute top-full left-1/2 z-50 mt-1 -translate-x-1/2 whitespace-nowrap rounded bg-zinc-900 px-1.5 py-0.5 text-[10px] font-medium text-white opacity-0 transition-opacity sm:group-hover:opacity-100 sm:group-focus-visible:opacity-100 dark:bg-zinc-700"
+      >
+        {label}
+      </span>
+    </button>
+  );
+}
+
+export function Board({ initialTasks, hasHeadlessTask, project, projectStats, progressStats }: Props) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -361,9 +429,21 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
   return (
     // #954 — mobile: page scrolls (h-auto, overflow-y-auto); desktop preserves the fixed-viewport board (h-screen, overflow-hidden)
     <main className="flex min-h-screen flex-col overflow-y-auto bg-white dark:bg-zinc-950 px-4 py-4 sm:px-6 sm:py-5 lg:h-screen lg:min-h-0 lg:overflow-hidden">
-      <header className="mb-4 flex flex-col gap-2">
-        {/* #954 — header wraps on mobile so badges/toggle drop to a second row instead of overflowing horizontally */}
-        <div className="flex flex-wrap items-center gap-2 text-sm">
+      {/* #1781 — header is height-capped on desktop (lg:max-h-[40vh] +
+          overflow-y-auto) so the flex-1 board below is GUARANTEED >=60vh of
+          the lg:h-screen main. The single nav row + compact panels band keep
+          the header well under the cap; the cap is the hard structural floor. */}
+      <header
+        className="mb-4 flex flex-col gap-2 lg:max-h-[40vh] lg:overflow-y-auto lg:pr-1"
+        data-board-header
+        tabIndex={-1}
+      >
+        {/* #1781 — single nav row on desktop; flex-wrap still drops controls
+            to extra rows on mobile. */}
+        <div
+          className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm"
+          data-board-nav-row
+        >
           <ProjectSwitcher current={project.name} />
           <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
             ·
@@ -377,7 +457,9 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
           <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
             ·
           </span>
-          {/* #1349 — per-project settings (nudge threshold + future knobs). */}
+          {/* #1349 — per-project settings (nudge threshold + future knobs).
+              KEPT as a text link (distinct from the platform Integrations icon
+              in the right cluster). */}
           <Link
             href={`/p/${encodeURIComponent(project.name)}/settings`}
             className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
@@ -404,46 +486,34 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
           <span className="text-zinc-500 dark:text-zinc-400 tabular-nums">
             {visibleTasks.length} task{visibleTasks.length === 1 ? "" : "s"}
           </span>
+          {/* #1781 — audit-filter as a compact icon button (shield/filter +
+              count badge). Still toggles setShowAudit; amber when ON;
+              aria-pressed. Hidden when count=0 (#1238 GOV3 behaviour kept). */}
           {auditTaskCount > 0 && (
-            <>
-              <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
-                ·
-              </span>
-              {/* #1238 GOV3 — audit-task filter toggle. Default OFF; chip click
-                  flips the local pref. Hidden entirely when the project has
-                  no audit tasks at all so it doesn't add chrome for nothing. */}
-              <button
-                type="button"
-                onClick={() => setShowAudit((v) => !v)}
-                aria-pressed={showAudit}
-                className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide transition-colors min-h-[36px] sm:min-h-0 ${
-                  showAudit
-                    ? "border-amber-400 bg-amber-100 text-amber-900 dark:border-amber-600 dark:bg-amber-950/40 dark:text-amber-200"
-                    : "border-zinc-200 bg-transparent text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
-                }`}
-                data-audit-task-toggle
-              >
-                <span>{showAudit ? "Hide" : "Show"} audit tasks</span>
-                <span className="rounded bg-white/60 px-1 text-[10px] tabular-nums text-zinc-600 dark:bg-zinc-900/40 dark:text-zinc-300">
-                  {auditTaskCount}
-                </span>
-              </button>
-            </>
+            <HeaderIconBtn
+              icon="shield-filter"
+              label={
+                showAudit
+                  ? `Hide audit tasks (${auditTaskCount})`
+                  : `Show audit tasks (${auditTaskCount})`
+              }
+              onClick={() => setShowAudit((v) => !v)}
+              active={showAudit}
+              ariaPressed={showAudit}
+              count={auditTaskCount}
+              tone="amber"
+              dataAttr="data-audit-task-toggle"
+            />
           )}
-          {/* #1726 — scheduled/template noise chip. Display-only; always hidden
-              when count=0 so it adds no chrome for projects without recurrence. */}
+          {/* #1781 — scheduled/template noise as a display-only clock icon +
+              count badge. Hidden when count=0 (#1726 behaviour kept). */}
           {scheduledTaskCount > 0 && (
-            <>
-              <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
-                ·
-              </span>
-              <span className="inline-flex items-center gap-1 rounded-full border border-zinc-200 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:border-zinc-700 dark:text-zinc-400 min-h-[36px] sm:min-h-0">
-                <span>scheduled</span>
-                <span className="rounded bg-white/60 px-1 text-[10px] tabular-nums text-zinc-600 dark:bg-zinc-900/40 dark:text-zinc-300">
-                  {scheduledTaskCount}
-                </span>
-              </span>
-            </>
+            <HeaderIconBtn
+              icon="clock"
+              label={`Scheduled / template tasks (${scheduledTaskCount})`}
+              count={scheduledTaskCount}
+              dataAttr="data-scheduled-task-badge"
+            />
           )}
           <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
             ·
@@ -472,113 +542,88 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
               </button>
             ))}
           </span>
-          {/* #1288 — header right cluster: two visually distinct groups
-              (Task actions | Project controls) + standalone ThemePicker. */}
-          <span className="ml-auto flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+          {/* #1781 — right cluster: +New dropdown, pause/terminate icon
+              buttons, FlagBellBadge, Integrations, ThemePicker. All on the same
+              row; ml-auto pushes them right on desktop, full-width wrap on
+              mobile. */}
+          <span
+            className="ml-auto flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto"
+            data-board-actions-cluster
+          >
+            {/* +New ▾ — single dropdown replacing the AI/Manual trigger pair.
+                Drives the existing modals via externalOpen (same props/flow). */}
+            <NewTaskDropdown project={project} onPushToast={pushToast} />
 
-            {/* ── Group A: Task actions ─────────────────────────────────── */}
-            <div
-              className="flex items-center gap-1 rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
-              aria-label="Task actions"
-            >
-              <span className="mr-1 text-[9px] font-semibold uppercase tracking-widest text-zinc-400 dark:text-zinc-500 select-none">
-                Tasks
-              </span>
-              {/* #7 §A AC#3 — per-project role whitelist; null/empty → all roles */}
-              <AiTaskModal
-                projectId={project.id}
-                enabledRoles={readEnabledRoles(project.config)}
-                project={project}
-                onPushToast={pushToast}
-              />
-              <NewTaskModal
-                projectId={project.id}
-                enabledRoles={readEnabledRoles(project.config)}
-                project={project}
-                onPushToast={pushToast}
-              />
-            </div>
+            {/* Pause / Terminate — icon buttons. Hidden when killed (mutex with
+                the KilledBanner revive). Each opens the SAME modal via the
+                existing externalOpen state. */}
+            {!project.is_killed && (
+              <>
+                <HeaderIconBtn
+                  icon="pause"
+                  label={
+                    project.is_paused
+                      ? "Project paused — click to unpause"
+                      : "Pause project"
+                  }
+                  onClick={() => setPauseModalOpen(true)}
+                  active={project.is_paused ?? false}
+                  ariaPressed={project.is_paused ?? false}
+                  tone="amber"
+                  dataAttr="data-pause-icon-btn"
+                />
+                <PauseProjectModal
+                  project={project}
+                  mode={project.is_paused ? "unpause" : "pause"}
+                  externalOpen={pauseModalOpen}
+                  onExternalClose={() => setPauseModalOpen(false)}
+                />
+                <HeaderIconBtn
+                  icon="power"
+                  label="Terminate project"
+                  onClick={() => setTerminateModalOpen(true)}
+                  tone="red"
+                  dataAttr="data-terminate-icon-btn"
+                />
+                <KillProjectModal
+                  project={project}
+                  mode="kill"
+                  externalOpen={terminateModalOpen}
+                  onExternalClose={() => setTerminateModalOpen(false)}
+                />
+              </>
+            )}
 
-            {/* ── Divider ───────────────────────────────────────────────── */}
-            <span aria-hidden className="h-5 w-px bg-zinc-200 dark:bg-zinc-700" />
-
-            {/* ── Group B: Project controls ─────────────────────────────── */}
-            <div
-              className="flex items-center gap-1 rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
-              aria-label="Project controls"
-            >
-              <span className="mr-1 text-[9px] font-semibold uppercase tracking-widest text-zinc-400 dark:text-zinc-500 select-none">
-                Project
-              </span>
-              {/* #1288 — pause Switch. ON = live, OFF = paused.
-                  Switch click → opens PauseProjectModal (existing flow).
-                  Hidden when project is already terminated (mutex). */}
-              {!project.is_killed && (
-                <>
-                  <Switch
-                    label="Pause"
-                    checked={project.is_paused ?? false}
-                    colorOn="amber"
-                    onClick={() => setPauseModalOpen(true)}
-                    aria-label={project.is_paused ? "Project paused — click to unpause" : "Pause project"}
-                  />
-                  <PauseProjectModal
-                    project={project}
-                    mode={project.is_paused ? "unpause" : "pause"}
-                    externalOpen={pauseModalOpen}
-                    onExternalClose={() => setPauseModalOpen(false)}
-                  />
-                </>
-              )}
-              {/* #1288 — terminate Switch. ON = live, OFF = terminated.
-                  Switch click → opens KillProjectModal (existing flow).
-                  Visible only when not currently terminated; revive lives
-                  inline in KilledBanner. */}
-              {!project.is_killed && (
-                <>
-                  <Switch
-                    label="Terminate"
-                    checked={false}
-                    colorOn="red"
-                    onClick={() => setTerminateModalOpen(true)}
-                    aria-label="Terminate project"
-                  />
-                  <KillProjectModal
-                    project={project}
-                    mode="kill"
-                    externalOpen={terminateModalOpen}
-                    onExternalClose={() => setTerminateModalOpen(false)}
-                  />
-                </>
-              )}
-            </div>
-
-            {/* ── FlagBellBadge — review notification, outside both groups ─ */}
+            {/* ── FlagBellBadge — review notification ───────────────────── */}
             <FlagBellBadge />
 
-            {/* ── PlatformSettingsModal — #1655 integrations gear, outside
-                both groups (platform-wide, not per-project) ────────────── */}
+            {/* ── PlatformSettingsModal — #1655 / #1781 Integrations (plug
+                icon, platform-wide; distinct from the per-project Settings
+                nav link) ─────────────────────────────────────────────────── */}
             <PlatformSettingsModal />
 
-            {/* ── ThemePicker — user preference, outside both groups ────── */}
+            {/* ── ThemePicker — user preference ─────────────────────────── */}
             <ThemePicker />
           </span>
         </div>
-        {/* Kanban #1392 — Usage + P&L side-by-side on md+; stacked on sm.
-            P&L panel gated by NEXT_PUBLIC_FINANCE_PANELS_ENABLED flag;
-            when off, Usage renders full-width (no grid wrapper). */}
-        <div className={FINANCE_PANELS_ENABLED ? "grid grid-cols-1 md:grid-cols-2 gap-3" : ""}>
-          {/* Kanban #1289 — per-project usage panel. Collapsed by default on the
-              project board (dense page). storageKey scoped per project so each
-              project remembers its own expand state independently. */}
+        {/* #1781 — compact panels band: Usage / P&L / Progress in ONE row on
+            desktop. Usage + P&L are collapsed by default (short); Progress is
+            the new compact strip (small charts, tight padding). Grid is
+            3-col when finance is on, 2-col (Usage + Progress) when off. */}
+        <div
+          className={`grid grid-cols-1 gap-3 ${
+            FINANCE_PANELS_ENABLED ? "lg:grid-cols-3" : "lg:grid-cols-2"
+          }`}
+          data-board-panels-band
+        >
+          {/* Kanban #1289 — per-project usage panel. Collapsed by default. */}
           <CostSummary
             stats={projectStats}
             ariaLabel={`Usage for ${project.name}`}
             defaultCollapsed={true}
             storageKey={`project.${project.id}.panels.usage.expanded`}
           />
-          {/* Kanban #1329 (M6 FE) — per-project P&L card. Sources
-              /api/projects/{id}/pl; period selector + localStorage default. */}
+          {/* Kanban #1329 (M6 FE) — per-project P&L card (finance-gated). */}
           {FINANCE_PANELS_ENABLED && (
             <PnlSummaryCard
               projectId={project.id}
@@ -587,6 +632,13 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats }: 
               storageKey={`project.${project.id}.panels.pnl.expanded`}
             />
           )}
+          {/* Kanban #1292 / #1781 — burndown + velocity in compact strip form,
+              folded into the same band. Click→full modal unchanged. */}
+          <ProgressChartsPanel
+            data={progressStats}
+            projectId={project.id}
+            compact
+          />
         </div>
         {/* #1209 GOV1 D5 — red strip above the consent banner when killed.
             (Renders nothing when is_killed=false.) */}

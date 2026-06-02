@@ -1339,6 +1339,65 @@ export async function getProjectPl(
   });
 }
 
+// ============================================================================
+// Kanban #1292 — per-project progress charts (burndown + velocity).
+//
+// GET /api/projects/{id}/progress-stats?bucket={day|week}&days={int}
+//   X-Project-Id header REQUIRED (gates per Kanban #695; must equal the path
+//   id). Mirrors the getProjectPl header-passing pattern below.
+//
+// Contract (frozen, verified live 2026-06-01):
+//   - `burndown` + `velocity` are EQUAL-LENGTH arrays, both ASCEND by `t`,
+//     zero-filled (one entry per bucket, never skipped) with IDENTICAL `t`
+//     axes (same dates in the same order).
+//   - `t` is a bucket-start date string "YYYY-MM-DD" (NOT a timestamp).
+//   - `remaining` / `completed` are plain integers (>= 0).
+//   - `generated_at` is ISO 8601 UTC ("Z" suffix).
+// ============================================================================
+
+export const PROGRESS_BUCKETS = ["day", "week"] as const;
+export type ProgressBucketLiteral = (typeof PROGRESS_BUCKETS)[number];
+
+// BurndownPoint — one bucket of remaining open work. `t` is the bucket-start
+// date ("YYYY-MM-DD"); `remaining` is a non-negative integer.
+export type BurndownPoint = {
+  t: string;
+  remaining: number;
+};
+
+// VelocityPoint — one bucket of completed work. Same `t` axis as the paired
+// BurndownPoint at the same index; `completed` is a non-negative integer.
+export type VelocityPoint = {
+  t: string;
+  completed: number;
+};
+
+// ProgressStatsResponse — response of /api/projects/{id}/progress-stats.
+export type ProgressStatsResponse = {
+  project_id: number;
+  bucket: ProgressBucketLiteral;
+  window_days: number;
+  burndown: BurndownPoint[];
+  velocity: VelocityPoint[];
+  generated_at: string;
+};
+
+// getProjectProgressStats — per-project burndown + velocity series.
+// X-Project-Id header is required (gates per Kanban #695); helper passes it
+// transparently. Mirrors getProjectPl's option + header shape exactly.
+export async function getProjectProgressStats(
+  projectId: number,
+  opts: { bucket?: ProgressBucketLiteral; days?: number } = {},
+): Promise<ProgressStatsResponse> {
+  const qs = new URLSearchParams();
+  if (opts.bucket) qs.set("bucket", opts.bucket);
+  if (opts.days != null) qs.set("days", String(opts.days));
+  const path = `/api/projects/${projectId}/progress-stats${qs.toString() ? "?" + qs : ""}`;
+  return jsonFetch<ProgressStatsResponse>(path, {
+    headers: { "X-Project-Id": String(projectId) },
+  });
+}
+
 // getCrossProjectPl — operator-level cross-project rollup. NO X-Project-Id
 // header (the endpoint spans projects by design). `include_killed` defaults
 // to false on the BE; pass true to include projects in is_killed=true state.

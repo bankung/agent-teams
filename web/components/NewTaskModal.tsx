@@ -67,6 +67,11 @@ type Props = {
   // ToastStack rather than as inline-only red text. Optional for the same
   // forward-compat reason.
   onPushToast?: (text: string) => void;
+  // #1781 — optional external open control (mirrors Pause/KillProjectModal).
+  // When provided, the component renders no internal trigger button and the
+  // +New dropdown owns the open state.
+  externalOpen?: boolean;
+  onExternalClose?: () => void;
 };
 
 
@@ -75,6 +80,8 @@ export function NewTaskModal({
   enabledRoles,
   project,
   onPushToast,
+  externalOpen,
+  onExternalClose,
 }: Props) {
   const isProjectPaused = project?.is_paused === true;
   // #7 §A AC#3 — narrow role dropdown to project.config.enabled_roles when set.
@@ -84,7 +91,9 @@ export function NewTaskModal({
     [enabledRoles],
   );
   const router = useRouter();
-  const [open, setOpen] = useState(false);
+  // #1781 — external open wins when provided; otherwise self-managed.
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = externalOpen !== undefined ? externalOpen : internalOpen;
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [processStatus, setProcessStatus] = useState<TaskStatusValue>(
@@ -117,7 +126,8 @@ export function NewTaskModal({
 
   function closeModal() {
     if (submitting) return;
-    setOpen(false);
+    setInternalOpen(false);
+    onExternalClose?.();
     resetFields();
   }
 
@@ -209,7 +219,8 @@ export function NewTaskModal({
     try {
       await createTask(projectId, body);
       router.refresh();
-      setOpen(false);
+      setInternalOpen(false);
+      onExternalClose?.();
       resetFields();
     } catch (err: unknown) {
       if (err instanceof HttpError) {
@@ -238,16 +249,20 @@ export function NewTaskModal({
 
   return (
     <>
-      {/* #954 — 44px min tap target on mobile */}
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="inline-flex items-center gap-1.5 rounded border border-zinc-300 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-400 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
-        data-new-task-trigger
-      >
-        <Icon name="add-task" size={14} aria-hidden />
-        <span>New task</span>
-      </button>
+      {/* #954 — 44px min tap target on mobile.
+          #1781 — when the +New dropdown drives this modal (externalOpen set),
+          render no internal trigger; the dropdown owns the open state. */}
+      {externalOpen === undefined && (
+        <button
+          type="button"
+          onClick={() => setInternalOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded border border-zinc-300 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-400 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
+          data-new-task-trigger
+        >
+          <Icon name="add-task" size={14} aria-hidden />
+          <span>New task</span>
+        </button>
+      )}
       {/* #954 — mobile: full-screen sheet (no padding, edge-to-edge); desktop restores centered max-w-md card */}
       <ModalShell
         open={open}

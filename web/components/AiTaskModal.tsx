@@ -78,6 +78,11 @@ type Props = {
   // is not gated by pause.
   project?: ProjectRead;
   onPushToast?: (text: string) => void;
+  // #1781 — optional external open control (mirrors Pause/KillProjectModal).
+  // When provided, the component renders no internal trigger button and the
+  // +New dropdown owns the open state.
+  externalOpen?: boolean;
+  onExternalClose?: () => void;
 };
 
 
@@ -98,6 +103,8 @@ export function AiTaskModal({
   enabledRoles,
   project,
   onPushToast,
+  externalOpen,
+  onExternalClose,
 }: Props) {
   const router = useRouter();
   const isProjectPaused = project?.is_paused === true;
@@ -107,7 +114,9 @@ export function AiTaskModal({
     () => filterRoleOptions(ROLE_OPTIONS, enabledRoles),
     [enabledRoles],
   );
-  const [open, setOpen] = useState(false);
+  // #1781 — external open wins when provided; otherwise self-managed.
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = externalOpen !== undefined ? externalOpen : internalOpen;
   const [phase, setPhase] = useState<Phase>("input");
   const [text, setText] = useState("");
   const [parsing, setParsing] = useState(false);
@@ -187,7 +196,8 @@ export function AiTaskModal({
 
   function closeModal() {
     if (parsing || creating) return;
-    setOpen(false);
+    setInternalOpen(false);
+    onExternalClose?.();
     resetAll();
   }
 
@@ -311,7 +321,8 @@ export function AiTaskModal({
     try {
       await createTask(projectId, body);
       router.refresh();
-      setOpen(false);
+      setInternalOpen(false);
+      onExternalClose?.();
       resetAll();
     } catch (err: unknown) {
       if (err instanceof HttpError) {
@@ -341,16 +352,20 @@ export function AiTaskModal({
 
   return (
     <>
-      {/* #954 — 44px min tap target on mobile */}
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="inline-flex items-center gap-1.5 rounded border border-violet-300 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-violet-700 hover:border-violet-400 hover:text-violet-900 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-violet-700 dark:bg-zinc-900 dark:text-violet-300 dark:hover:border-violet-500 dark:hover:text-violet-100"
-        data-ai-task-trigger
-      >
-        <Icon name="ai-agent" size={14} />
-        <span>AI task</span>
-      </button>
+      {/* #954 — 44px min tap target on mobile.
+          #1781 — when the +New dropdown drives this modal (externalOpen set),
+          render no internal trigger; the dropdown owns the open state. */}
+      {externalOpen === undefined && (
+        <button
+          type="button"
+          onClick={() => setInternalOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded border border-violet-300 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-violet-700 hover:border-violet-400 hover:text-violet-900 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-violet-700 dark:bg-zinc-900 dark:text-violet-300 dark:hover:border-violet-500 dark:hover:text-violet-100"
+          data-ai-task-trigger
+        >
+          <Icon name="ai-agent" size={14} />
+          <span>AI task</span>
+        </button>
+      )}
       {/* #954 — mobile: full-screen sheet (both phases); desktop restores centered max-w-md card */}
       <ModalShell
         open={open}

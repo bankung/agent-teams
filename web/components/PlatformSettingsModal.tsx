@@ -255,17 +255,24 @@ export function PlatformSettingsModal() {
 
   return (
     <>
-      {/* Gear trigger — matches EditProjectModal icon-button styling + 44px
-          mobile tap target. `agent-config` is the gear glyph in the sprite. */}
+      {/* #1781 — Integrations trigger. Icon is the plug/connector glyph (NOT
+          the gear) to disambiguate from the per-project Settings nav link.
+          aria-label + title + visible tooltip all read "Integrations". */}
       <button
         type="button"
         onClick={() => setOpen(true)}
-        aria-label="Platform integrations settings"
+        aria-label="Integrations"
         title="Integrations"
-        className="inline-flex items-center justify-center rounded border border-zinc-300 bg-white text-zinc-700 hover:border-zinc-400 hover:text-zinc-900 px-2 py-1 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 sm:px-1.5 sm:py-1 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
+        className="group relative inline-flex items-center justify-center rounded border border-zinc-300 bg-white text-zinc-700 hover:border-zinc-400 hover:text-zinc-900 px-2 py-1 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 sm:px-1.5 sm:py-1 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
         data-platform-settings-trigger
       >
-        <Icon name="agent-config" size={14} />
+        <Icon name="integrations" size={14} />
+        {/* Visible tooltip on hover/focus (sm+; mobile relies on the 44px label). */}
+        <span
+          className="pointer-events-none absolute top-full right-0 z-50 mt-1 whitespace-nowrap rounded bg-zinc-900 px-1.5 py-0.5 text-[10px] font-medium text-white opacity-0 transition-opacity sm:group-hover:opacity-100 sm:group-focus-visible:opacity-100 dark:bg-zinc-700"
+        >
+          Integrations
+        </span>
       </button>
 
       <ModalShell

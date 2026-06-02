@@ -370,7 +370,7 @@ export function PnlSummaryCard({
                   className="flex flex-col items-start gap-1 rounded-md border border-emerald-100 bg-white/70 px-3 py-3 dark:border-emerald-900/30 dark:bg-zinc-950/40"
                   title={`Revenue: ${state.data.revenue} ${state.data.currency}`}
                 >
-                  <span className="text-2xl font-semibold tabular-nums leading-none text-emerald-700 dark:text-emerald-300">
+                  <span className={`${collapsible ? "text-lg" : "text-2xl"} font-semibold tabular-nums leading-none text-emerald-700 dark:text-emerald-300`}>
                     {formatMoney(state.data.revenue, state.data.currency)}
                   </span>
                   <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
@@ -382,7 +382,7 @@ export function PnlSummaryCard({
                   className="flex flex-col items-start gap-1 rounded-md border border-emerald-100 bg-white/70 px-3 py-3 dark:border-emerald-900/30 dark:bg-zinc-950/40"
                   title="Expenses = cost + operating expense (excludes refunds)"
                 >
-                  <span className="text-2xl font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100">
+                  <span className={`${collapsible ? "text-lg" : "text-2xl"} font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100`}>
                     {formatMoney(render?.expenses ?? 0, state.data.currency)}
                   </span>
                   <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
@@ -394,7 +394,7 @@ export function PnlSummaryCard({
                   className="flex flex-col items-start gap-1 rounded-md border border-emerald-100 bg-white/70 px-3 py-3 dark:border-emerald-900/30 dark:bg-zinc-950/40"
                   title="Refunds issued on prior sales"
                 >
-                  <span className="text-2xl font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100">
+                  <span className={`${collapsible ? "text-lg" : "text-2xl"} font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100`}>
                     {formatMoney(render?.refunds ?? 0, state.data.currency)}
                   </span>
                   <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
@@ -407,7 +407,7 @@ export function PnlSummaryCard({
                   title="Net = revenue − expenses − refunds. transfer excluded."
                 >
                   <span
-                    className={`text-2xl font-semibold tabular-nums leading-none ${render?.netColor ?? "text-zinc-900 dark:text-zinc-100"}`}
+                    className={`${collapsible ? "text-lg" : "text-2xl"} font-semibold tabular-nums leading-none ${render?.netColor ?? "text-zinc-900 dark:text-zinc-100"}`}
                   >
                     {formatMoney(state.data.net, state.data.currency)}
                   </span>
