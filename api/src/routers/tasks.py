@@ -75,12 +75,30 @@ from src.services.session_project import (
     assert_task_belongs_to_session,
     require_project_id_header,
 )
+from src.services.operator_auth import (
+    OperatorDecision,
+    require_operator_proof,
+)
 from src.services.action_templates import get_template
 from src.services.handoff_spawn import spawn_child_from_handoff
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 logger = logging.getLogger(__name__)
+
+# Kanban #1857 / #1852 (Phase 1) — operator-only AC attributions. Setting a
+# criterion's `verified_by` to one of these literals asserts a HUMAN operator
+# verified it; the #1275 audit-trail gate (downstream) trusts that. So the API
+# must reject it unless the request carries a valid operator-proof. AI-issued
+# PATCHes may set ANY OTHER `verified_by` value (role/agent strings) freely.
+# Reserved set kept minimal (design §5 sub-decision: reserve 'user'/'operator',
+# everything else free-form).
+_OPERATOR_ONLY_VERIFIED_BY = frozenset({"user", "operator"})
+
+# Source-text-locked: pinned by test_operator_auth (verbatim detail assert).
+_DETAIL_OPERATOR_PROOF_REQUIRED = (
+    "operator_proof_required: verified_by in {'user','operator'} is operator-only"
+)
 
 # Source-text-locked (#122). Pinned by test_post_task_400_detail_strings + test_tasks_scheduled_at
 _DETAIL_SCHEDULED_XOR_TEMPLATE = (
@@ -226,6 +244,27 @@ def _apply_jsonb_serialization(payload: object, updates: dict) -> None:
         and updates["resume_context"] is not None
     ):
         updates["resume_context"] = payload.model_dump(mode="json")["resume_context"]  # type: ignore[union-attr]
+
+
+def _patch_sets_operator_only_verified_by(updates: dict) -> bool:
+    """True iff this PATCH sets any AC criterion's `verified_by` to a reserved
+    operator-only literal ('user'/'operator') — Kanban #1857 gate.
+
+    Reads the SERIALIZED `acceptance_criteria` list in `updates` (already
+    model_dump'd to dicts by `_apply_jsonb_serialization`, so each criterion is
+    a plain dict here). Tolerant of shape: a non-list value or a non-dict
+    element simply does not match (no 500; the boundary validator already
+    rejected malformed AC at 422). Comparison is on the EXACT literal string —
+    descriptive attributions like 'Lead' / 'dev-backend+Lead' / 'operator+Lead'
+    are NOT gated (only the bare reserved literals are).
+    """
+    ac = updates.get("acceptance_criteria")
+    if not isinstance(ac, list):
+        return False
+    for crit in ac:
+        if isinstance(crit, dict) and crit.get("verified_by") in _OPERATOR_ONLY_VERIFIED_BY:
+            return True
+    return False
 
 
 def _fire_hitl_push(task_id: int, title: str, question_payload: dict | None) -> None:
@@ -1399,6 +1438,7 @@ async def update_task(
     session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
     if_unmodified_since: str | None = Header(default=None, alias="If-Unmodified-Since"),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
 ) -> Task:
     task = await get_or_404(
         session, Task, detail=f"Task id={task_id} not found", id=task_id
@@ -1465,6 +1505,26 @@ async def update_task(
     # #801 — model_dump(mode='json') coercion for JSONB columns. Kanban #1682
     # Phase 1 dedup: extracted to _apply_jsonb_serialization (defined above).
     _apply_jsonb_serialization(payload, updates)
+
+    # Kanban #1857 / #1852 (Phase 1) — operator-only AC attribution gate.
+    # If this PATCH sets any criterion's `verified_by` to a reserved
+    # operator-only literal ('user'/'operator') AND the request lacks a valid
+    # operator-proof -> 403. The downstream #1275 audit-trail gate trusts
+    # `verified_by='user'` as genuinely-operator; without this check any AI
+    # agent could PATCH that literal and unlock its own gated action.
+    #
+    # FAIL-OPEN when unset: `require_operator_proof` returns OPERATOR for any
+    # request when OPERATOR_ACTION_KEY is unset (gate INACTIVE), so this 403 is
+    # dormant on the live deployment (no key in .env yet) and existing PATCH
+    # flows are unaffected. The operator ACTIVATES by setting the key + wiring
+    # the X-Operator-Token header into their verify-flow (see operator_auth.py).
+    if (
+        operator_proof is not OperatorDecision.OPERATOR
+        and _patch_sets_operator_only_verified_by(updates)
+    ):
+        raise HTTPException(
+            status_code=403, detail=_DETAIL_OPERATOR_PROOF_REQUIRED
+        )
 
     # Kanban #832: pop action-only fields before writing to ORM.
     # These are not DB columns — they trigger interaction logic below.
