@@ -124,6 +124,7 @@ Dev team tracks subagent tier in `tasks.subagent_models` per Kanban #887 — ful
 - Carrying context across project switch → **re-resolve active project, re-read team playbook + shared/**.
 - Lifecycle-program lock-code keywords in committed files → see `.git/hooks/pre-push` and [.claude/docs/lessons.md](.claude/docs/lessons.md) "Lifecycle-program keywords."
 - Saving a project-scoped memory to operator memory dir instead of `<working_path>/shared/` → **wrong zone; see Q3 above**.
+- Full-reading every `shared/` reference file at bootstrap → **context bloat**; read only the compact/hot set (decisions + api-contracts-core + state digest), pull big refs (full `api-contracts.md`, `db-schema.md`, `decisions-archive-*`) on-demand per the team playbook's lazy-read doctrine (#1798).
 
 ## Available teams
 

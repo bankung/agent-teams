@@ -18,6 +18,16 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-06-02 — Bootstrap-context reduction (api-contracts split) + Mode-B Option-1 decision — #1798, #1652
+**Scope:** shared / process + engine
+
+**Decision:** (1) **#1798** — `api-contracts.md` split into `api-contracts-core.md` (31KB; hot: projects read + tasks CRUD/PATCH; bootstrap-read) + `api-contracts.md` (52KB; full reference; on-demand). Part of the lazy-read bootstrap doctrine (methodology decision in `context/teams/dev/decisions.md`); `db-schema.md` also deferred to on-demand. (2) **#1652** — operator chose **Option 1** (per-project `runtime_config` + engine-built per-project image) as the END-STATE fix for the Mode-B binary-dependency gap, **PHASED**: Phase 1 = Option-2 host-prereq guard (fail-clear; binary-dep projects Mode-A-only) to unblock Mode B NOW; Phase 2 = build Option 1 when a real binary-dep project needs headless. Full design: `shared/design/mode-b-runtime-options.md`.
+
+**Implications:**
+- Bootstrap read drops ~153KB → ~68KB/session.
+- Mode-B workstream (#1728 / #776 / #781 / #1191) unblocks once the Phase-1 guard lands (binary-dep = documented Mode-A-only).
+- Phase-2 build is Medium-Large + security-gated (image build from adopter config) and blocked on an operator-vs-AI auth distinction for `runtime_config` writes.
+
 ## 2026-06-02 — Per-project progress charts (#1292) + project-board header redesign (#1781)
 **Scope:** backend + frontend
 

@@ -21,6 +21,19 @@ Template for a new entry:
 **Implications:** <what changes downstream>
 -->
 
+## 2026-06-02 — Lazy-read bootstrap doctrine: tier api-contracts, defer big refs — Kanban #1798
+**Scope:** team-playbook / lifecycle
+**Proposed by:** lead (context-bloat workstream; operator-approved + "ii")
+
+**Decision:** Shrink the per-session bootstrap context read. Lifecycle step 2 ("Read relevant context") now reads ONLY a compact/hot set at bootstrap — `decisions.md` (kept compact), `api-contracts-core.md` (hot endpoints: projects read + tasks CRUD/PATCH), `component-status.md` + `backlog-roadmap.md` (state digest), role `current-state.md`, standards — and pulls big references ON DEMAND: `api-contracts.md` (FULL — section-read/grep when a task touches a non-hot endpoint), `db-schema.md` (read the relevant section when touching the data layer), `decisions-archive-*` (grep for history). api-contracts was TIERED (not deferred whole) because it's de-facto always-needed but only a few endpoints are hot.
+
+**Reasoning:** bootstrap was reading ~153KB every session (decisions 244→27 after #1583 + api-contracts 82 + db-schema 44) ≈ ~38k+ tok before any work. Operator insight: api-contracts is used constantly → full-defer unrealistic; but hot endpoints are few → tier it (core + full) like decisions active/archive. db-schema is fine to defer.
+
+**Implications:**
+- `agent-teams/shared/api-contracts.md` split → `api-contracts-core.md` (31KB, bootstrap) + `api-contracts.md` (52KB, full, on-demand); each endpoint in exactly one file. Other dev projects should tier their own hot contract similarly.
+- **Missing-context guard (mandatory):** before acting on a non-hot API surface or the data layer, grep/read the relevant section first — don't assume a contract/decision is absent just because it wasn't loaded at bootstrap.
+- Kept-reduced by the context_footprint audit metric (#1213 design) + the #1786 bloat-guard hook. Project-specific split lives in `agent-teams/shared/decisions.md`.
+
 ## 2026-05-30 — Agent tier-audit artifact relocated here from bin/tier-presets/ — Kanban #1685
 **Scope:** team-playbook / methodology / agent tiering
 **Proposed by:** lead (code-minimization / hygiene combo #1685 + #1657)

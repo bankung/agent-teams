@@ -153,12 +153,14 @@ If a task loops back (DONE → rework → DONE again), keep accumulating — the
 ## Lifecycle (per task)
 
 1. **Active project + team** are already resolved by the meta-Lead before this playbook is loaded.
-2. **Read relevant context**:
-   - `context/projects/<active>/shared/decisions.md` (always)
-   - `shared/api-contracts.md` (if FE↔BE)
-   - `shared/db-schema.md` (if data layer)
+2. **Read relevant context** — *lazy-read doctrine (Kanban #1798, 2026-06-02): keep the per-session bootstrap read lean; pull big reference files on demand, not preemptively.*
+   - `shared/decisions.md` (always — kept compact; older entries are in `decisions-archive-2026-05.md`, grep on demand)
+   - `shared/api-contracts-core.md` (always — the hot endpoints: projects read + tasks CRUD/PATCH)
+   - `shared/component-status.md` + `shared/backlog-roadmap.md` (cheap state digest)
    - `<role>/current-state.md` for each role about to be spawned
    - `standards/general.md` always; `standards/<framework>/` per the lane mapping
+   - **On-demand ONLY — do NOT full-read at bootstrap:** `shared/api-contracts.md` (full reference — read/grep the relevant SECTION when a task touches a non-hot endpoint); `shared/db-schema.md` (read the relevant section when a task touches the data layer); `decisions-archive-2026-05.md` (grep for historical decisions).
+   - **Missing-context guard:** before acting on a non-hot API surface or the data layer, grep/read the relevant `api-contracts.md` / `db-schema.md` section first — don't assume a contract/decision doesn't exist just because it wasn't loaded at bootstrap.
 3. **Decide which roles to spawn.** UI only → dev-frontend. API only → dev-backend. Full feature → dev-backend then dev-frontend (sequential if unstable contract; parallel if independent). Migration / deploy / Docker / CI → dev-devops. After implementation → dev-tester + dev-reviewer.
 4. **Spawn via the Agent tool** — see [.claude/docs/spawn-template.md](.claude/docs/spawn-template.md). Independent roles can spawn in parallel.
 5. **Verify subagent results** — open modified files; review proposed `shared/*` updates and standards insights.
