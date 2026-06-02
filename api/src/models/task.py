@@ -231,6 +231,17 @@ class Task(Base):
         server_default=text("'[]'::jsonb"),
         default=list,
     )
+    # Kanban #1677 (2026-06-02): per-task model-tier override. One of
+    # 'haiku'/'sonnet'/'opus' or NULL (=inherit). Precedence (orchestrator
+    # convention, NOT enforced in code here): task.model_override >
+    # project.agent_overrides > role default. The Lead/orchestrator reads this
+    # off TaskRead, resolves the effective tier, and records the RESOLVED tier
+    # in the existing subagent_models spawn log. No DB CHECK on the value —
+    # the Pydantic Literal at the API boundary gates the tier set (422),
+    # mirroring the halt_reason posture (nullable TEXT, no DB DEFAULT). NULL =
+    # inherit; non-null = the explicit tier for every spawn on this task.
+    # Migration 0056's nullable=true backfills existing rows to NULL.
+    model_override: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Self-ref FK: spawned children point at the template they came from.
     # ON DELETE SET NULL — defense-in-depth; app never hard-deletes templates.
     spawned_from_task_id: Mapped[int | None] = mapped_column(

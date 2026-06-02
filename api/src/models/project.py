@@ -238,6 +238,24 @@ class Project(Base):
         nullable=True,
     )
 
+    # Kanban #1800 / #1652 (2026-06-02): Mode-B Phase-1 host-prereq guard.
+    # Declared list of host-binary names the project's Mode-B (langgraph
+    # headless) tools require on PATH, e.g. ["ffmpeg", "yt-dlp"]. The langgraph
+    # worker runs a pre-pickup `shutil.which()` check against this list and
+    # PATCHes the task BLOCKED (halt_reason='runtime_prereq_missing') when any
+    # declared binary is absent. NULL = no host-binary requirements = today's
+    # behavior (gate skips entirely). Standalone column, NOT runtime_config —
+    # Phase 1 does NO image build, so it must not introduce the security-gated
+    # runtime_config surface prematurely (#1801; memo §B.3 #5). Element shape
+    # (each name `^[A-Za-z0-9][A-Za-z0-9._-]*$`) validated at the API boundary
+    # by Pydantic; NO DB CHECK on shape (mirrors notification_targets /
+    # tools_config / sources precedent — element-shape validation lives at the
+    # API layer). See migration 0055_required_binaries.
+    required_binaries: Mapped[list[str] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
     # Kanban #953 (2026-05-17): per-project financial-separation columns.
     # Each project becomes an isolated accounting unit. All four NULLABLE for
     # legacy-row resilience; fiscal_year_start + currency_default carry

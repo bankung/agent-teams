@@ -161,6 +161,33 @@ async def fire_template(db: "AsyncSession", template: Task) -> Task | None:
         await db.refresh(template)
         return None
 
+    # Dedup gate (Kanban #1728, 2026-06-02): if at least one open (non-terminal)
+    # child already exists for this template, skip spawning a new one this tick
+    # but STILL advance next_fire_at so the template retries at the next cron
+    # slot. This bounds pile-up to exactly one open fire per template at any
+    # time. It is NOT a halt — the template stays ACTIVE and the next scheduler
+    # tick re-evaluates. When a real executor drains the open fire
+    # (TODO→DONE/CANCELLED), the subsequent spawn succeeds normally.
+    # This is a safe permanent invariant compatible with a future executor
+    # (#776 full-auto, #1652 Mode B) — no removal needed when those land.
+    # Dedup shares the active_count query already run for the L21 cap above
+    # (no second COUNT query).
+    if active_count >= 1:
+        logger.info(
+            "recurrence.fire_template: dedup — template_id=%d already has %d "
+            "open fire(s); skipping spawn, advancing next_fire_at",
+            template.id,
+            active_count,
+        )
+        template.next_fire_at = next_cron_fire(
+            template.recurrence_rule or "",
+            template.recurrence_timezone or "UTC",
+        )
+        template.updated_at = func.now()
+        await db.commit()
+        await db.refresh(template)
+        return None
+
     child = Task(
         project_id=template.project_id,
         parent_task_id=template.parent_task_id,

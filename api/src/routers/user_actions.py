@@ -66,6 +66,7 @@ from src.constants import RecordStatus, TaskInteractionKind, TaskStatus
 from src.db import get_session
 from src.models.project import Project
 from src.models.task import Task
+from src.schemas.dashboard import PendingByProject, UserPendingResponse
 from src.schemas.user_actions import NextActionItem, NextActionResponse
 from src.services.budget_enforcer import compute_spend
 from src.services.next_action_ranker import (
@@ -306,3 +307,79 @@ async def get_next_action(
         for s in scored
     ]
     return NextActionResponse(items=items, fallback_hint=None)
+
+
+# HITL pending statuses — mirrors phase-1 InboxBadge.tsx (Kanban #1003):
+#   interaction_kind IN ('question','decision')
+#   AND process_status NOT IN (DONE=5, CANCELLED=6)
+#   AND tasks.status=1 AND projects.status=1
+_PENDING_INTERACTION_KINDS: tuple[str, ...] = (
+    TaskInteractionKind.QUESTION,
+    TaskInteractionKind.DECISION,
+)
+_PENDING_EXCLUDED_STATUSES: tuple[int, ...] = (TaskStatus.DONE, TaskStatus.CANCELLED)
+
+
+@router.get("/pending", response_model=UserPendingResponse)
+async def get_user_pending(
+    db: AsyncSession = Depends(get_session),
+) -> UserPendingResponse:
+    """Cross-project HITL pending aggregate for the operator inbox badge.
+
+    Operator-level: NO X-Project-Id header required (spans all active
+    projects). Single SQL query with GROUP BY project — no N+1 fan-out.
+
+    Predicate (mirrors phase-1 InboxBadge.tsx, Kanban #1003):
+      interaction_kind IN ('question', 'decision')
+      AND process_status NOT IN (5=DONE, 6=CANCELLED)
+      AND tasks.status = 1 (active)
+      AND projects.status = 1 (active)
+
+    `oldest_age_hours` is (UTC_now - MIN(created_at)) in hours across all
+    matching rows; null when count=0. `by_project` sorted project_name ASC.
+    """
+    stmt = (
+        select(
+            Task.project_id,
+            Project.name.label("project_name"),
+            func.count(Task.id).label("pending_count"),
+            func.min(Task.created_at).label("oldest_created_at"),
+        )
+        .join(Project, Project.id == Task.project_id)
+        .where(
+            Project.status == RecordStatus.ACTIVE,
+            Task.status == RecordStatus.ACTIVE,
+            Task.interaction_kind.in_(_PENDING_INTERACTION_KINDS),
+            Task.process_status.notin_(_PENDING_EXCLUDED_STATUSES),
+        )
+        .group_by(Task.project_id, Project.name)
+        .order_by(Project.name.asc())
+    )
+    result = (await db.execute(stmt)).all()
+
+    total = sum(r.pending_count for r in result)
+
+    # oldest_age_hours: global minimum of per-project MIN(created_at).
+    oldest_age_hours: float | None = None
+    if result:
+        oldest_ts = min(r.oldest_created_at for r in result)
+        if oldest_ts is not None:
+            now = datetime.now(timezone.utc)
+            if oldest_ts.tzinfo is None:
+                oldest_ts = oldest_ts.replace(tzinfo=timezone.utc)
+            oldest_age_hours = (now - oldest_ts).total_seconds() / 3600.0
+
+    by_project = [
+        PendingByProject(
+            project_id=r.project_id,
+            project_name=r.project_name,
+            count=r.pending_count,
+        )
+        for r in result
+    ]
+
+    return UserPendingResponse(
+        count=total,
+        oldest_age_hours=oldest_age_hours,
+        by_project=by_project,
+    )

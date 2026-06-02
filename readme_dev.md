@@ -354,6 +354,31 @@ The api ships several background subsystems beyond CRUD task storage:
 
 ---
 
+## LLM provider reference (Kanban #1086)
+
+Set `LANGGRAPH_LLM_PROVIDER` in `.env` to switch the engine's inference backend. All providers share the same `make_chat_model()` factory in `langgraph/llm.py`; no other code changes are needed.
+
+| Provider | Env value | Key var | Model var | Default model | Cost tier | Quality / use-case |
+|---|---|---|---|---|---|---|
+| **Anthropic** | `anthropic` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | $$$ | Best reasoning + instruction-following; recommended for production orchestration. |
+| **OpenAI** | `openai` | `OPENAI_API_KEY` | `OPENAI_MODEL` | `gpt-4o` | $$$ | Strong all-rounder; good tool-use support; useful when Anthropic is unavailable. |
+| **DeepSeek** | `deepseek` | `DEEPSEEK_API_KEY` | `LANGGRAPH_DEEPSEEK_MODEL` | `deepseek-chat` (V3) | $ | Very low cost per token; competitive quality. `deepseek-reasoner` (R1) adds chain-of-thought for harder tasks at moderate cost. Best for cost-sensitive or high-volume workloads. |
+| **Ollama** | `ollama` | _(none — local)_ | `OLLAMA_MODEL` | `llama3.2` | free | Fully offline; no API key. Quality depends on the pulled model (`qwen2.5:7b` recommended for agent tasks). Requires a local Ollama server reachable from Docker. |
+
+**Switching example (DeepSeek):**
+
+```
+LANGGRAPH_LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=sk-...
+# Optional — defaults to deepseek-chat (V3). Use deepseek-reasoner for R1 chain-of-thought.
+LANGGRAPH_DEEPSEEK_MODEL=deepseek-chat
+LANGGRAPH_DEEPSEEK_BASE_URL=https://api.deepseek.com
+```
+
+Then restart: `docker compose -p agent-teams restart langgraph`.
+
+---
+
 ## Day-to-day usage
 
 ### Through the Kanban UI

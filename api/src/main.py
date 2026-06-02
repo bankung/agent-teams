@@ -7,6 +7,7 @@ the recurrence subsystem (templates spawn + one-shots transition).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
@@ -198,6 +199,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "backup scheduled: cron=%s tz=%s bucket=%s prefix=%s dry_run=%s",
             backup_cfg.cron_rule, backup_cfg.timezone, backup_cfg.s3_bucket,
             backup_cfg.s3_prefix, backup_cfg.dry_run,
+        )
+
+        # Kanban #1474 — startup catchup: if the desktop was OFF during the
+        # scheduled window (APScheduler silently skips missed fires by default),
+        # kick off one immediate run if the latest backup is older than the
+        # threshold. Fire-and-forget on the loop so startup is non-blocking.
+        _catchup_max_age_hours = float(
+            os.environ.get("BACKUP_CATCHUP_MAX_AGE_HOURS", "24")
+        )
+        asyncio.create_task(
+            runner.catchup_if_stale(_catchup_max_age_hours),
+            name="backup_catchup",
+        )
+        logger.info(
+            "backup catchup task scheduled: max_age_hours=%.1f",
+            _catchup_max_age_hours,
         )
     else:
         logger.warning(

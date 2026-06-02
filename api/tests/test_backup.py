@@ -91,7 +91,7 @@ def test_config_enabled_with_all_env_set() -> None:
     assert cfg.s3_region == "us-east-1"
     assert cfg.s3_endpoint is None
     assert cfg.s3_prefix == "agent-teams/"
-    assert cfg.cron_rule == "0 3 * * *"
+    assert cfg.cron_rule == "0 14 * * *"
     assert cfg.timezone == "UTC"
     assert cfg.keep_daily == 30
     assert cfg.keep_monthly == 12

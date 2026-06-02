@@ -17,6 +17,8 @@ import pytest
 import llm
 from llm import (
     DEFAULT_ANTHROPIC_MODEL,
+    DEFAULT_DEEPSEEK_BASE_URL,
+    DEFAULT_DEEPSEEK_MODEL,
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OPENAI_MODEL,
@@ -43,6 +45,10 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         # whatever the docker-compose langgraph env block injects.
         "OLLAMA_MODEL",
         "OLLAMA_BASE_URL",
+        # Kanban #1086 — DeepSeek env-vars scrubbed for the same reason.
+        "DEEPSEEK_API_KEY",
+        "LANGGRAPH_DEEPSEEK_MODEL",
+        "LANGGRAPH_DEEPSEEK_BASE_URL",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -68,6 +74,10 @@ def test_resolve_provider_default_is_anthropic() -> None:
         "ollama",
         "OLLAMA",
         "  Ollama  ",
+        # Kanban #1086 — deepseek provider accepted with same normalization rules.
+        "deepseek",
+        "DeepSeek",
+        "  deepseek  ",
     ],
 )
 def test_resolve_provider_accepts_normalized_values(
@@ -84,12 +94,13 @@ def test_resolve_provider_rejects_unknown(monkeypatch: pytest.MonkeyPatch, value
         resolve_provider()
     msg = str(excinfo.value)
     assert "Unknown LANGGRAPH_LLM_PROVIDER" in msg
-    # Error message must point the operator at the fix — Kanban #891 added
-    # ollama so all three valid values must appear so the operator sees the
-    # full menu when picking a fix.
+    # Error message must point the operator at the fix — all valid values must
+    # appear so the operator sees the full menu when picking a fix.
+    # Kanban #891 added ollama; #1086 added deepseek.
     assert "anthropic" in msg
     assert "openai" in msg
     assert "ollama" in msg
+    assert "deepseek" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -242,11 +253,15 @@ def test_default_model_constants_are_canonical() -> None:
     # Kanban #891 — ollama defaults pinned here to catch a future drift.
     assert DEFAULT_OLLAMA_MODEL == "llama3.2"
     assert DEFAULT_OLLAMA_BASE_URL == "http://host.docker.internal:11434"
+    # Kanban #1086 — deepseek defaults pinned here to catch a future drift.
+    assert DEFAULT_DEEPSEEK_MODEL == "deepseek-chat"
+    assert DEFAULT_DEEPSEEK_BASE_URL == "https://api.deepseek.com"
     # Constants must themselves pass the model-name regex (catches a future
     # typo in this file).
     assert llm._MODEL_NAME_RE.match(DEFAULT_ANTHROPIC_MODEL)
     assert llm._MODEL_NAME_RE.match(DEFAULT_OPENAI_MODEL)
     assert llm._OLLAMA_MODEL_NAME_RE.match(DEFAULT_OLLAMA_MODEL)
+    assert llm._MODEL_NAME_RE.match(DEFAULT_DEEPSEEK_MODEL)
 
 
 # ---------------------------------------------------------------------------
@@ -388,3 +403,57 @@ def test_make_chat_model_ollama_invalid_model_rejected(
     with pytest.raises(RuntimeError) as excinfo:
         make_chat_model()
     assert "Invalid model name" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# DeepSeek provider (Kanban #1086) — OpenAI-compatible API via ChatOpenAI.
+# Construction-only: ChatOpenAI does NOT call the API in __init__, so these
+# tests pass without a real DEEPSEEK_API_KEY.
+# ---------------------------------------------------------------------------
+
+
+def test_make_chat_model_deepseek_happy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default DeepSeek path: returns ChatOpenAI with deepseek-chat + deepseek base_url."""
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-fake-not-real")
+    model = make_chat_model()
+    assert type(model).__name__ == "ChatOpenAI"
+    name = getattr(model, "model_name", None) or getattr(model, "model", None)
+    assert name == DEFAULT_DEEPSEEK_MODEL
+    # openai_api_base / base_url attribute name differs across langchain-openai versions;
+    # coerce both to string and search for the canonical domain.
+    base = str(getattr(model, "openai_api_base", None) or getattr(model, "base_url", None) or "")
+    assert "api.deepseek.com" in base
+
+
+def test_make_chat_model_deepseek_missing_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing DEEPSEEK_API_KEY must raise RuntimeError naming the right env-var."""
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "deepseek")
+    # DEEPSEEK_API_KEY intentionally unset by the autouse fixture.
+    with pytest.raises(RuntimeError) as excinfo:
+        make_chat_model()
+    msg = str(excinfo.value)
+    assert "DEEPSEEK_API_KEY" in msg
+    assert "unset or empty" in msg
+    # Must NOT point at the wrong key — misleads ops.
+    assert "ANTHROPIC_API_KEY" not in msg
+    assert "OPENAI_API_KEY" not in msg
+
+
+def test_make_chat_model_deepseek_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LANGGRAPH_DEEPSEEK_MODEL override is honored."""
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-fake")
+    monkeypatch.setenv("LANGGRAPH_DEEPSEEK_MODEL", "deepseek-reasoner")
+    model = make_chat_model()
+    name = getattr(model, "model_name", None) or getattr(model, "model", None)
+    assert name == "deepseek-reasoner"
+
+
+def test_make_chat_model_unknown_provider_still_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: unknown provider still raises 'Unknown LANGGRAPH_LLM_PROVIDER' (no regression
+    from adding deepseek)."""
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "bogus-provider")
+    with pytest.raises(RuntimeError) as excinfo:
+        make_chat_model()
+    assert "Unknown LANGGRAPH_LLM_PROVIDER" in str(excinfo.value)

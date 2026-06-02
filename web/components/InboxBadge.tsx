@@ -1,91 +1,172 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import { listProjects, listTasks } from "@/lib/api";
-import { TaskStatus } from "@/lib/constants";
+import { getUserPending, type UserPendingByProject } from "@/lib/api";
 import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
 
-// Kanban #1003 phase 1 — cross-project HITL-waiting count badge.
-// HITL-waiting = interaction_kind in ('question','decision') AND
-// process_status not in (DONE=5, CANCELLED=6) AND status=1 (active).
-// Client-side aggregate: fetch active projects → per-project tasks → filter.
+// Kanban #1457 phase 2 — replace N+1 fan-out with single /api/user/pending call.
+// Color thresholds:
+//   green  count === 0
+//   yellow count 1–INBOX_YELLOW_MAX
+//   red    count > INBOX_YELLOW_MAX  OR  oldest_age_hours > INBOX_RED_AGE_HOURS
 // Polling 60s + SSE row_changed invalidation (mirrors FlagBellBadge pattern).
+// SSE debounce: 400ms (within 300–500ms spec range).
 
 const POLL_MS = 60_000;
+const SSE_DEBOUNCE_MS = 400;
 
-async function fetchHitlCount(): Promise<number> {
-  const projects = await listProjects({ status: 1 });
-  const counts = await Promise.all(
-    projects.map(async (project) => {
-      try {
-        const tasks = await listTasks(project.id, { pending: true, limit: 500 });
-        return tasks.filter(
-          (t) =>
-            t.interaction_kind !== "work" &&
-            t.process_status !== TaskStatus.DONE &&
-            t.process_status !== TaskStatus.CANCELLED,
-        ).length;
-      } catch {
-        return 0;
-      }
-    }),
-  );
-  return counts.reduce((sum, n) => sum + n, 0);
+export const INBOX_YELLOW_MAX = 5;
+export const INBOX_RED_AGE_HOURS = 48;
+
+type BadgeColor = "green" | "yellow" | "red";
+
+function resolveBadgeColor(
+  count: number,
+  oldestAgeHours: number | null,
+): BadgeColor {
+  if (count === 0) return "green";
+  if (count > INBOX_YELLOW_MAX || (oldestAgeHours ?? 0) > INBOX_RED_AGE_HOURS)
+    return "red";
+  return "yellow";
 }
 
+const COLOR_CLASSES: Record<BadgeColor, string> = {
+  green:
+    "border-green-300 bg-green-50 text-green-700 hover:border-green-400 hover:text-green-900 dark:border-green-800 dark:bg-green-950/40 dark:text-green-400 dark:hover:border-green-700 dark:hover:text-green-200",
+  yellow:
+    "border-yellow-300 bg-yellow-50 text-yellow-700 hover:border-yellow-400 hover:text-yellow-900 dark:border-yellow-700 dark:bg-yellow-950/40 dark:text-yellow-400 dark:hover:border-yellow-600 dark:hover:text-yellow-200",
+  red:
+    "border-red-300 bg-red-50 text-red-700 hover:border-red-400 hover:text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-400 dark:hover:border-red-700 dark:hover:text-red-200",
+};
+
+type InboxState = {
+  count: number;
+  oldest_age_hours: number | null;
+  by_project: UserPendingByProject[];
+};
+
 export function InboxBadge() {
-  const [count, setCount] = useState<number | null>(null);
+  const [data, setData] = useState<InboxState | null>(null);
+  const [showBreakdown, setShowBreakdown] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const n = await fetchHitlCount();
-      setCount(n);
+      const res = await getUserPending();
+      setData({
+        count: res.count,
+        oldest_age_hours: res.oldest_age_hours,
+        by_project: res.by_project,
+      });
     } catch {
       // Keep last known value on transient error; next poll will recover.
     }
   }, []);
 
+  // SSE-driven refresh with 400ms debounce per spec (300–500ms range).
+  const debouncedRefresh = useCallback(() => {
+    if (debounceRef.current !== null) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => void refresh(), SSE_DEBOUNCE_MS);
+  }, [refresh]);
+
   useEffect(() => {
     void refresh();
     const t = setInterval(() => void refresh(), POLL_MS);
-    return () => clearInterval(t);
+    return () => {
+      clearInterval(t);
+      if (debounceRef.current !== null) clearTimeout(debounceRef.current);
+    };
   }, [refresh]);
 
   useRowChangedEvents({
-    onTaskChange: refresh,
-    onProjectChange: refresh,
+    onTaskChange: debouncedRefresh,
+    onProjectChange: debouncedRefresh,
   });
 
-  const hasItems = count !== null && count > 0;
+  const count = data?.count ?? 0;
+  const hasItems = data !== null && count > 0;
+  const color = data !== null
+    ? resolveBadgeColor(count, data.oldest_age_hours)
+    : "green";
   const label = hasItems
     ? `${count} pending interaction task${count === 1 ? "" : "s"} — open Inbox`
     : "Inbox — no pending tasks";
 
   return (
-    <Link
-      href="/inbox"
-      title={label}
-      aria-label={label}
-      data-inbox-badge
-      data-inbox-count={count ?? 0}
-      className="relative inline-flex items-center justify-center rounded border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-600 transition-colors hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
-    >
-      Inbox
-      {count !== null && (
-        <span
-          aria-hidden
-          data-inbox-count-bubble
-          className={
-            hasItems
-              ? "ml-1.5 tabular-nums"
-              : "ml-1.5 tabular-nums text-zinc-400 dark:text-zinc-600"
-          }
+    <div className="relative">
+      <Link
+        href="/inbox"
+        title={label}
+        aria-label={label}
+        data-inbox-badge
+        data-inbox-count={count}
+        className={`relative inline-flex items-center justify-center rounded border px-2 py-1 text-xs font-medium transition-colors ${COLOR_CLASSES[color]}`}
+        onMouseEnter={() => setShowBreakdown(true)}
+        onMouseLeave={() => setShowBreakdown(false)}
+        onFocus={() => setShowBreakdown(true)}
+        onBlur={() => setShowBreakdown(false)}
+      >
+        Inbox
+        {data !== null && (
+          <span
+            aria-hidden
+            data-inbox-count-bubble
+            className="ml-1.5 tabular-nums"
+          >
+            ({count})
+          </span>
+        )}
+      </Link>
+
+      {/* Hover/tap breakdown — per-project counts */}
+      {showBreakdown && data !== null && data.by_project.length > 0 && (
+        <div
+          role="tooltip"
+          aria-live="polite"
+          className="absolute left-0 top-full z-50 mt-1 min-w-[160px] rounded border border-zinc-200 bg-white py-1.5 shadow-md dark:border-zinc-700 dark:bg-zinc-900"
         >
-          ({count})
-        </span>
+          {data.by_project.map((entry) => (
+            <div
+              key={entry.project_id}
+              className="flex items-center justify-between gap-4 px-3 py-0.5 text-xs"
+            >
+              <span className="truncate text-zinc-700 dark:text-zinc-300">
+                {entry.project_name}
+              </span>
+              <span className="shrink-0 tabular-nums font-medium text-zinc-900 dark:text-zinc-100">
+                {entry.count}
+              </span>
+            </div>
+          ))}
+        </div>
       )}
-    </Link>
+
+      {/* Mobile tile (sm:hidden) — per-project breakdown visible at 375px */}
+      {data !== null && data.by_project.length > 0 && (
+        <div
+          aria-label="Inbox breakdown by project"
+          className="mt-2 w-full rounded border border-zinc-200 bg-zinc-50 sm:hidden dark:border-zinc-800 dark:bg-zinc-900/40"
+        >
+          <p className="border-b border-zinc-200 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-500">
+            Pending by project
+          </p>
+          {data.by_project.map((entry) => (
+            <div
+              key={entry.project_id}
+              className="flex items-center justify-between px-3 py-1.5 text-xs"
+            >
+              <span className="text-zinc-700 dark:text-zinc-300">
+                {entry.project_name}
+              </span>
+              <span className="tabular-nums font-medium text-zinc-900 dark:text-zinc-100">
+                {entry.count}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

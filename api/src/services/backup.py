@@ -78,7 +78,7 @@ class BackupConfig(BaseModel):
     s3_region: str = Field(default="us-east-1")
     s3_endpoint: str | None = Field(default=None)
     s3_prefix: str = Field(default="agent-teams/")
-    cron_rule: str = Field(default="0 3 * * *")
+    cron_rule: str = Field(default="0 14 * * *")
     timezone: str = Field(default="UTC")
     keep_daily: int = Field(default=30, ge=1)
     keep_monthly: int = Field(default=12, ge=0)
@@ -131,7 +131,7 @@ class BackupConfig(BaseModel):
             s3_region=e.get("BACKUP_S3_REGION", "us-east-1"),
             s3_endpoint=(e.get("BACKUP_S3_ENDPOINT") or None),
             s3_prefix=_normalize_prefix(e.get("BACKUP_S3_PREFIX", "agent-teams/")),
-            cron_rule=e.get("BACKUP_CRON_RULE", "0 3 * * *"),
+            cron_rule=e.get("BACKUP_CRON_RULE", "0 14 * * *"),
             timezone=e.get("BACKUP_TIMEZONE", "UTC"),
             keep_daily=int(e.get("BACKUP_KEEP_DAILY", "30")),
             keep_monthly=int(e.get("BACKUP_KEEP_MONTHLY", "12")),
@@ -206,7 +206,78 @@ class BackupRunner:
     def __init__(self, cfg: BackupConfig):
         self.cfg = cfg
 
-    # -- Public entrypoint -------------------------------------------------
+    # -- Public entrypoints ------------------------------------------------
+
+    def latest_backup_timestamp(self) -> datetime | None:
+        """Return the UTC timestamp of the most-recent canonical backup in S3.
+
+        Scans the canonical prefix (skips _dryrun/ objects) using the same
+        paginator + _parse_key_timestamp helper used by _prune(). Returns None
+        if no backup-shaped objects are found (fresh deploy or empty bucket).
+
+        Kanban #1474 — called by catchup_if_stale() at startup.
+        """
+        client = self._s3_client()
+        prefix = self.cfg.s3_prefix
+        latest: datetime | None = None
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.cfg.s3_bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                k = obj["Key"]
+                if k.startswith(prefix + "_dryrun/"):
+                    continue
+                dt = _parse_key_timestamp(k)
+                if dt is None:
+                    continue
+                if latest is None or dt > latest:
+                    latest = dt
+        return latest
+
+    async def catchup_if_stale(self, max_age_hours: float) -> bool:
+        """Fire an immediate run_once() if the latest backup is older than threshold.
+
+        Rules:
+          - Disabled config → no-op (returns False).
+          - No prior canonical backup exists → no-op, logs INFO (fresh deploy;
+            the first real snapshot comes from the cron schedule, not startup).
+          - Latest backup age < max_age_hours → no-op (returns False).
+          - Latest backup age >= max_age_hours → runs run_once() and returns True.
+
+        The call is designed to be fire-and-forget on the event loop (non-blocking
+        startup). Kanban #1474 — covers machine-off / missed-cron-window gaps.
+        """
+        if not self.cfg.is_enabled:
+            logger.debug("backup.catchup: disabled, skipping")
+            return False
+
+        try:
+            latest = await asyncio.to_thread(self.latest_backup_timestamp)
+        except Exception:
+            logger.exception("backup.catchup: could not query S3 for latest timestamp — skipping")
+            return False
+
+        if latest is None:
+            logger.info(
+                "backup.catchup: no prior canonical backup found — "
+                "skipping catchup on fresh deploy; cron will produce the first snapshot"
+            )
+            return False
+
+        age_hours = (datetime.now(timezone.utc) - latest).total_seconds() / 3600
+        if age_hours < max_age_hours:
+            logger.info(
+                "backup.catchup: latest backup is %.1fh old (threshold=%.1fh) — no catchup needed",
+                age_hours, max_age_hours,
+            )
+            return False
+
+        logger.warning(
+            "backup.catchup: latest backup is %.1fh old (threshold=%.1fh) — "
+            "triggering immediate catchup run",
+            age_hours, max_age_hours,
+        )
+        await self.run_once()
+        return True
 
     async def run_once(self) -> BackupResult:
         """Run the full backup cycle. Safe to call from a scheduler thread.

@@ -657,6 +657,14 @@ async def create_project(
             t.model_dump() for t in payload.notification_targets
         ]
 
+    # Kanban #1800 / #1652 — Mode-B Phase-1 host-binary requirements. OMIT when
+    # None so the DB column lands NULL (= "no host-binary requirements"; worker
+    # gate skips). Mirrors notification_targets exactly. Each name was already
+    # validated against `_BINARY_NAME_RE` at the Pydantic boundary; the list is
+    # plain str entries so no model_dump is needed.
+    if payload.required_binaries is not None:
+        data["required_binaries"] = payload.required_binaries
+
     # Kanban #694, Phase 2: `is_active` is a free boolean — no atomic-clear of
     # other rows. The legacy `_clear_other_active(keep_id=None)` here was
     # load-bearing on the dropped `ux_projects_active_one` invariant.
@@ -795,6 +803,15 @@ async def update_project(
     # is semantically distinct from "[] configured" (which has zero priority
     # targets but still triggers the kind filter). `model_dump(exclude_unset=True)`
     # has already serialized each NotificationTarget to a plain dict.
+
+    # Kanban #1800 / #1652: `required_binaries` needs NO special branch here —
+    # it mirrors notification_targets' null-stays-null semantics. The DB column
+    # is nullable; an explicit-null PATCH surfaces as `None` in
+    # `model_dump(exclude_unset=True)` and the generic setattr loop below writes
+    # SQL NULL (= "no host-binary requirements"; worker gate skips). Key-absent
+    # is dropped by exclude_unset, leaving the column unchanged. An explicit list
+    # REPLACES the prior value (no merge). The strict `_BINARY_NAME_RE` validator
+    # already fired at the Pydantic boundary.
 
     # M10: cannot reactivate a soft-deleted project via PATCH — restore is a
     # separate (not-yet-built) admin path. Other fields ARE editable on a

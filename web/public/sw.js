@@ -1,7 +1,17 @@
-// Web Push service worker — Kanban #955.C (slice C) + #1349 (snooze actions).
+// Web Push service worker — Kanban #955.C (slice C) + #1349 (snooze actions)
+//                         + #1769 (SW-lifecycle guard).
+//
+// PUSH-ONLY — this SW intentionally registers NO `fetch` handler and opens
+// NO Cache Storage. It NEVER intercepts navigation or API requests. The only
+// purpose is receiving Web Push messages and surfacing notifications.
+// Kanban #1769: adding `install`/`activate` lifecycle handlers for immediate
+// takeover (skipWaiting + clients.claim) so a new SW version takes control
+// without requiring the operator to close all tabs.
 //
 // Three responsibilities:
-//   1. `push` event — render the notification using the backend's D4 payload
+//   1. `install` / `activate` lifecycle — skipWaiting + clients.claim so a
+//      newly deployed SW replaces a stale one immediately (Kanban #1769).
+//   2. `push` event — render the notification using the backend's D4 payload
 //      shape: { title, body, url, icon? }. The payload is JSON.stringified by
 //      notify_web_push.py before pywebpush encrypts + sends.
 //      Kanban #1349 — every notification carries two snooze quick-action
@@ -10,7 +20,7 @@
 //      The notification's `data.task_id` carries the id; payloads without
 //      a task_id (e.g. project-wide budget warnings) render the actions
 //      but the click handler degrades to a no-op + a deep-link navigate.
-//   2. `notificationclick` event — focus an existing window matching the
+//   3. `notificationclick` event — focus an existing window matching the
 //      target URL if one is open, else open a new one. Backed by D4's `url`
 //      field (e.g. `/p/<name>` or `/p/<name>?task=<id>`). Snooze actions
 //      route through `_handleSnoozeAction` first and skip the navigate.
@@ -27,6 +37,20 @@
 //     wake-up from some browsers. Render a generic message rather than throw.
 //   - Icon files /icon-192.png + /badge-72.png are placeholders for this
 //     slice (#955.C followup); notifications render fine without them.
+
+// Kanban #1769 — immediate takeover lifecycle handlers.
+// skipWaiting lets a waiting SW skip the "wait for all tabs to close" step
+// and become active immediately. clients.claim() makes the newly-active SW
+// take control of all open clients (tabs) without requiring a page reload from
+// the SW side. The ServiceWorkerRegister.tsx `controllerchange` listener then
+// triggers a single page reload on the client to adopt the new worker.
+self.addEventListener("install", function (event) {
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", function (event) {
+  event.waitUntil(self.clients.claim());
+});
 
 // Kanban #1349 — extract a task id from a payload URL like
 // "/tasks/123" or "/p/foo?task=123". Returns null when no id is found.

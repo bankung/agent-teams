@@ -133,6 +133,16 @@ export function TaskDetail({
   // #854 — inline cancel; state: cancelOpen / cancelReason
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
+  // #1677 — local model-tier selection; syncs from task.model_override on mount
+  const [modelOverride, setModelOverride] = useState<"haiku" | "sonnet" | "opus" | null>(
+    task.model_override,
+  );
+
+  // #1677 — keep local model-override in sync when the task prop changes
+  // (e.g. drawer re-used for a different task after an onPatch update).
+  useEffect(() => {
+    setModelOverride(task.model_override);
+  }, [task.id, task.model_override]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -226,6 +236,28 @@ export function TaskDetail({
       onPatch(updated);
     } catch (err: unknown) {
       const msg = extractErrorMessage(err, "Run failed");
+      onError(`Task #${task.id}: ${msg}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // #1677 — PATCH model_override; null clears back to inherit.
+  const handleModelOverrideChange = async (
+    tier: "haiku" | "sonnet" | "opus" | null,
+  ) => {
+    if (submitting) return;
+    setModelOverride(tier);
+    setSubmitting(true);
+    try {
+      const updated = await patchTask(projectId, task.id, {
+        model_override: tier,
+      });
+      onPatch(updated);
+    } catch (err: unknown) {
+      // Revert optimistic update on error
+      setModelOverride(task.model_override);
+      const msg = extractErrorMessage(err, "Update failed");
       onError(`Task #${task.id}: ${msg}`);
     } finally {
       setSubmitting(false);
@@ -346,6 +378,30 @@ export function TaskDetail({
                 />
               </div>
             )}
+            {/* #1677 — Model tier override: always visible, optimistic PATCH on change */}
+            <div className="mt-2" data-model-override-control>
+              <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                Model tier
+                <select
+                  value={modelOverride ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    void handleModelOverrideChange(
+                      v === "" ? null : (v as "haiku" | "sonnet" | "opus"),
+                    );
+                  }}
+                  disabled={submitting}
+                  data-model-override-select
+                  className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
+                >
+                  <option value="">Inherit (default)</option>
+                  <option value="haiku">Haiku</option>
+                  <option value="sonnet">Sonnet</option>
+                  <option value="opus">Opus</option>
+                </select>
+              </label>
+            </div>
+
             {/* #854 — Cancel: hidden on terminal states */}
             {!isTerminal && (
               <div className="mt-2" data-cancel-task-control>

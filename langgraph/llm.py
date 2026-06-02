@@ -248,9 +248,13 @@ DEFAULT_OLLAMA_MODEL = "llama3.2"
 # Windows). Linux compose needs `extra_hosts: ["host.docker.internal:host-gateway"]`
 # on the langgraph service to make this name resolvable.
 DEFAULT_OLLAMA_BASE_URL = "http://host.docker.internal:11434"
+# DeepSeek (Kanban #1086) — OpenAI-compatible API; reuses ChatOpenAI.
+# deepseek-chat = V3 (fast, cheap). deepseek-reasoner = R1 (chain-of-thought).
+DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
+DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
-_SUPPORTED_PROVIDERS = ("anthropic", "openai", "ollama")
-ProviderName = Literal["anthropic", "openai", "ollama"]
+_SUPPORTED_PROVIDERS = ("anthropic", "openai", "ollama", "deepseek")
+ProviderName = Literal["anthropic", "openai", "ollama", "deepseek"]
 
 # Strict model-name regex for anthropic/openai — lowercase letters, digits,
 # dot, hyphen. Catches obvious typos (`claude_sonnet_4_6` with underscores,
@@ -280,7 +284,7 @@ def resolve_provider() -> ProviderName:
         raise RuntimeError(
             f"Unknown LANGGRAPH_LLM_PROVIDER: {raw!r}; "
             f"expected one of {list(_SUPPORTED_PROVIDERS)}. "
-            "Set LANGGRAPH_LLM_PROVIDER=anthropic, openai, or ollama in .env "
+            "Set LANGGRAPH_LLM_PROVIDER=anthropic, openai, ollama, or deepseek in .env "
             "and restart the container (docker compose restart langgraph)."
         )
     return raw  # type: ignore[return-value]
@@ -312,6 +316,9 @@ def resolve_model(provider: str | None = None) -> str:
     elif p == "ollama":
         model = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL).strip()
         env_var = "OLLAMA_MODEL"
+    elif p == "deepseek":
+        model = os.getenv("LANGGRAPH_DEEPSEEK_MODEL", DEFAULT_DEEPSEEK_MODEL).strip()
+        env_var = "LANGGRAPH_DEEPSEEK_MODEL"
     else:
         raise RuntimeError(
             f"Unknown provider {p!r} passed to resolve_model(); "
@@ -339,7 +346,12 @@ def _require_api_key(provider: ProviderName) -> str:
 
     Not called for ollama — local runner needs no key.
     """
-    env_var = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
+    if provider == "anthropic":
+        env_var = "ANTHROPIC_API_KEY"
+    elif provider == "deepseek":
+        env_var = "DEEPSEEK_API_KEY"
+    else:
+        env_var = "OPENAI_API_KEY"
     key = os.getenv(env_var, "").strip()
     if not key:
         raise RuntimeError(
@@ -388,6 +400,13 @@ def make_chat_model(model: str | None = None) -> BaseChatModel:
         if openai_base_url:
             return ChatOpenAI(model=chosen_model, api_key=api_key, max_retries=1, base_url=openai_base_url)
         return ChatOpenAI(model=chosen_model, api_key=api_key, max_retries=1)
+
+    if provider == "deepseek":
+        api_key = _require_api_key(provider)
+        from langchain_openai import ChatOpenAI
+
+        base_url = os.getenv("LANGGRAPH_DEEPSEEK_BASE_URL", DEFAULT_DEEPSEEK_BASE_URL).strip() or DEFAULT_DEEPSEEK_BASE_URL
+        return ChatOpenAI(model=chosen_model, api_key=api_key, base_url=base_url, max_retries=1)
 
     # provider == "ollama" — resolve_provider() guarantees membership, so the
     # final branch is reachable iff the value is "ollama".

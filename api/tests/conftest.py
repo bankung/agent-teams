@@ -465,6 +465,34 @@ def scaffold_cleanup():
     Pulls repo_root from src.settings so tests and the router share the same
     on-disk root. `shutil.rmtree(... ignore_errors=True)` keeps teardown safe
     when the folder doesn't exist (e.g., POST failed before scaffolding).
+
+    Notifications/ subdir coverage (Kanban #1850):
+        When a test triggers notification delivery (PATCH→done/failed,
+        HITL-needed transition, or POST /api/notifications/deliver) and the
+        project has `working_path=None`, `_write_local_fallback` writes to
+        `repo_root/context/projects/<name>/notifications/`. That subdir is a
+        CHILD of the folder this fixture rmtrees, so the fallback leak is
+        covered automatically — no separate patching needed.
+
+        Residual edges NOT covered by this fixture:
+        (a) Delivery triggered for a project whose name was NOT registered via
+            scaffold_cleanup(name) — the rmtree never runs for that name.
+        (b) `working_path` is set to a path OUTSIDE `context/projects/<name>/`
+            (e.g., a tmp_path or a real project path) — the fallback writes
+            there instead; this fixture does not clean that location.
+
+        If you write a test that falls into edge (a) or (b) AND triggers
+        delivery, patch `_write_local_fallback` yourself (see
+        `_no_scaffold` autouse fixture in test_push_event_hooks_smoke.py for
+        the established pattern) OR use a dedicated `no_fallback_write`
+        monkeypatch fixture if the test must not assert on fallback behavior.
+
+        NOTE: do NOT monkeypatch `_write_local_fallback` globally inside this
+        fixture — two tests in test_notification_router.py
+        (`test_fallback_path_anchored_at_repo_root_when_working_path_null` and
+        `test_fallback_path_uses_repo_root_for_windows_working_path`) assert on
+        the fallback write behavior and would silently pass vacuously if the
+        write were suppressed here.
     """
     from src.settings import get_settings
 

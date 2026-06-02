@@ -224,6 +224,13 @@ export type TaskRead = {
   //                     silence a noisy task.
   last_nudge_at?: string | null;
   nudge_disabled?: boolean;
+  // Kanban #1677 — per-task model-tier override. null = inherit from project /
+  // role defaults. Precedence: task > project.agent_overrides > role default.
+  model_override: "haiku" | "sonnet" | "opus" | null;
+  // Kanban #1001 (2026-05-20) — halt reason set by Lead at halt time per #787
+  // decision matrix. NULL = task runs normally; non-null = halted with reason.
+  // Present on every TaskRead response; FE mirrors the BE nullable TEXT column.
+  halt_reason: string | null;
   created_at: string;
   updated_at: string;
   started_at: string | null;
@@ -704,6 +711,9 @@ export type TaskCreateBody = {
   // spawns the child task. The CHILD's value is always NULL (loop guard).
   // 400 on unknown template id; 400 on project-scope mismatch.
   handoff_template_id?: number;
+  // Kanban #1677 — per-task model-tier override. Omit or null = inherit from
+  // project.agent_overrides / role default. 422 on unknown tier string.
+  model_override?: "haiku" | "sonnet" | "opus" | null;
 };
 
 export async function createTask(
@@ -779,6 +789,9 @@ export type TaskPatch = Partial<
   // pointer. Key-absent leaves unchanged; explicit `null` clears; positive
   // int re-points (BE validates existence + project scope).
   handoff_template_id?: number | null;
+  // Kanban #1677 — per-task model-tier override. Key-absent = unchanged;
+  // explicit `null` = clear-to-inherit; value = set tier.
+  model_override?: "haiku" | "sonnet" | "opus" | null;
 };
 
 export async function patchTask(
@@ -1641,4 +1654,29 @@ export type IntegrationsResponse = {
 // Read-only; there is no toggle PATCH endpoint.
 export async function getIntegrations(): Promise<IntegrationsResponse> {
   return jsonFetch<IntegrationsResponse>(`/api/settings/integrations`);
+}
+
+// ============================================================================
+// Kanban #1457 phase 2 — GET /api/user/pending (operator-scoped, no project header).
+// ============================================================================
+
+// UserPendingByProject — one entry in UserPendingResponse.by_project.
+export type UserPendingByProject = {
+  project_id: number;
+  project_name: string;
+  count: number;
+};
+
+// UserPendingResponse — mirror of api/src/schemas/task.py:UserPendingResponse.
+// Replaces the N+1 fan-out in InboxBadge (phase 1) with a single endpoint.
+// oldest_age_hours is null when count=0.
+export type UserPendingResponse = {
+  count: number;
+  oldest_age_hours: number | null;
+  by_project: UserPendingByProject[];
+};
+
+// getUserPending — GET /api/user/pending. No X-Project-Id header (cross-project).
+export async function getUserPending(): Promise<UserPendingResponse> {
+  return jsonFetch<UserPendingResponse>(`/api/user/pending`);
 }

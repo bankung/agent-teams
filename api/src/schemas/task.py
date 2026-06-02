@@ -57,6 +57,15 @@ TaskTypeLiteral = Literal["bug", "feature", "chore", "docs", "refactor", "audit"
 # Wire enum for tasks.interaction_kind (#830); lockstep guard at module bottom
 InteractionKindLiteral = Literal["work", "question", "decision"]
 
+# Kanban #1677 (2026-06-02): wire enum for tasks.model_override — the per-task
+# model-tier override. One of the three Claude tiers, or null (=inherit, no
+# override). NOT backed by a src.constants tuple (no DB CHECK on the column —
+# the value is gated solely by this Literal at the API boundary, 422 on any
+# other value), so there is no lockstep guard at the module bottom. The tier
+# set intentionally matches SubagentModelEntry.model so a resolved override and
+# its recorded spawn-log entry speak the same vocabulary.
+ModelTierLiteral = Literal["haiku", "sonnet", "opus"]
+
 ProcessStatusCode = Annotated[
     int, Field(description="tasks.process_status — see TaskStatus.ALL")
 ]
@@ -530,6 +539,13 @@ class TaskCreate(BaseModel):
     # Kanban #1115 (2026-05-17, L18) — max 200 spawn entries per task; covers
     # heavy multi-day auto-pickup tasks while still bounding agent runaway.
     subagent_models: list[SubagentModelEntry] = Field(default_factory=list, max_length=200)
+    # Kanban #1677 (2026-06-02): per-task model-tier override. None / absent on
+    # POST → NULL in DB (= inherit; precedence falls through to
+    # project.agent_overrides, then the role default — an orchestrator
+    # convention, NOT enforced here). A value MUST be one of 'haiku'/'sonnet'/
+    # 'opus' (ModelTierLiteral) — any other string is rejected 422 by Pydantic.
+    # Plain scalar field: flows into Task(**payload_dict) with no router edit.
+    model_override: ModelTierLiteral | None = None
     # Kanban #830 (2026-05-12): interaction_kind discriminates agent-executed work
     # from user-interaction gate tasks created by the auto-run loop when ambiguity
     # is detected mid-task. 'work' is the default; 'question'/'decision' require
@@ -899,6 +915,18 @@ class TaskUpdate(BaseModel):
     # SubagentModelEntry (agent required, model Literal, at datetime).
     # Kanban #1115 (2026-05-17, L18) — max 200 spawn entries per task (parity with TaskCreate).
     subagent_models: list[SubagentModelEntry] | None = Field(default=None, max_length=200)
+    # Kanban #1677 (2026-06-02): PATCH-able per-task model-tier override.
+    # Semantics mirror halt_reason / status_change_reason exactly:
+    #   - key absent      → leave unchanged (exclude_unset=True in router)
+    #   - explicit null   → CLEAR (NULL — back to inherit; null IS meaningful,
+    #                       column is nullable)
+    #   - 'haiku'/'sonnet'/'opus' → set / change the override tier
+    #   - any other string → 422 (ModelTierLiteral)
+    # No _reject_explicit_null validator — parity with halt_reason /
+    # status_change_reason: explicit null is the documented "clear" path. The
+    # generic setattr loop in routers/tasks.py writes SQL NULL on explicit-null
+    # for this nullable scalar — no special router branch needed.
+    model_override: ModelTierLiteral | None = None
     interaction_kind: InteractionKindLiteral | None = None
     question_payload: QuestionPayload | None = None
     resume_context: dict[str, Any] | None = None
@@ -1206,6 +1234,14 @@ class TaskRead(BaseModel):
     # shape — Pydantic re-validates so a corrupt row would 500 rather than leak.
     # NOT NULL in the DB — always a list on the wire, never null.
     subagent_models: list[SubagentModelEntry]
+    # Kanban #1677 (2026-06-02) — per-task model-tier override. Backfilled to
+    # NULL on existing rows by migration 0056's nullable=true. NULL = inherit
+    # (no override). Surfaced on TaskRead so the Lead/orchestrator can read it
+    # and resolve the effective tier (precedence: task.model_override >
+    # project.agent_overrides > role default) at spawn time, recording the
+    # RESOLVED tier in subagent_models. Value-strict on read (ModelTierLiteral)
+    # — a hand-edited/corrupt out-of-set value would 500 here rather than leak.
+    model_override: ModelTierLiteral | None = None
     # Kanban #830 (2026-05-12) — backfilled to 'work' on existing rows by migration 0019.
     interaction_kind: InteractionKindLiteral
     # Kanban #830 — nullable JSONB. question_payload element shape validated by

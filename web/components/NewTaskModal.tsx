@@ -117,6 +117,8 @@ export function NewTaskModal({
   // #1343 — handoff template pointer. Persisted on the task row; BE spawns
   // the child on the DONE-flip (services/handoff_spawn.py).
   const [handoffTemplateId, setHandoffTemplateId] = useState<number | null>(null);
+  // #1677 — per-task model-tier override. null = Inherit (default).
+  const [modelOverride, setModelOverride] = useState<"haiku" | "sonnet" | "opus" | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -142,6 +144,7 @@ export function NewTaskModal({
     setAllowDuringPauseReason("");
     setActionTemplateId(null);
     setHandoffTemplateId(null);
+    setModelOverride(null);
     setError(null);
   }
 
@@ -214,6 +217,8 @@ export function NewTaskModal({
       ...(handoffTemplateId !== null
         ? { handoff_template_id: handoffTemplateId }
         : {}),
+      // #1677 — only include when a tier is explicitly chosen; null/omit = inherit.
+      ...(modelOverride !== null ? { model_override: modelOverride } : {}),
     };
 
     try {
@@ -373,6 +378,30 @@ export function NewTaskModal({
                     {o.label}
                   </option>
                 ))}
+              </select>
+            </label>
+
+            {/* #1677 — per-task model-tier override dropdown */}
+            <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+              Model tier{" "}
+              <span className="font-normal text-zinc-400">(optional)</span>
+              <select
+                value={modelOverride ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setModelOverride(
+                    v === "" ? null : (v as "haiku" | "sonnet" | "opus"),
+                  );
+                  if (error !== null) setError(null);
+                }}
+                disabled={submitting}
+                className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
+                data-new-task-model-override
+              >
+                <option value="">Inherit (default)</option>
+                <option value="haiku">Haiku</option>
+                <option value="sonnet">Sonnet</option>
+                <option value="opus">Opus</option>
               </select>
             </label>
 

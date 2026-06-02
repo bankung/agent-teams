@@ -169,3 +169,42 @@ When provisioning the backup target for the first time:
    passes, unset `BACKUP_DRY_RUN` and restart.
 9. Schedule a quarterly recovery-drill reminder. A backup you've never
    restored from is not a backup.
+
+## Startup catchup (Kanban #1474, 2026-06-02)
+
+### What it does
+
+On every api container start, if backup is enabled and a prior canonical backup
+exists in the bucket, the runner checks the age of the most-recent backup. If it
+is older than the threshold, it fires one immediate `run_once()` before the
+scheduler's first cron fire. This covers the "desktop was OFF during the cron
+window" gap that produced the 2026-05-20/21/23 missing snapshots (the desktop is
+not a server — APScheduler with `coalesce=True` silently discards fires that were
+never observed because the container was down).
+
+The default cron was also moved from `0 3 * * *` (03:00 UTC = 10:00 ICT) to
+`0 14 * * *` (14:00 UTC = 21:00 ICT, evening Bangkok) — a consistently
+high-uptime window for the desktop.
+
+### Configuration
+
+| Env var | Default | Description |
+|---|---|---|
+| `BACKUP_CRON_RULE` | `0 14 * * *` | Cron schedule (was `0 3 * * *` before 2026-06-02). |
+| `BACKUP_CATCHUP_MAX_AGE_HOURS` | `24` | Age threshold (hours); a latest backup older than this triggers a catchup on startup. |
+
+### No-op cases (by design)
+
+- Backup disabled (any required env var missing) → no catchup, no S3 call.
+- No prior canonical backup found → no catchup; the first snapshot is produced
+  by the cron schedule (avoids spam on a fresh deploy).
+- Latest backup younger than the threshold → no catchup, info log only.
+
+### Troubleshooting
+
+- **"backup catchup task scheduled" then no run** → latest backup is within the
+  window; normal. Look for `backup.catchup: latest backup is X.Xh old …`.
+- **"triggering immediate catchup run"** → catchup fired; a new S3 key should
+  land within minutes, followed by `backup.summary ok=True`.
+- **Activation** → the reschedule + catchup take effect on the next api restart
+  (the cron is registered at startup; the catchup runs on lifespan enter).

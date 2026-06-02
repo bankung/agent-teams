@@ -497,4 +497,27 @@ In addition to the standard field-update semantics, the following **action-only 
 
 No side effects.
 
+### POST /api/tools/email/{gmail,outlook}/trash — `X-Agent-Role` tool-grant gate (Kanban #1799, 2026-06-02)
+
+**New optional header:** `X-Agent-Role: <agent-type-name>` (e.g. `secretary`, `dev-backend`). Advisory + **spoofable** (Mode-A: stops agent drift, not malice).
+
+**Layer-0 authorization gate** (fires before auth/quota), driven by `projects.config.tool_grants` `{ "<role>": ["<tool_name>", ...] }` (tool names `gmail.trash` / `outlook.trash`, validated against `services/tool_registry`):
+- **403** `detail: "tool_grant_denied: role '<r>' is not granted tool '<t>' ..."` when the role **IS a key** in `tool_grants` and the tool is **NOT** in its list (empty list = denied every tool).
+- **Allow (unrestricted)** when: `tool_grants` absent, role not a key, or header omitted (opt-in regime — you only lock down roles you list).
+
+Complementary to (not replacing) `langgraph/tools/permission_gate` (tier-based, Mode-B) and the `gate.py` daily-units cap (both untouched). Discovery is Lead-mediated (Lead injects allowed tools into spawn briefs). Design: `shared/design/tool-registry-governance.md`.
+
+### GET /api/user/pending (Kanban #1457 phase 2, 2026-06-02)
+
+**Purpose:** cross-project HITL pending aggregate for the operator inbox badge.
+
+**Header:** none — operator-scoped/cross-project, does **NOT** take `X-Project-Id`.
+
+**Response 200:** `UserPendingResponse`
+```json
+{ "count": int, "oldest_age_hours": float | null, "by_project": [ {"project_id": int, "project_name": str, "count": int} ] }
+```
+- Predicate (mirrors phase-1 `InboxBadge.tsx`): `interaction_kind IN ('question','decision') AND process_status NOT IN (5,6) AND tasks.status=1 AND projects.status=1`.
+- `oldest_age_hours` = age of the oldest pending task's `created_at`; `null` when `count=0`. `by_project` sorted by `project_name`. Single GROUP BY query (no N+1). No side effects.
+
 <!-- No endpoints documented yet. First endpoint goes above this line. -->

@@ -46,6 +46,27 @@ async def require_project_id_header(
     return x_project_id
 
 
+async def optional_agent_role_header(
+    x_agent_role: Annotated[str | None, Header(alias="X-Agent-Role")] = None,
+) -> str | None:
+    """FastAPI dependency: extract the OPTIONAL `X-Agent-Role` header (Kanban #1799).
+
+    Returns the agent-type-name string (e.g. `secretary`, `dev-backend`) the
+    Lead/agent set via `-H "X-Agent-Role: <role>"`, or None when absent. The
+    tool-governance gate (`services/tool_grants.check_grant`) reads this to
+    look the role up in `config.tool_grants`.
+
+    🔒 TRUST BOUNDARY: this header is ADVISORY and SPOOFABLE. It is sufficient
+    for the Mode-A threat model (single-operator: stop agent drift, not
+    malice). It MUST NOT be treated as an authenticated identity. See
+    `services/tool_grants` for the full rationale. We do not validate the value
+    shape here — the gate's membership lookup simply misses on a garbage role
+    (an unknown role is not a key in `tool_grants` -> unrestricted), and writing
+    an arbitrary string never escalates privilege.
+    """
+    return x_agent_role
+
+
 def assert_task_belongs_to_session(
     task_id: int, task_project_id: int, session_project_id: int
 ) -> None:

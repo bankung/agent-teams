@@ -234,6 +234,11 @@ async def test_poll_once_happy_path_done(monkeypatch: pytest.MonkeyPatch) -> Non
                     "blocked_count": 0,
                 },
             )
+        # Mode-B prereq gate (#1800) fetches the bound project's
+        # required_binaries once per tick; answer with "no requirements" so the
+        # gate is a no-op and the clean-path lifecycle is unaffected.
+        if req.method == "GET" and req.url.path == "/api/projects/1":
+            return httpx.Response(200, json={"id": 1, "required_binaries": None})
         if req.method == "PATCH" and req.url.path == "/api/tasks/123":
             return httpx.Response(200, json={"id": 123})
         raise AssertionError(f"unexpected request: {req.method} {req.url.path}")
@@ -253,26 +258,28 @@ async def test_poll_once_happy_path_done(monkeypatch: pytest.MonkeyPatch) -> Non
     async with _make_client(handler, log) as client:
         await _poll_once(client, _make_graph_module(ainvoke), cfg, _headers(cfg))
 
-    # Three requests in this exact order.
-    assert [r.method for r in log.requests] == ["GET", "PATCH", "PATCH"]
-    assert [r.url.path for r in log.requests] == [
-        "/api/tasks/next-autorun",
-        "/api/tasks/123",
-        "/api/tasks/123",
+    # Task PATCHes in this exact order — IN_PROGRESS then DONE. The Mode-B
+    # prereq gate (#1800) also issues a GET /api/projects/1 per tick, so the
+    # raw request list is no longer a fixed ["GET","PATCH","PATCH"]; assert on
+    # the task PATCHes (all target /api/tasks/123) instead.
+    task_patches = [
+        r for r in log.requests
+        if r.method == "PATCH" and r.url.path == "/api/tasks/123"
     ]
+    assert len(task_patches) == 2
 
     # Header propagated on every request.
     for r in log.requests:
         assert r.headers.get("X-Project-Id") == "1"
 
     # IN_PROGRESS body — process_status=2 + started_at populated.
-    in_progress = _body(log.requests[1])
+    in_progress = _body(task_patches[0])
     assert in_progress["process_status"] == STATUS_IN_PROGRESS
     assert "started_at" in in_progress and in_progress["started_at"]
 
     # DONE body — process_status=5, completed_at, status_change_reason carries
     # the final_result.
-    done = _body(log.requests[2])
+    done = _body(task_patches[1])
     assert done["process_status"] == STATUS_DONE
     assert "completed_at" in done and done["completed_at"]
     assert done["status_change_reason"] == "did the work"
@@ -320,9 +327,16 @@ async def test_poll_once_graph_raises_marks_blocked(
     async with _make_client(handler, log) as client:
         await _poll_once(client, _make_graph_module(boom), cfg, _headers(cfg))
 
-    # GET + PATCH IN_PROGRESS + PATCH BLOCKED.
-    assert [r.method for r in log.requests] == ["GET", "PATCH", "PATCH"]
-    blocked = _body(log.requests[2])
+    # IN_PROGRESS then BLOCKED. The Mode-B prereq gate (#1800) adds a GET
+    # /api/projects/{id} per tick (here the handler answers any GET with the
+    # next-autorun body → no required_binaries → gate no-op), so assert on the
+    # task PATCHes rather than the raw request sequence.
+    patches = [r for r in log.requests if r.method == "PATCH"]
+    assert [_body(p)["process_status"] for p in patches] == [
+        STATUS_IN_PROGRESS,
+        STATUS_BLOCKED,
+    ]
+    blocked = _body(patches[1])
     assert blocked["process_status"] == STATUS_BLOCKED
     assert "halt_reason" in blocked
     assert "langgraph error" in blocked["halt_reason"]

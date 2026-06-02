@@ -33,6 +33,34 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
+# Kanban #1796 — prevent on-disk scaffold pollution.
+# Two code paths create context/projects/<name>/ on the shared /repo tree
+# during tests:
+#   1. scaffold_project_folder — called by POST /api/projects for
+#      working_path=null projects.
+#   2. _write_local_fallback in notification_router — writes a fallback
+#      .txt file to context/projects/<name>/notifications/ when all push
+#      adapters report ok=False (no_targets_configured / all_adapters_failed).
+# Both are no-op patched here. Tests run against agent_teams_test DB;
+# on-disk side effects must not land in the shared /repo working tree.
+# autouse=True so every test in this module gets the guard without touching
+# individual test signatures.
+@pytest.fixture(autouse=True)
+def _no_scaffold(monkeypatch):
+    import src.routers.projects as _proj_router
+    import src.services.project_scaffold as _scaffold_svc
+    import src.services.notification_router as _notif_router
+
+    monkeypatch.setattr(_proj_router, "scaffold_project_folder", lambda *a, **kw: None)
+    monkeypatch.setattr(_scaffold_svc, "scaffold_project_folder", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        _notif_router,
+        "_write_local_fallback",
+        lambda *a, **kw: {"ok": False, "detail": "suppressed_in_test", "path": None},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

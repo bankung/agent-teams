@@ -250,12 +250,16 @@ async def test_clean_task_proceeds_normally(
     # AC5: LLM mock IS called on clean content.
     assert ainvoke_called["count"] == 1
 
-    # Normal lifecycle: GET + IN_PROGRESS PATCH + DONE PATCH.
-    assert [r.method for r in log.requests] == ["GET", "PATCH", "PATCH"]
-    in_progress = _body(log.requests[1])
-    assert in_progress["process_status"] == STATUS_IN_PROGRESS
-    done = _body(log.requests[2])
-    assert done["process_status"] == STATUS_DONE
+    # Normal lifecycle: IN_PROGRESS PATCH then DONE PATCH. Filter to the task
+    # PATCHes — the Mode-B prereq gate (#1800) also issues a GET
+    # /api/projects/{id} per tick, so the raw request list is no longer a fixed
+    # ["GET","PATCH","PATCH"]; assert on the PATCH sequence instead.
+    patches = [r for r in log.requests if r.method == "PATCH"]
+    assert [_body(p)["process_status"] for p in patches] == [
+        STATUS_IN_PROGRESS,
+        STATUS_DONE,
+    ]
+    done = _body(patches[1])
     assert done["status_change_reason"] == "endpoint wired"
 
 
@@ -304,5 +308,11 @@ async def test_task_with_no_scannable_content_proceeds(
         await _poll_once(client, _make_graph_module(ainvoke), cfg, _headers(cfg))
 
     assert called["count"] == 1
-    # GET + IN_PROGRESS + DONE — 3 requests, no halt.
-    assert len(log.requests) == 3
+    # IN_PROGRESS + DONE — two task PATCHes, no halt. (The Mode-B prereq gate
+    # #1800 adds a GET /api/projects/{id} per tick, so assert on PATCHes rather
+    # than the raw request count.)
+    patches = [r for r in log.requests if r.method == "PATCH"]
+    assert [_body(p)["process_status"] for p in patches] == [
+        STATUS_IN_PROGRESS,
+        STATUS_DONE,
+    ]

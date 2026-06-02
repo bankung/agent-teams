@@ -8,6 +8,10 @@ per-project /api/projects/{id}/* tree. Currently:
     (status=1) projects. Project fields denormalized into each row so the
     FE doesn't N+1 to resolve project_id → project_name.
 
+  - `PendingByProject` / `UserPendingResponse` — cross-project HITL pending
+    aggregate for the operator inbox badge (Kanban #1457 phase 2). Returns
+    count, oldest_age_hours, and per-project breakdown in a single query.
+
 Mirrors the cross-project /api/pnl pattern (operator-level, no
 X-Project-Id header). See routers/dashboard.py for the endpoint.
 """
@@ -16,7 +20,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DashboardActiveTaskRow(BaseModel):
@@ -67,3 +71,40 @@ class DashboardActiveTasks(BaseModel):
 
     rows: list[DashboardActiveTaskRow]
     total_count: int
+
+
+class PendingByProject(BaseModel):
+    """Per-project HITL pending count for GET /api/user/pending (Kanban #1457).
+
+    `count` is the number of active pending HITL tasks for that project.
+    `project_name` is denormalized so the FE doesn't need a follow-up lookup.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: int
+    project_name: str
+    count: int
+
+
+class UserPendingResponse(BaseModel):
+    """Response for GET /api/user/pending — cross-project HITL inbox aggregate.
+
+    Predicate: interaction_kind IN ('question', 'decision')
+               AND process_status NOT IN (5=DONE, 6=CANCELLED)
+               AND tasks.status = 1 (active)
+               AND projects.status = 1 (active)
+
+    `oldest_age_hours` is the age in hours of the oldest matching task
+    (UTC now − created_at), or null when count=0.
+    `by_project` is sorted by project_name ASC for stable rendering.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    count: int
+    oldest_age_hours: float | None = Field(
+        default=None,
+        description="Hours since the oldest pending HITL task was created. Null when count=0.",
+    )
+    by_project: list[PendingByProject]

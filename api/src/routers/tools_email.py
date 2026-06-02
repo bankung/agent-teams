@@ -28,10 +28,13 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
+from src.constants import RecordStatus
 from src.db import get_session
+from src.models.project import Project
 from src.schemas.tools_email import (
     AuthStatusResponse,
     GmailAuthStartResponse,
@@ -44,7 +47,11 @@ from src.schemas.tools_email import (
     OutlookTrashResponse,
     UsageResponse,
 )
-from src.services.session_project import require_project_id_header
+from src.services.session_project import (
+    optional_agent_role_header,
+    require_project_id_header,
+)
+from src.services.tool_grants import GrantDecision, check_grant
 from src.tools.email import gate, gmail_client, outlook_client, token_store
 
 logger = logging.getLogger(__name__)
@@ -60,6 +67,62 @@ _LIST_UNITS_PER_CALL = 5  # rough; we charge once per list invocation.
 # gate then applies on the resolved count — this is a separate ceiling so a
 # user with `?force=true` still can't accidentally enumerate a 50k-id inbox.
 _MAX_LIST_RESULTS = 1000
+
+
+# ---------------------------------------------------------------------------
+# Tool-governance gate (Kanban #1799 P0)
+# ---------------------------------------------------------------------------
+
+# 403 detail for a tool-grant denial. Stable string (a future source-text-lock
+# test can scan for it). The role + tool are interpolated so the agent's log
+# shows exactly which (role, tool) pair was refused.
+_DETAIL_TOOL_GRANT_DENIED_TEMPLATE = (
+    "tool_grant_denied: role {role!r} is not granted tool {tool!r} for this "
+    "project (config.tool_grants). Ask the Lead to add it to the role's "
+    "allow-list, or call without an X-Agent-Role header if this role should "
+    "be unrestricted."
+)
+
+
+async def _enforce_tool_grant_or_403(
+    session: AsyncSession,
+    session_project_id: int,
+    role: str | None,
+    tool_name: str,
+) -> None:
+    """Run the #1799 per-agent-name tool-governance gate; raise 403 on deny.
+
+    Reads the project's `config` (the JSONB holding `tool_grants`) and calls
+    the pure `services.tool_grants.check_grant`. Enforcement is OPT-IN and
+    defaults UNRESTRICTED: `tool_grants` absent, or `role` unlisted, or no
+    role header -> ALLOW. Only an explicitly-listed role missing the tool ->
+    403. The gate writes its own audit row for BOTH allow and deny.
+
+    Wired at the START of the trash handlers, AFTER role resolution and BEFORE
+    the daily-cap / bulk / auth gates — a forbidden role should be turned away
+    before any OAuth/quota work. A missing project row is treated as
+    unrestricted (None config -> ALLOW) rather than 404: the existing handler
+    flow never 404s on the project, and the cross-project guard already lives
+    in `require_project_id_header`'s session binding.
+    """
+    config = (
+        await session.execute(
+            select(Project.config)
+            .where(Project.id == session_project_id)
+            .where(Project.status == RecordStatus.ACTIVE)
+        )
+    ).scalar_one_or_none()
+
+    decision = check_grant(
+        config, role, tool_name, project_id=session_project_id
+    )
+    if decision is GrantDecision.DENY:
+        raise HTTPException(
+            status_code=403,
+            detail=_DETAIL_TOOL_GRANT_DENIED_TEMPLATE.format(
+                role=role, tool=tool_name
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -182,9 +245,15 @@ async def gmail_trash(
     body: GmailTrashRequest,
     force: bool = Query(default=False, description="Bypass the bulk-threshold gate."),
     session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
     session: AsyncSession = Depends(get_session),
 ) -> GmailTrashResponse:
     """Trash Gmail messages by query OR explicit ids.
+
+    Layer 0 (#1799): per-agent-name tool-governance gate — `gmail.trash` must
+    be granted to the `X-Agent-Role` (if the role is restricted in
+    `config.tool_grants`). Fires FIRST so a forbidden role is turned away
+    before any OAuth/quota work. Opt-in: unrestricted by default.
 
     Flow (FIX-6 #1609 — gate ordering):
       message_ids mode:
@@ -201,6 +270,11 @@ async def gmail_trash(
         4. Daily-cap gate (Layer 1) for 20 * count units.
         5. Trash loop; audit row written after upstream call (Layer 2).
     """
+    # Layer 0 (#1799) — tool-governance gate. 403 on a denied (role, gmail.trash).
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "gmail.trash"
+    )
+
     # FIX-6 (#1609): message_ids mode — bulk-check before auth so the payload
     # safety rail is observable without OAuth setup. query mode still requires
     # auth first because the list call (which produces the count) requires auth.
@@ -418,9 +492,15 @@ async def outlook_trash(
     body: OutlookTrashRequest,
     force: bool = Query(default=False, description="Bypass the bulk-threshold gate."),
     session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
     session: AsyncSession = Depends(get_session),
 ) -> OutlookTrashResponse:
     """Move Outlook messages to Deleted Items by query OR explicit ids.
+
+    Layer 0 (#1799): per-agent-name tool-governance gate — `outlook.trash` must
+    be granted to the `X-Agent-Role` (if the role is restricted in
+    `config.tool_grants`). Fires FIRST so a forbidden role is turned away
+    before any OAuth/quota work. Opt-in: unrestricted by default.
 
     Flow (FIX-6 #1609 — gate ordering):
       message_ids mode:
@@ -437,6 +517,11 @@ async def outlook_trash(
         4. Daily-cap gate (Layer 1) for 10 * count units.
         5. Move loop; audit row written after upstream call (Layer 2).
     """
+    # Layer 0 (#1799) — tool-governance gate. 403 on a denied (role, outlook.trash).
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "outlook.trash"
+    )
+
     if body.message_ids is not None:
         ids = list(body.message_ids)
 

@@ -143,8 +143,22 @@ def test_task_update_accepts_explicit_null_clears_cap() -> None:
 
 @pytest.mark.asyncio
 async def test_fire_template_halts_at_cap(client, scaffold_cleanup) -> None:
-    """Template with max_active_children=3: fire 3 times → 3 children + still
-    TODO. 4th fire → no child, template → BLOCKED + halt_reason set."""
+    """Template with max_active_children=3: accumulate 3 open children (drain
+    between fires so dedup doesn't suppress them), then 4th fire → BLOCKED.
+
+    With the dedup gate installed (#1728), consecutive fires on the same template
+    that already has >=1 open child return None (dedup) rather than spawning.
+    To test L21 cap isolation we must drain each child (DONE) before the next
+    fire so active_count stays at 0 between fires — then manually patch 3
+    children back to TODO (or use direct ORM) to fill the cap for the halt test.
+    Simplest approach: bypass the dedup by marking each child DONE immediately
+    after spawn, accumulate 3 DONE children, then restore one to TODO × 3 via
+    PATCH to hit the cap on the halt-fire call.
+
+    Actually the cleanest approach: use cap=1 and fire twice — first succeeds
+    (count=0), second hits cap=1 (L21 before dedup). That tests the L21 halt
+    path unambiguously without fighting dedup.
+    """
     from src.constants import TaskStatus
     from src.db import SessionLocal
     from src.models.task import Task
@@ -159,30 +173,28 @@ async def test_fire_template_halts_at_cap(client, scaffold_cleanup) -> None:
     headers = {"X-Project-Id": str(project_id)}
 
     try:
-        tpl_id = await _make_template(client, project_id, max_children=3)
+        # cap=1: first fire succeeds (active_count=0), second fire hits L21
+        # (active_count=1 >= cap=1) before reaching the dedup branch.
+        tpl_id = await _make_template(client, project_id, max_children=1)
 
-        # Fire 3 times — all spawn successfully, template stays TODO.
-        spawned_ids: list[int] = []
-        for _ in range(3):
-            async with SessionLocal() as db:
-                tpl = await db.get(Task, tpl_id)
-                child = await fire_template(db, tpl)
-                assert child is not None, "first 3 fires must spawn a child"
-                spawned_ids.append(child.id)
-
-        # Verify state after 3 successful spawns: template still TODO, 3 children.
+        # First fire: active_count=0 < cap=1 → spawn.
         async with SessionLocal() as db:
             tpl = await db.get(Task, tpl_id)
-            assert tpl.process_status == TaskStatus.TODO, (
-                f"template should remain TODO after 3 spawns, got {tpl.process_status}"
-            )
+            child = await fire_template(db, tpl)
+            assert child is not None, "first fire (count=0 < cap=1) must spawn a child"
+            child_id = child.id
+
+        # Verify template still TODO after first spawn.
+        async with SessionLocal() as db:
+            tpl = await db.get(Task, tpl_id)
+            assert tpl.process_status == TaskStatus.TODO
             assert tpl.halt_reason is None
 
-        # 4th fire — cap reached, template halts, no child spawned.
+        # Second fire: active_count=1 >= cap=1 → L21 halt (before dedup branch).
         async with SessionLocal() as db:
             tpl = await db.get(Task, tpl_id)
             result = await fire_template(db, tpl)
-            assert result is None, "4th fire at cap must return None"
+            assert result is None, "2nd fire at cap must return None"
 
         # Verify halted template state.
         async with SessionLocal() as db:
@@ -190,21 +202,20 @@ async def test_fire_template_halts_at_cap(client, scaffold_cleanup) -> None:
             assert tpl.process_status == TaskStatus.BLOCKED
             assert tpl.halt_reason == "max_active_children_reached"
             assert tpl.status_change_reason is not None
-            assert "3 active children" in tpl.status_change_reason
-            assert "cap 3" in tpl.status_change_reason
+            assert "1 active children" in tpl.status_change_reason
+            assert "cap 1" in tpl.status_change_reason
 
-        # Verify no 4th child landed.
+        # Verify exactly 1 child total (no extra from halt-fire).
         children = await client.get("/api/tasks?limit=500", headers=headers)
         spawned_from_tpl = [
             t for t in children.json() if t.get("spawned_from_task_id") == tpl_id
         ]
-        assert len(spawned_from_tpl) == 3, (
-            f"expected exactly 3 children, got {len(spawned_from_tpl)}"
+        assert len(spawned_from_tpl) == 1, (
+            f"expected exactly 1 child, got {len(spawned_from_tpl)}"
         )
 
         # Cleanup
-        for cid in spawned_ids:
-            await client.delete(f"/api/tasks/{cid}", headers=headers)
+        await client.delete(f"/api/tasks/{child_id}", headers=headers)
         await client.delete(f"/api/tasks/{tpl_id}", headers=headers)
     finally:
         await client.delete(f"/api/projects/{project_id}")
@@ -219,7 +230,12 @@ async def test_fire_template_halts_at_cap(client, scaffold_cleanup) -> None:
 async def test_fire_template_terminal_children_dont_count(
     client, scaffold_cleanup
 ) -> None:
-    """Mark all 3 spawned children DONE → 4th fire should succeed (no halt)."""
+    """DONE children are not counted as active — subsequent fires spawn freely.
+
+    With the dedup gate (#1728): fire 1 child, mark it DONE (active_count drops
+    to 0), fire again → succeeds (active_count=0, not deduped). Repeat to verify
+    the DONE exclusion holds regardless of how many DONE children exist.
+    """
     from src.constants import TaskStatus
     from src.db import SessionLocal
     from src.models.task import Task
@@ -236,31 +252,33 @@ async def test_fire_template_terminal_children_dont_count(
     try:
         tpl_id = await _make_template(client, project_id, max_children=2)
 
-        # Fire 2 → 2 children.
-        first_ids: list[int] = []
+        all_child_ids: list[int] = []
+
+        # Fire 1, mark DONE; fire again (should succeed since DONE children
+        # don't count toward active_count). Repeat twice to exercise the path.
         for _ in range(2):
             async with SessionLocal() as db:
                 tpl = await db.get(Task, tpl_id)
                 child = await fire_template(db, tpl)
-                assert child is not None
-                first_ids.append(child.id)
-
-        # Mark both DONE via the public API.
-        for cid in first_ids:
+                assert child is not None, (
+                    "spawn must succeed when all prior children are DONE"
+                )
+                all_child_ids.append(child.id)
+            # Mark child DONE so it doesn't block the next fire (dedup or cap).
             await client.patch(
-                f"/api/tasks/{cid}",
+                f"/api/tasks/{all_child_ids[-1]}",
                 json={"process_status": TaskStatus.DONE},
                 headers=headers,
             )
 
-        # 3rd fire — cap is 2 but active count is 0 (both DONE), should spawn.
+        # Third fire — 0 active children (both DONE), should spawn again.
         async with SessionLocal() as db:
             tpl = await db.get(Task, tpl_id)
             child = await fire_template(db, tpl)
             assert child is not None, (
-                "spawn must succeed when prior children are all DONE"
+                "spawn must succeed when all prior children are DONE (2 DONE children)"
             )
-            third_id = child.id
+            all_child_ids.append(child.id)
 
         # Template still TODO.
         async with SessionLocal() as db:
@@ -269,8 +287,7 @@ async def test_fire_template_terminal_children_dont_count(
             assert tpl.halt_reason is None
 
         # Cleanup
-        await client.delete(f"/api/tasks/{third_id}", headers=headers)
-        for cid in first_ids:
+        for cid in all_child_ids:
             await client.delete(f"/api/tasks/{cid}", headers=headers)
         await client.delete(f"/api/tasks/{tpl_id}", headers=headers)
     finally:
@@ -286,7 +303,11 @@ async def test_fire_template_terminal_children_dont_count(
 async def test_fire_template_soft_deleted_children_dont_count(
     client, scaffold_cleanup
 ) -> None:
-    """DELETE /api/tasks/{id} soft-deletes (status=0); next fire should succeed."""
+    """DELETE /api/tasks/{id} soft-deletes (status=0); next fire should succeed.
+
+    With the dedup gate (#1728): fire 1, soft-delete it (active_count drops to 0
+    since status=0 excluded), fire again → spawn succeeds.
+    """
     from src.constants import TaskStatus
     from src.db import SessionLocal
     from src.models.task import Task
@@ -303,26 +324,27 @@ async def test_fire_template_soft_deleted_children_dont_count(
     try:
         tpl_id = await _make_template(client, project_id, max_children=2)
 
-        first_ids: list[int] = []
-        for _ in range(2):
-            async with SessionLocal() as db:
-                tpl = await db.get(Task, tpl_id)
-                child = await fire_template(db, tpl)
-                first_ids.append(child.id)
-
-        # Soft-delete both.
-        for cid in first_ids:
-            await client.delete(f"/api/tasks/{cid}", headers=headers)
-
-        # Next fire — active count should be 0 (soft-deleted excluded).
+        # Fire 1 child.
         async with SessionLocal() as db:
             tpl = await db.get(Task, tpl_id)
             child = await fire_template(db, tpl)
             assert child is not None
-            third_id = child.id
+            first_id = child.id
+
+        # Soft-delete it (status=0 excluded from active_count).
+        await client.delete(f"/api/tasks/{first_id}", headers=headers)
+
+        # Next fire — active count should be 0 (soft-deleted excluded), spawn.
+        async with SessionLocal() as db:
+            tpl = await db.get(Task, tpl_id)
+            child = await fire_template(db, tpl)
+            assert child is not None, (
+                "spawn must succeed when prior child is soft-deleted (status=0)"
+            )
+            second_id = child.id
             assert tpl.process_status == TaskStatus.TODO
 
-        await client.delete(f"/api/tasks/{third_id}", headers=headers)
+        await client.delete(f"/api/tasks/{second_id}", headers=headers)
         await client.delete(f"/api/tasks/{tpl_id}", headers=headers)
     finally:
         await client.delete(f"/api/projects/{project_id}")
@@ -446,8 +468,13 @@ async def test_env_default_fallback_kicks_in(
     client, scaffold_cleanup, monkeypatch
 ) -> None:
     """Template with max_active_children=NULL falls back to
-    MAX_ACTIVE_CHILDREN_DEFAULT. Override env to 2, fire 2, third should halt."""
-    monkeypatch.setenv("MAX_ACTIVE_CHILDREN_DEFAULT", "2")
+    MAX_ACTIVE_CHILDREN_DEFAULT env var (overridden to 1 here).
+
+    With the dedup gate (#1728): active_count >= cap fires BEFORE active_count >= 1
+    (dedup), so cap=1 means first fire spawns (count=0 < cap=1), second fire halts
+    via L21 (count=1 >= cap=1) — env fallback correctly drives the halt.
+    """
+    monkeypatch.setenv("MAX_ACTIVE_CHILDREN_DEFAULT", "1")
 
     from src.constants import TaskStatus
     from src.db import SessionLocal
@@ -471,29 +498,27 @@ async def test_env_default_fallback_kicks_in(
             tpl = await db.get(Task, tpl_id)
             assert tpl.max_active_children is None
 
-        child_ids: list[int] = []
-        for _ in range(2):
-            async with SessionLocal() as db:
-                tpl = await db.get(Task, tpl_id)
-                child = await fire_template(db, tpl)
-                assert child is not None
-                child_ids.append(child.id)
+        # First fire: active_count=0 < cap=1 → spawn.
+        async with SessionLocal() as db:
+            tpl = await db.get(Task, tpl_id)
+            child = await fire_template(db, tpl)
+            assert child is not None, "first fire must spawn (count=0 < env cap=1)"
+            child_id = child.id
 
-        # 3rd fire — env cap is 2, should halt.
+        # Second fire: active_count=1 >= cap=1 → L21 halt (env default).
         async with SessionLocal() as db:
             tpl = await db.get(Task, tpl_id)
             result = await fire_template(db, tpl)
-            assert result is None
+            assert result is None, "second fire must halt (count=1 >= env cap=1)"
 
         async with SessionLocal() as db:
             tpl = await db.get(Task, tpl_id)
             assert tpl.process_status == TaskStatus.BLOCKED
             assert tpl.halt_reason == "max_active_children_reached"
-            # status_change_reason mentions cap=2 (the env value, NOT the hardcoded 100).
-            assert "cap 2" in tpl.status_change_reason
+            # status_change_reason mentions cap=1 (the env value, NOT the hardcoded 100).
+            assert "cap 1" in tpl.status_change_reason
 
-        for cid in child_ids:
-            await client.delete(f"/api/tasks/{cid}", headers=headers)
+        await client.delete(f"/api/tasks/{child_id}", headers=headers)
         await client.delete(f"/api/tasks/{tpl_id}", headers=headers)
     finally:
         await client.delete(f"/api/projects/{project_id}")
@@ -548,7 +573,14 @@ async def test_resume_after_clearing_halt_and_raising_cap(
     client, scaffold_cleanup
 ) -> None:
     """Operator workflow: template halted → PATCH max_active_children up,
-    clear halt_reason, flip ps back to TODO → next fire succeeds."""
+    clear halt_reason, flip ps back to TODO, drain existing child → next fire succeeds.
+
+    With the dedup gate (#1728): after resume, if the original open child still
+    exists, the next fire would deduplicate (active_count >= 1). The real operator
+    workflow when resuming is to also drain the stale open fires (mark DONE /
+    CANCELLED) before the template can fire a fresh child. This test validates that
+    full workflow: halt → drain existing → resume → fire succeeds.
+    """
     from src.constants import TaskStatus
     from src.db import SessionLocal
     from src.models.task import Task
@@ -565,7 +597,7 @@ async def test_resume_after_clearing_halt_and_raising_cap(
     try:
         tpl_id = await _make_template(client, project_id, max_children=1)
 
-        # Spawn 1, then hit cap on 2nd.
+        # Spawn 1, then hit cap on 2nd → template halts.
         async with SessionLocal() as db:
             tpl = await db.get(Task, tpl_id)
             first = await fire_template(db, tpl)
@@ -573,10 +605,9 @@ async def test_resume_after_clearing_halt_and_raising_cap(
 
         async with SessionLocal() as db:
             tpl = await db.get(Task, tpl_id)
-            assert await fire_template(db, tpl) is None  # halted
+            assert await fire_template(db, tpl) is None  # halted via L21 (cap=1)
 
-        # Operator workflow: raise cap to 5, clear halt_reason, restore TODO.
-        # halt_reason explicit-null is meaningful (TaskUpdate semantics).
+        # Operator workflow: raise cap, clear halt, restore TODO.
         patch_resp = await client.patch(
             f"/api/tasks/{tpl_id}",
             json={
@@ -592,11 +623,22 @@ async def test_resume_after_clearing_halt_and_raising_cap(
         assert body["halt_reason"] is None
         assert body["process_status"] == TaskStatus.TODO
 
-        # Next fire — should succeed (1 child < new cap of 5).
+        # Drain the existing open child (mark DONE) so the dedup gate doesn't
+        # suppress the post-resume fire. In the real operator workflow, stale
+        # open fires are resolved before the template is re-enabled.
+        await client.patch(
+            f"/api/tasks/{first_id}",
+            json={"process_status": TaskStatus.DONE},
+            headers=headers,
+        )
+
+        # Post-resume fire — active_count=0 (first child is DONE), spawn succeeds.
         async with SessionLocal() as db:
             tpl = await db.get(Task, tpl_id)
             second = await fire_template(db, tpl)
-            assert second is not None, "post-resume fire must spawn"
+            assert second is not None, (
+                "post-resume fire must spawn when stale child is drained"
+            )
             second_id = second.id
 
         # Cleanup

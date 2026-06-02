@@ -42,6 +42,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import time
 from types import ModuleType
 from typing import Any
@@ -265,6 +266,49 @@ async def _poll_once(
                 "status_change_reason": (
                     f"L17 worker gate: task content matched destructive patterns "
                     f"({matched}). Human review required before auto-run."
+                )[:_REASON_MAX],
+            },
+        )
+        return
+
+    # 1d) Mode-B Phase-1 host-prereq gate (Kanban #1800 / #1652). Adjacent to
+    # the L17 gate, BEFORE the IN_PROGRESS flip + the LLM call (zero token
+    # spend). The bound project may declare `required_binaries` — host
+    # executables its Mode-B tools shell out to (e.g. ffmpeg, yt-dlp). A binary
+    # dep can ONLY be satisfied by editing langgraph/Dockerfile + rebuilding the
+    # shared image (a CORE edit — the anti-pattern), so until #1652 Phase 2
+    # builds per-project images, a binary-dep project is Mode-A-only. Rather
+    # than let the tool blow up mid-run with an opaque FileNotFoundError, we
+    # fail CLEAN here: `shutil.which()` each declared binary; if any is missing,
+    # PATCH BLOCKED with halt_reason='runtime_prereq_missing' naming the missing
+    # binary. None / empty → skip entirely (project byte-for-byte unaffected).
+    required_binaries = await _fetch_project_required_binaries(
+        client, cfg, headers, cfg.project_id
+    )
+    missing = [
+        b for b in (required_binaries or []) if shutil.which(b) is None
+    ]
+    if missing:
+        logger.warning(
+            "Mode-B prereq gate: REFUSING to invoke agent on task %d — "
+            "missing host binaries %s (project %d declares required_binaries=%s)",
+            task_id,
+            missing,
+            cfg.project_id,
+            required_binaries,
+        )
+        await _patch_task(
+            client,
+            cfg,
+            headers,
+            task_id,
+            {
+                "process_status": STATUS_BLOCKED,
+                "halt_reason": "runtime_prereq_missing",
+                "status_change_reason": (
+                    f"Mode-B host-prereq gate: missing host binar"
+                    f"{'ies' if len(missing) > 1 else 'y'} {missing} not on "
+                    f"PATH — project is Mode-A-only until #1652 Phase 2."
                 )[:_REASON_MAX],
             },
         )
@@ -704,6 +748,94 @@ async def _fetch_project_policies(
     policies = body.get("approval_policies") if isinstance(body, dict) else None
     _policy_cache[project_id] = (now, policies)
     return policies
+
+
+# ---------------------------------------------------------------------------
+# Mode-B host-prereq fetch (Kanban #1800 / #1652)
+# ---------------------------------------------------------------------------
+
+# Tiny in-process TTL cache for required_binaries — sibling of _policy_cache.
+# Saves a GET /api/projects/{id} on every poll tick while still picking up
+# operator-side edits within ~10s. Keyed by project_id; process-local; restart
+# clears. Mirrors the _fetch_project_policies cache contract exactly.
+_required_binaries_cache: dict[int, tuple[float, list[str] | None]] = {}
+
+
+def _required_binaries_cache_clear() -> None:
+    """Test hook — clear the in-process required_binaries cache."""
+    _required_binaries_cache.clear()
+
+
+async def _fetch_project_required_binaries(
+    client: httpx.AsyncClient,
+    cfg: WorkerConfig,
+    headers: dict[str, str],
+    project_id: int,
+) -> list[str] | None:
+    """GET /api/projects/{project_id} and return its `required_binaries` field.
+
+    Returns None (= "no host-binary requirements"; gate skips) on:
+      - any non-200 response
+      - missing / null `required_binaries` field in the body
+      - JSON parse failure
+      - a non-list value (defensive — a hand-edited row should not crash the
+        gate; treat malformed shapes as "no requirements" and proceed).
+
+    FAIL-OPEN rationale: a transient API hiccup must NOT block every task on the
+    board. The gate's job is to catch the *declared-and-missing* case crisply;
+    when we cannot read the declaration, we proceed (the legacy opaque
+    FileNotFoundError remains the backstop). This mirrors
+    `_fetch_project_policies`' "fall back to the safe default on read failure"
+    posture. Results cached ~10s per project_id (sibling of the policy cache).
+    """
+    now = time.monotonic()
+    cached = _required_binaries_cache.get(project_id)
+    if cached is not None and (now - cached[0]) < _POLICY_CACHE_TTL_SEC:
+        return cached[1]
+
+    try:
+        resp = await client.get(
+            f"{cfg.api_base}/api/projects/{project_id}", headers=headers
+        )
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "required_binaries fetch: project %d HTTP error %s; proceeding "
+            "(gate fails open on read failure)",
+            project_id,
+            exc,
+        )
+        # Do NOT cache the failure — the next tick should retry.
+        return None
+    if resp.status_code != 200:
+        logger.warning(
+            "required_binaries fetch: project %d returned %d; proceeding "
+            "(gate fails open on read failure)",
+            project_id,
+            resp.status_code,
+        )
+        return None
+    try:
+        body = resp.json()
+    except ValueError:
+        logger.warning(
+            "required_binaries fetch: project %d returned non-JSON body; proceeding",
+            project_id,
+        )
+        return None
+    value = body.get("required_binaries") if isinstance(body, dict) else None
+    # Value-tolerant: only a list of names is meaningful. A hand-edited scalar /
+    # dict is treated as "no requirements" so the gate never crashes on a
+    # malformed row (parity with the API's value-tolerant ProjectRead).
+    if value is not None and not isinstance(value, list):
+        logger.warning(
+            "required_binaries fetch: project %d has non-list value %r; "
+            "treating as no requirements",
+            project_id,
+            value,
+        )
+        value = None
+    _required_binaries_cache[project_id] = (now, value)
+    return value
 
 
 # ---------------------------------------------------------------------------

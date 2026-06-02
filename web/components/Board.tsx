@@ -306,6 +306,24 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
+  // Kanban #1787 — needs-attention badge: tasks requiring human action.
+  // Predicate: REVIEW (ps=3) | BLOCKED (ps=4) | is_pending=true | halt_reason non-empty.
+  // halt_reason catches halted-but-not-BLOCKED tasks (e.g. operator-HOLD tasks
+  // parked in TODO with a halt_reason set). TaskRead includes halt_reason (#1001).
+  // Derived from the unfiltered tasks list (not visibleTasks) so the count
+  // reflects the real state even when the audit-task filter is active.
+  const needsAttentionCount = useMemo(
+    () =>
+      tasks.filter(
+        (t) =>
+          t.process_status === TaskStatus.REVIEW ||
+          t.process_status === TaskStatus.BLOCKED ||
+          t.is_pending === true ||
+          (t.halt_reason != null && t.halt_reason !== ""),
+      ).length,
+    [tasks],
+  );
+
   // #1238 GOV3 — audit-task tally is computed against the unfiltered list so
   // the toggle chip can show "Show audit tasks (N)" even when the filter is
   // active. AuditHistorySection consumes the full audit list separately (via
@@ -513,6 +531,18 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
               label={`Scheduled / template tasks (${scheduledTaskCount})`}
               count={scheduledTaskCount}
               dataAttr="data-scheduled-task-badge"
+            />
+          )}
+          {/* Kanban #1787 — needs-attention badge: tasks where REVIEW | BLOCKED |
+              is_pending=true (halted tasks land on ps=4 which BLOCKED covers).
+              Display-only count pill; data-needs-attention-count is the smoke anchor. */}
+          {needsAttentionCount > 0 && (
+            <HeaderIconBtn
+              icon="alert"
+              label={`Needs attention (${needsAttentionCount})`}
+              count={needsAttentionCount}
+              tone="amber"
+              dataAttr="data-needs-attention-count"
             />
           )}
           <span aria-hidden className="text-zinc-300 dark:text-zinc-600">

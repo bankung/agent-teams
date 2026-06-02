@@ -62,6 +62,17 @@ _AGENT_OVERRIDE_KEY = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 _ALLOWED_URL_SCHEMES = ("http", "https", "ref", "file")
 _SCHEME_RE = re.compile(rf"^({'|'.join(_ALLOWED_URL_SCHEMES)})://", re.IGNORECASE)
 
+# Kanban #1800 / #1652 — `projects.required_binaries` element shape. Each entry
+# is a plain executable NAME resolved against PATH by the langgraph worker's
+# `shutil.which()` pre-pickup gate — NOT a path, glob, or shell fragment. The
+# regex must start with an alphanumeric (rejects leading dot/dash that could
+# read as a flag or hidden file) then allow only `[A-Za-z0-9._-]`. This rejects
+# the entire injection surface: paths (`/`, `\`, `..`), shell metachars
+# (`;`, `|`, `&`, `$`, backtick, spaces), and the empty string. Mirrors the
+# memo §B.1 "name+pin regex (reject URLs, git+, shell metachars)" posture,
+# minus the version-pin part (Phase 1 declares names only, no install).
+_BINARY_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
 
 # Kanban #7 Section A (AC#1) — per-project enabled_roles validator (JSONB
 # subkey, not a column). Semantic contract:
@@ -92,6 +103,79 @@ def _validate_enabled_roles_in_config(config: dict[str, Any]) -> dict[str, Any]:
                 f"({TaskRole.RANGE_MIN}..{TaskRole.RANGE_MAX})"
             )
     return config
+
+
+# Kanban #1799 (2026-06-02) — `config.tool_grants` validator (JSONB subkey, not
+# a column), mirroring `_validate_enabled_roles_in_config`. Grant store for the
+# Mode-A tool-governance gate (`services/tool_grants.check_grant`). Shape:
+#   { "<agent-type-name>": ["<tool_name>", ...] }
+# Semantic contract:
+#   - key absent          -> "unrestricted" (no role is locked down; default)
+#   - { role: [tool,...] } -> role is restricted to exactly that allow-list
+#   - { role: [] }         -> role is denied every tool (explicit lockout)
+# Validation (422 on violation):
+#   - tool_grants itself must be a dict.
+#   - each KEY (role) must match `_AGENT_OVERRIDE_KEY` — the same agent-type-name
+#     shape used by agent_overrides (cross-team role names all fit).
+#   - each VALUE must be a list of strings, each a registry-known tool name. A
+#     tool name absent from `services/tool_registry.TOOL_REGISTRY` is a typo /
+#     stale entry and is rejected so a grant can never silently reference a tool
+#     that does not exist.
+# `is_known_tool` is imported lazily inside the function: `tool_registry`
+# imports `ToolTier` from THIS module, so a top-level import would be circular.
+def _validate_tool_grants_in_config(config: dict[str, Any]) -> dict[str, Any]:
+    if "tool_grants" not in config:
+        return config
+    from src.services.tool_registry import is_known_tool
+
+    grants = config["tool_grants"]
+    if not isinstance(grants, dict):
+        raise ValueError(
+            "config.tool_grants must be an object mapping role -> [tool_name, ...] "
+            f"(got {type(grants).__name__})"
+        )
+    for role, tools in grants.items():
+        if not _AGENT_OVERRIDE_KEY.fullmatch(role):
+            raise ValueError(
+                f"config.tool_grants role key {role!r} must match "
+                f"{_AGENT_OVERRIDE_KEY.pattern}"
+            )
+        if not isinstance(tools, list):
+            raise ValueError(
+                f"config.tool_grants[{role!r}] must be a list of tool names "
+                f"(got {type(tools).__name__})"
+            )
+        for idx, tool in enumerate(tools):
+            if not isinstance(tool, str):
+                raise ValueError(
+                    f"config.tool_grants[{role!r}][{idx}] must be a tool name "
+                    f"string (got {type(tool).__name__}: {tool!r})"
+                )
+            if not is_known_tool(tool):
+                raise ValueError(
+                    f"config.tool_grants[{role!r}][{idx}]={tool!r} is not a "
+                    "registered tool (see services/tool_registry.TOOL_REGISTRY)"
+                )
+    return config
+
+
+# Kanban #1800 / #1652 — shared validator for `required_binaries` on Create +
+# Update. None passes through (key-absent / explicit-null both surface as None
+# at the field level; the router distinguishes them via exclude_unset). Each
+# element must be a non-empty str matching `_BINARY_NAME_RE`. Rejecting paths /
+# shell metachars at the boundary keeps the worker's `shutil.which(name)` call
+# fed only with bare executable names.
+def _validate_required_binaries(v: list[str] | None) -> list[str] | None:
+    if v is None:
+        return v
+    for idx, name in enumerate(v):
+        if not isinstance(name, str) or not _BINARY_NAME_RE.fullmatch(name):
+            raise ValueError(
+                f"required_binaries[{idx}]={name!r} must be a bare executable "
+                f"name matching {_BINARY_NAME_RE.pattern} (no paths, slashes, "
+                f"shell metacharacters, or empty strings)"
+            )
+    return v
 
 
 class SourceEntry(BaseModel):
@@ -296,6 +380,13 @@ class ProjectCreate(BaseModel):
         default=None, max_length=20
     )
 
+    # Kanban #1800 / #1652: Mode-B Phase-1 host-binary requirements. None (the
+    # default) → router OMITS the column from INSERT so the DB column lands NULL
+    # (= "no host-binary requirements"; worker gate skips). An explicit list is
+    # validated element-by-element against `_BINARY_NAME_RE`. max_length=50 caps
+    # array size at the boundary (operator-configured, low cardinality expected).
+    required_binaries: list[str] | None = Field(default=None, max_length=50)
+
     @field_validator("agent_overrides")
     @classmethod
     def _validate_agent_override_keys(cls, v):
@@ -308,13 +399,20 @@ class ProjectCreate(BaseModel):
                 )
         return v
 
+    @field_validator("required_binaries")
+    @classmethod
+    def _validate_required_binaries(cls, v):
+        return _validate_required_binaries(v)
+
     # Kanban #7 Section A (AC#1) — validate config.enabled_roles JSONB subkey.
+    # Kanban #1799 — also validate config.tool_grants JSONB subkey.
     @field_validator("config")
     @classmethod
     def _validate_config_enabled_roles(cls, v):
         if not v:
             return v
-        return _validate_enabled_roles_in_config(v)
+        v = _validate_enabled_roles_in_config(v)
+        return _validate_tool_grants_in_config(v)
 
 
 class ProjectUpdate(BaseModel):
@@ -464,6 +562,15 @@ class ProjectUpdate(BaseModel):
         default=None, max_length=20
     )
 
+    # Kanban #1800 / #1652 (2026-06-02): Mode-B Phase-1 host-binary requirements.
+    # PATCH semantics mirror `notification_targets` EXACTLY: key-absent leaves
+    # the column unchanged (exclude_unset); explicit list REPLACES the prior
+    # value (no merge); explicit `null` CLEARS to NULL (= no host-binary
+    # requirements; worker gate skips). The DB column IS nullable and ProjectRead
+    # surfaces None as null on the wire — like notification_targets, we do NOT
+    # coerce to []. Element shape validated against `_BINARY_NAME_RE`.
+    required_binaries: list[str] | None = Field(default=None, max_length=50)
+
     # Kanban #1011 (2026-05-20): per-project HITL aging nudge threshold.
     # PATCH semantics — key-absent leaves unchanged (exclude_unset); explicit
     # `null` CLEARS to NULL (= disabled); explicit int sets the threshold.
@@ -498,15 +605,22 @@ class ProjectUpdate(BaseModel):
                 )
         return v
 
+    @field_validator("required_binaries")
+    @classmethod
+    def _validate_required_binaries(cls, v):
+        return _validate_required_binaries(v)
+
     # Kanban #7 Section A (AC#1) — validate config.enabled_roles JSONB subkey
     # on PATCH (mirrors ProjectCreate). Key-absent → leave unchanged
     # (exclude_unset); explicit dict → validate enabled_roles if present.
+    # Kanban #1799 — also validate config.tool_grants JSONB subkey on PATCH.
     @field_validator("config")
     @classmethod
     def _validate_config_enabled_roles(cls, v):
         if v is None or not v:
             return v
-        return _validate_enabled_roles_in_config(v)
+        v = _validate_enabled_roles_in_config(v)
+        return _validate_tool_grants_in_config(v)
 
 
 class ProjectRead(BaseModel):
@@ -634,6 +748,15 @@ class ProjectRead(BaseModel):
     # Writes still go through the strict `NotificationTarget` validator on
     # POST/PATCH.
     notification_targets: list[dict[str, Any]] | None = None
+
+    # Kanban #1800 / #1652 (2026-06-02) — Mode-B Phase-1 host-binary
+    # requirements. NULL = no host-binary requirements (worker gate skips).
+    # Value-tolerant on read (`list[str] | None`, NOT coerced to [] — the
+    # "no requirements" NULL state is distinct from "[] configured", same as
+    # notification_targets) so a legacy / hand-edited row never 500s a read.
+    # Writes still go through the strict `_BINARY_NAME_RE` validator on
+    # POST/PATCH.
+    required_binaries: list[str] | None = None
 
     # Kanban #1011 (2026-05-20) — per-project HITL aging nudge threshold.
     # NULL = nudges disabled. 0 = nudges disabled (same semantics as NULL).
