@@ -665,6 +665,12 @@ type ListTasksOpts = {
   // Kanban #1868 — filter to tasks assigned to a given milestone id. Used by
   // the milestones page to surface a milestone's task list.
   milestone_id?: number;
+  // Kanban #1873 (M2 Calendar) — inclusive due_date range filter. Both are ISO
+  // "YYYY-MM-DD" date strings; the BE returns tasks whose due_date falls within
+  // [due_from, due_to]. Used by the Calendar view to fetch a visible month's
+  // tasks. Either may be sent independently (open-ended range).
+  due_from?: string;
+  due_to?: string;
 };
 
 export async function listTasks(
@@ -678,6 +684,8 @@ export async function listTasks(
     qs.set("parent_task_id", String(opts.parent_task_id));
   if (opts.milestone_id !== undefined)
     qs.set("milestone_id", String(opts.milestone_id));
+  if (opts.due_from !== undefined) qs.set("due_from", opts.due_from);
+  if (opts.due_to !== undefined) qs.set("due_to", opts.due_to);
   if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
   const path = buildPath("/api/tasks", qs);
   return jsonFetch<TaskRead[]>(path, {

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import types as _types
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi import status as http_status
@@ -349,6 +349,20 @@ async def list_tasks(
         ge=1,
         description="Filter to tasks assigned to the given milestone id (Kanban #1868).",
     ),
+    due_from: date | None = Query(
+        default=None,
+        description=(
+            "Inclusive lower bound on tasks.due_date (Calendar M2). "
+            "Tasks with NULL due_date are excluded when any due bound is set."
+        ),
+    ),
+    due_to: date | None = Query(
+        default=None,
+        description=(
+            "Inclusive upper bound on tasks.due_date (Calendar M2). "
+            "Tasks with NULL due_date are excluded when any due bound is set."
+        ),
+    ),
     top_level_only: bool = Query(
         default=False,
         description=(
@@ -414,6 +428,12 @@ async def list_tasks(
     # Kanban #1868: filter to a single milestone's tasks.
     if milestone_id is not None:
         stmt = stmt.where(Task.milestone_id == milestone_id)
+    # Calendar M2: due_date range filter. NULL due_date rows are excluded when
+    # any bound is provided (open-ended range is fine; either bound alone works).
+    if due_from is not None:
+        stmt = stmt.where(Task.due_date >= due_from)
+    if due_to is not None:
+        stmt = stmt.where(Task.due_date <= due_to)
     if top_level_only:
         stmt = stmt.where(Task.parent_task_id.is_(None))
     elif parent_task_id is not None:

@@ -496,6 +496,22 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
             Milestones
           </Link>
           <Sep />
+          {/* #1873 (M2) — month-grid calendar of task due_dates + milestone deadlines. */}
+          <Link
+            href={`/p/${encodeURIComponent(project.name)}/calendar`}
+            className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
+          >
+            Calendar
+          </Link>
+          <Sep />
+          {/* #1874 (M3) — milestone-level Gantt timeline. */}
+          <Link
+            href={`/p/${encodeURIComponent(project.name)}/gantt`}
+            className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
+          >
+            Gantt
+          </Link>
+          <Sep />
           <span className="text-zinc-600 dark:text-zinc-400">
             team: <span className="text-zinc-900 dark:text-zinc-100">{project.team}</span>
           </span>
