@@ -127,14 +127,13 @@ Template:
 - `main` HEAD always == the latest release tag; never force-push `main`.
 - Trial run: first release `v0.1.0` cut from main today (2026-05-29); hotfix (0.1.1) + first weekly bump (0.2.0) being exercised manually during the trial. Promote to dev-team methodology (`context/teams/dev/`) only if it proves out over a few weeks.
 
-## 2026-05-29 — Public-repo hygiene: removed internal working notes + pre-push keyword guard — Kanban #1637
+## 2026-05-29 — Public-repo hygiene: removed internal working notes — Kanban #1637
 **Scope:** shared / privacy
 
-**Decision:** Removed a few dated internal working notes and genericized some incidental references that carried early-stage private planning detail not intended for a public repository. Chose edit-forward remediation (remove/genericize at HEAD + add a prevention hook) over a git-history rewrite + force-push — the rewrite would break active worktrees/clones and offers diminishing returns (rewrite is not a full guarantee against caches/forks).
+**Decision:** Removed a few dated internal working notes and genericized some incidental references that carried early-stage private planning detail not intended for a public repository. Chose edit-forward remediation (remove/genericize at HEAD) over a git-history rewrite + force-push — the rewrite would break active worktrees/clones and offers diminishing returns (rewrite is not a full guarantee against caches/forks).
 
 **Implications:**
 - Internal/early-stage planning notes stay in the DB + local-only zones, never in tracked repo files.
-- A pre-push keyword guard now blocks pushes that would reintroduce the flagged terms into tracked files.
 - Prior content remains in git history; a future history-rewrite stays available if ever warranted.
 
 ## 2026-05-28 — api suite determinism: triage closed, 0051 downgrade regression fixed, concurrent-invocation lock added — Kanban #1599

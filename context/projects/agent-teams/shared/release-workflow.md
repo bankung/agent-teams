@@ -50,8 +50,6 @@
 4. `git checkout dev && git merge main`.
 
 ## Guardrails
-- The pre-push hook (`.git/hooks/pre-push`, #1637) scans tracked content on
-  EVERY push — to `main` AND `dev`. Keep both clean of the flagged keyword set.
 - A recruiter sees `main` (the curated weekly release), not `dev`'s churn.
 - Trial status: this is a first run (Kanban #1646). Promote to dev-team
   methodology (`context/teams/dev/`) only if it proves out across a few weeks.

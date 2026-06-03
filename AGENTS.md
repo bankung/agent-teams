@@ -122,7 +122,6 @@ Dev team tracks subagent tier in `tasks.subagent_models` per Kanban #887 — ful
 - Marking task done without opening modified files → **always verify first**.
 - `git add -A` on scoped task → **stage only files this task touched**.
 - Carrying context across project switch → **re-resolve active project, re-read team playbook + shared/**.
-- Lifecycle-program lock-code keywords in committed files → see `.git/hooks/pre-push` and [.codex/docs/lessons.md](.codex/docs/lessons.md) "Lifecycle-program keywords."
 - Saving a project-scoped memory to operator memory dir instead of `<working_path>/shared/` → **wrong zone; see Q3 above**.
 
 ## Available teams

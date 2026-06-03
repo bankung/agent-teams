@@ -126,20 +126,6 @@ When `working_path` changes on a project, BOTH the DB row AND any agent prompts 
 2. novel-drift agents written to agent-teams `.claude/agents/` instead of novel-drift's own `.claude/`.
 3. agent-teams becomes a content store coupled to N external projects' release cadence — unsustainable.
 
-## Lifecycle-program keywords (pre-push hook enforcement)
-
-**Rule.** Committed files MUST NOT contain lifecycle-program lock-code keywords. The `.git/hooks/pre-push` hook enforces forward-prevention; existing history may carry pre-policy leaks but won't ship going forward.
-
-**What is a lifecycle-program lock-code keyword?** Keywords that indicate Kanban workflow state, process status, or internal automation control. Examples (not exhaustive): `task_id`, `process_status_lock`, `status_transition_gate`, `auto_archive_on_done`, etc. These belong in the DB schema and API contracts, not in committed prose or code comments.
-
-**Why banned from code.** When keywords live in code, they create phantom dependencies: the next engineer reads the keyword in a docstring, assumes it's a feature or rule, tries to use it, discovers it's either defunct or exists only in the DB schema. The gap between code documentation and DB reality breeds confusion and incorrect assumptions.
-
-**Substitution.** `_scratch/.lifecycle-mapping.md` documents approved substitutions for common patterns. Example:
-- ✗ `# TODO: auto_archive_on_done` (lifecycle keyword)
-- ✓ `# TODO: archive when task closes (manual via UI or future automation)` (prose description, no keyword)
-
-The pre-push hook scans committed diffs for known keywords and blocks the push if any are found. Developers can override locally for emergency fixes, but the block is the standard gate.
-
 ## Karpathy lane (universal discipline on every turn)
 
 **Three core principles:**

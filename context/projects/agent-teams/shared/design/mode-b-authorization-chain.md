@@ -3,7 +3,7 @@
 **Decision date:** 2026-05-19
 **Source task:** Kanban #1205
 **Status:** design lock; implementation children seeded as separate tasks
-**Promote target (Lead, after lock-code check):** `context/projects/agent-teams/shared/design/mode-b-authorization-chain.md`
+**Promote target (Lead, after review):** `context/projects/agent-teams/shared/design/mode-b-authorization-chain.md`
 
 ---
 

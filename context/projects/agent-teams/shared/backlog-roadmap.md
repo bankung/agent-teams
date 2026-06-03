@@ -62,7 +62,7 @@ This cluster kills the scheduler-noise root cause (#1728) and unblocks headless 
 - **UI nice-to-have:** #1000 (approval inbox /inbox), #1005 (comment thread), #1008/#1013 (inline AC edit), #1014 (approval-policy authoring UI), #1292 (burndown charts), #1582 (onboarding tour), #1457 (HITL inbox phase 2), #1678 (zero-LLM memory search).
 - **Misc/integration:** #806 (Kanban-as-MCP adapter), #1086 (DeepSeek provider), #1474/#1475 (backup recovery + drill), #1015-cookbook.
 - **External-integration / notification plumbing:** #1439 (external-notify rate-limit+retry), #1275 / #1424 (PreToolUse authz hook patterns + audit-trail-to-gate), #1388 (local-cron LinkedIn/JobsDB response check + push), #1470 (web test framework + phone E2E smoke).
-- **Audit/auditor followups:** #1222 (stale-doc curator), #1223 (auto-propose runbook stubs), #1233/#1239/#1240/#1261/#1243/#1244 (AA-series followups), #1213 (threshold drift), #1265 (cache-hit verify), #1263 (lock-code-hygiene Phase 2B).
+- **Audit/auditor followups:** #1222 (stale-doc curator), #1223 (auto-propose runbook stubs), #1233/#1239/#1240/#1261/#1243/#1244 (GOV-series followups), #1213 (threshold drift), #1265 (cache-hit verify), #1263 (public-repo hygiene Phase 2B).
 - **netops:** #1643 (in-progress, blocked on operator: move agents + restart, tracked by #1649) · #1649 (smoke-gate).
 
 ---
