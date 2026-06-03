@@ -96,6 +96,21 @@ function yAt(
   return top + plotH * (1 - frac);
 }
 
+const MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+
 // formatDate — "2026-03-02" → "Mar 2" for compact axis labels. Falls back to
 // the raw string if it doesn't parse (defensive; the contract is "YYYY-MM-DD").
 function formatDate(t: string): string {
@@ -103,20 +118,6 @@ function formatDate(t: string): string {
   if (parts.length !== 3) return t;
   const [y, mo, d] = parts.map((p) => Number.parseInt(p, 10));
   if (!y || !mo || !d) return t;
-  const MONTHS = [
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-  ];
   return `${MONTHS[mo - 1] ?? mo} ${d}`;
 }
 

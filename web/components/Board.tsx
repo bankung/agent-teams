@@ -79,6 +79,13 @@ const ALL_STATUSES: TaskStatusValue[] = [
   TaskStatus.DONE,
 ];
 
+// Nav-row separator — 7 identical occurrences in the header row.
+const Sep = () => (
+  <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
+    ·
+  </span>
+);
+
 const COLUMN_PS: Record<string, TaskStatusValue> = Object.fromEntries(
   COLUMNS.flatMap((col) => col.statuses.map((s) => [col.key, s] as const)),
 );
@@ -463,18 +470,14 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
           data-board-nav-row
         >
           <ProjectSwitcher current={project.name} />
-          <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
-            ·
-          </span>
+          <Sep />
           <Link
             href="/dashboard"
             className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
           >
             Dashboard
           </Link>
-          <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
-            ·
-          </span>
+          <Sep />
           {/* #1349 — per-project settings (nudge threshold + future knobs).
               KEPT as a text link (distinct from the platform Integrations icon
               in the right cluster). */}
@@ -484,23 +487,17 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
           >
             Settings
           </Link>
-          <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
-            ·
-          </span>
+          <Sep />
           <span className="text-zinc-600 dark:text-zinc-400">
             team: <span className="text-zinc-900 dark:text-zinc-100">{project.team}</span>
           </span>
           {project.sources.length > 0 && (
             <>
-              <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
-                ·
-              </span>
+              <Sep />
               <SourcesBadge sources={project.sources} />
             </>
           )}
-          <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
-            ·
-          </span>
+          <Sep />
           <span className="text-zinc-500 dark:text-zinc-400 tabular-nums">
             {visibleTasks.length} task{visibleTasks.length === 1 ? "" : "s"}
           </span>
@@ -545,14 +542,12 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
               dataAttr="data-needs-attention-count"
             />
           )}
-          <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
-            ·
-          </span>
+          <Sep />
           <ConnectionStateBadge
             state={connectionState}
             lastEventAt={lastEventAt}
           />
-          <span aria-hidden className="text-zinc-300 dark:text-zinc-600">·</span>
+          <Sep />
           {/* #954 — 44px min tap target on mobile for view-mode toggle */}
           <span className="inline-flex items-center rounded-md border border-zinc-200 dark:border-zinc-700 overflow-hidden text-xs">
             {(["board", "list"] as const).map((v) => (

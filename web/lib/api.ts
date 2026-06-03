@@ -237,12 +237,6 @@ export type TaskRead = {
   completed_at: string | null;
 };
 
-// ProjectGrantConsent — body shape for POST /api/projects/{id}/grant-consent (#483).
-// Backend uses Pydantic extra="forbid" — sending any other field returns 422.
-export type ProjectGrantConsent = {
-  confirm_name: string;
-};
-
 // HttpError — typed error for non-2xx API responses. Callers (page.tsx) can
 // discriminate on `.status` to separate 404 from 500 / network / 422. The
 // `.message` is the formatted detail (string for 400, joined `msg` for Pydantic
@@ -324,6 +318,19 @@ async function jsonFetch<T>(
   return (await response.json()) as T;
 }
 
+// buildPath — append URLSearchParams as a query string when non-empty.
+function buildPath(base: string, qs: URLSearchParams): string {
+  return qs.toString() ? `${base}?${qs}` : base;
+}
+
+// applyActor — stamp X-Actor header when actor is a non-empty string.
+function applyActor(
+  headers: Record<string, string>,
+  actor: string | undefined,
+): void {
+  if (actor && actor.trim().length > 0) headers["X-Actor"] = actor.trim();
+}
+
 export async function getProjectByName(name: string): Promise<ProjectRead> {
   return jsonFetch<ProjectRead>(
     `/api/projects/by-name/${encodeURIComponent(name)}`,
@@ -345,7 +352,7 @@ export async function listProjects(
 ): Promise<ProjectRead[]> {
   const qs = new URLSearchParams();
   if (opts.status !== undefined) qs.set("status", String(opts.status));
-  const path = qs.toString() ? `/api/projects?${qs}` : `/api/projects`;
+  const path = buildPath("/api/projects", qs);
   return jsonFetch<ProjectRead[]>(path);
 }
 
@@ -418,9 +425,7 @@ export async function getAuditDailyRollup(
   const qs = new URLSearchParams();
   if (opts.from) qs.set("from", opts.from);
   if (opts.to) qs.set("to", opts.to);
-  const path = qs.toString()
-    ? `/api/audit/daily-rollup?${qs}`
-    : `/api/audit/daily-rollup`;
+  const path = buildPath("/api/audit/daily-rollup", qs);
   return jsonFetch<AuditDailyRollupEntry[]>(path);
 }
 
@@ -539,7 +544,7 @@ export async function killProject(
 ): Promise<KillReviveResponse> {
   const qs = force ? "?force=true" : "";
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (actor && actor.trim().length > 0) headers["X-Actor"] = actor.trim();
+  applyActor(headers, actor);
   return jsonFetch<KillReviveResponse>(`/api/projects/${projectId}/kill${qs}`, {
     method: "POST",
     headers,
@@ -552,7 +557,7 @@ export async function reviveProject(
   actor?: string,
 ): Promise<KillReviveResponse> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (actor && actor.trim().length > 0) headers["X-Actor"] = actor.trim();
+  applyActor(headers, actor);
   return jsonFetch<KillReviveResponse>(`/api/projects/${projectId}/revive`, {
     method: "POST",
     headers,
@@ -589,10 +594,6 @@ export type PauseUnpauseResponse = {
 };
 
 export type PauseProjectBody = { reason: string };
-// Unpause carries no body fields today; the type exists so a future
-// unpause-time field (e.g. `recompute_recurrence: bool`) can land without
-// breaking the wire contract.
-export type UnpauseProjectBody = Record<string, never>;
 
 export async function pauseProject(
   projectId: number,
@@ -600,7 +601,7 @@ export async function pauseProject(
   actor?: string,
 ): Promise<PauseUnpauseResponse> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (actor && actor.trim().length > 0) headers["X-Actor"] = actor.trim();
+  applyActor(headers, actor);
   return jsonFetch<PauseUnpauseResponse>(`/api/projects/${projectId}/pause`, {
     method: "POST",
     headers,
@@ -613,7 +614,7 @@ export async function unpauseProject(
   actor?: string,
 ): Promise<PauseUnpauseResponse> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (actor && actor.trim().length > 0) headers["X-Actor"] = actor.trim();
+  applyActor(headers, actor);
   return jsonFetch<PauseUnpauseResponse>(`/api/projects/${projectId}/unpause`, {
     method: "POST",
     headers,
@@ -663,7 +664,7 @@ export async function listTasks(
   else if (opts.parent_task_id !== undefined)
     qs.set("parent_task_id", String(opts.parent_task_id));
   if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
-  const path = qs.toString() ? `/api/tasks?${qs}` : `/api/tasks`;
+  const path = buildPath("/api/tasks", qs);
   return jsonFetch<TaskRead[]>(path, {
     headers: { "X-Project-Id": String(projectId) },
   });
@@ -1074,7 +1075,7 @@ export async function resolveFlag(
     "Content-Type": "application/json",
     "X-Project-Id": String(projectId),
   };
-  if (actor && actor.trim().length > 0) headers["X-Actor"] = actor.trim();
+  applyActor(headers, actor);
   return jsonFetch<ResolveFlagResponse>(
     `/api/tasks/${flagId}/resolve-flag`,
     {
@@ -1201,9 +1202,7 @@ export const push = {
     const qs = new URLSearchParams();
     if (opts.include_deleted) qs.set("include_deleted", "true");
     if (opts.project_id != null) qs.set("project_id", String(opts.project_id));
-    const path = qs.toString()
-      ? `/api/push/subscriptions?${qs}`
-      : `/api/push/subscriptions`;
+    const path = buildPath("/api/push/subscriptions", qs);
     return jsonFetch<PushSubscriptionRead[]>(path);
   },
 };
@@ -1346,7 +1345,7 @@ export async function getProjectPl(
   if (opts.period) qs.set("period", opts.period);
   if (opts.since) qs.set("since", opts.since);
   if (opts.until) qs.set("until", opts.until);
-  const path = `/api/projects/${projectId}/pl${qs.toString() ? "?" + qs : ""}`;
+  const path = buildPath(`/api/projects/${projectId}/pl`, qs);
   return jsonFetch<PLSummary>(path, {
     headers: { "X-Project-Id": String(projectId) },
   });
@@ -1405,7 +1404,7 @@ export async function getProjectProgressStats(
   const qs = new URLSearchParams();
   if (opts.bucket) qs.set("bucket", opts.bucket);
   if (opts.days != null) qs.set("days", String(opts.days));
-  const path = `/api/projects/${projectId}/progress-stats${qs.toString() ? "?" + qs : ""}`;
+  const path = buildPath(`/api/projects/${projectId}/progress-stats`, qs);
   return jsonFetch<ProgressStatsResponse>(path, {
     headers: { "X-Project-Id": String(projectId) },
   });
@@ -1427,7 +1426,7 @@ export async function getCrossProjectPl(
   if (opts.since) qs.set("since", opts.since);
   if (opts.until) qs.set("until", opts.until);
   if (opts.include_killed) qs.set("include_killed", "true");
-  const path = `/api/pnl${qs.toString() ? "?" + qs : ""}`;
+  const path = buildPath("/api/pnl", qs);
   return jsonFetch<PLCrossProject>(path);
 }
 
@@ -1581,9 +1580,7 @@ export const handoffTemplates = {
   async list(opts: { projectId?: number } = {}): Promise<HandoffTemplateRead[]> {
     const qs = new URLSearchParams();
     if (opts.projectId != null) qs.set("project_id", String(opts.projectId));
-    const path = qs.toString()
-      ? `/api/handoff-templates?${qs}`
-      : `/api/handoff-templates`;
+    const path = buildPath("/api/handoff-templates", qs);
     return jsonFetch<HandoffTemplateRead[]>(path);
   },
 };

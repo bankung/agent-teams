@@ -99,7 +99,7 @@ async def kill_project(
     place where grace lives, not here. The `force` value is captured into
     drain_summary so the audit row reflects which path the operator took.
     """
-    project = await _get_active_project_or_404(session, project_id)
+    project = await get_active_project_or_404(session, project_id)
 
     if project.is_killed:
         raise HTTPException(
@@ -249,7 +249,7 @@ async def revive_project(
     `halt_reason='revive_stale'` stamp instead of auto-resume — operator
     must explicitly re-arm via the existing manual-template path.
     """
-    project = await _get_active_project_or_404(session, project_id)
+    project = await get_active_project_or_404(session, project_id)
 
     if not project.is_killed:
         raise HTTPException(
@@ -358,15 +358,3 @@ async def revive_project(
         "audit_id": audit.id,
     }
 
-
-# Backward-compat alias — pause_switch.py imports this name from kill_switch.
-# The implementation now lives in db.get_active_project_or_404 (Kanban #1682).
-async def _get_active_project_or_404(
-    session: AsyncSession, project_id: int
-) -> Project:
-    """Fetch the project row; 404 on missing OR soft-deleted.
-
-    Delegates to db.get_active_project_or_404 — kept here so pause_switch.py
-    can continue to import it from this module without change.
-    """
-    return await get_active_project_or_404(session, project_id)

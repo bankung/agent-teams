@@ -28,6 +28,7 @@ import { PauseOverrideBlock } from "./PauseOverrideBlock";
 import { HandoffTemplatePicker } from "./HandoffTemplatePicker";
 import { Icon } from "./Icon";
 import { ModalShell } from "./ModalShell";
+import { ModelTierSelect } from "./ModelTierSelect";
 
 // Trigger button + dialog for the AI-task flow (Kanban #857).
 //
@@ -611,7 +612,7 @@ export function AiTaskModal({
               <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
                 Model tier{" "}
                 <span className="font-normal text-zinc-400">(optional)</span>
-                <select
+                <ModelTierSelect
                   value={modelOverride ?? ""}
                   onChange={(e) => {
                     const v = e.target.value;
@@ -621,14 +622,8 @@ export function AiTaskModal({
                     if (createError !== null) setCreateError(null);
                   }}
                   disabled={creating}
-                  className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
                   data-ai-task-model-override
-                >
-                  <option value="">Inherit (default)</option>
-                  <option value="haiku">Haiku</option>
-                  <option value="sonnet">Sonnet</option>
-                  <option value="opus">Opus</option>
-                </select>
+                />
               </label>
 
               <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">

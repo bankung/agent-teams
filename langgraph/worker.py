@@ -315,7 +315,7 @@ async def _poll_once(
         return
 
     # 2) Flip to IN_PROGRESS.
-    started_at = _now_iso()
+    started_at = _config.utc_now()
     patch_in_progress = await _patch_task(
         client,
         cfg,
@@ -404,7 +404,7 @@ async def _poll_once(
         return
 
     # 4) Finalize.
-    body = _build_finalize_body(final_state, completed_at=_now_iso())
+    body = _build_finalize_body(final_state, completed_at=_config.utc_now())
 
     # Kanban #957 Phase 1 — approval-policy hook. Only fires on HITL pause
     # bodies (halt_reason in {question, decision}). Pre-empts the BLOCKED
@@ -665,25 +665,22 @@ async def _patch_task(
     return resp
 
 
-def _now_iso() -> str:
-    """UTC ISO-8601 timestamp the API accepts on PATCH (started_at, completed_at).
-
-    Delegates to config.utc_now() which emits the 'Z'-suffix form.
-    """
-    return _config.utc_now()
 
 
 # ---------------------------------------------------------------------------
-# Approval-policy fetch (Kanban #957 Phase 1)
+# Project-field fetch helper (Kanban #957 Phase 1 / #1800 / #1652)
 # ---------------------------------------------------------------------------
 
-# Tiny in-process TTL cache for approval_policies. Saves a GET /api/projects/{id}
-# on every HITL pause while still picking up operator-side edits within ~10s.
-# The cache is keyed by project_id and intentionally bounded (one entry per
-# project the worker has seen this process — typically 1 since the worker
-# is single-project per env). Process-local; restart clears.
+# Shared TTL for both per-field caches. Saves GET /api/projects/{id} on every
+# HITL pause / poll tick while still picking up operator-side edits within ~10s.
+# Each cache is keyed by project_id and process-local; restart clears.
 _POLICY_CACHE_TTL_SEC = 10.0
+
+# Per-field caches — kept as module-level names so tests can inspect / clear
+# them by name (test_worker_policy_hook.py uses `worker._policy_cache` directly;
+# test_worker_prereq_gate.py imports `_required_binaries_cache_clear` by name).
 _policy_cache: dict[int, tuple[float, dict[str, Any] | None]] = {}
+_required_binaries_cache: dict[int, tuple[float, list[str] | None]] = {}
 
 
 def _policy_cache_clear() -> None:
@@ -691,30 +688,30 @@ def _policy_cache_clear() -> None:
     _policy_cache.clear()
 
 
-async def _fetch_project_policies(
+def _required_binaries_cache_clear() -> None:
+    """Test hook — clear the in-process required_binaries cache."""
+    _required_binaries_cache.clear()
+
+
+async def _fetch_project_field(
     client: httpx.AsyncClient,
     cfg: WorkerConfig,
     headers: dict[str, str],
     project_id: int,
-) -> dict[str, Any] | None:
-    """GET /api/projects/{project_id} and return its `approval_policies` field.
+    *,
+    field: str,
+    log_prefix: str,
+    on_error_suffix: str,
+    cache: dict[int, tuple[float, Any]],
+) -> Any:
+    """GET /api/projects/{project_id} and return one named field.
 
-    Returns None on:
-      - any non-200 response (the worker logs + falls back to REQUIRE_ATTENTION)
-      - missing / null `approval_policies` field in the body
-      - JSON parse failure
-
-    Results are cached for ~10 seconds per project_id to avoid hammering the
-    API on every HITL pause. Operator edits propagate within the TTL window;
-    immediate uptake requires a worker restart (acceptable for Phase 1 —
-    policy edits are a low-frequency operation).
-
-    Note: GET /api/projects/{id} does NOT consult the X-Project-Id header
-    (project endpoints are by-id), but passing the existing headers is
-    harmless and keeps the call signature uniform with _patch_task.
+    Returns None on any non-200 response, missing/null field, or JSON failure.
+    Does NOT cache failures — the next call retries. Results cached ~10s per
+    project_id (TTL shared with approval-policy and required-binaries fetchers).
     """
     now = time.monotonic()
-    cached = _policy_cache.get(project_id)
+    cached = cache.get(project_id)
     if cached is not None and (now - cached[0]) < _POLICY_CACHE_TTL_SEC:
         return cached[1]
 
@@ -724,46 +721,59 @@ async def _fetch_project_policies(
         )
     except httpx.HTTPError as exc:
         logger.warning(
-            "approval_policies fetch: project %d HTTP error %s; falling back to REQUIRE_ATTENTION",
+            "%s fetch: project %d HTTP error %s; %s",
+            log_prefix,
             project_id,
             exc,
+            on_error_suffix,
         )
-        # Do NOT cache the failure — the next pause should retry.
+        # Do NOT cache the failure — the next call should retry.
         return None
     if resp.status_code != 200:
         logger.warning(
-            "approval_policies fetch: project %d returned %d; falling back to REQUIRE_ATTENTION",
+            "%s fetch: project %d returned %d; %s",
+            log_prefix,
             project_id,
             resp.status_code,
+            on_error_suffix,
         )
         return None
     try:
         body = resp.json()
     except ValueError:
         logger.warning(
-            "approval_policies fetch: project %d returned non-JSON body",
+            "%s fetch: project %d returned non-JSON body",
+            log_prefix,
             project_id,
         )
         return None
-    policies = body.get("approval_policies") if isinstance(body, dict) else None
-    _policy_cache[project_id] = (now, policies)
-    return policies
+    value = body.get(field) if isinstance(body, dict) else None
+    cache[project_id] = (now, value)
+    return value
 
 
-# ---------------------------------------------------------------------------
-# Mode-B host-prereq fetch (Kanban #1800 / #1652)
-# ---------------------------------------------------------------------------
+async def _fetch_project_policies(
+    client: httpx.AsyncClient,
+    cfg: WorkerConfig,
+    headers: dict[str, str],
+    project_id: int,
+) -> dict[str, Any] | None:
+    """Return `approval_policies` from GET /api/projects/{project_id}.
 
-# Tiny in-process TTL cache for required_binaries — sibling of _policy_cache.
-# Saves a GET /api/projects/{id} on every poll tick while still picking up
-# operator-side edits within ~10s. Keyed by project_id; process-local; restart
-# clears. Mirrors the _fetch_project_policies cache contract exactly.
-_required_binaries_cache: dict[int, tuple[float, list[str] | None]] = {}
+    Cached ~10s per project_id (Kanban #957 Phase 1). Returns None on any
+    read failure; caller falls back to REQUIRE_ATTENTION.
 
-
-def _required_binaries_cache_clear() -> None:
-    """Test hook — clear the in-process required_binaries cache."""
-    _required_binaries_cache.clear()
+    Note: GET /api/projects/{id} does NOT consult the X-Project-Id header
+    (project endpoints are by-id), but passing the existing headers is
+    harmless and keeps the call signature uniform with _patch_task.
+    """
+    return await _fetch_project_field(
+        client, cfg, headers, project_id,
+        field="approval_policies",
+        log_prefix="approval_policies",
+        on_error_suffix="falling back to REQUIRE_ATTENTION",
+        cache=_policy_cache,
+    )
 
 
 async def _fetch_project_required_binaries(
@@ -772,7 +782,7 @@ async def _fetch_project_required_binaries(
     headers: dict[str, str],
     project_id: int,
 ) -> list[str] | None:
-    """GET /api/projects/{project_id} and return its `required_binaries` field.
+    """Return `required_binaries` from GET /api/projects/{project_id}.
 
     Returns None (= "no host-binary requirements"; gate skips) on:
       - any non-200 response
@@ -784,45 +794,16 @@ async def _fetch_project_required_binaries(
     FAIL-OPEN rationale: a transient API hiccup must NOT block every task on the
     board. The gate's job is to catch the *declared-and-missing* case crisply;
     when we cannot read the declaration, we proceed (the legacy opaque
-    FileNotFoundError remains the backstop). This mirrors
-    `_fetch_project_policies`' "fall back to the safe default on read failure"
-    posture. Results cached ~10s per project_id (sibling of the policy cache).
+    FileNotFoundError remains the backstop). Cached ~10s per project_id
+    (Kanban #1800 / #1652).
     """
-    now = time.monotonic()
-    cached = _required_binaries_cache.get(project_id)
-    if cached is not None and (now - cached[0]) < _POLICY_CACHE_TTL_SEC:
-        return cached[1]
-
-    try:
-        resp = await client.get(
-            f"{cfg.api_base}/api/projects/{project_id}", headers=headers
-        )
-    except httpx.HTTPError as exc:
-        logger.warning(
-            "required_binaries fetch: project %d HTTP error %s; proceeding "
-            "(gate fails open on read failure)",
-            project_id,
-            exc,
-        )
-        # Do NOT cache the failure — the next tick should retry.
-        return None
-    if resp.status_code != 200:
-        logger.warning(
-            "required_binaries fetch: project %d returned %d; proceeding "
-            "(gate fails open on read failure)",
-            project_id,
-            resp.status_code,
-        )
-        return None
-    try:
-        body = resp.json()
-    except ValueError:
-        logger.warning(
-            "required_binaries fetch: project %d returned non-JSON body; proceeding",
-            project_id,
-        )
-        return None
-    value = body.get("required_binaries") if isinstance(body, dict) else None
+    value = await _fetch_project_field(
+        client, cfg, headers, project_id,
+        field="required_binaries",
+        log_prefix="required_binaries",
+        on_error_suffix="proceeding (gate fails open on read failure)",
+        cache=_required_binaries_cache,
+    )
     # Value-tolerant: only a list of names is meaningful. A hand-edited scalar /
     # dict is treated as "no requirements" so the gate never crashes on a
     # malformed row (parity with the API's value-tolerant ProjectRead).
@@ -834,7 +815,6 @@ async def _fetch_project_required_binaries(
             value,
         )
         value = None
-    _required_binaries_cache[project_id] = (now, value)
     return value
 
 
@@ -1063,7 +1043,7 @@ async def _resume_hitl_task(
         reason_body = final_result or "(resumed; no final_result)"
         body: dict[str, Any] = {
             "process_status": STATUS_DONE,
-            "completed_at": _now_iso(),
+            "completed_at": _config.utc_now(),
             "status_change_reason": f"{policy_prefix}{reason_body}"[:_REASON_MAX],
             # Clear halt_reason now that the engine finished — leaving it set
             # would keep the FE banner up.
@@ -1089,7 +1069,7 @@ async def _resume_hitl_task(
             body["question_payload"] = {
                 **(question_payload or {}),
                 "chosen_id": validated,
-                "chosen_at": _now_iso(),
+                "chosen_at": _config.utc_now(),
             }
     elif halt is None and not fresh_interrupt and sanitized_fired:
         # L23 override: would have been DONE, but sanitizer fired — halt for

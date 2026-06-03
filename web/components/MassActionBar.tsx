@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import type { AuditFlagWithProject } from "@/lib/api";
 import { extractErrorMessage } from "@/lib/errors";
+import { ModalShell } from "./ModalShell";
 
 // Kanban #1212 GOV4 (D4) — mass-action bar above the project-grouped flag
 // list on /review. Multi-select N flags + apply one of 3 mass actions:
@@ -121,83 +122,75 @@ export function MassActionBar({
 
       {/* Single confirm modal for continue + keep_paused (terminate routes
           through the page's TerminateFlagModal instead). */}
-      {confirming !== null && confirming !== "terminate" && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="mass-confirm-title"
-          className="fixed inset-0 z-50 flex items-stretch justify-center bg-zinc-900/40 dark:bg-zinc-950/70 sm:items-center sm:px-4"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget && !submitting) setConfirming(null);
-          }}
-          data-mass-confirm-modal={confirming}
+      <ModalShell
+        open={confirming !== null && confirming !== "terminate"}
+        onClose={() => { if (!submitting) setConfirming(null); }}
+        labelledBy="mass-confirm-title"
+        backdropProps={{ "data-mass-confirm-modal": confirming }}
+      >
+        <h2
+          id="mass-confirm-title"
+          className="text-sm font-semibold uppercase tracking-wide text-zinc-900 dark:text-zinc-100"
         >
-          <div className="flex w-full max-w-none flex-col overflow-y-auto rounded-none border-0 bg-white p-4 dark:bg-zinc-900 sm:h-auto sm:max-w-md sm:overflow-visible sm:rounded sm:border sm:border-zinc-200 sm:dark:border-zinc-800">
-            <h2
-              id="mass-confirm-title"
-              className="text-sm font-semibold uppercase tracking-wide text-zinc-900 dark:text-zinc-100"
-            >
-              {confirming === "continue"
-                ? `Continue ${count} flags?`
-                : `Keep ${count} flags paused?`}
-            </h2>
-            <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
-              {confirming === "continue"
-                ? "Each flag will be marked DONE and its project will be unpaused. Audit re-fires next cycle if conditions persist."
-                : "Each flag will be marked DONE; each project stays paused. Audit re-fires next cycle."}
-            </p>
-            <div className="mt-3 max-h-40 overflow-y-auto rounded border border-zinc-200 bg-zinc-50 px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-950">
-              <ul className="space-y-0.5 font-mono text-[11px] text-zinc-700 dark:text-zinc-300">
-                {selected.map(({ flag, project }) => (
-                  <li key={flag.id} data-mass-confirm-target>
-                    · {project.name}{" "}
-                    <span className="text-zinc-400">
-                      (flag #{flag.id})
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-
-            {error !== null && (
-              <p
-                role="alert"
-                className="mt-3 text-xs text-red-700 dark:text-red-300"
-              >
-                {error}
-              </p>
-            )}
-
-            <div className="mt-4 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setConfirming(null)}
-                disabled={submitting}
-                className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirm}
-                disabled={submitting}
-                className={
-                  confirming === "continue"
-                    ? "rounded border border-zinc-400 bg-zinc-500 px-3 py-2 text-xs font-medium uppercase tracking-wide text-white hover:bg-zinc-600 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-500 dark:bg-zinc-600 dark:hover:bg-zinc-700"
-                    : "rounded border border-orange-600 bg-orange-500 px-3 py-2 text-xs font-medium uppercase tracking-wide text-white hover:bg-orange-600 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-orange-500 dark:bg-orange-600 dark:hover:bg-orange-700"
-                }
-                data-mass-confirm-submit
-              >
-                {submitting
-                  ? "Submitting…"
-                  : confirming === "continue"
-                    ? `Continue ${count} flags`
-                    : `Keep ${count} paused`}
-              </button>
-            </div>
-          </div>
+          {confirming === "continue"
+            ? `Continue ${count} flags?`
+            : `Keep ${count} flags paused?`}
+        </h2>
+        <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
+          {confirming === "continue"
+            ? "Each flag will be marked DONE and its project will be unpaused. Audit re-fires next cycle if conditions persist."
+            : "Each flag will be marked DONE; each project stays paused. Audit re-fires next cycle."}
+        </p>
+        <div className="mt-3 max-h-40 overflow-y-auto rounded border border-zinc-200 bg-zinc-50 px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-950">
+          <ul className="space-y-0.5 font-mono text-[11px] text-zinc-700 dark:text-zinc-300">
+            {selected.map(({ flag, project }) => (
+              <li key={flag.id} data-mass-confirm-target>
+                · {project.name}{" "}
+                <span className="text-zinc-400">
+                  (flag #{flag.id})
+                </span>
+              </li>
+            ))}
+          </ul>
         </div>
-      )}
+
+        {error !== null && (
+          <p
+            role="alert"
+            className="mt-3 text-xs text-red-700 dark:text-red-300"
+          >
+            {error}
+          </p>
+        )}
+
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setConfirming(null)}
+            disabled={submitting}
+            className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleConfirm}
+            disabled={submitting}
+            className={
+              confirming === "continue"
+                ? "rounded border border-zinc-400 bg-zinc-500 px-3 py-2 text-xs font-medium uppercase tracking-wide text-white hover:bg-zinc-600 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-500 dark:bg-zinc-600 dark:hover:bg-zinc-700"
+                : "rounded border border-orange-600 bg-orange-500 px-3 py-2 text-xs font-medium uppercase tracking-wide text-white hover:bg-orange-600 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-orange-500 dark:bg-orange-600 dark:hover:bg-orange-700"
+            }
+            data-mass-confirm-submit
+          >
+            {submitting
+              ? "Submitting…"
+              : confirming === "continue"
+                ? `Continue ${count} flags`
+                : `Keep ${count} paused`}
+          </button>
+        </div>
+      </ModalShell>
     </>
   );
 }

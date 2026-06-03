@@ -368,8 +368,9 @@ def _compact_messages(messages: list[Any], budget_tokens: int) -> list[Any]:
         return out
 
     # Fast path: already under budget → no mutation, default path preserved.
-    if _total_tokens(_assemble()) <= budget_tokens:
-        return _assemble()
+    assembled = _assemble()
+    if _total_tokens(assembled) <= budget_tokens:
+        return assembled
 
     # The most-recent N turns are sacrosanct. Only turns before them are
     # candidates for stubbing then dropping.
@@ -399,8 +400,13 @@ def _compact_messages(messages: list[Any], budget_tokens: int) -> list[Any]:
 
     # Phase 2: still over budget → drop WHOLE oldest turns as units. Never
     # drop into the recent-N window; never drop head/preamble.
-    while old_count > 0 and _total_tokens(_assemble()) > budget_tokens:
-        turns.pop(0)
+    # M-1 extended: reuse running_tokens instead of re-summing _assemble() each
+    # iteration (O(N²) → O(N)). Each pop removes one turn; subtract its cost.
+    while old_count > 0 and running_tokens > budget_tokens:
+        dropped = turns.pop(0)
+        running_tokens -= sum(
+            _estimate_tokens(getattr(m, "content", "")) for m in dropped
+        )
         old_count -= 1
 
     # M-2: if the recent-N window alone still exceeds the budget, warn so
@@ -1250,11 +1256,7 @@ async def auditor_node(state: AgentState) -> dict[str, Any]:
             SystemMessage(content=build_system_message(_AUDITOR_LLM_SYSTEM_PROMPT)),
             HumanMessage(content=user_prompt),
         ]
-        ainvoke = getattr(model, "ainvoke", None)
-        if ainvoke is not None:
-            response = await ainvoke(messages)
-        else:
-            response = model.invoke(messages)
+        response = await _ainvoke_model(model, messages)
         raw_text = _stringify_content(getattr(response, "content", ""))
     except Exception as exc:
         # LLM-side failure → fail safe to ESCALATE.

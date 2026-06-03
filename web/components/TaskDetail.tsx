@@ -21,6 +21,7 @@ import { RunModeBadge } from "./RunModeBadge";
 import { TaskKindBadge } from "./TaskKindBadge";
 import { TaskMuteToggle } from "./TaskMuteToggle";
 import { TaskToolCalls } from "./TaskToolCalls";
+import { ModelTierSelect } from "./ModelTierSelect";
 
 // #1581 — "Tip: add AC" banner. Follows the same localStorage pattern as
 // DashboardWelcomeBanner: show=false on SSR, hydrate from localStorage in
@@ -99,12 +100,6 @@ const STATUS_LABEL: Record<number, string> = {
   [TaskStatus.DONE]: "done",
   [TaskStatus.CANCELLED]: "cancelled",
 };
-
-// Terminal states — Cancel/Done hide the Cancel button
-const TERMINAL_STATUSES: ReadonlyArray<number> = [
-  TaskStatus.DONE,
-  TaskStatus.CANCELLED,
-];
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
@@ -218,7 +213,7 @@ export function TaskDetail({
     }
   };
 
-  const isTerminal = TERMINAL_STATUSES.includes(task.process_status);
+  const isTerminal = ([TaskStatus.DONE, TaskStatus.CANCELLED] as number[]).includes(task.process_status);
 
   // #860 — show Run for TODO+ai+manual; auto_pickup over auto_headless skips consent gate. Details: shared/decisions.md 2026-05-14
   const canRun =
@@ -382,7 +377,7 @@ export function TaskDetail({
             <div className="mt-2" data-model-override-control>
               <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
                 Model tier
-                <select
+                <ModelTierSelect
                   value={modelOverride ?? ""}
                   onChange={(e) => {
                     const v = e.target.value;
@@ -392,13 +387,7 @@ export function TaskDetail({
                   }}
                   disabled={submitting}
                   data-model-override-select
-                  className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
-                >
-                  <option value="">Inherit (default)</option>
-                  <option value="haiku">Haiku</option>
-                  <option value="sonnet">Sonnet</option>
-                  <option value="opus">Opus</option>
-                </select>
+                />
               </label>
             </div>
 

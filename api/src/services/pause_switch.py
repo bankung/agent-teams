@@ -44,10 +44,8 @@ from src.constants import RecordStatus
 from src.models.project import Project
 from src.models.projects_audit import ProjectsAudit
 from src.models.task import Task
-from src.services.kill_switch import (
-    _get_active_project_or_404,
-    kill_project,
-)
+from src.db import get_active_project_or_404 as _get_active_project_or_404
+from src.services.kill_switch import kill_project
 from src.services.recurrence import next_cron_fire
 
 logger = logging.getLogger(__name__)

@@ -49,7 +49,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -349,13 +349,7 @@ class SweepMetrics:
     auto_paused: int = 0
 
     def to_dict(self) -> dict[str, int]:
-        return {
-            "checked": self.checked,
-            "alerts_low": self.alerts_low,
-            "alerts_medium": self.alerts_medium,
-            "alerts_high": self.alerts_high,
-            "auto_paused": self.auto_paused,
-        }
+        return asdict(self)
 
 
 class HealthMonitor:

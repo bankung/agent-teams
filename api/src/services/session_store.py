@@ -45,9 +45,7 @@ _VALID_SECTIONS = (SECTION_COMPACTED_HISTORY, SECTION_RECENT_ACTIVITY)
 
 _SectionLiteral = Literal["## Compacted History", "## Recent Activity"]
 
-# Skeleton text — re-exported from the CTX-1 helper indirectly. We keep the
-# skeleton definition single-sourced in this module (the CTX-1 helper now
-# delegates to us; see `session_files.py` for the back-compat shim).
+# Skeleton text — single-sourced here; consumed by sessions router directly.
 _SESSION_MD_SKELETON = (
     f"{SECTION_COMPACTED_HISTORY}\n"
     "_(empty — no compacts yet)_\n"
