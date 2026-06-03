@@ -27,6 +27,7 @@ from src.constants import ProjectTeam, RecordStatus, in_clause
 from src.models.base import Base
 
 if TYPE_CHECKING:
+    from src.models.milestone import Milestone
     from src.models.projects_audit import ProjectsAudit
     from src.models.task import Task
     from src.models.transaction import Transaction
@@ -348,6 +349,17 @@ class Project(Base):
     # on projects_audit.project_id is the load-bearing invariant.
     audit_entries: Mapped[list["ProjectsAudit"]] = relationship(
         "ProjectsAudit",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    # Kanban #1868 — per-project release-planning milestones. Cascade-delete
+    # mirrors `tasks` / `transactions`; the DB-side ON DELETE CASCADE on
+    # milestones.project_id is the load-bearing invariant (passive_deletes=True
+    # tells SQLAlchemy to let the DB handle the cascade).
+    milestones: Mapped[list["Milestone"]] = relationship(
+        "Milestone",
         back_populates="project",
         cascade="all, delete-orphan",
         passive_deletes=True,

@@ -13,7 +13,7 @@ is deleted we still want the historical record to live on.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
 from decimal import Decimal as _Decimal
@@ -22,6 +22,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -51,6 +52,7 @@ from src.constants import (
 from src.models.base import Base
 
 if TYPE_CHECKING:
+    from src.models.milestone import Milestone
     from src.models.project import Project
 
 
@@ -417,6 +419,28 @@ class Task(Base):
         nullable=True,
     )
 
+    # Kanban #1868 (2026-06-03): optional milestone grouping for release
+    # planning. NULL = task is not assigned to a milestone. FK ON DELETE SET
+    # NULL — deleting a milestone detaches its tasks (NOT cascade); the app
+    # soft-deletes a milestone and NULLs children in the same transaction
+    # (routers/milestones.py DELETE). Same-project rule (the referenced
+    # milestone must belong to the task's project) is app-layer-only — enforced
+    # in routers/tasks.py on POST + PATCH, NOT a DB CHECK (cross-table). Mirror
+    # of migration 0057's nullable FK; ix_tasks_milestone_id supports the
+    # `?milestone_id` task-list filter + the milestone rollup GROUP BY.
+    milestone_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("milestones.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Kanban #1868 follow-up (2026-06-03): optional display/planning date for
+    # the Calendar view (built later). Bare Date — no time, no TZ, no scheduler
+    # coupling. Fully decoupled from `scheduled_at` (DateTime, one-shot fire)
+    # and from the Gantt (milestone start_date / target_date). NULL = unset.
+    # Migration 0057_milestones adds the column; PG 16 metadata-only ADD COLUMN.
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -459,6 +483,12 @@ class Task(Base):
     )
 
     project: Mapped["Project"] = relationship("Project", back_populates="tasks")
+
+    # Kanban #1868: optional milestone grouping. lazy='select' (default) — the
+    # rollup endpoint aggregates via a GROUP BY query, not this relationship.
+    milestone: Mapped["Milestone | None"] = relationship(
+        "Milestone", back_populates="tasks"
+    )
 
     # Self-referential adjacency-list (SQLAlchemy "Adjacency List" pattern).
     # `remote_side="Task.id"` disambiguates which side is the parent; without
@@ -573,6 +603,9 @@ class Task(Base):
         # Kanban #771: supports the reverse-lookup endpoint
         # GET /api/tasks/{id}/blocks (rows pointing AT a given blocker).
         Index("ix_tasks_blocked_by", "blocked_by"),
+        # Kanban #1868: supports the `?milestone_id` task-list filter + the
+        # milestone rollup GROUP BY. Mirror of migration 0057's index.
+        Index("ix_tasks_milestone_id", "milestone_id"),
         # Partial index — scheduler hot path scans only the sparse template
         # subset. Mirror of migration 0007's postgresql_where predicate.
         Index(

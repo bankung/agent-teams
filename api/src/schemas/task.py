@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import zoneinfo
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
@@ -619,6 +619,18 @@ class TaskCreate(BaseModel):
     # Loop guard (AC6): the CHILD's handoff_template_id is set to NULL by
     # the spawn service so the chain terminates after one level.
     handoff_template_id: int | None = Field(default=None, ge=1)
+    # Kanban #1868 (2026-06-03): optional milestone grouping for release
+    # planning. None = unassigned. The referenced milestone MUST belong to the
+    # same project as the task — existence + same-project validated in the
+    # router (needs a DB lookup); cross-project / missing / soft-deleted → 422
+    # with a clear detail string. Plain scalar field — flows into
+    # Task(**payload_dict) with no router edit.
+    milestone_id: int | None = Field(default=None, ge=1)
+    # Kanban #1868 follow-up (2026-06-03): optional display/planning date for
+    # the Calendar view (built later). Bare date (no time, no TZ). Fully
+    # decoupled from scheduled_at / autorun / Gantt. None / absent → NULL
+    # in DB. No validator coupling it to any other field.
+    due_date: date | None = None
 
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=True)
@@ -993,6 +1005,23 @@ class TaskUpdate(BaseModel):
     #                       task, OR global template (project_id IS NULL))
     # Same posture as `blocked_by` — re-pointing IS supported in V1.
     handoff_template_id: int | None = Field(default=None, ge=1)
+    # Kanban #1868 (2026-06-03): PATCH-able milestone grouping. Semantics
+    # mirror blocked_by:
+    #   - key absent      → leave unchanged (exclude_unset=True in router)
+    #   - explicit null   → clear / unassign from the milestone (null IS
+    #                       meaningful — column is nullable)
+    #   - non-null int    → set / change the milestone (router validates
+    #                       existence + same-project scope; cross-project /
+    #                       missing / soft-deleted → 422)
+    # No _reject_explicit_null validator — explicit null is the documented
+    # "unassign" path (parity with blocked_by / handoff_template_id).
+    milestone_id: int | None = Field(default=None, ge=1)
+    # Kanban #1868 follow-up (2026-06-03): PATCH-able planning date. Semantics:
+    #   - key absent      → leave unchanged (exclude_unset=True in router)
+    #   - explicit null   → clear (null IS meaningful — column is nullable)
+    #   - non-null date   → set / change the date
+    # No coupling to scheduled_at or any other field.
+    due_date: date | None = None
 
     # Kanban #1011 (2026-05-20): per-task nudge on/off toggle. PATCH-able.
     # Semantics:
@@ -1289,6 +1318,16 @@ class TaskRead(BaseModel):
     # spawns a child via services/handoff_spawn.py (the CHILD's value is
     # always NULL — loop guard).
     handoff_template_id: int | None = None
+    # Kanban #1868 (2026-06-03) — optional milestone grouping for release
+    # planning. Backfilled to NULL on existing rows by migration 0057's
+    # nullable=true. NULL = unassigned. Set to NULL on the task whenever its
+    # milestone is soft-deleted (same transaction, routers/milestones.py DELETE).
+    milestone_id: int | None = None
+    # Kanban #1868 follow-up (2026-06-03) — optional display/planning date for
+    # the Calendar view. Backfilled to NULL on existing rows by migration 0057's
+    # nullable=true ADD COLUMN. NULL = unset. No coupling to scheduled_at /
+    # Gantt / autorun. Returned as an ISO-8601 date string (YYYY-MM-DD) when set.
+    due_date: date | None = None
 
     # Kanban #1011 (2026-05-20) — HITL aging nudge dedup + per-task toggle.
     # `last_nudge_at`: the timestamp of the last nudge fired for this task.

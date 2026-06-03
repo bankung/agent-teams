@@ -327,6 +327,27 @@ class TaskInteractionKind:
     ALL: tuple[str, ...] = (WORK, QUESTION, DECISION)
 
 
+class MilestoneStatus:
+    """milestones.milestone_status — 'planned'/'active'/'released'/'cancelled' (#1868).
+
+    The lifecycle code for a milestone (release-planning grouping of tasks).
+    Stored as TEXT NOT NULL DEFAULT 'planned' + a CHECK; mirror of migration
+    0057 (intentionally duplicated — see standards/sqlalchemy/migrations.md).
+
+    NAMING (#1868): the lifecycle column is `milestone_status` (this enum); the
+    uniform 0/1 soft-delete flag is the separate `status` column (RecordStatus).
+    This mirrors how tasks separate `process_status` (lifecycle) from `status`
+    (soft-delete).
+    """
+
+    PLANNED = "planned"
+    ACTIVE = "active"
+    RELEASED = "released"
+    CANCELLED = "cancelled"
+
+    ALL: tuple[str, ...] = (PLANNED, ACTIVE, RELEASED, CANCELLED)
+
+
 class SessionStatus:
     """sessions.status — 'active'/'compacting'/'closed' (#716). 'closed' is terminal.
     Mirror of migration 0008.

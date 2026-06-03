@@ -4,6 +4,7 @@ from src.models.base import Base
 from src.models.credential import CredentialAccessLog, ProjectCredential
 from src.models.email_oauth_token import EmailOAuthToken
 from src.models.handoff_template import HandoffTemplate
+from src.models.milestone import Milestone
 from src.models.project import Project
 from src.models.projects_audit import ProjectsAudit
 from src.models.push_subscription import PushSubscription
@@ -17,6 +18,7 @@ __all__ = [
     "CredentialAccessLog",
     "EmailOAuthToken",
     "HandoffTemplate",
+    "Milestone",
     "Project",
     "ProjectCredential",
     "ProjectsAudit",

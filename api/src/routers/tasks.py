@@ -26,6 +26,7 @@ from sqlalchemy.sql.elements import ClauseElement
 from src.constants import RecordStatus, TaskInteractionKind, TaskRunMode, TaskStatus, TaskType
 from src.db import get_or_404, get_session
 from src.models.handoff_template import HandoffTemplate
+from src.models.milestone import Milestone
 from src.models.project import Project
 from src.models.session import SessionRun
 from src.models.task import Task
@@ -343,6 +344,11 @@ async def list_tasks(
         ge=1,
         description="Filter to direct children of the given task id (Kanban #238).",
     ),
+    milestone_id: int | None = Query(
+        default=None,
+        ge=1,
+        description="Filter to tasks assigned to the given milestone id (Kanban #1868).",
+    ),
     top_level_only: bool = Query(
         default=False,
         description=(
@@ -405,6 +411,9 @@ async def list_tasks(
         stmt = stmt.where(Task.process_status != TaskStatus.CANCELLED)
     if assigned_role is not None:
         stmt = stmt.where(Task.assigned_role == assigned_role)
+    # Kanban #1868: filter to a single milestone's tasks.
+    if milestone_id is not None:
+        stmt = stmt.where(Task.milestone_id == milestone_id)
     if top_level_only:
         stmt = stmt.where(Task.parent_task_id.is_(None))
     elif parent_task_id is not None:
@@ -1159,6 +1168,24 @@ async def create_task(
                 ),
             )
 
+    # Kanban #1868: milestone_id existence + same-project validation. Mirrors
+    # the blocked_by posture — the referenced milestone must exist (not
+    # soft-deleted) AND belong to the same project as the task; cross-project
+    # / missing → 422. Stable detail strings pinned by
+    # test_milestone_id_detail_strings_pinned_in_router_source — keep in sync.
+    if payload.milestone_id is not None:
+        milestone = await session.get(Milestone, payload.milestone_id)
+        if milestone is None or milestone.status == RecordStatus.DELETED:
+            raise HTTPException(
+                status_code=422,
+                detail=f"milestone_id {payload.milestone_id} does not exist or is deleted",
+            )
+        if milestone.project_id != payload.project_id:
+            raise HTTPException(
+                status_code=422,
+                detail=f"milestone_id {payload.milestone_id} belongs to a different project",
+            )
+
     # Kanban #858 (2026-05-13): when interaction_kind IN ('question','decision'),
     # force task_kind='human' AND run_mode='manual' regardless of caller input.
     # Silent server-side coerce (Option A) — atomic so the HUMAN↔MANUAL
@@ -1733,6 +1760,25 @@ async def update_task(
                         f"handoff_template_id {new_handoff_template_id} "
                         "belongs to a different project"
                     ),
+                )
+
+    # Kanban #1868: milestone_id PATCH validation. Same posture as blocked_by /
+    # handoff_template_id — existence + same-project checks. Setting to None is
+    # always allowed (unassigns from the milestone). Stable detail strings
+    # pinned by test_milestone_id_detail_strings_pinned_in_router_source.
+    if "milestone_id" in updates:
+        new_milestone_id = updates["milestone_id"]
+        if new_milestone_id is not None:
+            milestone = await session.get(Milestone, new_milestone_id)
+            if milestone is None or milestone.status == RecordStatus.DELETED:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"milestone_id {new_milestone_id} does not exist or is deleted",
+                )
+            if milestone.project_id != task.project_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"milestone_id {new_milestone_id} belongs to a different project",
                 )
 
     # Kanban #772 resolved-final blocker-order constraint. Fires when EITHER
