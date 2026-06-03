@@ -6,10 +6,12 @@ import {
   cancelTask,
   getTaskBlocks,
   invalidateAnswer,
+  listMilestones,
   patchTask,
   submitAnswer,
   type AcceptanceCriterion,
   type AnswerHistoryEntry,
+  type MilestoneRead,
   type TaskRead,
 } from "@/lib/api";
 import { TaskKind, TaskRunMode, TaskStatus } from "@/lib/constants";
@@ -139,6 +141,36 @@ export function TaskDetail({
     setModelOverride(task.model_override);
   }, [task.id, task.model_override]);
 
+  // #1868 — milestone grouping + due date. `milestones` populates the picker;
+  // milestoneId / dueDate mirror the task and sync on prop change. Both are
+  // optional optimistic-PATCH mutators (same posture as model_override above).
+  const [milestones, setMilestones] = useState<MilestoneRead[]>([]);
+  const [milestoneId, setMilestoneId] = useState<number | null>(
+    task.milestone_id ?? null,
+  );
+  const [dueDate, setDueDate] = useState<string>(task.due_date ?? "");
+
+  useEffect(() => {
+    setMilestoneId(task.milestone_id ?? null);
+    setDueDate(task.due_date ?? "");
+  }, [task.id, task.milestone_id, task.due_date]);
+
+  // Fetch the project's active milestones once for the picker. Failure degrades
+  // to an empty list (picker still shows "None" + the current assignment).
+  useEffect(() => {
+    let cancelled = false;
+    listMilestones(projectId, { limit: 500 })
+      .then((rows) => {
+        if (!cancelled) setMilestones(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setMilestones([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
@@ -252,6 +284,46 @@ export function TaskDetail({
     } catch (err: unknown) {
       // Revert optimistic update on error
       setModelOverride(task.model_override);
+      const msg = extractErrorMessage(err, "Update failed");
+      onError(`Task #${task.id}: ${msg}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // #1868 — PATCH milestone_id; null unassigns. Optimistic + revert on error.
+  const handleMilestoneChange = async (newId: number | null) => {
+    if (submitting) return;
+    const prev = milestoneId;
+    setMilestoneId(newId);
+    setSubmitting(true);
+    try {
+      const updated = await patchTask(projectId, task.id, {
+        milestone_id: newId,
+      });
+      onPatch(updated);
+    } catch (err: unknown) {
+      setMilestoneId(prev);
+      const msg = extractErrorMessage(err, "Update failed");
+      onError(`Task #${task.id}: ${msg}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // #1868 — PATCH due_date; "" clears to null. Optimistic + revert on error.
+  const handleDueDateChange = async (value: string) => {
+    if (submitting) return;
+    const prev = dueDate;
+    setDueDate(value);
+    setSubmitting(true);
+    try {
+      const updated = await patchTask(projectId, task.id, {
+        due_date: value === "" ? null : value,
+      });
+      onPatch(updated);
+    } catch (err: unknown) {
+      setDueDate(prev);
       const msg = extractErrorMessage(err, "Update failed");
       onError(`Task #${task.id}: ${msg}`);
     } finally {
@@ -387,6 +459,54 @@ export function TaskDetail({
                   }}
                   disabled={submitting}
                   data-model-override-select
+                />
+              </label>
+            </div>
+
+            {/* #1868 — Milestone grouping: optimistic PATCH on change. */}
+            <div className="mt-2" data-task-milestone-control>
+              <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                Milestone
+                <select
+                  value={milestoneId === null ? "" : String(milestoneId)}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    void handleMilestoneChange(v === "" ? null : Number(v));
+                  }}
+                  disabled={submitting}
+                  data-task-milestone-select
+                  className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
+                >
+                  <option value="">None</option>
+                  {/* Defensive: if the current milestone isn't in the fetched
+                      list (e.g. a non-active status filtered out, or fetch
+                      failed), still render it so the assignment is visible. */}
+                  {milestoneId !== null &&
+                    !milestones.some((m) => m.id === milestoneId) && (
+                      <option value={String(milestoneId)}>
+                        #{milestoneId}
+                      </option>
+                    )}
+                  {milestones.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            {/* #1868 — Due date: optimistic PATCH on change; clear sends null. */}
+            <div className="mt-2" data-task-due-date-control>
+              <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                Due date
+                <input
+                  type="date"
+                  value={dueDate}
+                  onChange={(e) => void handleDueDateChange(e.target.value)}
+                  disabled={submitting}
+                  data-task-due-date-input
+                  className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
                 />
               </label>
             </div>

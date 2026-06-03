@@ -5,8 +5,10 @@ import { useRouter } from "next/navigation";
 
 import {
   createTask,
+  listMilestones,
   HttpError,
   type ActionTemplateRead,
+  type MilestoneRead,
   type ProjectRead,
   type TaskCreateBody,
 } from "@/lib/api";
@@ -120,12 +122,34 @@ export function NewTaskModal({
   const [handoffTemplateId, setHandoffTemplateId] = useState<number | null>(null);
   // #1677 — per-task model-tier override. null = Inherit (default).
   const [modelOverride, setModelOverride] = useState<"haiku" | "sonnet" | "opus" | null>(null);
+  // #1868 — optional milestone grouping ("" = none) + display/planning date.
+  const [milestoneId, setMilestoneId] = useState<"" | number>("");
+  const [dueDate, setDueDate] = useState("");
+  const [milestones, setMilestones] = useState<MilestoneRead[]>([]);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!open) return;
     titleInputRef.current?.focus();
   }, [open]);
+
+  // #1868 — load the project's active milestones when the modal opens so the
+  // picker is populated. Failure degrades to an empty list (the picker just
+  // shows "None"); a milestone-list outage shouldn't block task creation.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    listMilestones(projectId, { limit: 500 })
+      .then((rows) => {
+        if (!cancelled) setMilestones(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setMilestones([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, projectId]);
 
   function closeModal() {
     if (submitting) return;
@@ -146,6 +170,8 @@ export function NewTaskModal({
     setActionTemplateId(null);
     setHandoffTemplateId(null);
     setModelOverride(null);
+    setMilestoneId("");
+    setDueDate("");
     setError(null);
   }
 
@@ -220,6 +246,10 @@ export function NewTaskModal({
         : {}),
       // #1677 — only include when a tier is explicitly chosen; null/omit = inherit.
       ...(modelOverride !== null ? { model_override: modelOverride } : {}),
+      // #1868 — optional milestone grouping + due date. Omitting them sends
+      // nothing (BE defaults to NULL = unassigned / unset).
+      ...(milestoneId !== "" ? { milestone_id: milestoneId } : {}),
+      ...(dueDate !== "" ? { due_date: dueDate } : {}),
     };
 
     try {
@@ -421,6 +451,47 @@ export function NewTaskModal({
                 data-new-task-blocked-by
               />
             </label>
+
+            {/* #1868 — optional milestone picker + due date. */}
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                Milestone{" "}
+                <span className="font-normal text-zinc-400">(optional)</span>
+                <select
+                  value={milestoneId === "" ? "" : String(milestoneId)}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setMilestoneId(v === "" ? "" : Number(v));
+                    if (error !== null) setError(null);
+                  }}
+                  disabled={submitting}
+                  className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
+                  data-new-task-milestone
+                >
+                  <option value="">None</option>
+                  {milestones.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                Due date{" "}
+                <span className="font-normal text-zinc-400">(optional)</span>
+                <input
+                  type="date"
+                  value={dueDate}
+                  onChange={(e) => {
+                    setDueDate(e.target.value);
+                    if (error !== null) setError(null);
+                  }}
+                  disabled={submitting}
+                  className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
+                  data-new-task-due-date
+                />
+              </label>
+            </div>
 
             <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
               Description{" "}

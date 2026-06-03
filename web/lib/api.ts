@@ -217,6 +217,16 @@ export type TaskRead = {
   // NULL (loop guard enforced server-side). Optional on FE for defensive
   // resilience against pre-migration serialized payloads.
   handoff_template_id?: number | null;
+  // Kanban #1868 (2026-06-03) — optional milestone grouping for release
+  // planning. NULL = unassigned. Set to NULL automatically when the parent
+  // milestone is soft-deleted (routers/milestones.py DELETE, same transaction).
+  // Optional on the FE type for defensive resilience against pre-migration
+  // serialized payloads.
+  milestone_id?: number | null;
+  // Kanban #1868 (2026-06-03) — optional display/planning date for the Calendar
+  // view (future). ISO-8601 date string ("YYYY-MM-DD") when set; NULL = unset.
+  // Decoupled from scheduled_at / autorun / Gantt.
+  due_date?: string | null;
   // Kanban #1011 (2026-05-20) — HITL aging nudge dedup + per-task toggle.
   //   `last_nudge_at`: timestamp of last fired nudge; null = never nudged.
   //   `nudge_disabled`: per-task off switch; default false (nudges enabled
@@ -652,6 +662,9 @@ type ListTasksOpts = {
   parent_task_id?: number;
   top_level_only?: boolean;
   limit?: number;
+  // Kanban #1868 — filter to tasks assigned to a given milestone id. Used by
+  // the milestones page to surface a milestone's task list.
+  milestone_id?: number;
 };
 
 export async function listTasks(
@@ -663,6 +676,8 @@ export async function listTasks(
   if (opts.top_level_only) qs.set("top_level_only", "true");
   else if (opts.parent_task_id !== undefined)
     qs.set("parent_task_id", String(opts.parent_task_id));
+  if (opts.milestone_id !== undefined)
+    qs.set("milestone_id", String(opts.milestone_id));
   if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
   const path = buildPath("/api/tasks", qs);
   return jsonFetch<TaskRead[]>(path, {
@@ -715,6 +730,12 @@ export type TaskCreateBody = {
   // Kanban #1677 — per-task model-tier override. Omit or null = inherit from
   // project.agent_overrides / role default. 422 on unknown tier string.
   model_override?: "haiku" | "sonnet" | "opus" | null;
+  // Kanban #1868 — optional milestone grouping. Omit or null = unassigned.
+  // The referenced milestone MUST belong to the same project (422 otherwise).
+  milestone_id?: number | null;
+  // Kanban #1868 — optional display/planning date (ISO "YYYY-MM-DD"). Omit or
+  // null = unset. No coupling to scheduled_at / autorun.
+  due_date?: string | null;
 };
 
 export async function createTask(
@@ -793,6 +814,12 @@ export type TaskPatch = Partial<
   // Kanban #1677 — per-task model-tier override. Key-absent = unchanged;
   // explicit `null` = clear-to-inherit; value = set tier.
   model_override?: "haiku" | "sonnet" | "opus" | null;
+  // Kanban #1868 — milestone grouping. Key-absent = unchanged; explicit `null`
+  // = unassign; positive int = assign (BE validates existence + project scope).
+  milestone_id?: number | null;
+  // Kanban #1868 — display/planning date (ISO "YYYY-MM-DD"). Key-absent =
+  // unchanged; explicit `null` = clear; value = set.
+  due_date?: string | null;
 };
 
 export async function patchTask(
@@ -1676,4 +1703,173 @@ export type UserPendingResponse = {
 // getUserPending — GET /api/user/pending. No X-Project-Id header (cross-project).
 export async function getUserPending(): Promise<UserPendingResponse> {
   return jsonFetch<UserPendingResponse>(`/api/user/pending`);
+}
+
+// ============================================================================
+// Kanban #1868 (2026-06-03) — per-project Milestones CRUD + rollup.
+//
+// Mounted at /api/milestones; every endpoint is X-Project-Id scoped (the
+// session-bound project header is canonical — mirrors the tasks router).
+// Mirror of api/src/schemas/milestone.py.
+//
+// Column naming: `milestone_status` is the LIFECYCLE field (planned / active /
+// released / cancelled); the 0/1 soft-delete `status` flag is never exposed
+// (clients call deleteMilestone to soft-delete). The list `?status=` query
+// param filters the LIFECYCLE column, NOT the soft-delete flag.
+// ============================================================================
+
+export const MILESTONE_STATUSES = [
+  "planned",
+  "active",
+  "released",
+  "cancelled",
+] as const;
+export type MilestoneStatusValue = (typeof MILESTONE_STATUSES)[number];
+
+// MilestoneRead — full milestone row (no rollup). `start_date` / `target_date`
+// are ISO-8601 date strings ("YYYY-MM-DD"); `created_at` / `updated_at` /
+// `released_at` are ISO-8601 timestamps.
+export type MilestoneRead = {
+  id: number;
+  project_id: number;
+  title: string;
+  description: string | null;
+  milestone_status: MilestoneStatusValue;
+  start_date: string | null;
+  target_date: string | null;
+  sort_order: number | null;
+  created_at: string;
+  updated_at: string;
+  released_at: string | null;
+};
+
+// MilestoneRollup — task-rollup stats for a milestone.
+//   total              — active (status=1) tasks pointing here, incl. cancelled.
+//   by_process_status  — count per process_status bucket; keys "1".."6",
+//                        always all six (zero-filled).
+//   done               — count of process_status=5 (DONE) tasks.
+//   progress_pct       — done / (total excluding cancelled), 0..100, 1 decimal.
+//                        0.0 when the non-cancelled denominator is zero.
+export type MilestoneRollup = {
+  total: number;
+  by_process_status: Record<string, number>;
+  done: number;
+  progress_pct: number;
+};
+
+// MilestoneDetail — MilestoneRead + rollup; returned by GET /api/milestones/{id}.
+export type MilestoneDetail = MilestoneRead & {
+  rollup: MilestoneRollup;
+};
+
+// MilestoneCreate — POST /api/milestones body. `project_id` is defense-in-depth
+// (header is canonical; BE 400s on mismatch). Dates are ISO "YYYY-MM-DD" or
+// omitted. 422 when start_date > target_date.
+export type MilestoneCreate = {
+  project_id: number;
+  title: string;
+  description?: string | null;
+  milestone_status?: MilestoneStatusValue;
+  start_date?: string | null;
+  target_date?: string | null;
+  sort_order?: number | null;
+};
+
+// MilestoneUpdate — PATCH /api/milestones/{id} body, all fields optional.
+// Key-absent = unchanged; explicit `null` clears a nullable field. Re-scoping
+// between projects is NOT supported (no project_id on the surface).
+export type MilestoneUpdate = {
+  title?: string;
+  description?: string | null;
+  milestone_status?: MilestoneStatusValue;
+  start_date?: string | null;
+  target_date?: string | null;
+  sort_order?: number | null;
+  released_at?: string | null;
+};
+
+// listMilestones — GET /api/milestones. X-Project-Id scoped. Default returns
+// active (status=1) rows ordered by (sort_order ASC NULLS LAST, id ASC). The
+// optional `status` filters the milestone_status LIFECYCLE column.
+export async function listMilestones(
+  projectId: number,
+  opts: { status?: MilestoneStatusValue; limit?: number; offset?: number } = {},
+): Promise<MilestoneRead[]> {
+  const qs = new URLSearchParams();
+  if (opts.status) qs.set("status", opts.status);
+  if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
+  if (opts.offset !== undefined) qs.set("offset", String(opts.offset));
+  const path = buildPath("/api/milestones", qs);
+  return jsonFetch<MilestoneRead[]>(path, {
+    headers: { "X-Project-Id": String(projectId) },
+  });
+}
+
+// getMilestone — GET /api/milestones/{id} (WITH rollup). X-Project-Id scoped;
+// 404 when the milestone belongs to a different project than the session.
+export async function getMilestone(
+  projectId: number,
+  id: number,
+): Promise<MilestoneDetail> {
+  return jsonFetch<MilestoneDetail>(`/api/milestones/${id}`, {
+    headers: { "X-Project-Id": String(projectId) },
+  });
+}
+
+// createMilestone — POST /api/milestones. project_id required in body
+// (defense-in-depth) AND the X-Project-Id header (auth gate).
+export async function createMilestone(
+  projectId: number,
+  body: MilestoneCreate,
+): Promise<MilestoneRead> {
+  return jsonFetch<MilestoneRead>(`/api/milestones`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Project-Id": String(projectId),
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+// updateMilestone — PATCH /api/milestones/{id}. Partial update; send only the
+// diff. X-Project-Id scoped; 404 on cross-project / missing.
+export async function updateMilestone(
+  projectId: number,
+  id: number,
+  body: MilestoneUpdate,
+): Promise<MilestoneRead> {
+  return jsonFetch<MilestoneRead>(`/api/milestones/${id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Project-Id": String(projectId),
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+// deleteMilestone — DELETE /api/milestones/{id} (soft-delete). Detaches every
+// child task (milestone_id → NULL) in the same transaction. Returns 204 (no
+// body) on success; idempotent on already-deleted milestones.
+export async function deleteMilestone(
+  projectId: number,
+  id: number,
+): Promise<void> {
+  // DELETE returns 204 (no body) — jsonFetch would explode parsing JSON on an
+  // empty body; call fetch directly (mirrors push.unsubscribe above).
+  const url = `${apiBaseUrl()}/api/milestones/${id}`;
+  const response = await fetch(url, {
+    method: "DELETE",
+    cache: "no-store",
+    headers: { Accept: "application/json", "X-Project-Id": String(projectId) },
+  });
+  if (!response.ok && response.status !== 204) {
+    const body = (await response.json().catch(() => ({}))) as {
+      detail?: unknown;
+    };
+    const message =
+      formatDetail(body.detail) ?? `${response.status} ${response.statusText}`;
+    throw new HttpError(response.status, body.detail, message);
+  }
 }

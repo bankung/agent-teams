@@ -488,6 +488,14 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
             Settings
           </Link>
           <Sep />
+          {/* #1868 — per-project Milestones surface (X-Project-Id scoped). */}
+          <Link
+            href={`/p/${encodeURIComponent(project.name)}/milestones`}
+            className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
+          >
+            Milestones
+          </Link>
+          <Sep />
           <span className="text-zinc-600 dark:text-zinc-400">
             team: <span className="text-zinc-900 dark:text-zinc-100">{project.team}</span>
           </span>
