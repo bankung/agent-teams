@@ -515,6 +515,17 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
             Dashboard
           </Link>
           <Sep />
+          {/* #1000 — cross-project approval inbox. Plain text link (not the
+              polling InboxBadge): the dashboard already carries the live count
+              badge; the board keeps a lightweight link to avoid a 60s poller
+              on every board mount. */}
+          <Link
+            href="/inbox"
+            className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
+          >
+            Inbox
+          </Link>
+          <Sep />
           {/* #1349 — per-project settings (nudge threshold + future knobs).
               KEPT as a text link (distinct from the platform Integrations icon
               in the right cluster). */}
