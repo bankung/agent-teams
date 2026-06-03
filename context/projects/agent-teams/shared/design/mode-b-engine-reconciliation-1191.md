@@ -40,7 +40,7 @@ The secretary reaches authenticated Gmail/LinkedIn via **Chrome MCP** in interac
 - **Mode A** (interactive spawn): design-heavy/novel-surface work, anything needing per-action human approval, expensive/irreversible actions, exploration. Production path today; highest judgment + safety; higher per-task cost.
 - **Mode B** (headless engine, `run_mode=auto_pickup`): repetitive, well-specified, bounded tasks with a known + gated action space (email triage, status sweeps, scheduled routine). Lower per-task cost; scalable. Currently *in active development — treat results as drafts*; fully-autonomous end-to-end is *Roadmap*.
 
-**Cost argument (AC[6] target):** Mode A measured ~$21/day for ~15 spawns (~$1.40/spawn); arena scale is 100s/day. Mode B's edge: prompt-cache amortization (measured 77.5% input reduction on a 10-iteration run), no interactive overhead, bounded tool loop + compaction. AC[6] is the empirical check: same task, A vs B, assert Mode-B ≤70%.
+**Cost argument (AC[6] target):** Mode A measured ~$21/day for ~15 spawns (~$1.40/spawn); lifecycle-program scale is 100s/day. Mode B's edge: prompt-cache amortization (measured 77.5% input reduction on a 10-iteration run), no interactive overhead, bounded tool loop + compaction. AC[6] is the empirical check: same task, A vs B, assert Mode-B ≤70%.
 
 **Migration (staged):** M1 core-harness validated → M2 secretary domain → per-project runtime deps (#1652; Phase-1 guard #1800 shipped) → gradual cutover (route cheapest/most-repetitive templates to Mode B first, Mode-A fallback on halt, widen as confidence grows; Mode A stays default for novel/risky work indefinitely).
 

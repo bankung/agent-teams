@@ -1,6 +1,6 @@
 # Design proposal — `context_footprint` audit metric (fills the auditor's drift slot)
 
-**Status:** proposal (2026-06-02) — input to Kanban **#1213** (AA5 / GOV5 drift metric). Author: Lead. Not yet approved/implemented.
+**Status:** proposal (2026-06-02) — input to Kanban **#1213** (GOV5 drift metric). Author: Lead. Not yet approved/implemented.
 **Related:** #1583 (decisions.md compaction — the incident that motivated this), #1786 (lightweight detect hook — the cheap sibling), #1222 (stale-doc curator — the action layer), #1223 (auto-propose, HITL).
 
 ## Problem
