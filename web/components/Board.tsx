@@ -16,8 +16,10 @@ import {
 import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 
 import {
+  listMilestones,
   patchTask,
   reorderTask,
+  type MilestoneRead,
   type ProgressStatsResponse,
   type ProjectRead,
   type ProjectStatsEntry,
@@ -214,6 +216,16 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
   // as a discoverable affordance every session).
   const [showAudit, setShowAudit] = useState(false);
 
+  // #1868 v1.1 — milestone filter. "all" = no filter (default); "none" = only
+  // tasks with milestone_id == null; number = only tasks pointing at that
+  // milestone. Client-side filter on the in-memory `tasks` snapshot — the
+  // board already filters audit + scheduled noise client-side and has no
+  // client re-fetch path (initialTasks is SSR + SSE router.refresh()), so a
+  // client predicate is the consistent, minimum-viable v1. `milestones` feeds
+  // the dropdown; loaded once on mount (failure degrades to a no-op filter).
+  const [milestoneFilter, setMilestoneFilter] = useState<"all" | "none" | number>("all");
+  const [milestones, setMilestones] = useState<MilestoneRead[]>([]);
+
   // #1288 — Switch-driven modal open state for project controls group.
   const [terminateModalOpen, setTerminateModalOpen] = useState(false);
   const [pauseModalOpen, setPauseModalOpen] = useState(false);
@@ -222,6 +234,24 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
     const stored = localStorage.getItem(`kanban-view-${project.name}`);
     if (stored === "list" || stored === "board") setView(stored);
   }, [project.name]);
+
+  // #1868 v1.1 — load milestones for the filter dropdown. Client-side fetch on
+  // mount (supplementary list, NOT the task list — degrades to an empty list /
+  // no-op filter on failure rather than blanking the board). Re-runs on project
+  // switch. Mirrors the milestone-load pattern in NewTaskModal / AiTaskModal.
+  useEffect(() => {
+    let cancelled = false;
+    listMilestones(project.id, { limit: 500 })
+      .then((rows) => {
+        if (!cancelled) setMilestones(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setMilestones([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id]);
 
   // #1001 follow-up (2026-05-20) — `?task=<id>` deep-link handler.
   //
@@ -358,8 +388,15 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
   );
   const visibleTasks = useMemo(() => {
     const base = showAudit ? tasks : tasks.filter((t) => t.task_type !== "audit");
-    return base.filter((t) => !isScheduledNoise(t));
-  }, [tasks, showAudit]);
+    const noNoise = base.filter((t) => !isScheduledNoise(t));
+    // #1868 v1.1 — milestone filter. "all" → no-op; "none" → milestone_id null
+    // (treats undefined the same as null for legacy/pre-migration rows); number
+    // → exact match.
+    if (milestoneFilter === "all") return noNoise;
+    if (milestoneFilter === "none")
+      return noNoise.filter((t) => t.milestone_id == null);
+    return noNoise.filter((t) => t.milestone_id === milestoneFilter);
+  }, [tasks, showAudit, milestoneFilter]);
 
   const grouped = useMemo(() => groupByStatus(visibleTasks), [visibleTasks]);
 
@@ -525,6 +562,38 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
           <span className="text-zinc-500 dark:text-zinc-400 tabular-nums">
             {visibleTasks.length} task{visibleTasks.length === 1 ? "" : "s"}
           </span>
+          {/* #1868 v1.1 — milestone filter dropdown. Self-hides when the project
+              has no milestones (mirrors the audit-toggle's count>0 self-hide).
+              "All milestones" = no filter; "No milestone" = milestone_id null;
+              each option filters the board's task cards client-side. */}
+          {milestones.length > 0 && (
+            <label className="inline-flex items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+              <span className="sr-only sm:not-sr-only">Milestone</span>
+              <select
+                value={
+                  milestoneFilter === "all" || milestoneFilter === "none"
+                    ? milestoneFilter
+                    : String(milestoneFilter)
+                }
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setMilestoneFilter(
+                    v === "all" || v === "none" ? v : Number(v),
+                  );
+                }}
+                className="rounded-md border border-zinc-200 bg-transparent px-2 py-1.5 text-xs text-zinc-600 focus:border-zinc-400 focus:outline-none min-h-[44px] sm:min-h-0 dark:border-zinc-700 dark:text-zinc-300 dark:focus:border-zinc-500"
+                data-milestone-filter
+              >
+                <option value="all">All milestones</option>
+                <option value="none">No milestone</option>
+                {milestones.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           {/* #1781 — audit-filter as a compact icon button (shield/filter +
               count badge). Still toggles setShowAudit; amber when ON;
               aria-pressed. Hidden when count=0 (#1238 GOV3 behaviour kept). */}

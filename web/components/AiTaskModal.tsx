@@ -5,9 +5,11 @@ import { useRouter } from "next/navigation";
 
 import {
   createTask,
+  listMilestones,
   HttpError,
   parseTaskText,
   type ActionTemplateRead,
+  type MilestoneRead,
   type ParsedTaskProposal,
   type ProjectRead,
   type TaskCreateBody,
@@ -144,6 +146,14 @@ export function AiTaskModal({
   const [handoffTemplateId, setHandoffTemplateId] = useState<number | null>(null);
   // #1677 — per-task model-tier override. null = Inherit (default).
   const [modelOverride, setModelOverride] = useState<"haiku" | "sonnet" | "opus" | null>(null);
+  // #1868 parity — optional milestone grouping ("" = none) + display/planning
+  // date. Mirrors NewTaskModal; the create API already accepts both. The
+  // create POST only fires in the preview phase, so these only need to be
+  // wired into the onConfirm body (same phase the pause-override / handoff
+  // pickers live in).
+  const [milestoneId, setMilestoneId] = useState<"" | number>("");
+  const [dueDate, setDueDate] = useState("");
+  const [milestones, setMilestones] = useState<MilestoneRead[]>([]);
 
   const textInputRef = useRef<HTMLTextAreaElement | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
@@ -154,6 +164,24 @@ export function AiTaskModal({
     if (phase === "input") textInputRef.current?.focus();
     else titleInputRef.current?.focus();
   }, [open, phase]);
+
+  // #1868 parity — load the project's active milestones when the modal opens so
+  // the picker is populated. Failure degrades to an empty list (the picker just
+  // shows "None"); a milestone-list outage shouldn't block task creation.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    listMilestones(projectId, { limit: 500 })
+      .then((rows) => {
+        if (!cancelled) setMilestones(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setMilestones([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, projectId]);
 
   function resetAll() {
     setPhase("input");
@@ -170,6 +198,8 @@ export function AiTaskModal({
     setActionTemplateId(null);
     setHandoffTemplateId(null);
     setModelOverride(null);
+    setMilestoneId("");
+    setDueDate("");
     setCreateError(null);
   }
 
@@ -322,6 +352,10 @@ export function AiTaskModal({
         : {}),
       // #1677 — only include when a tier is explicitly chosen; null/omit = inherit.
       ...(modelOverride !== null ? { model_override: modelOverride } : {}),
+      // #1868 parity — optional milestone grouping + due date. Omitting them
+      // sends nothing (BE defaults to NULL = unassigned / unset).
+      ...(milestoneId !== "" ? { milestone_id: milestoneId } : {}),
+      ...(dueDate !== "" ? { due_date: dueDate } : {}),
     };
 
     try {
@@ -647,6 +681,49 @@ export function AiTaskModal({
                   data-ai-task-blocked-by
                 />
               </label>
+
+              {/* #1868 parity — optional milestone picker + due date (mirrors
+                  NewTaskModal). Preview phase only — the create POST that
+                  persists them fires here. */}
+              <div className="mt-3 grid grid-cols-2 gap-3">
+                <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                  Milestone{" "}
+                  <span className="font-normal text-zinc-400">(optional)</span>
+                  <select
+                    value={milestoneId === "" ? "" : String(milestoneId)}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setMilestoneId(v === "" ? "" : Number(v));
+                      if (createError !== null) setCreateError(null);
+                    }}
+                    disabled={creating}
+                    className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
+                    data-ai-task-milestone
+                  >
+                    <option value="">None</option>
+                    {milestones.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                  Due date{" "}
+                  <span className="font-normal text-zinc-400">(optional)</span>
+                  <input
+                    type="date"
+                    value={dueDate}
+                    onChange={(e) => {
+                      setDueDate(e.target.value);
+                      if (createError !== null) setCreateError(null);
+                    }}
+                    disabled={creating}
+                    className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
+                    data-ai-task-due-date
+                  />
+                </label>
+              </div>
 
               <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
                 Description{" "}
