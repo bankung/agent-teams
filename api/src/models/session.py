@@ -206,6 +206,21 @@ class SessionRun(Base):
         nullable=False,
         server_default=text("0"),
     )
+    # G2 (#1689): real prompt-cache token counts from Anthropic usage objects.
+    # cache_read_input_tokens   — served from cache (billed at 0.10x input rate).
+    # cache_creation_input_tokens — written to cache (billed at 1.25x input rate).
+    # Persisted so cost_usd reflects actual cache-hit/miss spend and the UI can
+    # display cache efficiency per run. Both default 0 (= "no cache observed").
+    cache_read_input_tokens: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        server_default=text("0"),
+    )
+    cache_creation_input_tokens: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        server_default=text("0"),
+    )
     total_context_chars: Mapped[int] = mapped_column(
         BigInteger,
         nullable=False,

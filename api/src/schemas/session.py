@@ -173,6 +173,9 @@ class SessionRunRead(BaseModel):
     finished_at: datetime | None
     total_input_tokens: int
     total_output_tokens: int
+    # G2 (#1689): persisted cache token columns (Anthropic prompt-cache fields).
+    cache_read_input_tokens: int
+    cache_creation_input_tokens: int
     total_context_chars: int
     total_cost_usd: Decimal
     budget_warning: bool

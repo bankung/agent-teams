@@ -398,8 +398,16 @@ async def update_session_run(
     provider = updates.pop("provider", None)
     model = updates.pop("model", None)
     updates.pop("total_cost_usd", None)  # server-managed; client value ignored.
+    # G2 (#1689): pop cache token fields so they are not written to the run row
+    # via the generic setattr loop below, then re-insert them as explicit column
+    # updates so they ARE persisted. Anthropic usage fields — 0 is the correct
+    # baseline when absent (no cache activity observed this run).
     cache_read_input_tokens = updates.pop("cache_read_input_tokens", None) or 0
     cache_creation_input_tokens = updates.pop("cache_creation_input_tokens", None) or 0
+    # Persist the cache token counts. They affect cost (forwarded to compute_cost
+    # below) and are stored for cost-display + cache-efficiency analytics.
+    updates["cache_read_input_tokens"] = cache_read_input_tokens
+    updates["cache_creation_input_tokens"] = cache_creation_input_tokens
 
     input_tokens = updates.get("total_input_tokens")
     output_tokens = updates.get("total_output_tokens")
