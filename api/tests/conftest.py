@@ -584,3 +584,30 @@ async def db_session():
 
     async with SessionLocal() as session:
         yield session
+
+
+@pytest.fixture(autouse=True)
+def _redirect_email_actions_audit(monkeypatch, tmp_path):
+    """Redirect tools_email._EMAIL_ACTIONS_PATH to tmp_path for every test.
+
+    Prevents any test from writing to the live _runtime/email-actions.jsonl
+    audit trail (test-surface pollution — Kanban #1585 follow-up).
+
+    The new file's explicit `_actions_to_tmp` fixture monkeypatches the same
+    attribute a second time on the tests that request it; last-write-wins, so
+    those tests still observe their own returned tmp path and this fixture does
+    not interfere. The two coexist safely — both use monkeypatch, which stacks
+    set-attr calls correctly within pytest's fixture teardown order.
+    """
+    try:
+        from src.routers import tools_email
+
+        monkeypatch.setattr(
+            tools_email,
+            "_EMAIL_ACTIONS_PATH",
+            tmp_path / "email-actions.jsonl",
+        )
+    except ImportError:
+        # tools_email not present (e.g., minimal test env without the router).
+        # Silently skip so this fixture is never a blocker.
+        pass

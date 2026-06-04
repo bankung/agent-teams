@@ -24,11 +24,12 @@ the `router` object + helpers above the marker.
 
 from __future__ import annotations
 
+import datetime
+import json
 import logging
 import os
 from enum import Enum
-from typing import Any
-
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,8 +40,13 @@ from src.db import get_session
 from src.models.project import Project
 from src.schemas.tools_email import (
     AuthStatusResponse,
+    GmailArchiveRequest,
     GmailAuthStartResponse,
     GmailCallbackResponse,
+    GmailDraftRequest,
+    GmailDraftResponse,
+    GmailMarkRequest,
+    GmailModifyResponse,
     GmailTrashRequest,
     GmailTrashResponse,
     OutlookAuthStartResponse,
@@ -163,14 +169,17 @@ class EmailTier(str, Enum):
     """
 
     READ = "read"  # OPEN — no operator-proof.
+    # Tier-1 mutations (mark-read/unread/archive/draft) — recoverable, so OPEN:
+    # Layer-0 role-gated + audited, but NO operator-proof (NOT in _PROOF_REQUIRED_TIERS).
+    MODIFY = "modify"
     REPLY = "reply"  # PROOF.
     SEND_INTERNAL = "send_internal"  # PROOF.
     DELETE = "delete"  # PROOF (trash maps here).
     EXTERNAL_SEND = "external_send"  # PROOF + out-of-band confirm.
 
 
-# Tiers that require an operator-proof (everything above `read`). `read` alone
-# is OPEN. Frozenset for O(1) membership + immutability.
+# Tiers that require an operator-proof (everything above `read`). `read` and
+# `modify` are OPEN. Frozenset for O(1) membership + immutability.
 _PROOF_REQUIRED_TIERS = frozenset(
     {
         EmailTier.REPLY,
@@ -179,6 +188,59 @@ _PROOF_REQUIRED_TIERS = frozenset(
         EmailTier.EXTERNAL_SEND,
     }
 )
+
+
+# ---------------------------------------------------------------------------
+# Secretary-action audit sink (Kanban #1585 AC5/AC8)
+# ---------------------------------------------------------------------------
+#
+# A SECOND, action-level JSONL trail, distinct from `gate.log_audit` (which
+# records the daily-units accounting per provider call). This one captures the
+# OPERATOR-FACING shape of every Tier-1/2 email action: who (agent_role), what
+# (action), at which tier, on which messages, under which approval mode, and the
+# result. One line per action. Best-effort guarded write — mirrors
+# `services/tool_grants.py::_write_audit`: a disk hiccup must NEVER turn a
+# successful action into a 500. Rotation/gzip is OUT OF SCOPE (follow-up).
+
+# Configurable via EMAIL_ACTIONS_AUDIT_PATH; defaults to the _runtime bind-mount
+# (durable across container restarts; same mount the lead_project_id file uses).
+_EMAIL_ACTIONS_PATH = Path(
+    os.environ.get("EMAIL_ACTIONS_AUDIT_PATH", "/repo/_runtime/email-actions.jsonl")
+)
+
+
+def _write_action_audit(
+    *,
+    agent_role: str | None,
+    action: str,
+    tier: EmailTier,
+    message_ids: list[str],
+    approval_mode: str,
+    result: str,
+) -> None:
+    """Append one JSONL secretary-action audit row (AC5/AC8).
+
+    Best-effort, guarded (mirrors tool_grants._write_audit): never breaks the
+    request. Schema:
+      {ts, agent_role, action, tier, message_ids, approval_mode, result}
+    """
+    row = {
+        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "agent_role": agent_role,
+        "action": action,
+        "tier": tier.value,
+        "message_ids": list(message_ids),
+        "approval_mode": approval_mode,
+        "result": result,
+    }
+    try:
+        _EMAIL_ACTIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _EMAIL_ACTIONS_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, separators=(",", ":")) + "\n")
+    except OSError:
+        # Audit is observability, not correctness — never let a disk hiccup
+        # turn a successful action into a 500.
+        pass
 
 # Source-text-locked: pinned by the #1859 smoke tests (verbatim detail assert).
 # The `tier` is interpolated so the agent's log shows exactly which tier was
@@ -522,6 +584,18 @@ async def gmail_trash(
         error_code=None if not errors else "partial_failure",
     )
 
+    # Secretary-action audit (#1585 AC5/AC8) — trash is Tier-2 `delete`
+    # (operator_proof approval mode). Logs the action-level row alongside the
+    # units-accounting row above.
+    _write_action_audit(
+        agent_role=agent_role,
+        action="trash",
+        tier=EmailTier.DELETE,
+        message_ids=trashed,
+        approval_mode="operator_proof",
+        result="success" if len(trashed) > 0 else ("partial" if errors else "noop"),
+    )
+
     return GmailTrashResponse(
         trashed_count=len(trashed),
         trashed_ids=trashed,
@@ -535,6 +609,237 @@ async def gmail_usage(
 ) -> UsageResponse:
     """Snapshot the daily-units counter for this project (UTC day)."""
     return UsageResponse(**gate.usage(session_project_id))
+
+
+# ---------------------------------------------------------------------------
+# Gmail — Tier-1 modify actions (Kanban #1585: mark read/unread, archive, draft)
+# ---------------------------------------------------------------------------
+#
+# All three are the `modify` tier — OPEN (Layer-0 role-gated + audited, NO
+# operator-proof). They MIRROR /gmail/trash's gate ordering exactly:
+#   1. Layer-0 (#1799) tool-grant gate  — _enforce_tool_grant_or_403
+#   2. Tier gate (#1859)                — _enforce_operator_tier_or_403 (no-op for `modify`)
+# then auth -> daily-cap -> upstream call -> gate.log_audit + secretary-action audit.
+
+# Modify-action unit costs (mirrors the Gmail quota reference; users.messages.modify
+# is 5 units/call, drafts.create is 10). Charged per message for modify; once for draft.
+_MODIFY_UNITS_PER_MESSAGE = 5
+_DRAFT_UNITS_PER_CALL = 10
+
+
+@router.post("/gmail/mark", response_model=GmailModifyResponse)
+async def gmail_mark(
+    body: GmailMarkRequest,
+    force: bool = Query(default=False, description="Bypass the bulk-threshold gate."),
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> GmailModifyResponse:
+    """Mark Gmail messages read/unread via label modify (`modify` tier — OPEN).
+
+    Layer 0 (#1799): `gmail.mark` must be granted to the X-Agent-Role (if the
+    role is restricted in config.tool_grants). Fires FIRST.
+
+    Tier gate (#1859): `modify` is at/below the open line — no operator-proof
+    required (it is NOT in _PROOF_REQUIRED_TIERS). The gate call is still made,
+    in the SAME Layer-0 -> tier order as /trash, so the composition stays uniform.
+
+    read=True  -> remove UNREAD (mark read); read=False -> add UNREAD (mark unread).
+    """
+    # Layer 0 (#1799) — tool-governance gate. 403 on a denied (role, gmail.mark).
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "gmail.mark"
+    )
+    # Tier gate (#1859) — `modify` is OPEN; this is a no-op but kept in order.
+    _enforce_operator_tier_or_403(EmailTier.MODIFY, operator_proof)
+
+    ids = list(body.message_ids)
+    # Layer 3 — bulk-threshold gate (mirrors /gmail/trash). Fires after Layer-0/tier,
+    # before auth/cap, so the payload-safety rail is observable without OAuth setup.
+    _bulk_check_or_400(len(ids), force)
+    creds = await _require_creds(session_project_id, session)
+
+    total_units = _MODIFY_UNITS_PER_MESSAGE * len(ids)
+    _cap_check_or_429(session_project_id, total_units, "mark")
+
+    add_label_ids = [] if body.read else ["UNREAD"]
+    remove_label_ids = ["UNREAD"] if body.read else []
+    try:
+        modified, errors = await run_in_threadpool(
+            gmail_client.modify_labels, creds, ids, add_label_ids, remove_label_ids
+        )
+    except Exception as exc:
+        gate.log_audit(
+            "gmail", session_project_id, "mark", total_units,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("gmail mark batch failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "gmail_mark_failed", "class": type(exc).__name__},
+        ) from exc
+
+    gate.log_audit(
+        "gmail", session_project_id, "mark", total_units,
+        success=len(modified) > 0,
+        error_code=None if not errors else "partial_failure",
+    )
+    _write_action_audit(
+        agent_role=agent_role,
+        action="mark_read" if body.read else "mark_unread",
+        tier=EmailTier.MODIFY,
+        message_ids=modified,
+        approval_mode="auto",
+        result="success" if len(modified) > 0 else ("partial" if errors else "noop"),
+    )
+    return GmailModifyResponse(
+        modified_count=len(modified), modified_ids=modified, errors=errors
+    )
+
+
+@router.post("/gmail/archive", response_model=GmailModifyResponse)
+async def gmail_archive(
+    body: GmailArchiveRequest,
+    force: bool = Query(default=False, description="Bypass the bulk-threshold gate."),
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> GmailModifyResponse:
+    """Archive Gmail messages — remove the INBOX label (`modify` tier — OPEN).
+
+    Gate ordering identical to /gmail/mark: Layer-0 (`gmail.archive`) THEN the
+    tier gate (no-op for `modify`), then bulk-threshold gate (Layer 3).
+    """
+    # Layer 0 (#1799) — tool-governance gate. 403 on a denied (role, gmail.archive).
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "gmail.archive"
+    )
+    # Tier gate (#1859) — `modify` is OPEN; no-op, kept in Layer-0 -> tier order.
+    _enforce_operator_tier_or_403(EmailTier.MODIFY, operator_proof)
+
+    ids = list(body.message_ids)
+    # Layer 3 — bulk-threshold gate (mirrors /gmail/trash).
+    _bulk_check_or_400(len(ids), force)
+    creds = await _require_creds(session_project_id, session)
+
+    total_units = _MODIFY_UNITS_PER_MESSAGE * len(ids)
+    _cap_check_or_429(session_project_id, total_units, "archive")
+
+    try:
+        modified, errors = await run_in_threadpool(
+            gmail_client.modify_labels, creds, ids, [], ["INBOX"]
+        )
+    except Exception as exc:
+        gate.log_audit(
+            "gmail", session_project_id, "archive", total_units,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("gmail archive batch failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "gmail_archive_failed", "class": type(exc).__name__},
+        ) from exc
+
+    gate.log_audit(
+        "gmail", session_project_id, "archive", total_units,
+        success=len(modified) > 0,
+        error_code=None if not errors else "partial_failure",
+    )
+    _write_action_audit(
+        agent_role=agent_role,
+        action="archive",
+        tier=EmailTier.MODIFY,
+        message_ids=modified,
+        approval_mode="auto",
+        result="success" if len(modified) > 0 else ("partial" if errors else "noop"),
+    )
+    return GmailModifyResponse(
+        modified_count=len(modified), modified_ids=modified, errors=errors
+    )
+
+
+@router.post("/gmail/draft", response_model=GmailDraftResponse)
+async def gmail_draft(
+    body: GmailDraftRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> GmailDraftResponse:
+    """Create a Gmail DRAFT — no send (`modify` tier — OPEN).
+
+    A draft is recoverable: it sits in Drafts until the operator explicitly
+    sends it (a higher-tier action that DOES carry operator-proof). Gate ordering
+    identical to /gmail/mark: Layer-0 (`gmail.draft`) THEN the tier gate (no-op).
+    """
+    # Layer 0 (#1799) — tool-governance gate. 403 on a denied (role, gmail.draft).
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "gmail.draft"
+    )
+    # Tier gate (#1859) — `modify` is OPEN; no-op, kept in Layer-0 -> tier order.
+    _enforce_operator_tier_or_403(EmailTier.MODIFY, operator_proof)
+
+    creds = await _require_creds(session_project_id, session)
+
+    _cap_check_or_429(session_project_id, _DRAFT_UNITS_PER_CALL, "draft")
+
+    try:
+        created = await run_in_threadpool(
+            gmail_client.save_draft,
+            creds,
+            to=body.to,
+            subject=body.subject,
+            body=body.body,
+        )
+    except Exception as exc:
+        gate.log_audit(
+            "gmail", session_project_id, "draft", _DRAFT_UNITS_PER_CALL,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("gmail draft create failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "gmail_draft_failed", "class": type(exc).__name__},
+        ) from exc
+
+    draft_id = created.get("draft_id")
+    if draft_id is None:
+        # Upstream returned an empty/missing id — treat as upstream failure.
+        gate.log_audit(
+            "gmail", session_project_id, "draft", _DRAFT_UNITS_PER_CALL,
+            success=False, error_code="empty_draft_response",
+        )
+        _write_action_audit(
+            agent_role=agent_role,
+            action="draft",
+            tier=EmailTier.MODIFY,
+            message_ids=[],
+            approval_mode="auto",
+            result="error",
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "empty_draft_response", "hint": "Gmail returned no draft id"},
+        )
+    gate.log_audit(
+        "gmail", session_project_id, "draft", _DRAFT_UNITS_PER_CALL,
+        success=True,
+    )
+    # Secretary-action audit — a draft has no message_ids yet; record the created
+    # draft id so the trail still references the artifact.
+    _write_action_audit(
+        agent_role=agent_role,
+        action="draft",
+        tier=EmailTier.MODIFY,
+        message_ids=[draft_id],
+        approval_mode="auto",
+        result="success",
+    )
+    return GmailDraftResponse(
+        draft_id=draft_id, message_id=created.get("message_id")
+    )
 
 
 # >>> #1608 OUTLOOK ROUTES BELOW — append-only zone for parallel dev coordination

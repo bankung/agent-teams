@@ -120,6 +120,111 @@ class GmailTrashResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Gmail — Tier-1 modify actions (Kanban #1585: mark read/unread, archive, draft)
+# ---------------------------------------------------------------------------
+#
+# These map to the `modify` EmailTier (OPEN — Layer-0 role-gated + audited, no
+# operator-proof). Tier-1 label mutations are recoverable; only `trash`/delete
+# (Tier-2) and the send/reply tiers carry an operator-proof.
+
+
+def _validate_message_ids(message_ids: list[str]) -> list[str]:
+    """Shared bound + allowlist check for an explicit Gmail message-id list.
+
+    Mirrors `GmailTrashRequest._exactly_one`'s id rules (<=1000 entries, each a
+    non-empty ASCII id <=64 chars, character-allowlisted) so every id-bearing
+    Gmail endpoint applies the SAME boundary guard. Raises ValueError on any
+    violation (Pydantic surfaces it as a 422).
+    """
+    if not isinstance(message_ids, list) or len(message_ids) == 0:
+        raise ValueError("message_ids must be a non-empty list.")
+    if len(message_ids) > 1000:
+        raise ValueError("message_ids list cannot exceed 1000 entries per call.")
+    for mid in message_ids:
+        if not isinstance(mid, str) or not (1 <= len(mid) <= 64):
+            raise ValueError("each message_id must be a non-empty string <=64 chars.")
+        if not _MID_ALLOWED.fullmatch(mid):
+            raise ValueError(
+                "message_ids contain disallowed characters; allowed: A-Z a-z 0-9 _ - = +"
+            )
+    return message_ids
+
+
+class GmailMarkRequest(BaseModel):
+    """Mark Gmail messages read/unread (`modify` tier).
+
+    `read=True`  -> remove the UNREAD label (mark read).
+    `read=False` -> add the UNREAD label (mark unread).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_ids: list[str] = Field(
+        ..., description="Explicit Gmail message id list to mark."
+    )
+    read: bool = Field(
+        ..., description="True = mark read (remove UNREAD); False = mark unread (add UNREAD)."
+    )
+
+    @model_validator(mode="after")
+    def _check_ids(self) -> "GmailMarkRequest":
+        _validate_message_ids(self.message_ids)
+        return self
+
+
+class GmailArchiveRequest(BaseModel):
+    """Archive Gmail messages — remove the INBOX label (`modify` tier)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_ids: list[str] = Field(
+        ..., description="Explicit Gmail message id list to archive (remove INBOX)."
+    )
+
+    @model_validator(mode="after")
+    def _check_ids(self) -> "GmailArchiveRequest":
+        _validate_message_ids(self.message_ids)
+        return self
+
+
+class GmailModifyResponse(BaseModel):
+    """Result of a mark/archive (label-modify) call. Reports modified ids + per-id errors."""
+
+    modified_count: int
+    modified_ids: list[str]
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class GmailDraftRequest(BaseModel):
+    """Create a Gmail DRAFT (no send) — `modify` tier.
+
+    A draft is a recoverable Tier-1 mutation: it lives in the Drafts folder
+    until the operator explicitly sends it (a `send_internal`/`external_send`
+    action, which carry operator-proof). Creating the draft itself does NOT.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    to: str = Field(
+        ..., min_length=1, max_length=998,
+        description="Recipient address line (RFC-2822 'To'). Operator-supplied; not validated as a strict addr-spec.",
+    )
+    subject: str = Field(
+        default="", max_length=998, description="Draft subject line."
+    )
+    body: str = Field(
+        default="", max_length=100_000, description="Draft plain-text body."
+    )
+
+
+class GmailDraftResponse(BaseModel):
+    """Result of a save-draft call. Reports the created Gmail draft id + message id."""
+
+    draft_id: str
+    message_id: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # #1608 OUTLOOK SCHEMAS BELOW — append-only zone for parallel dev coordination
 # ---------------------------------------------------------------------------
 

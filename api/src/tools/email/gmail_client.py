@@ -250,3 +250,94 @@ def trash_messages(creds: Credentials, message_ids: list[str]) -> tuple[list[str
                 }
             )
     return trashed, errors
+
+
+def modify_labels(
+    creds: Credentials,
+    message_ids: list[str],
+    add_label_ids: list[str] | None = None,
+    remove_label_ids: list[str] | None = None,
+) -> tuple[list[str], list[dict]]:
+    """Add/remove labels on each id via `users.messages.modify`. Returns (modified_ids, errors).
+
+    Covers the Tier-1 `modify` actions:
+      - mark read    -> remove_label_ids=["UNREAD"]
+      - mark unread  -> add_label_ids=["UNREAD"]
+      - archive      -> remove_label_ids=["INBOX"]
+
+    Per-message failures do NOT abort the loop (mirrors `trash_messages`) — the
+    caller surfaces partial success. We use per-id `modify` rather than
+    `batchModify` so a single bad id yields a per-id error entry instead of
+    failing the whole batch (batchModify is all-or-nothing and returns no body).
+    Each errors entry: {message_id, error_class, status}.
+    """
+    # Defense-in-depth: block system labels that bypass the operator-proof DELETE
+    # tier (TRASH/SPAM manipulation would let a modify-tier call effectively delete
+    # or spam-classify messages without operator-proof). Case-sensitive: Gmail
+    # system label ids are uppercase ASCII.
+    _DENIED_SYSTEM_LABELS = {"TRASH", "SPAM"}
+    all_requested = list(add_label_ids or []) + list(remove_label_ids or [])
+    for label in all_requested:
+        if label in _DENIED_SYSTEM_LABELS:
+            raise ValueError(f"system label not permitted via modify_labels: {label}")
+
+    service = _build_service(creds)
+    body = {
+        "addLabelIds": list(add_label_ids or []),
+        "removeLabelIds": list(remove_label_ids or []),
+    }
+    modified: list[str] = []
+    errors: list[dict] = []
+    for mid in message_ids:
+        try:
+            service.users().messages().modify(userId="me", id=mid, body=body).execute()
+            modified.append(mid)
+        except HttpError as e:
+            errors.append(
+                {
+                    "message_id": mid,
+                    "error_class": "HttpError",
+                    "status": getattr(e, "status_code", None) or getattr(e.resp, "status", None),
+                }
+            )
+        except Exception as e:
+            errors.append(
+                {
+                    "message_id": mid,
+                    "error_class": type(e).__name__,
+                    "status": None,
+                }
+            )
+    return modified, errors
+
+
+def save_draft(creds: Credentials, *, to: str, subject: str, body: str) -> dict:
+    """Create a Gmail DRAFT (no send) via `users.drafts.create`. Returns {draft_id, message_id}.
+
+    The draft lives in the Drafts folder until the operator explicitly sends it.
+    Creating it is a recoverable Tier-1 `modify` action; sending is a separate
+    higher-tier action. The MIME message is built with stdlib `email.message`
+    (UTF-8, base64url-encoded) — no extra dependency.
+    """
+    import base64
+    from email.message import EmailMessage
+
+    service = _build_service(creds)
+    msg = EmailMessage()
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.set_content(body)
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+    created = (
+        service.users()
+        .drafts()
+        .create(userId="me", body={"message": {"raw": raw}})
+        .execute()
+    )
+    return {
+        "draft_id": created.get("id"),
+        "message_id": (created.get("message") or {}).get("id"),
+    }
+
+
+# TODO(#1585 follow-up): Outlook parity for modify_labels/save_draft (mark/archive/draft).
