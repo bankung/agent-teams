@@ -38,7 +38,7 @@ The gap it fills: a **self-hosted, persistent, governed, multi-domain orchestrat
 
 - **Dogfooded.** agent-teams develops agent-teams — the orchestration, Kanban, and governance you're reading are the same ones that built them. The commit and task history prove it, in public.
 
-- **Planning views.** Milestones (group tasks into releases with progress rollup), a Calendar (tasks by due-date + milestone deadlines), and a Gantt timeline (milestone-level) — new in 0.5.0.
+- **Planning views.** Milestones (group tasks into releases with progress rollup), a Calendar (week/month with drag-to-reschedule), and a Gantt timeline that doubles as the milestone home — all reachable from one Board · List · Calendar · Gantt switcher, and you can drag a task straight onto a milestone to assign it. New in 0.5.0, refined in 0.5.1.
 
 ---
 
