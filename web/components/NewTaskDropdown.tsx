@@ -19,11 +19,13 @@
 // fresh trigger click.
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
-import type { ProjectRead } from "@/lib/api";
+import type { MilestoneRead, ProjectRead } from "@/lib/api";
 import { readEnabledRoles } from "@/lib/enabledRoles";
 import { AiTaskModal } from "./AiTaskModal";
 import { Icon } from "./Icon";
+import { MilestoneFormModal } from "./MilestoneFormModal";
 import { NewTaskModal } from "./NewTaskModal";
 
 type Props = {
@@ -31,9 +33,10 @@ type Props = {
   onPushToast: (text: string) => void;
 };
 
-type OpenModal = "ai" | "manual" | null;
+type OpenModal = "ai" | "manual" | "milestone" | null;
 
 export function NewTaskDropdown({ project, onPushToast }: Props) {
+  const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [openModal, setOpenModal] = useState<OpenModal>(null);
   const menuId = useId();
@@ -83,7 +86,7 @@ export function NewTaskDropdown({ project, onPushToast }: Props) {
     }
   }, [menuOpen]);
 
-  function pick(which: "ai" | "manual") {
+  function pick(which: "ai" | "manual" | "milestone") {
     setMenuOpen(false);
     setOpenModal(which);
   }
@@ -154,6 +157,16 @@ export function NewTaskDropdown({ project, onPushToast }: Props) {
             <Icon name="add-task" size={14} aria-hidden />
             <span>Manual Task</span>
           </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => pick("milestone")}
+            className="flex w-full items-center gap-2 border-t border-zinc-100 px-3 py-2.5 text-left text-xs font-medium text-zinc-700 hover:bg-amber-50 hover:text-amber-900 focus:bg-amber-50 focus:text-amber-900 focus:outline-none dark:border-zinc-800 dark:text-zinc-200 dark:hover:bg-amber-950/40 dark:hover:text-amber-100 dark:focus:bg-amber-950/40"
+            data-new-task-dropdown-milestone
+          >
+            <Icon name="sprint" size={14} aria-hidden />
+            <span>New Milestone</span>
+          </button>
         </div>
       )}
 
@@ -174,6 +187,18 @@ export function NewTaskDropdown({ project, onPushToast }: Props) {
         onPushToast={onPushToast}
         externalOpen={openModal === "manual"}
         onExternalClose={() => setOpenModal(null)}
+      />
+      {/* Wave B (#3b) — New Milestone shortcut. MilestoneFormModal in create
+          mode. On success router.refresh() re-fetches the board + milestone
+          filter dropdown (same pattern as MilestonesView). */}
+      <MilestoneFormModal
+        projectId={project.id}
+        open={openModal === "milestone"}
+        onClose={() => setOpenModal(null)}
+        onSaved={(_saved: MilestoneRead) => {
+          setOpenModal(null);
+          router.refresh();
+        }}
       />
     </div>
   );

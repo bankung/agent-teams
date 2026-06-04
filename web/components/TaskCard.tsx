@@ -72,7 +72,14 @@ export function TaskCard({ task, onOpenDetail, highlighted = false }: Props) {
   const cardBg = isPending
     ? "bg-yellow-50 hover:bg-yellow-100 hover:border-yellow-300 dark:bg-yellow-900/30 dark:hover:bg-yellow-900/40 dark:hover:border-yellow-700"
     : "bg-white hover:bg-zinc-50 hover:border-zinc-300 dark:bg-zinc-900 dark:hover:bg-zinc-800/50 dark:hover:border-zinc-700";
-  const baseCard = `rounded-md border border-zinc-200 dark:border-zinc-800 ${cardBg} p-2.5 transition-colors`;
+  // Wave B (#4) — bug task_type gets a red left-accent border so bugs are
+  // visually distinct on the board. Overrides the default zinc border-l only;
+  // the remaining three sides stay zinc-200.
+  const bugAccent =
+    task.task_type === "bug"
+      ? "border-l-4 border-l-red-500 dark:border-l-red-400"
+      : "";
+  const baseCard = `rounded-md border border-zinc-200 dark:border-zinc-800 ${cardBg} ${bugAccent} p-2.5 transition-colors`;
   const cursor = draggable ? " cursor-grab active:cursor-grabbing" : " cursor-not-allowed";
   // #1001 follow-up — deep-link ring-pulse. Class defined in globals.css
   // (animation-deep-link-pulse — 2s, ring-violet-500). Append after base so

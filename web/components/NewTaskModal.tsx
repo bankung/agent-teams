@@ -122,6 +122,9 @@ export function NewTaskModal({
   const [handoffTemplateId, setHandoffTemplateId] = useState<number | null>(null);
   // #1677 — per-task model-tier override. null = Inherit (default).
   const [modelOverride, setModelOverride] = useState<"haiku" | "sonnet" | "opus" | null>(null);
+  // Wave B (#4) — task_type selector. Default 'feature' mirrors the BE default;
+  // 'bug' triggers the red border on the board and in ListView.
+  const [taskType, setTaskType] = useState<"bug" | "feature" | "chore" | "docs" | "refactor">("feature");
   // #1868 — optional milestone grouping ("" = none) + display/planning date.
   const [milestoneId, setMilestoneId] = useState<"" | number>("");
   const [dueDate, setDueDate] = useState("");
@@ -170,6 +173,7 @@ export function NewTaskModal({
     setActionTemplateId(null);
     setHandoffTemplateId(null);
     setModelOverride(null);
+    setTaskType("feature");
     setMilestoneId("");
     setDueDate("");
     setError(null);
@@ -246,6 +250,10 @@ export function NewTaskModal({
         : {}),
       // #1677 — only include when a tier is explicitly chosen; null/omit = inherit.
       ...(modelOverride !== null ? { model_override: modelOverride } : {}),
+      // Wave B (#4) — only include when operator chose a non-default type.
+      // Omitting 'feature' is equivalent (BE default = 'feature') — just keeps
+      // the payload minimal for the common case.
+      ...(taskType !== "feature" ? { task_type: taskType } : {}),
       // #1868 — optional milestone grouping + due date. Omitting them sends
       // nothing (BE defaults to NULL = unassigned / unset).
       ...(milestoneId !== "" ? { milestone_id: milestoneId } : {}),
@@ -390,6 +398,28 @@ export function NewTaskModal({
                 </select>
               </label>
             </div>
+
+            {/* Wave B (#4) — task_type selector. 'feature' is the default;
+                'bug' triggers the red left-accent border on the board + ListView. */}
+            <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+              Type <span className="text-red-600 dark:text-red-400">*</span>
+              <select
+                value={taskType}
+                onChange={(e) => {
+                  setTaskType(e.target.value as typeof taskType);
+                  if (error !== null) setError(null);
+                }}
+                disabled={submitting}
+                className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
+                data-new-task-type
+              >
+                <option value="feature">Feature</option>
+                <option value="bug">Bug</option>
+                <option value="chore">Chore</option>
+                <option value="docs">Docs</option>
+                <option value="refactor">Refactor</option>
+              </select>
+            </label>
 
             <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
               Role <span className="font-normal text-zinc-400">(optional)</span>

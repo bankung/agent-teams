@@ -8,6 +8,7 @@ import {
   listTasks,
   type MilestoneDetail,
   type MilestoneRead,
+  type MilestoneStatusValue,
   type TaskRead,
 } from "@/lib/api";
 import { TaskStatus } from "@/lib/constants";
@@ -18,6 +19,13 @@ import { MilestoneDeleteModal } from "./MilestoneDeleteModal";
 
 // MilestonesView — per-project milestones list (Kanban #1868 FE, v1).
 //
+// Wave B (#3b) — milestone card left-accent border keyed to milestone_status,
+// mirroring the MilestoneStatusBadge hue vocabulary:
+//   planned   → zinc    (neutral)
+//   active    → amber   (in flight)
+//   released  → emerald (done)
+//   cancelled → red     (terminal)
+//
 // Server component (page.tsx) fetches every milestone WITH its rollup
 // (MilestoneDetail[]) and the project name; this client view owns:
 //   - the milestone cards (status badge, date window, progress bar, task count)
@@ -27,6 +35,15 @@ import { MilestoneDeleteModal } from "./MilestoneDeleteModal";
 //     milestone's task list (one fetch per expand, cached in local state)
 //
 // No board group-by, no calendar, no gantt — those are separate future slices.
+
+// Wave B (#3b) — left-accent border per milestone_status. Applied as a 4px
+// left border on the card; right/top/bottom keep the standard zinc-200 border.
+const MILESTONE_ACCENT: Record<MilestoneStatusValue, string> = {
+  planned: "border-l-4 border-l-zinc-400 dark:border-l-zinc-600",
+  active: "border-l-4 border-l-amber-400 dark:border-l-amber-500",
+  released: "border-l-4 border-l-emerald-500 dark:border-l-emerald-400",
+  cancelled: "border-l-4 border-l-red-400 dark:border-l-red-500",
+};
 
 const STATUS_LABEL: Record<number, string> = {
   [TaskStatus.TODO]: "todo",
@@ -182,7 +199,8 @@ function MilestoneCard({
     <li
       data-milestone-card
       data-milestone-id={milestone.id}
-      className="flex flex-col gap-2 rounded-lg border border-zinc-200 bg-white p-4 transition-colors hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
+      data-milestone-status={milestone.milestone_status}
+      className={`flex flex-col gap-2 rounded-lg border border-zinc-200 bg-white p-4 transition-colors hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700 ${MILESTONE_ACCENT[milestone.milestone_status]}`}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 flex-col gap-1">

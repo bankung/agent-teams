@@ -744,6 +744,9 @@ export type TaskCreateBody = {
   // Kanban #1868 — optional display/planning date (ISO "YYYY-MM-DD"). Omit or
   // null = unset. No coupling to scheduled_at / autorun.
   due_date?: string | null;
+  // Wave B (#4) — optional task_type override. BE default is 'feature'.
+  // Omit to keep the default; 'bug' triggers red border on the board.
+  task_type?: "bug" | "feature" | "chore" | "docs" | "refactor";
 };
 
 export async function createTask(

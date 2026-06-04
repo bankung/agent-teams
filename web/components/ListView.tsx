@@ -310,6 +310,12 @@ export function ListView({ tasks, onOpenDetail, highlightedTaskId = null }: Prop
           <tbody>
             {sorted.map((task) => {
               const isHighlighted = highlightedTaskId === task.id;
+              // Wave B (#4) — bug tasks get a red left-accent via a colored
+              // left-border cell that spans the full row height. We use a CSS
+              // box-shadow trick on the <tr> since <tr> doesn't accept
+              // border-left in all browsers reliably — inset box-shadow on the
+              // row is the cross-browser approach.
+              const isBug = task.task_type === "bug";
               return (
               <tr
                 key={task.id}
@@ -317,8 +323,9 @@ export function ListView({ tasks, onOpenDetail, highlightedTaskId = null }: Prop
                 tabIndex={0}
                 onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenDetail(task); } }}
                 data-task-card-id={task.id}
+                data-task-type={task.task_type ?? undefined}
                 data-deep-link-highlighted={isHighlighted ? "true" : undefined}
-                className={`cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800 border-b border-zinc-100 dark:border-zinc-800/60 last:border-b-0 transition-colors${isHighlighted ? " animate-deep-link-pulse" : ""}`}
+                className={`cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800 border-b border-zinc-100 dark:border-zinc-800/60 last:border-b-0 transition-colors${isHighlighted ? " animate-deep-link-pulse" : ""}${isBug ? " [box-shadow:inset_4px_0_0_0_theme(colors.red.500)] dark:[box-shadow:inset_4px_0_0_0_theme(colors.red.400)]" : ""}`}
               >
                 {/* #id */}
                 <td className="py-2 px-3 align-middle text-right font-mono text-xs text-zinc-400 dark:text-zinc-500 whitespace-nowrap">
