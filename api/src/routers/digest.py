@@ -46,6 +46,7 @@ from src.services.notify_email import (
     send_email,
 )
 from src.services.notify_ntfy import NTFY_ENV_ENABLED, NTFY_ENV_TOPIC, send_push
+from src.services.skill_stub_detector import run_skill_stub_detector
 
 # Kanban #1437 — "control" project id whose notification_targets carries the
 # digest_email_enabled flag. Single-tenant convention: always project id=1.
@@ -96,6 +97,29 @@ async def fire_digest(
     flags = await fetch_open_audit_flags(session)
     flag_count = len(flags)
 
+    # Kanban #1223 — run skill/runbook stub detector (HITL-gated; writes to
+    # _scratch/auditor/ only; soft-fail so a detector error never blocks the
+    # digest send).
+    try:
+        stub_result = await run_skill_stub_detector(session)
+        skill_stubs_payload = {
+            "proposed_count": stub_result.proposed_count,
+            "stub_dir": stub_result.stub_dir,
+            "groups_found": stub_result.groups_found,
+            "threshold_used": stub_result.threshold_used,
+        }
+        logger.info(
+            "digest fire: skill_stub_detector proposed=%d groups=%d skipped_dedup=%d",
+            stub_result.proposed_count,
+            stub_result.groups_found,
+            stub_result.skipped_dedup,
+        )
+    except Exception as _det_exc:  # noqa: BLE001
+        logger.warning(
+            "digest fire: skill_stub_detector failed (non-fatal): %s", _det_exc
+        )
+        skill_stubs_payload = {}
+
     # Build web base URL from env — defaults to localhost (dev) so links are
     # always absolute even when the env is unconfigured.
     base_url = os.environ.get("WEB_BASE_URL", "http://localhost:5431").rstrip("/")
@@ -105,6 +129,7 @@ async def fire_digest(
         "flags": flags,
         "base_url": base_url,
         "project_id": _CONTROL_PROJECT_ID,
+        "skill_stubs": skill_stubs_payload,  # Kanban #1223
     }
 
     subject = render_subject(flag_count, today)

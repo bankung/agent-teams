@@ -110,6 +110,23 @@ def render_text(payload: dict[str, Any]) -> str:
             lines.append(f"    Deep link: {link}")
         lines.append("")
 
+    # Kanban #1223 — skill/runbook stub proposals (optional — present when
+    # the digest pipeline ran the detector this cycle).
+    skill_stubs: dict[str, Any] = payload.get("skill_stubs") or {}
+    if skill_stubs:
+        proposed_count: int = int(skill_stubs.get("proposed_count") or 0)
+        stub_dir: str = str(skill_stubs.get("stub_dir") or "")
+        if proposed_count > 0 and stub_dir:
+            noun = "stub" if proposed_count == 1 else "stubs"
+            lines.append(
+                f"Skill/runbook proposals: {proposed_count} new {noun} proposed."
+            )
+            lines.append(f"  Review at: {stub_dir}")
+            lines.append("")
+        elif proposed_count == 0:
+            lines.append("Skill/runbook proposals: no new patterns detected.")
+            lines.append("")
+
     token = make_optout_token(project_id)
     optout_url = f"{base_url}/api/notifications/digest-optout?token={token}"
     lines += [
@@ -161,6 +178,27 @@ def render_html(payload: dict[str, Any]) -> str:
             )
             parts.append("</td></tr>")
         parts.append("</table>")
+
+    # Kanban #1223 — skill/runbook stub proposals section.
+    skill_stubs_h: dict[str, Any] = payload.get("skill_stubs") or {}
+    if skill_stubs_h:
+        proposed_count_h: int = int(skill_stubs_h.get("proposed_count") or 0)
+        stub_dir_h: str = str(skill_stubs_h.get("stub_dir") or "")
+        parts.append('<hr style="border: none; border-top: 1px solid #eee; margin: 16px 0;">')
+        if proposed_count_h > 0 and stub_dir_h:
+            noun_h = "stub" if proposed_count_h == 1 else "stubs"
+            parts.append(
+                f'<p><strong>Skill/runbook proposals:</strong> '
+                f'{proposed_count_h} new {noun_h} proposed.</p>'
+            )
+            parts.append(
+                f'<p style="font-size: 12px; color: #555;">Review at: '
+                f'<code>{_esc(stub_dir_h)}</code></p>'
+            )
+        else:
+            parts.append(
+                "<p><strong>Skill/runbook proposals:</strong> no new patterns detected.</p>"
+            )
 
     token = make_optout_token(project_id)
     optout_url = f"{base_url}/api/notifications/digest-optout?token={token}"
