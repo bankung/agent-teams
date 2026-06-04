@@ -1,29 +1,50 @@
-"""Pydantic schemas for the `project_resources` table (Kanban #1302).
+"""Pydantic schemas for the `project_resources` table (Kanban #1302 / #1309).
 
 Wire-enum for `kind` is a Literal kept in lockstep with
 `src.constants.ResourceKind.ALL` (guard at module bottom — mirrors the
 MilestoneStatusLiteral / TaskRunModeLiteral pattern).
 
-SCHEMA-ONLY this slice (#1302 / X.1): these models define the wire contract for
-the upcoming upload endpoint (#1309 / X.2). No router consumes them yet.
+#1309 — `tags` SHAPE CHANGE (list -> dict). The #1302 schema-only slice typed
+`tags` as a `list[str]` (mirroring `projects.sources`). The #1309 verify-and-tag
+pipeline needs to stash STRUCTURED metadata — `{row_count, col_count,
+schema_detected, preview, est_cost_if_full, hash, format_detected, ...}` — which
+is a JSON OBJECT, not a list. The table is brand-new with ZERO rows and NO
+consumers (verified live 2026-06-04: `SELECT count(*) FROM project_resources` =
+0), so widening the wire type from `list[str]` to `dict` is safe (no data to
+migrate, no readers to break). The DB column is JSONB which holds either shape;
+only the `server_default '[]'` differs from the value we now write (a dict),
+which is fine — every #1309 INSERT supplies an explicit `tags` object. See the
+report / decisions for the locked rationale.
 
-Column-naming convention, parity with `tasks` / `milestones`: `kind` is the
-DISCRIMINATOR; the 0/1 soft-delete `status` flag is intentionally NOT exposed on
-any public schema (clients will DELETE /api/.../resources/{id} to soft-delete) —
-parity with how `tasks` hides `status` while exposing `process_status`.
+Wire models used by the #1309 router:
+  - LINK create  -> the router parses the JSON body directly (dual-contract by
+    request content-type); `ResourceLinkCreate` documents that shape.
+  - FILE create  -> multipart (UploadFile + Form) handled directly in the router
+    (file metadata is server-derived, never client-supplied).
+  - `ResourceRead` / `ResourcePreview` are the response models.
+
+`ResourceCreate` / `ResourceUpdate` are RETAINED from the #1302 slice (still
+exported via `schemas/__init__`) for backward-compat; their `tags` field is
+widened to the dict shape to match the #1309 contract. They are not wired to the
+router (kept for any future full-body PATCH + the #1302 contract tests).
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.constants import ResourceKind
 
 # Wire enum for project_resources.kind; lockstep guard at module bottom.
 ResourceKindLiteral = Literal["file", "link"]
+
+# Tags keys that are server-internal and must NEVER appear on the wire.
+# stored_path leaks FS layout; keep it in the DB (DELETE needs it) but
+# strip it from every response (#1309 fix #4).
+_WIRE_HIDDEN_TAGS: frozenset[str] = frozenset({"stored_path"})
 
 
 def _check_kind_fields(
@@ -33,8 +54,8 @@ def _check_kind_fields(
 
     'file' rows MUST carry a `filename`; 'link' rows MUST carry a `url`. Raises
     ValueError (-> 422) so the friendlier API error fires BEFORE the DB
-    IntegrityError. Shared by ResourceCreate (and any future full-body PATCH).
-    Error messages are part of the wire contract.
+    IntegrityError. Error messages are part of the wire contract (pinned by the
+    #1302 schema contract tests).
     """
     if kind == ResourceKind.FILE and not filename:
         raise ValueError("kind='file' requires a non-empty filename")
@@ -42,75 +63,83 @@ def _check_kind_fields(
         raise ValueError("kind='link' requires a non-empty url")
 
 
-class ResourceCreate(BaseModel):
-    """Request body for the (forthcoming) POST upload/attach endpoint (#1309).
+class ResourceLinkCreate(BaseModel):
+    """JSON request body for attaching a LINK resource (#1309).
 
-    `project_id` is defense-in-depth — the X-Project-Id header is canonical and
-    the router will assert the body matches the session (mirrors TaskCreate /
-    MilestoneCreate). `task_id` optionally pins the resource to one task in the
-    same project (same-project rule is app-layer, like milestone_id).
+    The FILE path uses multipart (UploadFile + Form fields) handled in the
+    router — file metadata (filename, content_type, size_bytes, tags) is
+    SERVER-derived, never client-supplied. This body therefore models the link
+    kind only: `kind` is fixed to 'link', `url` is required.
+
+    `project_id` is NOT in the body — it is taken canonically from the URL path
+    (`POST /api/projects/{project_id}/resources`). `task_id` optionally pins the
+    resource to one task in the SAME project (same-project rule enforced in the
+    router, mirroring tasks.milestone_id).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["link"] = "link"
+    url: str = Field(min_length=1, max_length=2_000)
+    task_id: int | None = None
+    label: str | None = Field(default=None, max_length=500)
+
+
+class ResourceCreate(BaseModel):
+    """Generic create body retained from #1302 (backward-compat; not router-wired).
+
+    `tags` is the metadata OBJECT (#1309 dict shape; was list[str] in #1302).
+    DEFAULT {} matches the verify-and-tag pipeline output container. The per-kind
+    required-field validator + the kind Literal are preserved so the #1302
+    contract tests (and any future full-body PATCH) keep their wire behavior.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     project_id: int
     task_id: int | None = None
-    # The Literal 422s any value outside the enum.
     kind: ResourceKindLiteral
     filename: str | None = Field(default=None, max_length=500)
     url: str | None = Field(default=None, max_length=2_000)
     content_type: str | None = Field(default=None, max_length=255)
     size_bytes: int | None = Field(default=None, ge=0)
     label: str | None = Field(default=None, max_length=500)
-    # Tag-bearing (#1302) — a list of non-empty strings. Element shape validated
-    # here (mirrors projects.sources / required_binaries). DEFAULT [] matches the
-    # DB DEFAULT '[]'.
-    tags: list[str] = Field(default_factory=list, max_length=50)
+    tags: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate_kind_fields(self) -> "ResourceCreate":
         _check_kind_fields(self.kind, self.filename, self.url)
         return self
 
-    @model_validator(mode="after")
-    def _validate_tags(self) -> "ResourceCreate":
-        for t in self.tags:
-            if not isinstance(t, str) or not t.strip():
-                raise ValueError("tags must be non-empty strings")
-            if len(t) > 100:
-                raise ValueError("each tag must be <= 100 chars")
-        return self
-
 
 class ResourceUpdate(BaseModel):
-    """Request body for the (forthcoming) PATCH endpoint — all fields optional.
+    """Partial update body retained from #1302 (backward-compat; not router-wired).
 
-    Soft-delete `status` is intentionally absent — DELETE is the public
-    soft-delete path. `kind` is NOT editable post-create (changing the
-    discriminator would re-interpret filename/url semantics); the upcoming
-    router exposes only the metadata fields below. Missing-key vs explicit-null
-    is enforced at the router via `model_dump(exclude_unset=True)`.
+    `kind` is NOT editable post-create. `tags` (when present) is the metadata
+    object. Missing-key vs explicit-null is the caller's concern via
+    `model_dump(exclude_unset=True)`.
     """
 
     model_config = ConfigDict(extra="ignore")
 
     task_id: int | None = None
     label: str | None = Field(default=None, max_length=500)
-    tags: list[str] | None = Field(default=None, max_length=50)
-
-    @model_validator(mode="after")
-    def _validate_tags(self) -> "ResourceUpdate":
-        if self.tags is not None:
-            for t in self.tags:
-                if not isinstance(t, str) or not t.strip():
-                    raise ValueError("tags must be non-empty strings")
-                if len(t) > 100:
-                    raise ValueError("each tag must be <= 100 chars")
-        return self
+    tags: dict[str, Any] | None = None
 
 
 class ResourceRead(BaseModel):
-    """Full project_resource row as returned by the API."""
+    """Full project_resource row as returned by the API.
+
+    `tags` is the verify-and-tag metadata OBJECT (#1309) — row_count, col_count,
+    schema_detected, preview, est_cost_if_full, hash, format_detected, etc. for
+    files; url_scheme / head_status / title for links. Shape is intentionally
+    open (`dict[str, Any]`) so the pipeline can extend the metadata without a
+    schema bump.
+
+    Internal-only keys (stored_path) are stripped by the `_strip_internal_tags`
+    validator before serialisation — they live in the DB but must never reach the
+    wire (#1309 fix #4).
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -123,9 +152,40 @@ class ResourceRead(BaseModel):
     content_type: str | None
     size_bytes: int | None
     label: str | None
-    tags: list[str]
+    tags: dict[str, Any]
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _strip_internal_tags(cls, v: Any) -> Any:
+        """Drop server-internal keys (stored_path) before the value hits the wire."""
+        if isinstance(v, dict):
+            return {k: val for k, val in v.items() if k not in _WIRE_HIDDEN_TAGS}
+        return v
+
+
+class ResourcePreview(BaseModel):
+    """Lightweight preview payload for GET /api/resources/{id}/preview (#1309).
+
+    Read straight from the stored `tags` metadata — the endpoint NEVER re-reads
+    the full file. `preview` is the first-N-rows sample (list of row-objects for
+    CSV/TSV, parsed value for JSON, or None when no parser ran). The remaining
+    fields are the at-a-glance stats also surfaced in the board UI.
+    """
+
+    model_config = ConfigDict(from_attributes=False)
+
+    id: int
+    kind: ResourceKindLiteral
+    filename: str | None
+    content_type: str | None
+    format_detected: str | None = None
+    row_count: int | None = None
+    col_count: int | None = None
+    schema_detected: list[str] | None = None
+    preview: Any = None
+    parser_unavailable: bool = False
 
 
 # Sanity: the Literal stays in lockstep with src.constants.ResourceKind.ALL.

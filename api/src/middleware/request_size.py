@@ -48,7 +48,16 @@ async def request_size_middleware(request: Request, call_next):
     Note: only checks the header — does NOT defend against chunked transfer
     or missing Content-Length. The Pydantic field caps still catch oversize
     bodies that slip past this check. Belt-and-braces, not single-point.
+
+    SKIP for multipart/form-data: upload routes self-enforce their own cap
+    (520 MB) via streaming. Applying the 2 MB middleware cap here would kill
+    every upload >2 MB before it reached the route's real guard (#1309 fix #1).
     """
+    content_type = (request.headers.get("content-type") or "").lower()
+    if content_type.startswith("multipart/form-data"):
+        # Let the upload route enforce its own cap via stream_to_disk.
+        return await call_next(request)
+
     cl_header = request.headers.get("content-length")
     if cl_header is not None:
         try:

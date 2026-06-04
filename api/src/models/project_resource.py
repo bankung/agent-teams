@@ -52,10 +52,10 @@ class ProjectResource(Base):
     `kind` (TEXT) holds the discriminator (file / link); `status` (0/1) is the
     soft-delete flag. Per-kind required fields ('file' needs `filename`, 'link'
     needs `url`) are enforced both at the DB level (CHECK
-    `ck_project_resources_kind_fields`) and at the API boundary (Pydantic
-    ResourceCreate model_validator). `tags` is a JSONB list of strings —
-    element-shape validation lives at the API layer (mirrors
-    `projects.sources` / `projects.required_binaries`).
+    `ck_project_resources_kind_fields`) and at the API boundary. `tags` is a
+    JSONB metadata OBJECT (#1309) carrying the verify-and-tag pipeline output
+    (row/col counts, schema, preview, est_cost, hash, format_detected — or
+    link HEAD probe fields).
     """
 
     __tablename__ = "project_resources"
@@ -92,15 +92,23 @@ class ProjectResource(Base):
 
     label: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Tag-bearing (#1302) — JSONB list of strings. Mirror of projects.sources /
-    # projects.required_binaries (element-shape validated at the API layer; no
-    # DB CHECK on shape). server_default '[]' so omitted rows read an empty
-    # list; Python-side default=list keeps INSERT-without-explicit a list.
-    tags: Mapped[list[str]] = mapped_column(
+    # Tag-bearing — JSONB metadata OBJECT (#1309 shape change; was list[str] in
+    # the #1302 schema-only slice). Holds the verify-and-tag pipeline output:
+    # {row_count, col_count, schema_detected, preview, est_cost_if_full, hash,
+    # format_detected, parser_unavailable, ...} for files; {url_scheme,
+    # head_status, title, ...} for links. The DB column is JSONB (holds either
+    # shape); the table is brand-new with zero rows / no consumers, so widening
+    # the Python type list->dict is data-safe.
+    # server_default '[]': retained at the DB level — harmless because every
+    # #1309 INSERT supplies an explicit dict (ORM `default=dict` yields {} when
+    # omitted). Raw-SQL inserts without explicit tags would get [] (the array
+    # form), which is acceptable — the app always writes explicit tags (#1309
+    # fix #10: no migration needed; DB default vs ORM default intentionally differ).
+    tags: Mapped[dict] = mapped_column(
         JSONB,
         nullable=False,
         server_default=text("'[]'::jsonb"),
-        default=list,
+        default=dict,
     )
 
     # Uniform soft-delete flag (RecordStatus). Distinct from `kind`.

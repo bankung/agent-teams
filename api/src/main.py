@@ -41,6 +41,7 @@ from src.routers import templates as templates_router
 from src.routers import pl as pl_router
 from src.routers.pl import pnl_router
 from src.routers import projects as projects_router
+from src.routers import resources as resources_router
 from src.routers import scaffold as scaffold_router
 from src.routers import sessions as sessions_router
 from src.routers import settings as settings_router
@@ -361,6 +362,11 @@ def create_app() -> FastAPI:
     # Kanban #1303 — per-team task-template CRUD (GLOBAL config, no X-Project-Id;
     # POST/PATCH/DELETE operator-gated). Powers the forthcoming UI picker (X.6).
     app.include_router(task_templates_router.router, prefix="/api")
+    # Kanban #1309 — project resources API on the #1302 project_resources table.
+    # project-scoped POST/GET (/api/projects/{id}/resources, POST operator-gated)
+    # + resource-scoped GET detail/preview + operator-gated DELETE-to-trash.
+    app.include_router(resources_router.router_project, prefix="/api")
+    app.include_router(resources_router.router_resource, prefix="/api")
     # Kanban #955.A — Web Push subscription CRUD (browser PushManager endpoints).
     app.include_router(push_router.router, prefix="/api")
     # Kanban #1192 — ntfy push-notification fire endpoint (POST /api/push/fire).

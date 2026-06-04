@@ -1,7 +1,10 @@
 """Kanban #1302 (X.1) — project_resources SCHEMA contract-smoke tests.
 
-This task is SCHEMA + ORM + Pydantic ONLY — there is NO upload endpoint yet
-(#1309 / X.2). So these first-pass contract-smoke tests assert the DB-level and
+This slice was SCHEMA + ORM + Pydantic ONLY. The #1309 upload endpoint slice
+WIDENED `tags` from a `list[str]` to a metadata OBJECT (dict) — the table is
+brand-new with zero rows / no consumers, so the shape change is data-safe. The
+`tags` assertions below were updated from list-shape to dict-shape accordingly
+(#1309). These first-pass contract-smoke tests assert the DB-level and
 schema-level contract DIRECTLY (via the `db_session` fixture + the Pydantic
 models), NOT via HTTP.
 
@@ -72,18 +75,21 @@ async def _make_task(db_session, project_id: int) -> int:
 
 
 def test_resource_create_link_happy() -> None:
-    """ResourceCreate accepts a valid 'link' row and round-trips its fields."""
+    """ResourceCreate accepts a valid 'link' row and round-trips its fields.
+
+    #1309: `tags` is now a metadata OBJECT (dict), not a list of strings.
+    """
     rc = ResourceCreate(
         project_id=1,
         kind="link",
         url="https://example.com/spec.pdf",
         label="Spec",
-        tags=["spec", "external"],
+        tags={"url_scheme": "https", "title": "Spec"},
     )
     # POSITIVE: fields survive validation verbatim.
     assert rc.kind == "link"
     assert rc.url == "https://example.com/spec.pdf"
-    assert rc.tags == ["spec", "external"]
+    assert rc.tags == {"url_scheme": "https", "title": "Spec"}
     # filename stays None for a link.
     assert rc.filename is None
 
@@ -99,8 +105,8 @@ def test_resource_create_file_happy() -> None:
     )
     assert rc.kind == "file"
     assert rc.filename == "diagram.png"
-    # tags defaults to [] (mirrors the DB DEFAULT '[]').
-    assert rc.tags == []
+    # #1309: tags defaults to {} (the verify-and-tag metadata container).
+    assert rc.tags == {}
 
 
 def test_resource_create_file_without_filename_422() -> None:
@@ -141,7 +147,7 @@ def test_resource_read_from_orm_attributes() -> None:
         content_type = None
         size_bytes = None
         label = "Doc"
-        tags = ["a", "b"]
+        tags = {"url_scheme": "https", "head_status": 200}
         from datetime import datetime, timezone
 
         created_at = datetime(2026, 6, 4, tzinfo=timezone.utc)
@@ -150,7 +156,8 @@ def test_resource_read_from_orm_attributes() -> None:
     out = ResourceRead.model_validate(_Row())
     assert out.id == 7
     assert out.kind == "link"
-    assert out.tags == ["a", "b"]
+    # #1309: tags is the metadata OBJECT (dict).
+    assert out.tags == {"url_scheme": "https", "head_status": 200}
 
 
 # ---------------------------------------------------------------------------
@@ -196,11 +203,13 @@ async def test_db_check_valid_file_and_link_insert(db_session) -> None:
     await db_session.refresh(good_file)
     await db_session.refresh(good_link)
 
-    # POSITIVE: both rows persisted with ids + the JSONB tags default landed [].
+    # POSITIVE: both rows persisted with ids + the JSONB tags default landed {}.
+    # #1309: the ORM Python-side default is now `dict` (was `list`); an
+    # INSERT-without-explicit-tags row reads back {}.
     assert good_file.id is not None
     assert good_link.id is not None
-    assert good_file.tags == []
-    assert good_link.tags == []
+    assert good_file.tags == {}
+    assert good_link.tags == {}
     assert good_file.status == 1  # RecordStatus.ACTIVE default
 
     # Cleanup throwaway project (cascade removes both resources in the test DB).

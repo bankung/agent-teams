@@ -65,6 +65,8 @@ _scratch/*
 
 # runtime audit logs (durable via backup tarball, not git-tracked)
 /logs/
+# runtime resource uploads — fallback storage for projects with no working_path (#1309)
+/_data/
 
 # CTX-1 (Kanban #716): per-Claude-Code-instance session markdown store.
 # DB rows live in `sessions` / `session_runs` / `session_compacts`; markdown
