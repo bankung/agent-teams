@@ -26,10 +26,11 @@ Tool naming convention: `<provider>.<action>` (e.g. `gmail.trash`). One entry
 per governable action; add an action by adding one entry here + wiring the
 gate at the handler (design doc "Add a tool in the future" checklist).
 
-DISCOVERY is Lead-mediated (design doc): there is no agent-facing manifest
-endpoint in Mode A. The Lead reads `config.tool_grants[role]` + this registry
-and injects the allowed-tool spec into each spawn brief. Nothing to build for
-discovery in P0 — this docstring is the discovery contract reference.
+DISCOVERY (P0): was Lead-mediated — the Lead read `config.tool_grants[role]` +
+this registry and injected the allowed-tool spec into each spawn brief.
+DISCOVERY (P1, Kanban #1854): an agent-callable `GET /api/tools/directory`
+endpoint now derives the manifest from this registry + config.tool_grants at
+request time. See `routers/tools_directory.py`.
 """
 
 from __future__ import annotations
@@ -42,18 +43,27 @@ from src.schemas.project import ToolTier
 class ToolEntry(TypedDict):
     tier: ToolTier
     version: str
+    purpose: str  # Human-readable one-liner for agent discovery (Kanban #1854).
 
 
 # ---------------------------------------------------------------------------
-# The registry. `<provider>.<action>` -> {tier, version}. Seeded with the two
-# email-trash actions the P0 gate wires into (`routers/tools_email.py`).
+# The registry. `<provider>.<action>` -> {tier, version, purpose}. Seeded with
+# the two email-trash actions the P0 gate wires into (`routers/tools_email.py`).
 # Both are tier `destructive` — moving mail to trash/Deleted-Items is the
 # Mode-A action with the highest blast radius in today's catalog.
 # ---------------------------------------------------------------------------
 
 TOOL_REGISTRY: Final[dict[str, ToolEntry]] = {
-    "gmail.trash": {"tier": "destructive", "version": "v1"},
-    "outlook.trash": {"tier": "destructive", "version": "v1"},
+    "gmail.trash": {
+        "tier": "destructive",
+        "version": "v1",
+        "purpose": "Move Gmail messages to Trash by query or explicit message IDs.",
+    },
+    "outlook.trash": {
+        "tier": "destructive",
+        "version": "v1",
+        "purpose": "Move Outlook messages to Deleted Items by query or explicit message IDs.",
+    },
 }
 
 
