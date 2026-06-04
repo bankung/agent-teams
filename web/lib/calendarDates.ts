@@ -183,6 +183,77 @@ export const WEEKDAY_LABELS = [
 ] as const;
 
 // ---------------------------------------------------------------------------
+// Week grid (#13 — Calendar Wave E week view)
+// ---------------------------------------------------------------------------
+//
+// The week view is anchored on an arbitrary "anchor" civil date (any day inside
+// the week the operator is looking at). A week is the Sun-started 7-day span
+// containing that anchor. Like the month grid, all math stays in civil space
+// via epochDay (the UTC-epoch-day is a pure arithmetic vehicle, never
+// serialized). We reuse epochDay / epochDayToKey from the Gantt section below.
+
+// WeekDay — one cell in the week strip. Unlike the month grid every cell is
+// "in" the week (no leading/trailing pad), but we carry the {y,m,d} parts so
+// the header can show the date + weekday and the placement keys match.
+export type WeekDay = {
+  key: string; // "YYYY-MM-DD"
+  day: number; // civil day-of-month (1..31)
+  month0: number; // 0..11 (for cross-month week labels)
+  year: number;
+};
+
+// startOfWeekKey — the Sunday on/before `anchorKey` as "YYYY-MM-DD". Sun-started
+// to match WEEKDAY_LABELS + buildMonthGrid. Falls back to today on bad input.
+export function startOfWeekKey(anchorKey: string): string {
+  const ed = epochDay(anchorKey);
+  if (ed === null) return todayKey();
+  // 1970-01-01 (epochDay 0) was a Thursday → weekday = (ed + 4) % 7 with 0=Sun.
+  const weekday = ((ed % 7) + 7 + 4) % 7;
+  return epochDayToKey(ed - weekday);
+}
+
+// buildWeekDays — the 7 civil days (Sun..Sat) of the week containing `anchorKey`.
+export function buildWeekDays(anchorKey: string): WeekDay[] {
+  const startEd = epochDay(startOfWeekKey(anchorKey)) ?? 0;
+  const out: WeekDay[] = [];
+  for (let i = 0; i < 7; i++) {
+    const key = epochDayToKey(startEd + i);
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key);
+    out.push({
+      key,
+      year: m ? Number(m[1]) : 0,
+      month0: m ? Number(m[2]) - 1 : 0,
+      day: m ? Number(m[3]) : 0,
+    });
+  }
+  return out;
+}
+
+// addWeeks — shift an anchor "YYYY-MM-DD" by ±n weeks (civil-day arithmetic).
+export function addWeeks(anchorKey: string, delta: number): string {
+  const ed = epochDay(anchorKey);
+  if (ed === null) return todayKey();
+  return epochDayToKey(ed + delta * 7);
+}
+
+// weekLabel — human range label for a week, e.g. "Jun 1 – 7, 2026" (same month)
+// or "Jun 29 – Jul 5, 2026" (cross-month) or cross-year variants.
+export function weekLabel(anchorKey: string): string {
+  const days = buildWeekDays(anchorKey);
+  const a = days[0];
+  const b = days[6];
+  const sameYear = a.year === b.year;
+  const sameMonth = sameYear && a.month0 === b.month0;
+  if (sameMonth) {
+    return `${MONTH_NAMES[a.month0]} ${a.day} – ${b.day}, ${a.year}`;
+  }
+  if (sameYear) {
+    return `${MONTH_NAMES[a.month0]} ${a.day} – ${MONTH_NAMES[b.month0]} ${b.day}, ${a.year}`;
+  }
+  return `${MONTH_NAMES[a.month0]} ${a.day}, ${a.year} – ${MONTH_NAMES[b.month0]} ${b.day}, ${b.year}`;
+}
+
+// ---------------------------------------------------------------------------
 // Gantt time axis (#1874)
 // ---------------------------------------------------------------------------
 //

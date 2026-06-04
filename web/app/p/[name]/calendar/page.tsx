@@ -24,11 +24,7 @@ import {
   listTasks,
   HttpError,
 } from "@/lib/api";
-import {
-  currentYearMonth,
-  monthRangeKeys,
-  parseMonthParam,
-} from "@/lib/calendarDates";
+import { currentYearMonth, parseMonthParam } from "@/lib/calendarDates";
 import { CalendarView } from "@/components/CalendarView";
 import { ThemePicker } from "@/components/ThemePicker";
 import { ViewSwitcher } from "@/components/ViewSwitcher";
@@ -54,13 +50,19 @@ export default async function ProjectCalendarPage({
 
   // Resolve the visible month from the URL param; malformed → current month.
   const ym = parseMonthParam(searchParams.month) ?? currentYearMonth();
-  const { from, to } = monthRangeKeys(ym);
 
-  // Tasks in the visible month's due_date range + every milestone (small N).
-  // A milestone fetch failing degrades to an empty list rather than blanking
-  // the whole page (mirrors the milestones page's defensive fan-out).
+  // Wave E (#14) — placement is by due_date (unfinished) OR completed_at
+  // (finished). The BE only has a due_date range filter (no completed_at range),
+  // so we fetch the project's task set and let CalendarView resolve placement +
+  // filter to the visible cells client-side. This also lets the week view (#13)
+  // and drag-to-reschedule (#12) cover days adjacent to the month boundary
+  // without a re-fetch. CANCELLED is excluded by the BE default (and dropped
+  // from placement anyway). A milestone fetch failing degrades to an empty list
+  // rather than blanking the page (mirrors the milestones page's fan-out).
+  // FOLLOW-UP: a BE completed_from/completed_to filter would let us window this
+  // fetch again if a single project ever exceeds the 500-row cap.
   const [tasks, milestones] = await Promise.all([
-    listTasks(project.id, { due_from: from, due_to: to, limit: 500 }),
+    listTasks(project.id, { limit: 500 }),
     listMilestones(project.id, { limit: 500 }).catch(() => []),
   ]);
 
@@ -94,6 +96,7 @@ export default async function ProjectCalendarPage({
 
       <div className="mx-auto w-full max-w-5xl">
         <CalendarView
+          projectId={project.id}
           projectName={project.name}
           year={ym.year}
           month0={ym.month0}

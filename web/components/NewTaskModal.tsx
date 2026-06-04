@@ -77,6 +77,11 @@ type Props = {
   // +New dropdown owns the open state.
   externalOpen?: boolean;
   onExternalClose?: () => void;
+  // Wave E (#11) — pre-fill the due_date ("YYYY-MM-DD") when the modal is opened
+  // from a Calendar day cell's "New task on this date" action. Seeds the field
+  // on open; the operator can still edit/clear it before submit. resetFields
+  // restores this initial value rather than blanking it.
+  initialDueDate?: string;
 };
 
 
@@ -87,6 +92,7 @@ export function NewTaskModal({
   onPushToast,
   externalOpen,
   onExternalClose,
+  initialDueDate,
 }: Props) {
   const isProjectPaused = project?.is_paused === true;
   // #7 §A AC#3 — narrow role dropdown to project.config.enabled_roles when set.
@@ -129,7 +135,8 @@ export function NewTaskModal({
   const [taskType, setTaskType] = useState<"bug" | "feature" | "chore" | "docs" | "refactor">("feature");
   // #1868 — optional milestone grouping ("" = none) + display/planning date.
   const [milestoneId, setMilestoneId] = useState<"" | number>("");
-  const [dueDate, setDueDate] = useState("");
+  // Wave E (#11) — seed from initialDueDate (Calendar "New task on this date").
+  const [dueDate, setDueDate] = useState(initialDueDate ?? "");
   const [milestones, setMilestones] = useState<MilestoneRead[]>([]);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -177,7 +184,9 @@ export function NewTaskModal({
     setModelOverride(null);
     setTaskType("feature");
     setMilestoneId("");
-    setDueDate("");
+    // Wave E (#11) — restore the calendar-seeded due_date rather than blanking
+    // it, so a "New task on this date" flow keeps the target day on re-open.
+    setDueDate(initialDueDate ?? "");
     setError(null);
   }
 
