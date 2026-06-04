@@ -34,7 +34,6 @@ import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
 import { Icon } from "@/components/Icon";
 import { AuditHistorySection } from "@/components/AuditHistorySection";
 import { CostSummary } from "@/components/CostSummary";
-import { FlagBellBadge } from "@/components/FlagBellBadge";
 import { PnlSummaryCard } from "@/components/PnlSummaryCard";
 import { ProgressChartsPanel } from "@/components/ProgressChartsPanel";
 import { FINANCE_PANELS_ENABLED } from "@/lib/featureFlags";
@@ -50,6 +49,7 @@ import { SourcesBadge } from "@/components/SourcesBadge";
 import { TaskDetail } from "@/components/TaskDetail";
 import { ThemePicker } from "@/components/ThemePicker";
 import { ToastStack, type ToastMessage } from "@/components/Toast";
+import { ViewSwitcher } from "@/components/ViewSwitcher";
 
 type Props = {
   initialTasks: TaskRead[];
@@ -188,6 +188,35 @@ function HeaderIconBtn({
   );
 }
 
+// Wave A (#2) — navigating sibling of HeaderIconBtn. Same compact icon chrome +
+// hover tooltip, but renders a Next <Link> so Inbox / Settings stay real
+// navigations (not onClick handlers). aria-label + title carry the text the
+// former nav labels provided.
+function HeaderIconLink({
+  href,
+  icon,
+  label,
+}: {
+  href: string;
+  icon: string;
+  label: string;
+}) {
+  return (
+    <Link
+      href={href}
+      aria-label={label}
+      title={label}
+      className="group relative inline-flex items-center rounded-md border border-zinc-200 bg-transparent px-2 py-1.5 text-zinc-500 transition-colors min-h-[44px] sm:min-h-0 hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-100"
+    >
+      <Icon name={icon} size={15} aria-hidden />
+      {/* Visible tooltip (sm+) — mobile relies on the 44px tap target + label. */}
+      <span className="pointer-events-none absolute top-full left-1/2 z-50 mt-1 -translate-x-1/2 whitespace-nowrap rounded bg-zinc-900 px-1.5 py-0.5 text-[10px] font-medium text-white opacity-0 transition-opacity sm:group-hover:opacity-100 sm:group-focus-visible:opacity-100 dark:bg-zinc-700">
+        {label}
+      </span>
+    </Link>
+  );
+}
+
 export function Board({ initialTasks, hasHeadlessTask, project, projectStats, progressStats }: Props) {
   const router = useRouter();
   const pathname = usePathname();
@@ -230,9 +259,22 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
   const [terminateModalOpen, setTerminateModalOpen] = useState(false);
   const [pauseModalOpen, setPauseModalOpen] = useState(false);
 
+  // Wave A (#1) — view seed precedence: URL `?view=` param > localStorage >
+  // default 'board'. The ViewSwitcher's List link routes to `/p/<name>?view=list`
+  // so the param must win on mount; we then mirror it into localStorage so the
+  // per-project preference stays consistent with the URL the operator landed on.
   useEffect(() => {
+    const fromUrl = searchParams?.get("view");
+    if (fromUrl === "list" || fromUrl === "board") {
+      setView(fromUrl);
+      localStorage.setItem(`kanban-view-${project.name}`, fromUrl);
+      return;
+    }
     const stored = localStorage.getItem(`kanban-view-${project.name}`);
     if (stored === "list" || stored === "board") setView(stored);
+    // searchParams intentionally read once on mount for the seed; the in-board
+    // ViewSwitcher updates `view` state directly afterward (no re-navigation).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.name]);
 
   // #1868 v1.1 — load milestones for the filter dropdown. Client-side fetch on
@@ -341,24 +383,6 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  );
-
-  // Kanban #1787 — needs-attention badge: tasks requiring human action.
-  // Predicate: REVIEW (ps=3) | BLOCKED (ps=4) | is_pending=true | halt_reason non-empty.
-  // halt_reason catches halted-but-not-BLOCKED tasks (e.g. operator-HOLD tasks
-  // parked in TODO with a halt_reason set). TaskRead includes halt_reason (#1001).
-  // Derived from the unfiltered tasks list (not visibleTasks) so the count
-  // reflects the real state even when the audit-task filter is active.
-  const needsAttentionCount = useMemo(
-    () =>
-      tasks.filter(
-        (t) =>
-          t.process_status === TaskStatus.REVIEW ||
-          t.process_status === TaskStatus.BLOCKED ||
-          t.is_pending === true ||
-          (t.halt_reason != null && t.halt_reason !== ""),
-      ).length,
-    [tasks],
   );
 
   // #1238 GOV3 — audit-task tally is computed against the unfiltered list so
@@ -515,49 +539,27 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
             Dashboard
           </Link>
           <Sep />
-          {/* #1000 — cross-project approval inbox. Plain text link (not the
-              polling InboxBadge): the dashboard already carries the live count
-              badge; the board keeps a lightweight link to avoid a 60s poller
-              on every board mount. */}
-          <Link
-            href="/inbox"
-            className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
-          >
-            Inbox
-          </Link>
-          <Sep />
-          {/* #1349 — per-project settings (nudge threshold + future knobs).
-              KEPT as a text link (distinct from the platform Integrations icon
-              in the right cluster). */}
-          <Link
+          {/* Wave A (#2) — Inbox as an icon link (was a text link). Cross-project
+              approval inbox; lightweight <Link> (no polling badge — the
+              dashboard carries the live count). */}
+          <HeaderIconLink href="/inbox" icon="backlog" label="Inbox" />
+          {/* Wave A (#2) — per-project Settings as an icon link (was a text
+              link). #1349 nudge-threshold + future knobs. Distinct from the
+              platform Integrations plug icon in the right cluster. */}
+          <HeaderIconLink
             href={`/p/${encodeURIComponent(project.name)}/settings`}
-            className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
-          >
-            Settings
-          </Link>
+            icon="agent-config"
+            label="Settings"
+          />
           <Sep />
-          {/* #1868 — per-project Milestones surface (X-Project-Id scoped). */}
+          {/* #1868 — per-project Milestones surface (X-Project-Id scoped).
+              KEPT as a nav link (Wave A retains the milestones page); Calendar +
+              Gantt text links removed — they now live in the ViewSwitcher. */}
           <Link
             href={`/p/${encodeURIComponent(project.name)}/milestones`}
             className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
           >
             Milestones
-          </Link>
-          <Sep />
-          {/* #1873 (M2) — month-grid calendar of task due_dates + milestone deadlines. */}
-          <Link
-            href={`/p/${encodeURIComponent(project.name)}/calendar`}
-            className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
-          >
-            Calendar
-          </Link>
-          <Sep />
-          {/* #1874 (M3) — milestone-level Gantt timeline. */}
-          <Link
-            href={`/p/${encodeURIComponent(project.name)}/gantt`}
-            className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
-          >
-            Gantt
           </Link>
           <Sep />
           <span className="text-zinc-600 dark:text-zinc-400">
@@ -570,9 +572,9 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
             </>
           )}
           <Sep />
-          <span className="text-zinc-500 dark:text-zinc-400 tabular-nums">
-            {visibleTasks.length} task{visibleTasks.length === 1 ? "" : "s"}
-          </span>
+          {/* Wave A (#5/#3a) — the "NNN tasks" count moved OUT of the nav row
+              into the toolbar row directly under the consent banner (alongside
+              +New). See data-board-toolbar-row below. */}
           {/* #1868 v1.1 — milestone filter dropdown. Self-hides when the project
               has no milestones (mirrors the audit-toggle's count>0 self-hide).
               "All milestones" = no filter; "No milestone" = milestone_id null;
@@ -634,55 +636,31 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
               dataAttr="data-scheduled-task-badge"
             />
           )}
-          {/* Kanban #1787 — needs-attention badge: tasks where REVIEW | BLOCKED |
-              is_pending=true (halted tasks land on ps=4 which BLOCKED covers).
-              Display-only count pill; data-needs-attention-count is the smoke anchor. */}
-          {needsAttentionCount > 0 && (
-            <HeaderIconBtn
-              icon="alert"
-              label={`Needs attention (${needsAttentionCount})`}
-              count={needsAttentionCount}
-              tone="amber"
-              dataAttr="data-needs-attention-count"
-            />
-          )}
           <Sep />
           <ConnectionStateBadge
             state={connectionState}
             lastEventAt={lastEventAt}
           />
           <Sep />
-          {/* #954 — 44px min tap target on mobile for view-mode toggle */}
-          <span className="inline-flex items-center rounded-md border border-zinc-200 dark:border-zinc-700 overflow-hidden text-xs">
-            {(["board", "list"] as const).map((v) => (
-              <button
-                key={v}
-                type="button"
-                onClick={() => handleViewChange(v)}
-                aria-pressed={view === v}
-                className={`inline-flex items-center px-3 py-2 min-h-[44px] sm:min-h-0 sm:px-2.5 sm:py-1 capitalize transition-colors ${
-                  view === v
-                    ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 font-semibold"
-                    : "bg-transparent text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                }`}
-              >
-                <Icon name={v === "board" ? "view-board" : "view-list"} size={14} aria-hidden />
-                <span className="ml-1.5">{v}</span>
-              </button>
-            ))}
-          </span>
-          {/* #1781 — right cluster: +New dropdown, pause/terminate icon
-              buttons, FlagBellBadge, Integrations, ThemePicker. All on the same
-              row; ml-auto pushes them right on desktop, full-width wrap on
-              mobile. */}
+          {/* Wave A (#1) — unified Board · List · Calendar · Gantt switcher
+              replaces the former Board|List toggle. On the board page List is
+              the local `view` state (no navigation): clicking List/Board here
+              updates the view in place via onSelect; Calendar/Gantt are real
+              route links handled inside ViewSwitcher. `active` reflects the live
+              board/list view. */}
+          <ViewSwitcher
+            projectName={project.name}
+            active={view}
+            onSelect={handleViewChange}
+          />
+          {/* #1781 — right cluster: +New moved to the toolbar row (#5/#3a);
+              this cluster now holds pause/terminate icon buttons, Integrations,
+              ThemePicker. (Bell/FlagBellBadge removed in Wave A #6.) ml-auto
+              pushes them right on desktop, full-width wrap on mobile. */}
           <span
             className="ml-auto flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto"
             data-board-actions-cluster
           >
-            {/* +New ▾ — single dropdown replacing the AI/Manual trigger pair.
-                Drives the existing modals via externalOpen (same props/flow). */}
-            <NewTaskDropdown project={project} onPushToast={pushToast} />
-
             {/* Pause / Terminate — icon buttons. Hidden when killed (mutex with
                 the KilledBanner revive). Each opens the SAME modal via the
                 existing externalOpen state. */}
@@ -723,8 +701,9 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
               </>
             )}
 
-            {/* ── FlagBellBadge — review notification ───────────────────── */}
-            <FlagBellBadge />
+            {/* Wave A (#6) — FlagBellBadge (the 🔔 "needs attention" review
+                notification) removed from the board nav. /review remains
+                reachable from the dashboard + ReviewClient's own header. */}
 
             {/* ── PlatformSettingsModal — #1655 / #1781 Integrations (plug
                 icon, platform-wide; distinct from the per-project Settings
@@ -738,9 +717,12 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
         {/* #1781 — compact panels band: Usage / P&L / Progress in ONE row on
             desktop. Usage + P&L are collapsed by default (short); Progress is
             the new compact strip (small charts, tight padding). Grid is
-            3-col when finance is on, 2-col (Usage + Progress) when off. */}
+            3-col when finance is on, 2-col (Usage + Progress) when off.
+            Wave A (#7) — items-stretch + each panel `h-full` makes the three
+            equal height inside the row (gap via the band's gap-3, no per-panel
+            mb-5). */}
         <div
-          className={`grid grid-cols-1 gap-3 ${
+          className={`grid grid-cols-1 items-stretch gap-3 ${
             FINANCE_PANELS_ENABLED ? "lg:grid-cols-3" : "lg:grid-cols-2"
           }`}
           data-board-panels-band
@@ -751,6 +733,7 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
             ariaLabel={`Usage for ${project.name}`}
             defaultCollapsed={true}
             storageKey={`project.${project.id}.panels.usage.expanded`}
+            className="h-full"
           />
           {/* Kanban #1329 (M6 FE) — per-project P&L card (finance-gated). */}
           {FINANCE_PANELS_ENABLED && (
@@ -759,6 +742,7 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
               projectName={project.name}
               defaultCollapsed={true}
               storageKey={`project.${project.id}.panels.pnl.expanded`}
+              className="h-full"
             />
           )}
           {/* Kanban #1292 / #1781 — burndown + velocity in compact strip form,
@@ -780,6 +764,23 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
           hasHeadlessTask={hasHeadlessTask}
         />
       </header>
+      {/* Wave A (#5/#3a) — toolbar row directly under the consent ("Enable
+          headless auto-run") banner and above the kanban columns. Left: the
+          live "NNN tasks" count (moved out of the nav); right: the +New
+          dropdown (moved out of the nav right-cluster). Same NewTaskDropdown
+          instance/behaviour as before. */}
+      <div
+        className="mb-3 flex flex-wrap items-center justify-between gap-2"
+        data-board-toolbar-row
+      >
+        <span
+          className="text-sm tabular-nums text-zinc-500 dark:text-zinc-400"
+          data-board-task-count
+        >
+          {visibleTasks.length} task{visibleTasks.length === 1 ? "" : "s"}
+        </span>
+        <NewTaskDropdown project={project} onPushToast={pushToast} />
+      </div>
       {view === "list" ? (
         <ListView
           tasks={visibleTasks}

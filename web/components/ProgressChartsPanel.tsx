@@ -603,7 +603,9 @@ export function ProgressChartsPanel({
       data-project-id={projectId}
       aria-labelledby={headingId}
       className={`rounded-lg border border-zinc-200 bg-zinc-50/40 dark:border-zinc-800 dark:bg-zinc-950/20 ${
-        compact ? "p-3" : "mb-5 p-5"
+        // Wave A (#7) — compact (board band): h-full so this panel stretches to
+        // equal height with Usage / P&L inside the grid row.
+        compact ? "h-full p-3" : "mb-5 p-5"
       }`}
     >
       <div
@@ -617,9 +619,9 @@ export function ProgressChartsPanel({
         >
           Progress
         </h2>
-        <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
-          {bucketLabel} · last {data.window_days} days
-        </span>
+        {/* Wave A (#7) — "weekly · last 90 days" subtitle removed from the panel
+            header. The same context still renders in the expanded modal header
+            below (where it labels the full chart's axes). */}
       </div>
 
       {isEmpty ? (

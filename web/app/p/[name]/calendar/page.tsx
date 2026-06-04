@@ -31,6 +31,7 @@ import {
 } from "@/lib/calendarDates";
 import { CalendarView } from "@/components/CalendarView";
 import { ThemePicker } from "@/components/ThemePicker";
+import { ViewSwitcher } from "@/components/ViewSwitcher";
 
 type Props = {
   params: { name: string };
@@ -83,7 +84,10 @@ export default async function ProjectCalendarPage({
         <span className="text-xs text-zinc-500 dark:text-zinc-400 font-mono">
           ({project.name})
         </span>
+        {/* Wave A (#1) — shared view switcher (Calendar active). Off-board: all
+            four items navigate (no onSelect). */}
         <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
+          <ViewSwitcher projectName={project.name} active="calendar" />
           <ThemePicker />
         </span>
       </header>

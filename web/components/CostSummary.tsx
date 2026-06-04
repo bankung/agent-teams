@@ -81,6 +81,11 @@ type Props = {
   // defaultCollapsed=true so each project remembers its own preference.
   // Ignored when defaultCollapsed=false.
   storageKey?: string;
+  // Wave A (#7) — layout override for the panel <section> wrapper. Defaults to
+  // "mb-5" (the standalone / dashboard vertical-stack spacing). The board's
+  // 3-up panels band passes "h-full" so all three panels stretch to equal
+  // height inside the grid row (gap handled by the band's `gap-3`).
+  className?: string;
 };
 
 function readExpanded(key: string, defaultCollapsed: boolean): boolean {
@@ -114,6 +119,7 @@ export function CostSummary({
   ariaLabel = "Portfolio-wide token and cost usage",
   defaultCollapsed = false,
   storageKey,
+  className = "mb-5",
 }: Props) {
   let totalCost = 0;
   let totalInput = 0;
@@ -171,7 +177,7 @@ export function CostSummary({
     <section
       data-cost-summary
       aria-label={ariaLabel}
-      className="mb-5 rounded-lg border border-amber-200/60 bg-amber-50/40 p-5 dark:border-amber-900/40 dark:bg-amber-950/10"
+      className={`${className} rounded-lg border border-amber-200/60 bg-amber-50/40 p-5 dark:border-amber-900/40 dark:bg-amber-950/10`}
     >
       <div className="flex items-center gap-2 flex-wrap" style={{ marginBottom: expanded ? "0.75rem" : 0 }}>
         {collapsible ? (

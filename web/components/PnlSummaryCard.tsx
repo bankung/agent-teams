@@ -116,6 +116,12 @@ type Props = {
   defaultCollapsed?: boolean;
   /** localStorage key for per-project collapse state persistence. Required when defaultCollapsed=true. */
   storageKey?: string;
+  /**
+   * Wave A (#7) — layout override for the card <section> wrapper. Defaults to
+   * "mb-5" (standalone spacing). The board's 3-up panels band passes "h-full"
+   * so all three panels stretch to equal height inside the grid row.
+   */
+  className?: string;
 };
 
 type LoadState =
@@ -130,6 +136,7 @@ export function PnlSummaryCard({
   defaultCurrency = "USD",
   defaultCollapsed = false,
   storageKey,
+  className = "mb-5",
 }: Props) {
   // SSR / first-paint fallback is the brief's default "last_30d" so the
   // initial render is stable. Hydration effect upgrades to the stored value
@@ -256,7 +263,7 @@ export function PnlSummaryCard({
       data-pnl-summary-card
       data-project-id={projectId}
       aria-label={`P&L summary for ${projectName}`}
-      className="mb-5 rounded-lg border border-emerald-200/60 bg-emerald-50/40 p-5 dark:border-emerald-900/40 dark:bg-emerald-950/10"
+      className={`${className} rounded-lg border border-emerald-200/60 bg-emerald-50/40 p-5 dark:border-emerald-900/40 dark:bg-emerald-950/10`}
     >
       <div className="flex flex-wrap items-center gap-2" style={{ marginBottom: expanded ? "0.75rem" : 0 }}>
         {collapsible ? (
