@@ -4,7 +4,7 @@ import {
   getProjectByName,
   getProjectsStats,
   getProjectProgressStats,
-  listTasks,
+  listAllTasks,
   HttpError,
 } from "@/lib/api";
 import { TaskRunMode } from "@/lib/constants";
@@ -29,8 +29,11 @@ export default async function ProjectBoardPage({ params }: Props) {
   // Kanban #1292 — burndown + velocity series SSR-fetched in the same
   // Promise.all (established pattern; avoids the client-fetch origin class
   // that bit #1673). Defaults: bucket=week, days=90 (the BE defaults).
+  // #2033 — use listAllTasks (paginated, no limit cap) so projects with >500
+  // active tasks (agent-teams itself has ~600) get a complete set. The Board's
+  // milestone filter client-predicate then operates on the full snapshot.
   const [tasks, projectStats, progressStats] = await Promise.all([
-    listTasks(project.id, { limit: 500 }),
+    listAllTasks(project.id),
     getProjectsStats({ projectId: project.id }),
     getProjectProgressStats(project.id),
   ]);

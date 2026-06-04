@@ -539,19 +539,6 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
             Dashboard
           </Link>
           <Sep />
-          {/* Wave A (#2) — Inbox as an icon link (was a text link). Cross-project
-              approval inbox; lightweight <Link> (no polling badge — the
-              dashboard carries the live count). */}
-          <HeaderIconLink href="/inbox" icon="mail" label="Inbox" />
-          {/* Wave A (#2) — per-project Settings as an icon link (was a text
-              link). #1349 nudge-threshold + future knobs. Distinct from the
-              platform Integrations plug icon in the right cluster. */}
-          <HeaderIconLink
-            href={`/p/${encodeURIComponent(project.name)}/settings`}
-            icon="agent-config"
-            label="Settings"
-          />
-          <Sep />
           {/* #1868 — per-project Milestones surface (X-Project-Id scoped).
               KEPT as a nav link (Wave A retains the milestones page); Calendar +
               Gantt text links removed — they now live in the ViewSwitcher. */}
@@ -632,6 +619,16 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
             className="ml-auto flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto"
             data-board-actions-cluster
           >
+            {/* Wave A.2a (#1) — Inbox + Settings icon links moved to the right
+                cluster so the left nav stays lean (Dashboard · Milestones).
+                Inbox = cross-project approval inbox; Settings = per-project
+                knobs (#1349). Distinct from platform Integrations (plug icon). */}
+            <HeaderIconLink href="/inbox" icon="mail" label="Inbox" />
+            <HeaderIconLink
+              href={`/p/${encodeURIComponent(project.name)}/settings`}
+              icon="agent-config"
+              label="Settings"
+            />
             {/* Pause / Terminate — icon buttons. Hidden when killed (mutex with
                 the KilledBanner revive). Each opens the SAME modal via the
                 existing externalOpen state. */}

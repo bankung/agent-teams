@@ -693,6 +693,42 @@ export async function listTasks(
   });
 }
 
+// #2033 — the BE hard-caps list_tasks at 500 per page. Projects with >500
+// active tasks (e.g. agent-teams itself) would silently drop rows, making
+// milestone filters appear incomplete. listAllTasks paginates at PAGE=500
+// until a page shorter than PAGE is returned (= last page), then merges.
+// Only the opts fields that are safe to combine with offset are forwarded
+// (pending / top_level_only / parent_task_id / milestone_id / due_from /
+// due_to). `opts.limit` is intentionally ignored — the caller wants ALL rows.
+const _PAGE = 500;
+export async function listAllTasks(
+  projectId: number,
+  opts: Omit<ListTasksOpts, "limit"> = {},
+): Promise<TaskRead[]> {
+  const all: TaskRead[] = [];
+  let offset = 0;
+  while (true) {
+    const qs = new URLSearchParams();
+    if (opts.pending) qs.set("pending", "true");
+    if (opts.top_level_only) qs.set("top_level_only", "true");
+    else if (opts.parent_task_id !== undefined)
+      qs.set("parent_task_id", String(opts.parent_task_id));
+    if (opts.milestone_id !== undefined)
+      qs.set("milestone_id", String(opts.milestone_id));
+    if (opts.due_from !== undefined) qs.set("due_from", opts.due_from);
+    if (opts.due_to !== undefined) qs.set("due_to", opts.due_to);
+    qs.set("limit", String(_PAGE));
+    qs.set("offset", String(offset));
+    const page = await jsonFetch<TaskRead[]>(buildPath("/api/tasks", qs), {
+      headers: { "X-Project-Id": String(projectId) },
+    });
+    all.push(...page);
+    if (page.length < _PAGE) break;
+    offset += _PAGE;
+  }
+  return all;
+}
+
 export async function getTask(
   projectId: number,
   id: number,
