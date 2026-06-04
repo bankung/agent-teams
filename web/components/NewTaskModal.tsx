@@ -6,11 +6,14 @@ import { useRouter } from "next/navigation";
 import {
   createTask,
   listMilestones,
+  listTaskTemplates,
   HttpError,
+  type AcceptanceCriterion,
   type ActionTemplateRead,
   type MilestoneRead,
   type ProjectRead,
   type TaskCreateBody,
+  type TaskTemplateRead,
 } from "@/lib/api";
 import {
   PRIORITY_OPTIONS,
@@ -25,6 +28,7 @@ import {
 import { filterRoleOptions } from "@/lib/enabledRoles";
 import { extractErrorMessage } from "@/lib/errors";
 import { ActionTemplatePicker } from "./ActionTemplatePicker";
+import { TaskTemplatePicker } from "./TaskTemplatePicker";
 import { DatePicker } from "./DatePicker";
 import { PauseOverrideBlock } from "./PauseOverrideBlock";
 import { HandoffTemplatePicker } from "./HandoffTemplatePicker";
@@ -57,6 +61,45 @@ const LANE_OPTIONS: LaneOption[] = [
   { value: TaskStatus.BLOCKED, label: "Blocked" },
   { value: TaskStatus.DONE, label: "Done" },
 ];
+
+// #1310 — task_type values the modal's <select> can represent. A template's
+// default_task_type only seeds the form when it's one of these (e.g. 'audit'
+// or unknown kinds are ignored, leaving the current selection).
+const MODAL_TASK_TYPES = [
+  "feature",
+  "bug",
+  "chore",
+  "docs",
+  "refactor",
+] as const;
+type ModalTaskType = (typeof MODAL_TASK_TYPES)[number];
+
+// #1310 — replace every {{key}} with values[key] when that value is a non-empty
+// string; otherwise leave the literal {{key}} in place so unfilled placeholders
+// stay visible. Single regex pass; pure.
+function substitutePlaceholders(
+  text: string,
+  values: Record<string, string>,
+): string {
+  return text.replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (match, key: string) => {
+    const v = values[key];
+    return typeof v === "string" && v.trim() !== "" ? v : match;
+  });
+}
+
+// #1310 — derive the pre-filled description + AC rows from a template given the
+// current placeholder values. Pure; substitution never throws.
+function deriveFromTemplate(
+  template: TaskTemplateRead,
+  values: Record<string, string>,
+): { description: string; ac: { text: string }[] } {
+  return {
+    description: substitutePlaceholders(template.description_template, values),
+    ac: template.acceptance_criteria_template.map((row) => ({
+      text: substitutePlaceholders(row.text, values),
+    })),
+  };
+}
 
 
 type Props = {
@@ -138,6 +181,24 @@ export function NewTaskModal({
   // Wave E (#11) — seed from initialDueDate (Calendar "New task on this date").
   const [dueDate, setDueDate] = useState(initialDueDate ?? "");
   const [milestones, setMilestones] = useState<MilestoneRead[]>([]);
+  // #1310 — Task Template picker. `templates` is fetched on open from the
+  // GLOBAL /api/task-templates surface; `selectedTemplateId` tracks the chosen
+  // row; `placeholderValues` holds the live {{key}} inputs; `acceptanceCriteria`
+  // is the editable AC list seeded from the template (also sent on submit).
+  const [templates, setTemplates] = useState<TaskTemplateRead[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(
+    null,
+  );
+  const [placeholderValues, setPlaceholderValues] = useState<
+    Record<string, string>
+  >({});
+  const [acceptanceCriteria, setAcceptanceCriteria] = useState<
+    { text: string }[]
+  >([]);
+  // #1310 — once the user manually edits the template-derived description/AC,
+  // subsequent placeholder changes stop overwriting them ("auto-fill until you
+  // touch it, then it's yours"). Reset on a fresh template baseline.
+  const [templateFieldsDirty, setTemplateFieldsDirty] = useState(false);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -163,6 +224,30 @@ export function NewTaskModal({
     };
   }, [open, projectId]);
 
+  // #1310 — load the team's task templates when the modal opens. GLOBAL
+  // endpoint (no X-Project-Id). Failure degrades to [] (manual entry only) —
+  // a template-list outage must NOT block task creation. When the project /
+  // team is unknown, skip the fetch and show manual-entry only.
+  useEffect(() => {
+    if (!open) return;
+    const team = project?.team;
+    if (!team) {
+      setTemplates([]);
+      return;
+    }
+    let cancelled = false;
+    listTaskTemplates(team, { limit: 200 })
+      .then((rows) => {
+        if (!cancelled) setTemplates(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setTemplates([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, project?.team]);
+
   function closeModal() {
     if (submitting) return;
     setInternalOpen(false);
@@ -184,6 +269,12 @@ export function NewTaskModal({
     setModelOverride(null);
     setTaskType("feature");
     setMilestoneId("");
+    // #1310 — clear the template selection + derived fields. `templates` itself
+    // is left untouched (it refetches on open).
+    setSelectedTemplateId(null);
+    setPlaceholderValues({});
+    setAcceptanceCriteria([]);
+    setTemplateFieldsDirty(false);
     // Wave E (#11) — restore the calendar-seeded due_date rather than blanking
     // it, so a "New task on this date" flow keeps the target day on re-open.
     setDueDate(initialDueDate ?? "");
@@ -204,6 +295,60 @@ export function NewTaskModal({
     setPriority(template.default_priority);
     if (error !== null) setError(null);
   }
+
+  // #1310 — Task Template selection. null = manual entry: clear the selection
+  // and the pre-filled fields cleanly (AC#4). A template seeds priority +
+  // (when it maps) task_type, then derives description + AC from the template
+  // with empty placeholder values (so unfilled {{key}} stay literal/visible).
+  function onSelectTemplate(t: TaskTemplateRead | null) {
+    if (t === null) {
+      setSelectedTemplateId(null);
+      setPlaceholderValues({});
+      setDescription("");
+      setAcceptanceCriteria([]);
+      setTemplateFieldsDirty(false);
+      if (error !== null) setError(null);
+      return;
+    }
+    setSelectedTemplateId(t.id);
+    const values: Record<string, string> = {};
+    setPlaceholderValues(values);
+    setPriority(t.default_priority);
+    // Map default_task_type onto the modal's union ONLY when it's a value the
+    // <select> can show; 'audit' / unknowns are ignored (current type kept).
+    if ((MODAL_TASK_TYPES as readonly string[]).includes(t.default_task_type)) {
+      setTaskType(t.default_task_type as ModalTaskType);
+    }
+    const derived = deriveFromTemplate(t, values);
+    setDescription(derived.description);
+    setAcceptanceCriteria(derived.ac);
+    setTemplateFieldsDirty(false);
+    if (error !== null) setError(null);
+  }
+
+  // #1310 — live substitution (AC#2). On every placeholder edit we re-derive
+  // description + AC from the SELECTED template with the new values, UNLESS the
+  // user has manually edited those fields (templateFieldsDirty=true), in which
+  // case we update placeholderValues only and leave description/AC untouched
+  // ("auto-fill until you touch it, then it's yours").
+  function onPlaceholderChange(key: string, val: string) {
+    const next = { ...placeholderValues, [key]: val };
+    setPlaceholderValues(next);
+    if (selectedTemplateId === null) return;
+    if (templateFieldsDirty) return;
+    const t = templates.find((x) => x.id === selectedTemplateId);
+    if (!t) return;
+    const derived = deriveFromTemplate(t, next);
+    setDescription(derived.description);
+    setAcceptanceCriteria(derived.ac);
+    if (error !== null) setError(null);
+  }
+
+  // #1310 — the currently selected template row (for placeholder rendering).
+  const selectedTemplate =
+    selectedTemplateId === null
+      ? null
+      : templates.find((t) => t.id === selectedTemplateId) ?? null;
 
   // Title is required by the backend (min_length=1). The disabled-submit guard
   // mirrors that constraint so empty titles never reach the network.
@@ -269,6 +414,25 @@ export function NewTaskModal({
       // nothing (BE defaults to NULL = unassigned / unset).
       ...(milestoneId !== "" ? { milestone_id: milestoneId } : {}),
       ...(dueDate !== "" ? { due_date: dueDate } : {}),
+      // #1310 — template-derived (or hand-edited) acceptance criteria. Only
+      // non-empty rows are sent; each becomes a fresh `pending` AC. No template
+      // id is sent — the created task is a plain task (pure client-side
+      // pre-fill). Omitted entirely when no AC rows have text.
+      ...(acceptanceCriteria.filter((r) => r.text.trim()).length > 0
+        ? {
+            acceptance_criteria: acceptanceCriteria
+              .filter((r) => r.text.trim())
+              .map(
+                (r): AcceptanceCriterion => ({
+                  text: r.text.trim(),
+                  status: "pending",
+                  verified_by: null,
+                  verified_at: null,
+                  notes: null,
+                }),
+              ),
+          }
+        : {}),
     };
 
     try {
@@ -365,6 +529,43 @@ export function NewTaskModal({
                 data-new-task-title
               />
             </label>
+
+            {/* #1310 — Task Template picker (native <select>). Pre-fills
+                description + AC client-side. Empty-state note when the team has
+                no templates; manual entry below stays fully usable. */}
+            <TaskTemplatePicker
+              templates={templates}
+              team={project?.team ?? ""}
+              selectedId={selectedTemplateId}
+              onSelect={onSelectTemplate}
+              disabled={submitting}
+            />
+
+            {/* #1310 — one text input per placeholder of the chosen template.
+                Live substitution: each edit re-derives description + AC. */}
+            {selectedTemplate !== null &&
+              selectedTemplate.placeholders.length > 0 && (
+                <div className="mt-3 flex flex-col gap-2" data-new-task-placeholders>
+                  {selectedTemplate.placeholders.map((key) => (
+                    <label
+                      key={key}
+                      className="block text-xs font-medium text-zinc-700 dark:text-zinc-300"
+                    >
+                      <span className="font-mono">{`{{${key}}}`}</span>
+                      <input
+                        type="text"
+                        value={placeholderValues[key] ?? ""}
+                        onChange={(e) => onPlaceholderChange(key, e.target.value)}
+                        placeholder={`Value for ${key}`}
+                        autoComplete="off"
+                        disabled={submitting}
+                        className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
+                        data-new-task-placeholder={key}
+                      />
+                    </label>
+                  ))}
+                </div>
+              )}
 
             <div className="mt-3 grid grid-cols-2 gap-3">
               <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
@@ -531,6 +732,7 @@ export function NewTaskModal({
                 value={description}
                 onChange={(e) => {
                   setDescription(e.target.value);
+                  setTemplateFieldsDirty(true);
                   if (error !== null) setError(null);
                 }}
                 placeholder="Markdown supported"
@@ -540,6 +742,69 @@ export function NewTaskModal({
                 data-new-task-description
               />
             </label>
+
+            {/* #1310 — acceptance-criteria editor. Visible only when a template
+                is selected; seeded from the template (substituted), then freely
+                editable. Non-empty rows are sent on submit as `pending` ACs. */}
+            {/* #1310 — AC editor shown only when a template is selected; standalone manual AC entry is out of scope for this task. */}
+            {selectedTemplateId !== null && (
+              <div className="mt-3 flex flex-col gap-2" data-new-task-ac-editor>
+                <span className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                  Acceptance criteria{" "}
+                  <span className="font-normal text-zinc-400">
+                    (from template, editable)
+                  </span>
+                </span>
+                {acceptanceCriteria.map((row, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={row.text}
+                      onChange={(e) => {
+                        const next = acceptanceCriteria.slice();
+                        next[i] = { text: e.target.value };
+                        setAcceptanceCriteria(next);
+                        setTemplateFieldsDirty(true);
+                        if (error !== null) setError(null);
+                      }}
+                      placeholder="Criterion"
+                      autoComplete="off"
+                      disabled={submitting}
+                      className="block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
+                      data-new-task-ac-row
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAcceptanceCriteria(
+                          acceptanceCriteria.filter((_, j) => j !== i),
+                        );
+                        setTemplateFieldsDirty(true);
+                        if (error !== null) setError(null);
+                      }}
+                      disabled={submitting}
+                      className="shrink-0 rounded border border-zinc-200 bg-white px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-zinc-500 hover:border-zinc-300 hover:text-zinc-800 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:border-zinc-700 dark:hover:text-zinc-200"
+                      data-new-task-ac-remove
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAcceptanceCriteria([...acceptanceCriteria, { text: "" }]);
+                    setTemplateFieldsDirty(true);
+                    if (error !== null) setError(null);
+                  }}
+                  disabled={submitting}
+                  className="self-start rounded border border-zinc-200 bg-white px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-zinc-600 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+                  data-new-task-ac-add
+                >
+                  + Add criterion
+                </button>
+              </div>
+            )}
 
             {/* #1343 — handoff template picker. Self-hides when no templates
                 exist (empty GET response). On DONE-flip BE atomically spawns

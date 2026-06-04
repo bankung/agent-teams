@@ -783,6 +783,11 @@ export type TaskCreateBody = {
   // Wave B (#4) — optional task_type override. BE default is 'feature'.
   // Omit to keep the default; 'bug' triggers red border on the board.
   task_type?: "bug" | "feature" | "chore" | "docs" | "refactor";
+  // Kanban #1310 — template-derived acceptance criteria. The Task Template
+  // picker substitutes {{placeholders}} client-side, then sends the resulting
+  // AC rows here (the BE accepts up to 50; each item needs non-empty `text`).
+  // No template id is sent — the created task is a plain task.
+  acceptance_criteria?: AcceptanceCriterion[];
 };
 
 export async function createTask(
@@ -1834,6 +1839,46 @@ export type MilestoneUpdate = {
   sort_order?: number | null;
   released_at?: string | null;
 };
+
+// TaskTemplateRead — Kanban #1310 (2026-06-04). One row from the GLOBAL
+// GET /api/task-templates surface (backend #1303). Mirrors the BE
+// TaskTemplateRead schema. NOT project-scoped — there is NO X-Project-Id
+// header on the list endpoint (parity with /api/milestones would be WRONG).
+// `acceptance_criteria_template` items only need `text` (the only field the
+// client substitutes); the BE may carry extra keys, which we ignore.
+export type TaskTemplateRead = {
+  id: number;
+  team: string;
+  name: string;
+  icon: string | null;
+  description_template: string;
+  acceptance_criteria_template: { text: string }[];
+  default_task_type: string;
+  default_priority: TaskPriorityValue;
+  default_task_kind: string;
+  placeholders: string[];
+  status: number;
+  created_at: string;
+  updated_at: string | null;
+};
+
+// listTaskTemplates — GET /api/task-templates (#1310). GLOBAL endpoint:
+// sends NO X-Project-Id header. `team` filters the catalog when provided;
+// omit to fetch all. Default limit 200 (small catalog). Mirrors the
+// listMilestones query-building style minus the project scoping.
+export async function listTaskTemplates(
+  team?: string,
+  opts: { includeDisabled?: boolean; limit?: number; offset?: number } = {},
+): Promise<TaskTemplateRead[]> {
+  const qs = new URLSearchParams();
+  if (team !== undefined && team !== "") qs.set("team", team);
+  if (opts.includeDisabled !== undefined)
+    qs.set("include_disabled", String(opts.includeDisabled));
+  qs.set("limit", String(opts.limit ?? 200));
+  if (opts.offset !== undefined) qs.set("offset", String(opts.offset));
+  const path = buildPath("/api/task-templates", qs);
+  return jsonFetch<TaskTemplateRead[]>(path);
+}
 
 // listMilestones — GET /api/milestones. X-Project-Id scoped. Default returns
 // active (status=1) rows ordered by (sort_order ASC NULLS LAST, id ASC). The
