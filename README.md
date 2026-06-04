@@ -1,16 +1,20 @@
 # agent-teams
 
-**A self-hosted orchestration and governance layer that turns an agentic coding CLI — Claude Code or OpenAI Codex — into a persistent, governed, multi-domain agent *team*.**
+**A self-hosted orchestration and governance layer that turns Claude Code or OpenAI Codex into a persistent, governed, multi-domain agent team.**
 
-You're one person trying to move several things forward at once. The coding agent that was razor-sharp an hour ago is now drifting — its one long session has piled up and mixed context until you're re-explaining what you already said, babysitting each run, and carrying every open thread in your head. A single coding CLI is a powerful brain with no memory across sessions, no project state, no team structure, and no safety rails. agent-teams is the layer that closes that gap: a Postgres-backed Kanban that remembers the plan so you don't have to, a meta-orchestrator that spawns a fresh domain specialist per task, a five-zone context model, and a defense-in-depth safety system. File the queue, step away, and trust it's handled — the leverage of a whole team, without the burnout of being one. Everything runs on your machine in Docker. No cloud sign-up, no SaaS subscription, no code leaving your network.
+You know the feeling: the coding session that started sharp is now drifting, re-explaining itself, and holding your entire plan hostage. A single CLI is a powerful brain with no memory across sessions, no project structure, and no safety rails.
 
-It is also **dogfooded**: agent-teams is built *by* agent-teams. The repo's own commit history and Kanban are the system managing its own development.
+agent-teams closes that gap. It wraps your coding CLI with a Postgres-backed Kanban, a Lead meta-orchestrator that spawns fresh domain specialists per task, a five-zone context model, and a defense-in-depth safety layer. File the queue, step away, trust it's handled — the leverage of a whole team, without the burnout of being one.
+
+Everything runs locally in Docker. No cloud sign-up, no SaaS subscription, no code leaving your network.
+
+It is also **dogfooded**: agent-teams builds agent-teams. The repo's own commit history and Kanban are living proof.
 
 ---
 
 ## Why it's different
 
-Claude Code already gives you sub-agents, and you can keep several sessions open. agent-teams is the layer that makes that raw power actually land — every task a clean, scoped contract instead of one sprawling chat you keep having to wrangle.
+Claude Code already gives you sub-agents, and you can keep several sessions open. agent-teams is the layer that makes that raw power actually land: every task becomes a clean, scoped contract instead of one sprawling chat you keep having to wrangle.
 
 | | Self-hosted | Persistent task/project state | Beyond code | Governance/safety layer | Form |
 |---|:--:|:--:|:--:|:--:|---|
@@ -26,32 +30,30 @@ The gap it fills: a **self-hosted, persistent, governed, multi-domain orchestrat
 
 ## What's genuinely special
 
-- **Batch & parallel execution without context rot.** Queue tasks ahead, run them hands-off back-to-back or in parallel — each task spawns a fresh specialist with scoped context, not a sprawling conversation. Per-task context stays bounded; the board holds the plan so you don't.
+- **Tasks are contracts — with proof.** Every task carries structured acceptance criteria. Before a task can be marked done, each criterion is verified with evidence and stamped passed/failed. The system proves the work met the contract; it doesn't just claim "done." Hard cost guardrails (daily/monthly budget caps → `429`) and a full `tasks_history` audit trail are built in.
 
-- **Tasks as precise contracts.** Tasks carry **acceptance-criteria gates** and hard cost guardrails (daily/monthly budget caps, returning `429` if over-budget), ensuring output lands right the first time instead of re-prompting. Full audit trail in `tasks_history`.
+- **Batch and parallel without context rot.** Queue tasks, run them back-to-back or in parallel — each spawns a fresh domain specialist with scoped context. No sprawling conversation, no bleed-through. The Kanban holds the plan; the agents hold nothing stale.
 
-- **Meta-orchestrator + team playbooks.** A "Lead" agent resolves the project, loads its team playbook, and spawns the right specialists. **8 teams** and **~39 specialist agent definitions** in `.claude/agents/`, each with a scoped lane and permission model.
+- **Two execution modes.** Mode A (production today): Claude Code or Codex drives each specialist interactively with per-action approval — you keep control. Mode B (actively in development): flip a task to `auto_headless` and the LangGraph engine runs it with no terminal open, Postgres-checkpointed.
 
-- **Persistent state + 5-zone context architecture.** PostgreSQL Kanban plus a five-zone storage model — **DB, standards, team-methodology, project-shared, role-state** — that survives sessions and gives each agent its bounded, relevant slice. Prompt-caching measured a **77.5% input-cost reduction**. See the **[quota-efficiency guide](readme_quota-efficiency.md)** for day-to-day impact.
+- **Rich planning views.** Board · List · Calendar · Gantt in one switcher. Calendar supports week/month with drag-to-reschedule. Gantt doubles as the milestone home — drag a task straight onto a milestone and watch the progress rollup update.
 
-- **Incident-driven defense-in-depth.** Born from a real postmortem (2026-05-17): **22 prevention layers** span the database, API, LangGraph engine, and CLI hooks — Postgres role gates, migration/seed target guards, payload caps, sanitization, safety prelude, pre-push secret scan, and soft-delete + audit triggers.
+- **Extend without migrations.** Add a new team or new agent types by editing constants and dropping a markdown file — no DB migration required. 8 teams and ~39 specialist agent definitions ship today. → [How to add a team](readme_dev.md#team-roster--dev-team) · [Full onboarding runbook](context/teams/dev/team-onboarding-runbook.md)
 
-- **Dogfooded.** agent-teams develops agent-teams — the orchestration, Kanban, and governance you're reading are the same ones that built them. The commit and task history prove it, in public.
-
-- **Planning views.** Milestones (group tasks into releases with progress rollup), a Calendar (week/month with drag-to-reschedule), and a Gantt timeline that doubles as the milestone home — all reachable from one Board · List · Calendar · Gantt switcher, and you can drag a task straight onto a milestone to assign it. New in 0.5.0, refined in 0.5.1.
+- **Self-hosted, local-first, dogfooded.** Runs in Docker on your machine. Anthropic, OpenAI, or fully-local Ollama — your choice, one `.env` variable. No code leaves your network. And the system building itself is the system you're reading about: the commit log and live Kanban are the proof.
 
 ---
 
 ## What it is — and isn't
 
-**It is:** an orchestration + governance layer on top of an agentic coding CLI. It works today via **Claude Code** (the live execution brain) and **OpenAI Codex**.
+**It is:** an orchestration and governance layer on top of a coding CLI. Works today with **Claude Code** and **OpenAI Codex**.
 
 **It isn't:**
-- a frontier autonomous SWE agent like **Devin** — it orchestrates a coding agent, it doesn't *be* one;
-- an IDE like **Cursor** or **Windsurf** — there's no editor; you keep your own;
-- a from-scratch agent framework like **CrewAI** / **AutoGen** / **LangGraph** — in fact it *uses* LangGraph for its headless engine rather than reinventing one.
+- a frontier autonomous SWE agent like **Devin** — it orchestrates your coding agent, it doesn't replace one;
+- an IDE like **Cursor** or **Windsurf** — no editor here; keep your own;
+- a from-scratch agent framework like **CrewAI** / **AutoGen** / **LangGraph** — it actually *uses* LangGraph for its headless engine rather than reinventing it.
 
-And in the interest of an honest reviewer's read: the **headless autonomous engine is in active development**. Today the execution brain is the Claude Code / Codex CLI driven interactively (with per-action approval), while the `langgraph` service runs tasks through a supervisor → specialist graph with Postgres-checkpointed state. The interactive path is the production path right now.
+**Honest status on the headless engine:** today the production path is Mode A — Claude Code / Codex CLI driven interactively (per-action approval). The `langgraph` service (supervisor → specialist graph, Postgres-checkpointed) is the Mode B path and is **actively in development**. Don't rely on it for critical work yet.
 
 ---
 
@@ -69,13 +71,13 @@ flowchart TD
     CLI -.headless path.-> Engine[LangGraph engine · Postgres checkpoints]
 ```
 
-The Lead reads the team playbook, resolves which project the session is bound to, and spawns specialists. Specialists run on the coding CLI and persist their work to the Kanban and the five context zones.
+The Lead reads the team playbook, resolves the active project, and spawns the right specialists. Specialists run on your coding CLI and write their results back to the Kanban and five context zones — no context leaks between tasks.
 
 ---
 
 ## CLI-agnostic by design
 
-The orchestration runs on agentic coding CLIs — **Claude Code and OpenAI Codex** — because the rules live in portable instruction files: [`CLAUDE.md`](CLAUDE.md) for Claude Code and [`AGENTS.md`](AGENTS.md) for Codex. The same governance, lanes, and team structure apply regardless of which CLI drives them. This is a deliberate vendor-portable design: you aren't locked to one coding-agent vendor.
+The orchestration works across coding CLIs because the rules live in portable instruction files: [`CLAUDE.md`](CLAUDE.md) for Claude Code and [`AGENTS.md`](AGENTS.md) for Codex. Same governance, same lanes, same team structure — whichever CLI you run. You're not locked to one vendor.
 
 ---
 
@@ -84,15 +86,17 @@ The orchestration runs on agentic coding CLIs — **Claude Code and OpenAI Codex
 1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) and restart your computer.
 2. Open a terminal **in this folder** and run the installer:
    - **macOS / Linux / WSL:** `./bin/install.sh`
-   - **Windows (PowerShell):** `.\bin\install.ps1` (if scripts are blocked, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once first)
-3. Open **http://localhost:5431** — your Kanban board (the installer seeds a `demo-tour` project to explore). Create, queue, and track tasks here, and answer agents' questions as they come up. Two ways to put agents to work:
+   - **Windows (PowerShell):** `.\bin\install.ps1` *(if scripts are blocked, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once first)*
+3. Open **http://localhost:5431** — your Kanban board. The installer seeds a `demo-tour` project to explore. Create tasks, queue them, and answer agent questions as they come up.
 
-   - **3.1 — From a Claude Code or Codex session (works today).** Open this repo in Claude Code or OpenAI Codex; the Lead resolves your project, loads its team playbook, and orchestrates the specialists end-to-end. This is the production path right now. → see **[CLAUDE-CODE-START.md](CLAUDE-CODE-START.md)**.
-   - **3.2 — One-click "Start" on the board *(in active development)*.** Flipping a task to auto-run hands it to the headless `langgraph` engine so it runs with no terminal open. This path is **in active development** (the specialist execution is text-only today) — see the "What it is — and isn't" section above.
+Two ways to put agents to work:
 
-The installer is safe to re-run; the services keep running after you close the terminal.
+- **Mode A — Claude Code / Codex session (production today).** Open this repo in Claude Code or OpenAI Codex. The Lead resolves your project, loads the team playbook, and orchestrates specialists end-to-end. → **[CLAUDE-CODE-START.md](CLAUDE-CODE-START.md)**
+- **Mode B — One-click "Start" on the board *(in active development)*.** Flip a task to auto-run and the headless `langgraph` engine handles it with no terminal open. See "What it is — and isn't" above for the honest status.
 
-**Multi-provider, local-first.** Models are switchable via one `.env` variable (`LANGGRAPH_LLM_PROVIDER`): **Anthropic** (default), **OpenAI**, or **Ollama** for fully local inference with no API key and no network egress. Your code is never stored by any provider; with Ollama it never leaves your machine.
+The installer is safe to re-run; services keep running after you close the terminal.
+
+**Multi-provider, local-first.** Switch models with one `.env` variable (`LANGGRAPH_LLM_PROVIDER`): **Anthropic** (default), **OpenAI**, or **Ollama** for fully local inference — no API key, no network egress. With Ollama, nothing leaves your machine.
 
 **Stop / reset:** `docker compose down` to stop; `.\bin\reset.ps1` (or `./bin/reset.sh`) to wipe and start fresh.
 
@@ -100,11 +104,12 @@ The installer is safe to re-run; the services keep running after you close the t
 
 ## Learn more
 
-The companion docs go deep so this README stays scannable:
+Companion docs go deep so this README stays scannable:
 
 - **[QUICKSTART.md](QUICKSTART.md)** — 5-minute tour via the browser UI.
 - **[CLAUDE-CODE-START.md](CLAUDE-CODE-START.md)** — driving the team from a Claude Code terminal session.
 - **[USAGE-POWER.md](USAGE-POWER.md)** — parallel agents, auto-mode, multi-project workflows, mobile remote access.
-- **[readme_dev.md](readme_dev.md)** — architecture deep-dive: storage zones, team rosters, configuration, and customization.
+- **[readme_dev.md](readme_dev.md)** — architecture deep-dive: storage zones, team rosters, configuration, and extensibility (including how to add a new team or agent type).
+- **[context/teams/dev/team-onboarding-runbook.md](context/teams/dev/team-onboarding-runbook.md)** — full step-by-step runbook for adding teams and agents.
 
-For the full development history, read the git log and the Kanban it produced — that's the dogfooding in action.
+For the full development history, browse the git log and the Kanban that drove it — dogfooding in action.
