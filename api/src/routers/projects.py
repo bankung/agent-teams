@@ -482,6 +482,7 @@ async def get_project_progress_stats(
             Task.process_status,
             Task.is_template,
             Task.task_type,
+            Task.title,
         )
         .where(Task.project_id == project_id)
         .where(Task.status == RecordStatus.ACTIVE)
@@ -502,10 +503,14 @@ async def get_project_progress_stats(
 
         remaining = 0
         completed = 0
-        for created_at, completed_at, process_status, is_template, task_type in rows:
-            # Exclude recurring templates and audit governance tasks — they are
-            # not real remaining work and the board hides them from task counts.
-            if is_template or task_type == TaskType.AUDIT:
+        for created_at, completed_at, process_status, is_template, task_type, title in rows:
+            # Mirrors the board's isScheduledNoise + audit filter so remaining
+            # == board's visible-open count. Exclude:
+            #   - recurring templates (is_template)
+            #   - audit governance tasks (task_type == AUDIT)
+            #   - scheduled-noise tasks whose title starts with "[schedule:"
+            #     (board: t.is_template || t.title.startsWith("[schedule:"))
+            if is_template or task_type == TaskType.AUDIT or (title or "").startswith("[schedule:"):
                 continue
             # Burndown: open as of bucket_end (exclusive boundary). Exclude CANCELLED.
             if (

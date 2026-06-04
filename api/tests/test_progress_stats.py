@@ -556,3 +556,60 @@ async def test_progress_stats_excludes_templates_and_audit_tasks(
         )
     finally:
         await client.delete(f"/api/projects/{pid}")
+
+
+# ---- 9. scheduled-noise tasks ([schedule: prefix) excluded from remaining ----
+
+
+@pytest.mark.asyncio
+async def test_progress_stats_excludes_schedule_prefixed_tasks(
+    client, scaffold_cleanup, db_session
+) -> None:
+    """Open tasks whose title starts with '[schedule:' (scheduled-noise) MUST NOT
+    count toward burndown remaining — mirrors the board's isScheduledNoise filter.
+
+    Setup:
+      task R: real open task              → should appear in remaining
+      task S: open, title '[schedule: ...' → excluded (scheduled-noise)
+
+    Assertions (POSITIVE + NEGATIVE pair):
+      - remaining in latest bucket == 1 (only R), NOT 2 (vacuous both-counted value)
+    """
+    project = await _make_project(client, scaffold_cleanup, slug="k1292-sched")
+    pid = project["id"]
+    today = datetime.now(timezone.utc).date()
+
+    def days_ago(n: int) -> datetime:
+        d = today - timedelta(days=n)
+        return datetime(d.year, d.month, d.day, 12, 0, 0, tzinfo=timezone.utc)
+
+    try:
+        r = await _make_task_http(client, pid, "k1292-sched real-open")
+        s = await _make_task_http(client, pid, "[schedule: daily-standup]")
+
+        base_dt = days_ago(3)
+        await _backdate_task(db_session, r["id"], created_at=base_dt)
+        await _backdate_task(db_session, s["id"], created_at=base_dt)
+
+        resp = await client.get(
+            f"/api/projects/{pid}/progress-stats?bucket=day&days=14",
+            headers={"X-Project-Id": str(pid)},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        burn = _series_by_t(body["burndown"], "remaining")
+        today_str = today.isoformat()
+
+        # POSITIVE: only the real task R counts toward remaining.
+        assert burn.get(today_str) == 1, (
+            "[schedule: task must be excluded from remaining",
+            burn,
+        )
+        # NEGATIVE: if scheduled-noise were counted, remaining would be 2.
+        assert burn.get(today_str) != 2, (
+            "scheduled-noise task must NOT inflate remaining",
+            burn,
+        )
+    finally:
+        await client.delete(f"/api/projects/{pid}")
