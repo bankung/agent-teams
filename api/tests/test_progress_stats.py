@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from src.models.task import Task
+from src.constants import TaskType
 
 
 # ---- helpers ---------------------------------------------------------------
@@ -425,5 +426,133 @@ async def test_progress_stats_default_bucket_is_week(
         body = resp.json()
         assert body["bucket"] == "week"
         assert body["window_days"] == 90  # default days
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+# ---- 8. template + audit tasks excluded from remaining and completed ----------
+
+
+async def _set_task_fields(
+    db_session,
+    task_id: int,
+    **kwargs,
+) -> None:
+    """Directly set arbitrary ORM fields on a task row (test DB only)."""
+    task = await db_session.get(Task, task_id)
+    assert task is not None, f"task_id={task_id} not found"
+    for field, value in kwargs.items():
+        setattr(task, field, value)
+    await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_progress_stats_excludes_templates_and_audit_tasks(
+    client, scaffold_cleanup, db_session
+) -> None:
+    """Templates (is_template=True) and audit tasks (task_type='audit') MUST NOT
+    count toward burndown remaining or velocity completed.
+
+    Setup:
+      task R: real open task  → should appear in remaining
+      task T: recurrence template (is_template=True) → excluded from remaining
+      task U: audit task (task_type='audit') → excluded from remaining
+      task D: real DONE task  → should appear in completed velocity
+      task TA: audit DONE task → excluded from completed velocity
+
+    Assertions (POSITIVE + NEGATIVE pairs):
+      - remaining in latest bucket == 1 (only R), NOT 3 (vacuous all-open count)
+      - sum of velocity.completed == 1 (only D), NOT 2 (audit task excluded)
+    """
+    project = await _make_project(client, scaffold_cleanup, slug="k1292-excl")
+    pid = project["id"]
+    now = datetime.now(timezone.utc)
+    today = now.date()
+
+    def days_ago(n: int) -> datetime:
+        d = today - timedelta(days=n)
+        return datetime(d.year, d.month, d.day, 12, 0, 0, tzinfo=timezone.utc)
+
+    try:
+        # Create tasks via HTTP — all start as open TODO, no special fields yet.
+        r = await _make_task_http(client, pid, "k1292-excl real-open")
+        t = await _make_task_http(client, pid, "k1292-excl template-open")
+        u = await _make_task_http(client, pid, "k1292-excl audit-open")
+        d = await _make_task_http(client, pid, "k1292-excl real-done")
+        ta = await _make_task_http(client, pid, "k1292-excl audit-done")
+
+        base_dt = days_ago(5)  # created 5 days ago so they're in the window
+
+        # R: real open task, stays TODO.
+        await _backdate_task(db_session, r["id"], created_at=base_dt)
+
+        # T: mark as template directly on DB (avoids cron-expression validation
+        # complexity in the HTTP layer — test DB backdating pattern).
+        await _backdate_task(db_session, t["id"], created_at=base_dt)
+        await _set_task_fields(
+            db_session,
+            t["id"],
+            is_template=True,
+            recurrence_rule="0 9 * * 1",  # satisfies DB CHECK constraint
+            next_fire_at=days_ago(1),     # satisfies DB CHECK constraint
+        )
+
+        # U: audit task, stays open.
+        await _backdate_task(db_session, u["id"], created_at=base_dt)
+        await _set_task_fields(db_session, u["id"], task_type=TaskType.AUDIT)
+
+        # D: real DONE task, completed 2 days ago.
+        await _backdate_task(
+            db_session,
+            d["id"],
+            created_at=base_dt,
+            completed_at=days_ago(2),
+            process_status=5,
+        )
+
+        # TA: audit DONE task — should NOT count as velocity.
+        await _backdate_task(
+            db_session,
+            ta["id"],
+            created_at=base_dt,
+            completed_at=days_ago(2),
+            process_status=5,
+        )
+        await _set_task_fields(db_session, ta["id"], task_type=TaskType.AUDIT)
+
+        resp = await client.get(
+            f"/api/projects/{pid}/progress-stats?bucket=day&days=14",
+            headers={"X-Project-Id": str(pid)},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        burn = _series_by_t(body["burndown"], "remaining")
+        vel = _series_by_t(body["velocity"], "completed")
+
+        # Latest bucket = today's start bucket (day-0).
+        today_str = today.isoformat()
+
+        # POSITIVE: only the real open task R counts.
+        assert burn.get(today_str) == 1, (
+            "only real open task R should appear in remaining, not template/audit",
+            burn,
+        )
+        # NEGATIVE: if templates/audit were counted, remaining would be 3 (R+T+U).
+        assert burn.get(today_str) != 3, (
+            "template and audit tasks must NOT count toward remaining",
+            burn,
+        )
+
+        # Velocity POSITIVE: only real DONE task D counted.
+        assert sum(vel.values()) == 1, (
+            "only real DONE task D should appear in velocity; audit DONE is excluded",
+            vel,
+        )
+        # NEGATIVE: if audit DONE were included, sum would be 2.
+        assert sum(vel.values()) != 2, (
+            "audit DONE task must NOT count toward velocity",
+            vel,
+        )
     finally:
         await client.delete(f"/api/projects/{pid}")

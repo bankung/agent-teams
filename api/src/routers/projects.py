@@ -30,11 +30,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
 from sqlalchemy.sql.elements import ClauseElement
 
-from src.constants import (  # TaskStatus.CANCELLED used by stats
+from src.constants import (  # TaskStatus.CANCELLED + TaskType.AUDIT used by stats
     ProjectTeam,
     RecordStatus,
     TaskRunMode,
     TaskStatus,
+    TaskType,
 )
 from src.db import get_active_project_or_404, get_or_404, get_session
 from src.middleware.rate_limit import _projects_post_limit, limiter
@@ -470,8 +471,18 @@ async def get_project_progress_stats(
     # (CANCELLED) rows are NOT excluded at SQL — the velocity filter needs
     # process_status=5 and the burndown filter excludes 6 in Python, so we
     # fetch all active rows once and bucket in memory.
+    # is_template + task_type are fetched so the Python loop can exclude
+    # recurring templates and audit governance tasks from both remaining and
+    # completed counts (Kanban Wave A.2b fix — board hides both, burndown must
+    # match).
     stmt = (
-        select(Task.created_at, Task.completed_at, Task.process_status)
+        select(
+            Task.created_at,
+            Task.completed_at,
+            Task.process_status,
+            Task.is_template,
+            Task.task_type,
+        )
         .where(Task.project_id == project_id)
         .where(Task.status == RecordStatus.ACTIVE)
     )
@@ -491,7 +502,11 @@ async def get_project_progress_stats(
 
         remaining = 0
         completed = 0
-        for created_at, completed_at, process_status in rows:
+        for created_at, completed_at, process_status, is_template, task_type in rows:
+            # Exclude recurring templates and audit governance tasks — they are
+            # not real remaining work and the board hides them from task counts.
+            if is_template or task_type == TaskType.AUDIT:
+                continue
             # Burndown: open as of bucket_end (exclusive boundary). Exclude CANCELLED.
             if (
                 created_at <= bucket_end_dt
