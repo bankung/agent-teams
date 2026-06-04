@@ -127,6 +127,27 @@ def render_text(payload: dict[str, Any]) -> str:
             lines.append("Skill/runbook proposals: no new patterns detected.")
             lines.append("")
 
+    # Kanban #1222 — stale-doc curator section (optional — present when the
+    # digest pipeline ran the curator this cycle).
+    stale_docs: dict[str, Any] = payload.get("stale_docs") or {}
+    if stale_docs:
+        stale_count: int = int(stale_docs.get("stale_count") or 0)
+        contradiction_count: int = int(stale_docs.get("contradiction_count") or 0)
+        report_path_sd: str = str(stale_docs.get("report_path") or "")
+        scanned: int = int(stale_docs.get("scanned_count") or 0)
+        if stale_count > 0 or contradiction_count > 0:
+            lines.append(
+                f"Stale-doc audit: {stale_count} stale, "
+                f"{contradiction_count} contradiction flag(s) "
+                f"(scanned {scanned} docs)."
+            )
+            if report_path_sd:
+                lines.append(f"  Report: {report_path_sd}")
+            lines.append("")
+        else:
+            lines.append(f"Stale-doc audit: all {scanned} docs fresh, no contradictions.")
+            lines.append("")
+
     token = make_optout_token(project_id)
     optout_url = f"{base_url}/api/notifications/digest-optout?token={token}"
     lines += [
@@ -198,6 +219,31 @@ def render_html(payload: dict[str, Any]) -> str:
         else:
             parts.append(
                 "<p><strong>Skill/runbook proposals:</strong> no new patterns detected.</p>"
+            )
+
+    # Kanban #1222 — stale-doc curator section.
+    stale_docs_h: dict[str, Any] = payload.get("stale_docs") or {}
+    if stale_docs_h:
+        stale_count_h: int = int(stale_docs_h.get("stale_count") or 0)
+        contradiction_count_h: int = int(stale_docs_h.get("contradiction_count") or 0)
+        report_path_h: str = str(stale_docs_h.get("report_path") or "")
+        scanned_h: int = int(stale_docs_h.get("scanned_count") or 0)
+        parts.append('<hr style="border: none; border-top: 1px solid #eee; margin: 16px 0;">')
+        if stale_count_h > 0 or contradiction_count_h > 0:
+            parts.append(
+                f'<p><strong>Stale-doc audit:</strong> '
+                f'{stale_count_h} stale, {contradiction_count_h} contradiction flag(s) '
+                f'(scanned {scanned_h} docs).</p>'
+            )
+            if report_path_h:
+                parts.append(
+                    f'<p style="font-size: 12px; color: #555;">Report: '
+                    f'<code>{_esc(report_path_h)}</code></p>'
+                )
+        else:
+            parts.append(
+                f'<p><strong>Stale-doc audit:</strong> all {scanned_h} docs fresh, '
+                f'no contradictions.</p>'
             )
 
     token = make_optout_token(project_id)

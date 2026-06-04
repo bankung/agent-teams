@@ -47,6 +47,7 @@ from src.services.notify_email import (
 )
 from src.services.notify_ntfy import NTFY_ENV_ENABLED, NTFY_ENV_TOPIC, send_push
 from src.services.skill_stub_detector import run_skill_stub_detector
+from src.services.stale_doc_curator import run_stale_doc_curator
 
 # Kanban #1437 — "control" project id whose notification_targets carries the
 # digest_email_enabled flag. Single-tenant convention: always project id=1.
@@ -120,6 +121,30 @@ async def fire_digest(
         )
         skill_stubs_payload = {}
 
+    # Kanban #1222 — run stale-doc curator (HITL-gated; writes to
+    # _scratch/auditor/ only; soft-fail so a curator error never blocks the
+    # digest send). Synchronous FS-only function; no DB session needed.
+    try:
+        stale_result = run_stale_doc_curator()
+        stale_docs_payload = {
+            "stale_count": stale_result.stale_count,
+            "contradiction_count": stale_result.contradiction_count,
+            "report_path": stale_result.report_path,
+            "scanned_count": stale_result.scanned_count,
+            "threshold_days": stale_result.threshold_days,
+        }
+        logger.info(
+            "digest fire: stale_doc_curator stale=%d contradictions=%d scanned=%d",
+            stale_result.stale_count,
+            stale_result.contradiction_count,
+            stale_result.scanned_count,
+        )
+    except Exception as _cur_exc:  # noqa: BLE001
+        logger.warning(
+            "digest fire: stale_doc_curator failed (non-fatal): %s", _cur_exc
+        )
+        stale_docs_payload = {}
+
     # Build web base URL from env — defaults to localhost (dev) so links are
     # always absolute even when the env is unconfigured.
     base_url = os.environ.get("WEB_BASE_URL", "http://localhost:5431").rstrip("/")
@@ -130,6 +155,7 @@ async def fire_digest(
         "base_url": base_url,
         "project_id": _CONTROL_PROJECT_ID,
         "skill_stubs": skill_stubs_payload,  # Kanban #1223
+        "stale_docs": stale_docs_payload,  # Kanban #1222
     }
 
     subject = render_subject(flag_count, today)
