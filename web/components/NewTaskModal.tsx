@@ -195,10 +195,14 @@ export function NewTaskModal({
   const [acceptanceCriteria, setAcceptanceCriteria] = useState<
     { text: string }[]
   >([]);
-  // #1310 — once the user manually edits the template-derived description/AC,
-  // subsequent placeholder changes stop overwriting them ("auto-fill until you
-  // touch it, then it's yours"). Reset on a fresh template baseline.
-  const [templateFieldsDirty, setTemplateFieldsDirty] = useState(false);
+  // #1310 — independent "user has taken over" flags. Once the user edits the
+  // description (descriptionDirty) or the AC list (acDirty — text edit OR
+  // structural add/remove), placeholder changes stop re-deriving THAT field,
+  // but the other keeps live-substituting. Both reset on a fresh template
+  // baseline. Splitting avoids: (a) "+ Add criterion" freezing the description,
+  // and (b) the re-derive wiping a user-added AC row.
+  const [descriptionDirty, setDescriptionDirty] = useState(false);
+  const [acDirty, setAcDirty] = useState(false);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -274,7 +278,8 @@ export function NewTaskModal({
     setSelectedTemplateId(null);
     setPlaceholderValues({});
     setAcceptanceCriteria([]);
-    setTemplateFieldsDirty(false);
+    setDescriptionDirty(false);
+    setAcDirty(false);
     // Wave E (#11) — restore the calendar-seeded due_date rather than blanking
     // it, so a "New task on this date" flow keeps the target day on re-open.
     setDueDate(initialDueDate ?? "");
@@ -301,12 +306,16 @@ export function NewTaskModal({
   // (when it maps) task_type, then derives description + AC from the template
   // with empty placeholder values (so unfilled {{key}} stay literal/visible).
   function onSelectTemplate(t: TaskTemplateRead | null) {
+    // #1310 — re-selecting the already-active template is a no-op (don't wipe
+    // the user's filled placeholder values / derived edits).
+    if (t !== null && t.id === selectedTemplateId) return;
     if (t === null) {
       setSelectedTemplateId(null);
       setPlaceholderValues({});
       setDescription("");
       setAcceptanceCriteria([]);
-      setTemplateFieldsDirty(false);
+      setDescriptionDirty(false);
+      setAcDirty(false);
       if (error !== null) setError(null);
       return;
     }
@@ -322,25 +331,24 @@ export function NewTaskModal({
     const derived = deriveFromTemplate(t, values);
     setDescription(derived.description);
     setAcceptanceCriteria(derived.ac);
-    setTemplateFieldsDirty(false);
+    setDescriptionDirty(false);
+    setAcDirty(false);
     if (error !== null) setError(null);
   }
 
   // #1310 — live substitution (AC#2). On every placeholder edit we re-derive
   // description + AC from the SELECTED template with the new values, UNLESS the
-  // user has manually edited those fields (templateFieldsDirty=true), in which
-  // case we update placeholderValues only and leave description/AC untouched
-  // ("auto-fill until you touch it, then it's yours").
+  // user has taken over that specific field (descriptionDirty / acDirty). Each
+  // field is guarded independently so editing one doesn't freeze the other.
   function onPlaceholderChange(key: string, val: string) {
     const next = { ...placeholderValues, [key]: val };
     setPlaceholderValues(next);
     if (selectedTemplateId === null) return;
-    if (templateFieldsDirty) return;
     const t = templates.find((x) => x.id === selectedTemplateId);
     if (!t) return;
     const derived = deriveFromTemplate(t, next);
-    setDescription(derived.description);
-    setAcceptanceCriteria(derived.ac);
+    if (!descriptionDirty) setDescription(derived.description);
+    if (!acDirty) setAcceptanceCriteria(derived.ac);
     if (error !== null) setError(null);
   }
 
@@ -377,6 +385,7 @@ export function NewTaskModal({
     setError(null);
     setSubmitting(true);
 
+    const nonEmptyAc = acceptanceCriteria.filter((r) => r.text.trim() !== "");
     const body: TaskCreateBody = {
       project_id: projectId,
       title: trimmedTitle,
@@ -418,19 +427,17 @@ export function NewTaskModal({
       // non-empty rows are sent; each becomes a fresh `pending` AC. No template
       // id is sent — the created task is a plain task (pure client-side
       // pre-fill). Omitted entirely when no AC rows have text.
-      ...(acceptanceCriteria.filter((r) => r.text.trim()).length > 0
+      ...(nonEmptyAc.length > 0
         ? {
-            acceptance_criteria: acceptanceCriteria
-              .filter((r) => r.text.trim())
-              .map(
-                (r): AcceptanceCriterion => ({
-                  text: r.text.trim(),
-                  status: "pending",
-                  verified_by: null,
-                  verified_at: null,
-                  notes: null,
-                }),
-              ),
+            acceptance_criteria: nonEmptyAc.map(
+              (r): AcceptanceCriterion => ({
+                text: r.text.trim(),
+                status: "pending",
+                verified_by: null,
+                verified_at: null,
+                notes: null,
+              }),
+            ),
           }
         : {}),
     };
@@ -732,7 +739,7 @@ export function NewTaskModal({
                 value={description}
                 onChange={(e) => {
                   setDescription(e.target.value);
-                  setTemplateFieldsDirty(true);
+                  setDescriptionDirty(true);
                   if (error !== null) setError(null);
                 }}
                 placeholder="Markdown supported"
@@ -764,7 +771,7 @@ export function NewTaskModal({
                         const next = acceptanceCriteria.slice();
                         next[i] = { text: e.target.value };
                         setAcceptanceCriteria(next);
-                        setTemplateFieldsDirty(true);
+                        setAcDirty(true);
                         if (error !== null) setError(null);
                       }}
                       placeholder="Criterion"
@@ -779,7 +786,7 @@ export function NewTaskModal({
                         setAcceptanceCriteria(
                           acceptanceCriteria.filter((_, j) => j !== i),
                         );
-                        setTemplateFieldsDirty(true);
+                        setAcDirty(true);
                         if (error !== null) setError(null);
                       }}
                       disabled={submitting}
@@ -794,7 +801,7 @@ export function NewTaskModal({
                   type="button"
                   onClick={() => {
                     setAcceptanceCriteria([...acceptanceCriteria, { text: "" }]);
-                    setTemplateFieldsDirty(true);
+                    setAcDirty(true);
                     if (error !== null) setError(null);
                   }}
                   disabled={submitting}
