@@ -437,3 +437,42 @@ async def test_layer0_grant_denial_precedes_tier_gate(client, monkeypatch):
     # operator_proof_required string.
     assert "tool_grant_denied" in resp.json()["detail"]
     assert "operator_proof_required" not in resp.json()["detail"]
+
+
+# ===========================================================================
+# NIT-1 (#1848): 403 role reflection is capped at 64 chars
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_grant_denied_detail_caps_role_at_64_chars(client, monkeypatch):
+    """A long X-Agent-Role value is truncated to 64 chars in the 403 detail.
+
+    The spoofable header must not be reflected verbatim — arbitrary-length
+    strings in error bodies are a low-severity but real injection surface.
+    The cap is applied in `_enforce_tool_grant_or_403` before interpolation.
+    """
+    from src.services import tool_grants as tg
+
+    real_check = tg.check_grant
+
+    def _deny_check(config, role, tool_name, *, project_id=None):
+        # Always deny so the 403 body is always generated.
+        return tg.GrantDecision.DENY
+
+    monkeypatch.setattr(tools_email, "check_grant", _deny_check)
+
+    long_role = "a" * 200  # 200-char role name — well above the 64-char cap.
+    resp = await client.post(
+        f"{_BASE}/gmail/trash",
+        headers={**_HDR, "X-Agent-Role": long_role},
+        json={"message_ids": ["abc123def456"]},
+    )
+    assert resp.status_code == 403, resp.text
+    detail = resp.json()["detail"]
+    assert "tool_grant_denied" in detail
+    # NEGATIVE: the full 200-char role string must NOT appear verbatim.
+    assert long_role not in detail
+    # POSITIVE: the 64-char prefix DOES appear (the role is in the detail, capped).
+    assert "a" * 64 in detail
+    assert "a" * 65 not in detail

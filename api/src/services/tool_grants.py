@@ -72,12 +72,13 @@ class GrantDecision(str, Enum):
     DENY = "deny"
 
 
-# Audit log path. Configurable via TOOL_GRANTS_AUDIT_PATH; defaults to the same
-# _scratch bind-mount the email-tools gate writes to, in a sibling file so the
-# two trails stay separable. Mirrors `tools/email/gate.py::_AUDIT_PATH`.
+# Audit log path. Configurable via TOOL_GRANTS_AUDIT_PATH; defaults to
+# /repo/logs/ (durable, outside _scratch which is gitignored and excluded from
+# the nightly backup tarball). Override with TOOL_GRANTS_AUDIT_PATH env var.
+# (#1848 NIT-2: moved from _scratch/ to a durable sink).
 _AUDIT_PATH = Path(
     os.environ.get(
-        "TOOL_GRANTS_AUDIT_PATH", "/repo/_scratch/tool-grants-audit.jsonl"
+        "TOOL_GRANTS_AUDIT_PATH", "/repo/logs/tool-grants-audit.jsonl"
     )
 )
 

@@ -63,6 +63,9 @@ context/projects/_*/
 _scratch/*
 !_scratch/.gitkeep
 
+# runtime audit logs (durable via backup tarball, not git-tracked)
+/logs/
+
 # CTX-1 (Kanban #716): per-Claude-Code-instance session markdown store.
 # DB rows live in `sessions` / `session_runs` / `session_compacts`; markdown
 # content (session.md + archive/ + cards/) lives here. Never commit content.

@@ -121,10 +121,13 @@ async def _enforce_tool_grant_or_403(
         config, role, tool_name, project_id=session_project_id
     )
     if decision is GrantDecision.DENY:
+        # Cap the reflected role at 64 chars so the spoofable X-Agent-Role
+        # header is never echoed verbatim into a 403 body (#1848 NIT-1).
+        safe_role = (role or "")[:64]
         raise HTTPException(
             status_code=403,
             detail=_DETAIL_TOOL_GRANT_DENIED_TEMPLATE.format(
-                role=role, tool=tool_name
+                role=safe_role, tool=tool_name
             ),
         )
 

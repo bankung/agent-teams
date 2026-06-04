@@ -239,3 +239,47 @@ def test_validator_ignores_config_without_tool_grants() -> None:
     pc = ProjectCreate(**_create_payload({"enabled_roles": [1, 2, 3]}))
     assert "tool_grants" not in pc.config
     assert pc.config["enabled_roles"] == [1, 2, 3]
+
+
+# ===========================================================================
+# NIT-2 (#1848): audit default path is outside _scratch (durable sink)
+# ===========================================================================
+
+
+def test_audit_default_path_is_not_scratch() -> None:
+    """The module-level _AUDIT_PATH default must not point into _scratch/.
+
+    _scratch is gitignored and excluded from the nightly backup tarball
+    (backup.py::_TAR_SKIP_NAMES). Audit rows written there are lost on
+    container rebuild if TOOL_GRANTS_AUDIT_PATH is unset. The default should
+    resolve to a durable path (e.g. /repo/logs/) so the trail survives absent
+    operator configuration.
+
+    POSITIVE: the default contains '/logs/' (a durable directory).
+    NEGATIVE: the default does NOT contain '_scratch'.
+    """
+    import os
+
+    from src.services import tool_grants
+
+    # Read the compiled default from the env-lookup expression (the module
+    # stores the resolved Path in _AUDIT_PATH at import time). If the env var
+    # is set in the test runner the value will reflect that; this test asserts
+    # the DEFAULT (env var unset).
+    env_override = os.environ.get("TOOL_GRANTS_AUDIT_PATH", "")
+    if env_override:
+        # Env is set — can only assert it's not _scratch (operator configured).
+        assert "_scratch" not in env_override, (
+            "TOOL_GRANTS_AUDIT_PATH points into _scratch — override to a "
+            "durable path (e.g. /repo/logs/tool-grants-audit.jsonl)"
+        )
+    else:
+        # No override — the compiled default in the module must not be _scratch.
+        default_str = str(tool_grants._AUDIT_PATH)
+        assert "_scratch" not in default_str, (
+            f"Default audit path {default_str!r} is inside _scratch (not durable)"
+        )
+        # POSITIVE: the path is in the expected durable location.
+        assert "logs" in default_str, (
+            f"Default audit path {default_str!r} should be in a 'logs' directory"
+        )
