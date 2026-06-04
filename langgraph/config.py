@@ -49,6 +49,19 @@ def resolve_project_id() -> int | None:
     return int(raw)
 
 
+def resolve_session_id() -> int | None:
+    """Resolve LANGGRAPH_SESSION_ID to an int, or None if absent/malformed.
+
+    When set, the worker registers each task invocation as a session_run
+    under this session and PATCHes token usage back on finalize (Mode-A
+    usage reporting, Kanban #1886). None → skip session_run lifecycle.
+    """
+    raw = os.getenv("LANGGRAPH_SESSION_ID", "").strip()
+    if not raw or not raw.isdigit():
+        return None
+    return int(raw)
+
+
 def utc_now() -> str:
     """UTC ISO-8601 timestamp with 'Z' suffix.
 

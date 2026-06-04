@@ -259,9 +259,14 @@ async def backend_specialist_node(state: AgentState) -> dict:
         # task that don't need tools.
         response = await _ainvoke_model(model, initial_messages)
         content = _stringify_content(response.content)
+        inp, out, cr, cc = _extract_usage(response)
         return {
             "messages": [response],
             "final_result": content,
+            "usage_input_tokens": inp,
+            "usage_output_tokens": out,
+            "usage_cache_read_tokens": cr,
+            "usage_cache_creation_tokens": cc,
         }
 
     return await _run_tool_use_loop(bound, initial_messages, ctx, tools_config)
@@ -443,6 +448,13 @@ async def _run_tool_use_loop(
     # Kanban #1717 — resolve the compaction budget once per loop (env is
     # stable for the lifetime of one task).
     context_budget = _resolve_context_token_budget()
+    # Kanban #1886 — accumulate token usage across all loop iterations.
+    # Each LLM call may return usage_metadata; sum them so finalize gets
+    # the true per-task totals regardless of tool-loop depth.
+    total_inp: int = 0
+    total_out: int = 0
+    total_cr: int = 0
+    total_cc: int = 0
 
     for iteration in range(MAX_TOOL_LOOP_ITERATIONS):
         # Compact BEFORE invoking — trims older tool-result payloads so the
@@ -458,6 +470,12 @@ async def _run_tool_use_loop(
         # the whole current turn (response + ALL ToolMessages for this turn)
         # so no tool_call id is left without a paired ToolMessage. Kanban #1720 fix H-2.
         response_start = len(messages) - 1
+        # Kanban #1886 — accumulate usage_metadata for this LLM call.
+        inp, out, cr, cc = _extract_usage(response)
+        total_inp += inp
+        total_out += out
+        total_cr += cr
+        total_cc += cc
 
         tool_calls = getattr(response, "tool_calls", None) or []
         if not tool_calls:
@@ -466,6 +484,10 @@ async def _run_tool_use_loop(
             return {
                 "messages": [response],
                 "final_result": content,
+                "usage_input_tokens": total_inp,
+                "usage_output_tokens": total_out,
+                "usage_cache_read_tokens": total_cr,
+                "usage_cache_creation_tokens": total_cc,
             }
 
         # Each tool call gets its own ToolMessage in the next turn. On HALT
@@ -518,6 +540,10 @@ async def _run_tool_use_loop(
                     "final_result": (
                         f"Halted for review: {outcome.halt_reason}"
                     ),
+                    "usage_input_tokens": total_inp,
+                    "usage_output_tokens": total_out,
+                    "usage_cache_read_tokens": total_cr,
+                    "usage_cache_creation_tokens": total_cc,
                 }
 
             messages.append(
@@ -540,6 +566,10 @@ async def _run_tool_use_loop(
         "messages": messages[response_start:] if last_response is not None else [],
         "halt_reason": TOOL_LOOP_HALT_REASON,
         "final_result": f"Halted: {TOOL_LOOP_HALT_REASON}",
+        "usage_input_tokens": total_inp,
+        "usage_output_tokens": total_out,
+        "usage_cache_read_tokens": total_cr,
+        "usage_cache_creation_tokens": total_cc,
     }
 
 
@@ -763,6 +793,32 @@ async def _ainvoke_model(model: Any, messages: list[Any]) -> Any:
         return await ainvoke(messages)
     # Sync fallback — wrap in asyncio.to_thread? For tests, just call inline.
     return model.invoke(messages)
+
+
+def _extract_usage(response: Any) -> tuple[int, int, int, int]:
+    """Extract token counts from an AIMessage's usage_metadata.
+
+    Returns (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens).
+    Handles None / missing / partial usage_metadata gracefully — all fields
+    default to 0 so a provider that omits usage_metadata never crashes the loop.
+
+    LangChain usage_metadata shape (Anthropic):
+      {
+        "input_tokens": int,
+        "output_tokens": int,
+        "cache_read_input_tokens": int,      # absent on non-Anthropic
+        "cache_creation_input_tokens": int,  # absent on non-Anthropic
+      }
+    """
+    meta = getattr(response, "usage_metadata", None)
+    if not isinstance(meta, dict):
+        return 0, 0, 0, 0
+    return (
+        int(meta.get("input_tokens") or 0),
+        int(meta.get("output_tokens") or 0),
+        int(meta.get("cache_read_input_tokens") or 0),
+        int(meta.get("cache_creation_input_tokens") or 0),
+    )
 
 
 def _stringify_content(content: Any) -> str:

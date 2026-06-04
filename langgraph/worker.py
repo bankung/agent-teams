@@ -52,6 +52,7 @@ import httpx
 from agent_context_sanitizer import sanitize_for_agent_context
 from approval_evaluator import evaluate_policy
 import config as _config
+from config import resolve_session_id
 from content_safety import sanitize_agent_action, scan_task_content
 from hitl import (
     CheckpointMissingError,
@@ -329,6 +330,16 @@ async def _poll_once(
         # un-jams the state.
         return
 
+    # 2b) Kanban #1886 — Mode-A usage reporting. If LANGGRAPH_SESSION_ID is
+    # configured, create a session_run for this task invocation so we have a
+    # row to PATCH with token usage on finalize. None → skip usage reporting.
+    session_run_id: int | None = None
+    session_id = resolve_session_id()
+    if session_id is not None:
+        session_run_id = await _create_session_run(
+            client, cfg, headers, session_id, task_id
+        )
+
     # 3) Invoke the compiled graph.
     compiled = getattr(graph_module, "graph", None)
     if compiled is None:
@@ -374,6 +385,10 @@ async def _poll_once(
         "prior_status_change_reason": sanitize_for_agent_context(
             task.get("status_change_reason")
         ),
+        # Kanban #1886 — inject session_run_id so nodes (and the finalize step)
+        # know which run row to PATCH with token usage. None when
+        # LANGGRAPH_SESSION_ID is unset (usage reporting disabled).
+        "session_run_id": session_run_id,
     }
     config = {"configurable": {"thread_id": f"task-{task_id}"}}
 
@@ -473,6 +488,21 @@ async def _poll_once(
         final_state.get("halt_reason"),
         body.get("process_status"),
     )
+
+    # Kanban #1886 — Mode-A usage reporting. PATCH the session_run with
+    # accumulated token usage if a run was registered for this invocation.
+    # Best-effort: runs AFTER the task finalize PATCH so a usage-PATCH failure
+    # never blocks or reverts the task's process_status.
+    run_id_from_state = (
+        final_state.get("session_run_id")
+        if isinstance(final_state, dict)
+        else None
+    )
+    effective_run_id = run_id_from_state or session_run_id
+    if effective_run_id is not None:
+        await _patch_session_run_usage(
+            client, cfg, headers, effective_run_id, final_state
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -632,6 +662,132 @@ def _build_finalize_body(
     if audit_retry_count is not None:
         body["audit_retry_count"] = int(audit_retry_count)
     return body
+
+
+async def _create_session_run(
+    client: httpx.AsyncClient,
+    cfg: WorkerConfig,
+    headers: dict[str, str],
+    session_id: int,
+    task_id: int,
+) -> int | None:
+    """POST /api/sessions/{session_id}/runs to register a run; return its id.
+
+    Kanban #1886 — Mode-A usage reporting. Called before the graph is invoked
+    so the run row exists to receive the token PATCH on finalize. Returns None
+    on any failure (HTTP error, non-201, JSON parse) — a missing session_run_id
+    means the usage PATCH is skipped, never crashes the task lifecycle.
+
+    Note: this endpoint does NOT need X-Project-Id (session endpoints are
+    by-id, project comes from the session row). The existing `headers` dict
+    carries X-Project-Id harmlessly; no auth issue.
+    """
+    url = f"{cfg.api_base}/api/sessions/{session_id}/runs"
+    try:
+        resp = await client.post(url, headers=headers, json={"task_id": task_id})
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "session_run create: HTTP error for task=%d session=%d: %r",
+            task_id,
+            session_id,
+            exc,
+        )
+        return None
+    if resp.status_code != 201:
+        logger.warning(
+            "session_run create: POST /sessions/%d/runs returned %d (task=%d): %s",
+            session_id,
+            resp.status_code,
+            task_id,
+            resp.text[:200],
+        )
+        return None
+    try:
+        run_id = resp.json().get("id")
+    except Exception:
+        logger.warning(
+            "session_run create: non-JSON response for task=%d session=%d",
+            task_id,
+            session_id,
+        )
+        return None
+    if not isinstance(run_id, int):
+        logger.warning(
+            "session_run create: response missing int id for task=%d session=%d",
+            task_id,
+            session_id,
+        )
+        return None
+    logger.info(
+        "session_run created: run_id=%d task=%d session=%d",
+        run_id,
+        task_id,
+        session_id,
+    )
+    return run_id
+
+
+async def _patch_session_run_usage(
+    client: httpx.AsyncClient,
+    cfg: WorkerConfig,
+    headers: dict[str, str],
+    session_run_id: int,
+    final_state: dict[str, Any],
+) -> None:
+    """PATCH /api/session_runs/{id} with accumulated token usage from the graph.
+
+    Kanban #1886 — Mode-A usage reporting. Reads the four usage fields from
+    final_state (populated by nodes.py from AIMessage.usage_metadata). Defaults
+    to 0 when absent so partial or no-usage providers don't fail the PATCH.
+    Also marks the run status='done' and forwards provider/model from env-vars
+    so the API can compute total_cost_usd server-side.
+
+    Best-effort: logs warnings on failure, never raises — the task lifecycle
+    (DONE / BLOCKED flip) must already have completed before this is called.
+    """
+    url = f"{cfg.api_base}/api/session_runs/{session_run_id}"
+    body: dict[str, Any] = {
+        "status": "done",
+        "total_input_tokens": int(final_state.get("usage_input_tokens") or 0),
+        "total_output_tokens": int(final_state.get("usage_output_tokens") or 0),
+        "cache_read_input_tokens": int(final_state.get("usage_cache_read_tokens") or 0),
+        "cache_creation_input_tokens": int(final_state.get("usage_cache_creation_tokens") or 0),
+    }
+    # Forward provider + model so the API can compute total_cost_usd.
+    from llm import resolve_model, resolve_provider  # local import avoids circular at module level
+    try:
+        body["provider"] = resolve_provider()
+        body["model"] = resolve_model()
+    except Exception as exc:
+        # Cost computation is best-effort — skip if provider/model resolution
+        # fails (e.g. LANGGRAPH_MODEL_ID unset in tests / minimal deployments).
+        logger.debug("session_run usage PATCH: resolver skipped (%r)", exc)
+
+    try:
+        resp = await client.request("PATCH", url, headers=headers, json=body)
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "session_run usage PATCH: HTTP error for run_id=%d: %r",
+            session_run_id,
+            exc,
+        )
+        return
+    if resp.status_code != 200:
+        logger.warning(
+            "session_run usage PATCH: returned %d for run_id=%d: %s",
+            resp.status_code,
+            session_run_id,
+            resp.text[:200],
+        )
+        return
+    logger.info(
+        "session_run usage PATCH ok: run_id=%d inp=%d out=%d cr=%d cc=%d",
+        session_run_id,
+        body["total_input_tokens"],
+        body["total_output_tokens"],
+        body["cache_read_input_tokens"],
+        body["cache_creation_input_tokens"],
+    )
 
 
 async def _patch_task(

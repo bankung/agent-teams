@@ -54,3 +54,14 @@ class AgentState(TypedDict, total=False):
     audit_verdict: Literal["pass", "auto_resolve", "escalate"] | None
     audit_report: dict[str, Any] | None
     audit_retry_count: int
+    # Kanban #1886 — Mode-A usage reporting. Worker injects `session_run_id`
+    # before invoking the graph (from LANGGRAPH_SESSION_ID + a pre-run
+    # POST /sessions/{id}/runs). Nodes accumulate token usage from
+    # AIMessage.usage_metadata into the four token fields; worker reads them
+    # on finalize and PATCHes PATCH /api/session_runs/{id}. All default 0 so
+    # a provider that omits usage_metadata doesn't crash the loop.
+    session_run_id: int | None
+    usage_input_tokens: int
+    usage_output_tokens: int
+    usage_cache_read_tokens: int
+    usage_cache_creation_tokens: int

@@ -52,6 +52,13 @@ def test_agent_state_keys_are_stable() -> None:
         # the LLM. Set by worker.py via agent_context_sanitizer.
         "prior_halt_reason",
         "prior_status_change_reason",
+        # Kanban #1886 (2026-06-04) — Mode-A usage reporting.
+        # session_run_id injected by worker; token totals accumulated by nodes.
+        "session_run_id",
+        "usage_input_tokens",
+        "usage_output_tokens",
+        "usage_cache_read_tokens",
+        "usage_cache_creation_tokens",
     }
     annotations = set(AgentState.__annotations__.keys())
     assert annotations == expected
