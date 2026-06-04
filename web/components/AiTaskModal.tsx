@@ -26,9 +26,11 @@ import {
 import { filterRoleOptions } from "@/lib/enabledRoles";
 import { extractErrorMessage } from "@/lib/errors";
 import { ActionTemplatePicker } from "./ActionTemplatePicker";
+import { DatePicker } from "./DatePicker";
 import { PauseOverrideBlock } from "./PauseOverrideBlock";
 import { HandoffTemplatePicker } from "./HandoffTemplatePicker";
 import { Icon } from "./Icon";
+import { MilestoneCombobox } from "./MilestoneCombobox";
 import { ModalShell } from "./ModalShell";
 import { ModelTierSelect } from "./ModelTierSelect";
 
@@ -686,43 +688,33 @@ export function AiTaskModal({
                   NewTaskModal). Preview phase only — the create POST that
                   persists them fires here. */}
               <div className="mt-3 grid grid-cols-2 gap-3">
-                <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                <div className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
                   Milestone{" "}
                   <span className="font-normal text-zinc-400">(optional)</span>
-                  <select
-                    value={milestoneId === "" ? "" : String(milestoneId)}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setMilestoneId(v === "" ? "" : Number(v));
+                  <MilestoneCombobox
+                    value={milestoneId === "" ? null : milestoneId}
+                    onChange={(id) => {
+                      setMilestoneId(id === null ? "" : id);
                       if (createError !== null) setCreateError(null);
                     }}
+                    milestones={milestones}
                     disabled={creating}
-                    className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
-                    data-ai-task-milestone
-                  >
-                    <option value="">None</option>
-                    {milestones.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.title}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                    inputProps={{ "data-ai-task-milestone": true }}
+                  />
+                </div>
+                <div className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
                   Due date{" "}
                   <span className="font-normal text-zinc-400">(optional)</span>
-                  <input
-                    type="date"
+                  <DatePicker
                     value={dueDate}
-                    onChange={(e) => {
-                      setDueDate(e.target.value);
+                    onChange={(v) => {
+                      setDueDate(v ?? "");
                       if (createError !== null) setCreateError(null);
                     }}
                     disabled={creating}
-                    className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
-                    data-ai-task-due-date
+                    inputProps={{ "data-ai-task-due-date": true }}
                   />
-                </label>
+                </div>
               </div>
 
               <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">

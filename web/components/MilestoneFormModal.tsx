@@ -12,6 +12,7 @@ import {
   type MilestoneUpdate,
 } from "@/lib/api";
 import { extractErrorMessage } from "@/lib/errors";
+import { DatePicker } from "./DatePicker";
 import { ModalShell } from "./ModalShell";
 
 // MilestoneFormModal — create/edit milestone dialog (Kanban #1868 FE).
@@ -198,38 +199,38 @@ export function MilestoneFormModal({
         </label>
 
         <div className="mt-3 grid grid-cols-2 gap-3">
-          <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+          <div className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
             Start date{" "}
             <span className="font-normal text-zinc-400">(optional)</span>
-            <input
-              type="date"
+            <DatePicker
               value={startDate}
-              onChange={(e) => {
-                setStartDate(e.target.value);
+              onChange={(v) => {
+                setStartDate(v ?? "");
                 if (error !== null) setError(null);
               }}
               disabled={submitting}
-              aria-invalid={!datesValid}
-              className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
-              data-milestone-start-date
+              inputProps={{
+                "data-milestone-start-date": true,
+                "aria-invalid": !datesValid,
+              }}
             />
-          </label>
-          <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+          </div>
+          <div className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
             Target date{" "}
             <span className="font-normal text-zinc-400">(optional)</span>
-            <input
-              type="date"
+            <DatePicker
               value={targetDate}
-              onChange={(e) => {
-                setTargetDate(e.target.value);
+              onChange={(v) => {
+                setTargetDate(v ?? "");
                 if (error !== null) setError(null);
               }}
               disabled={submitting}
-              aria-invalid={!datesValid}
-              className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
-              data-milestone-target-date
+              inputProps={{
+                "data-milestone-target-date": true,
+                "aria-invalid": !datesValid,
+              }}
             />
-          </label>
+          </div>
         </div>
         {!datesValid && (
           <p className="mt-1 text-xs text-red-700 dark:text-red-300">

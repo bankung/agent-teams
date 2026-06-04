@@ -17,7 +17,9 @@ import {
 import { TaskKind, TaskRunMode, TaskStatus } from "@/lib/constants";
 import { computeBlockedByExclusionSet } from "@/lib/cycleExclusion";
 import { extractErrorMessage } from "@/lib/errors";
+import { DatePicker } from "./DatePicker";
 import { DecisionInteractionView } from "./DecisionInteractionView";
+import { MilestoneCombobox } from "./MilestoneCombobox";
 import { PendingBadge } from "./PendingBadge";
 import { RunModeBadge } from "./RunModeBadge";
 import { TaskKindBadge } from "./TaskKindBadge";
@@ -463,52 +465,37 @@ export function TaskDetail({
               </label>
             </div>
 
-            {/* #1868 — Milestone grouping: optimistic PATCH on change. */}
+            {/* #1868 — Milestone grouping: optimistic PATCH on change.
+                Wave C (#8) — searchable combobox; the defensive "#<id>"
+                fallback for a filtered-out / unfetched milestone is now owned
+                by MilestoneCombobox (its closed-input label). */}
             <div className="mt-2" data-task-milestone-control>
-              <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+              <span className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
                 Milestone
-                <select
-                  value={milestoneId === null ? "" : String(milestoneId)}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    void handleMilestoneChange(v === "" ? null : Number(v));
-                  }}
-                  disabled={submitting}
-                  data-task-milestone-select
-                  className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
-                >
-                  <option value="">None</option>
-                  {/* Defensive: if the current milestone isn't in the fetched
-                      list (e.g. a non-active status filtered out, or fetch
-                      failed), still render it so the assignment is visible. */}
-                  {milestoneId !== null &&
-                    !milestones.some((m) => m.id === milestoneId) && (
-                      <option value={String(milestoneId)}>
-                        #{milestoneId}
-                      </option>
-                    )}
-                  {milestones.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              </span>
+              <MilestoneCombobox
+                value={milestoneId}
+                onChange={(id) => void handleMilestoneChange(id)}
+                milestones={milestones}
+                disabled={submitting}
+                inputProps={{ "data-task-milestone-select": true }}
+              />
             </div>
 
-            {/* #1868 — Due date: optimistic PATCH on change; clear sends null. */}
+            {/* #1868 — Due date: optimistic PATCH on change; clear sends null.
+                Wave C (#9) — calendar-popover; emitEmptyString=false so Clear
+                sends real null straight into the null-aware PATCH handler. */}
             <div className="mt-2" data-task-due-date-control>
-              <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+              <span className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
                 Due date
-                <input
-                  type="date"
-                  value={dueDate}
-                  onChange={(e) => void handleDueDateChange(e.target.value)}
-                  disabled={submitting}
-                  data-task-due-date-input
-                  className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
-                />
-              </label>
+              </span>
+              <DatePicker
+                value={dueDate === "" ? null : dueDate}
+                onChange={(v) => void handleDueDateChange(v ?? "")}
+                emitEmptyString={false}
+                disabled={submitting}
+                inputProps={{ "data-task-due-date-input": true }}
+              />
             </div>
 
             {/* #854 — Cancel: hidden on terminal states */}
