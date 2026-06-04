@@ -25,6 +25,8 @@ the `router` object + helpers above the marker.
 from __future__ import annotations
 
 import logging
+import os
+from enum import Enum
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -51,6 +53,8 @@ from src.services.session_project import (
     optional_agent_role_header,
     require_project_id_header,
 )
+from src.services.operator_auth import OperatorDecision, require_operator_proof
+from src.services.notify_ntfy import send_push
 from src.services.tool_grants import GrantDecision, check_grant
 from src.tools.email import gate, gmail_client, outlook_client, token_store
 
@@ -123,6 +127,162 @@ async def _enforce_tool_grant_or_403(
                 role=role, tool=tool_name
             ),
         )
+
+
+# ---------------------------------------------------------------------------
+# Operator-proof tier gate (Kanban #1859 — Phase 3 of #1852)
+# ---------------------------------------------------------------------------
+#
+# COMPOSES ON TOP OF the #1799 Layer-0 grant gate above — it does NOT replace
+# it. Layer-0 answers "WHICH role may call this tool"; this gate answers
+# "is the OPERATOR present for THIS write". The two are orthogonal: a call must
+# pass Layer-0 first, then (for tiers above `read`) carry an operator-proof.
+#
+# Tier model (per #1852 design §5 / #1859 AC):
+#   read           OPEN  — Layer-0 grant only, no operator-proof.
+#   reply          PROOF — operator-proof required; 403 if absent.
+#   send_internal  PROOF — operator-proof required; 403 if absent.
+#   delete         PROOF — operator-proof required; 403 if absent. (trash = delete-class)
+#   external_send  ESCALATE — operator-proof + out-of-band push/ntfy confirm + HITL resume.
+#
+# FAIL-OPEN when unset: `require_operator_proof` returns OPERATOR for any request
+# when OPERATOR_ACTION_KEY is unset (gate INACTIVE), so this 403 is DORMANT on the
+# live deployment (no key in .env yet) and existing trash flows are unaffected.
+# The operator ACTIVATES by setting the key + presenting X-Operator-Token. This is
+# the SAME activation discipline as the #1857 Phase-1 verified_by gate.
+
+
+class EmailTier(str, Enum):
+    """Operator-proof requirement tier for an email action.
+
+    `str, Enum` so the value serializes straight into the audit/detail strings
+    (mirrors `operator_auth.OperatorDecision` / `tool_grants.GrantDecision`).
+    """
+
+    READ = "read"  # OPEN — no operator-proof.
+    REPLY = "reply"  # PROOF.
+    SEND_INTERNAL = "send_internal"  # PROOF.
+    DELETE = "delete"  # PROOF (trash maps here).
+    EXTERNAL_SEND = "external_send"  # PROOF + out-of-band confirm.
+
+
+# Tiers that require an operator-proof (everything above `read`). `read` alone
+# is OPEN. Frozenset for O(1) membership + immutability.
+_PROOF_REQUIRED_TIERS = frozenset(
+    {
+        EmailTier.REPLY,
+        EmailTier.SEND_INTERNAL,
+        EmailTier.DELETE,
+        EmailTier.EXTERNAL_SEND,
+    }
+)
+
+# Source-text-locked: pinned by the #1859 smoke tests (verbatim detail assert).
+# The `tier` is interpolated so the agent's log shows exactly which tier was
+# refused. Mirrors the stable-string convention of the Layer-0 denial above.
+_DETAIL_OPERATOR_PROOF_REQUIRED_TEMPLATE = (
+    "operator_proof_required: email tier {tier!r} is above 'read' and requires "
+    "an operator-proof (X-Operator-Token). The #1799 role grant answers WHICH "
+    "role; this gate answers OPERATOR-PRESENT. Present the operator token "
+    "out-of-band, or call a read-tier endpoint if no mutation is intended."
+)
+
+# Source-text-locked: pinned by the #1859 external-send escalation test.
+_DETAIL_EXTERNAL_SEND_CONFIRM_PENDING = (
+    "operator_confirm_pending: external-send is the highest-blast tier and "
+    "escalates to an out-of-band push/ntfy confirmation. A push was emitted; "
+    "approve it (or re-issue carrying X-Operator-Token after approving) to "
+    "resume. HALT semantics mirror the HITL interrupt/resume loop."
+)
+
+
+def _enforce_operator_tier_or_403(
+    tier: EmailTier, operator_proof: OperatorDecision
+) -> None:
+    """Run the #1859 tiered operator-proof gate; raise 403 on a missing proof.
+
+    Wired AFTER `_enforce_tool_grant_or_403` (Layer-0) in the gated handlers.
+    `read`-tier actions are OPEN (no-op here). Any tier in
+    `_PROOF_REQUIRED_TIERS` requires `operator_proof is OperatorDecision.OPERATOR`
+    — otherwise 403 with a stable detail.
+
+    The proof is resolved by the `require_operator_proof` FastAPI dependency,
+    which fail-OPENS (returns OPERATOR for any request) when OPERATOR_ACTION_KEY
+    is unset, so this gate is dormant on the live deployment until the operator
+    activates it. The `external_send` tier is handled by
+    `_escalate_external_send_or_202` (push confirm) rather than a bare 403 — call
+    that helper instead of this one for external sends.
+    """
+    if tier not in _PROOF_REQUIRED_TIERS:
+        return
+    if operator_proof is not OperatorDecision.OPERATOR:
+        raise HTTPException(
+            status_code=403,
+            detail=_DETAIL_OPERATOR_PROOF_REQUIRED_TEMPLATE.format(tier=tier.value),
+        )
+
+
+def _escalate_external_send_or_202(
+    operator_proof: OperatorDecision,
+    *,
+    project_id: int,
+    summary: str,
+) -> None:
+    """Highest-blast (`external_send`) escalation: out-of-band push/ntfy confirm.
+
+    Reuses the EXISTING notification infra (`services.notify_ntfy.send_push`, the
+    same primitive `routers/tasks.py::_fire_hitl_push` uses) — it does NOT build a
+    new notification system. Reuses the HITL HALT/resume SEMANTICS (the request
+    HALTS with a 202 + `halt_reason`, mirroring the interrupt/resume loop) WITHOUT
+    a new DB row: the operator resumes by re-issuing the call carrying a valid
+    `X-Operator-Token`, which makes `operator_proof is OPERATOR` true on the
+    retry and lets this helper pass through. No pending-confirm table is needed
+    for the single-operator MVP (see report — migration explicitly NOT taken).
+
+    Flow:
+      - operator_proof IS OPERATOR  -> the operator already approved out-of-band
+        (presented the token); pass through (the caller proceeds with the send).
+      - operator_proof NOT OPERATOR -> fire an ntfy push (best-effort; send_push
+        soft-fails and is itself gated by PUSH_ENABLED/NTFY_TOPIC) and raise
+        HTTP 202 with `halt_reason=operator_confirm_required`. The caller does
+        NOT proceed; the external send is HALTED pending the out-of-band tap.
+    """
+    if operator_proof is OperatorDecision.OPERATOR:
+        return
+
+    # Out-of-band confirm — reuse the ntfy push primitive. Best-effort: send_push
+    # never raises and self-gates on PUSH_ENABLED/NTFY_TOPIC, so an unconfigured
+    # push channel does NOT turn the HALT into a 500 — the 202 still fires.
+    base_url = os.environ.get("WEB_BASE_URL", "http://localhost:5431").rstrip("/")
+    click_url = f"{base_url}/approve/email-send"
+    try:
+        result = send_push(
+            f"External email send awaiting your confirmation ({summary[:80]}).",
+            title="Agent-Teams: confirm external email send",
+            priority=5,
+            click_url=click_url,
+            tags="warning,email,robot",
+        )
+        if not result.ok:
+            logger.warning(
+                "external_send confirm: project=%d push ok=False detail=%s",
+                project_id,
+                result.detail,
+            )
+    except Exception:  # noqa: BLE001 — push is observability; never 500 the HALT.
+        logger.exception(
+            "external_send confirm: project=%d unexpected push error; HALT still raised",
+            project_id,
+        )
+
+    raise HTTPException(
+        status_code=202,
+        detail={
+            "error": "operator_confirm_required",
+            "halt_reason": "operator_confirm_required",
+            "message": _DETAIL_EXTERNAL_SEND_CONFIRM_PENDING,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +406,7 @@ async def gmail_trash(
     force: bool = Query(default=False, description="Bypass the bulk-threshold gate."),
     session_project_id: int = Depends(require_project_id_header),
     agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
     session: AsyncSession = Depends(get_session),
 ) -> GmailTrashResponse:
     """Trash Gmail messages by query OR explicit ids.
@@ -254,6 +415,11 @@ async def gmail_trash(
     be granted to the `X-Agent-Role` (if the role is restricted in
     `config.tool_grants`). Fires FIRST so a forbidden role is turned away
     before any OAuth/quota work. Opt-in: unrestricted by default.
+
+    Tier gate (#1859): trash is the `delete` tier — above `read`, so it requires
+    an operator-proof AFTER Layer-0. Absent (and the gate ACTIVE) -> 403. The
+    gate is DORMANT (fail-open) until OPERATOR_ACTION_KEY is set, so live trash
+    flows are unaffected until the operator activates it.
 
     Flow (FIX-6 #1609 — gate ordering):
       message_ids mode:
@@ -274,6 +440,11 @@ async def gmail_trash(
     await _enforce_tool_grant_or_403(
         session, session_project_id, agent_role, "gmail.trash"
     )
+
+    # Tier gate (#1859) — trash = `delete` tier (above read). Operator-proof
+    # required AFTER Layer-0; 403 if absent (when the gate is ACTIVE). Dormant
+    # when OPERATOR_ACTION_KEY is unset (fail-open).
+    _enforce_operator_tier_or_403(EmailTier.DELETE, operator_proof)
 
     # FIX-6 (#1609): message_ids mode — bulk-check before auth so the payload
     # safety rail is observable without OAuth setup. query mode still requires
@@ -493,6 +664,7 @@ async def outlook_trash(
     force: bool = Query(default=False, description="Bypass the bulk-threshold gate."),
     session_project_id: int = Depends(require_project_id_header),
     agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
     session: AsyncSession = Depends(get_session),
 ) -> OutlookTrashResponse:
     """Move Outlook messages to Deleted Items by query OR explicit ids.
@@ -501,6 +673,11 @@ async def outlook_trash(
     be granted to the `X-Agent-Role` (if the role is restricted in
     `config.tool_grants`). Fires FIRST so a forbidden role is turned away
     before any OAuth/quota work. Opt-in: unrestricted by default.
+
+    Tier gate (#1859): trash is the `delete` tier — above `read`, so it requires
+    an operator-proof AFTER Layer-0. Absent (and the gate ACTIVE) -> 403. The
+    gate is DORMANT (fail-open) until OPERATOR_ACTION_KEY is set, so live trash
+    flows are unaffected until the operator activates it.
 
     Flow (FIX-6 #1609 — gate ordering):
       message_ids mode:
@@ -521,6 +698,11 @@ async def outlook_trash(
     await _enforce_tool_grant_or_403(
         session, session_project_id, agent_role, "outlook.trash"
     )
+
+    # Tier gate (#1859) — trash = `delete` tier (above read). Operator-proof
+    # required AFTER Layer-0; 403 if absent (when the gate is ACTIVE). Dormant
+    # when OPERATOR_ACTION_KEY is unset (fail-open).
+    _enforce_operator_tier_or_403(EmailTier.DELETE, operator_proof)
 
     if body.message_ids is not None:
         ids = list(body.message_ids)
