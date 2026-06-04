@@ -89,15 +89,22 @@ function substitutePlaceholders(
 
 // #1310 — derive the pre-filled description + AC rows from a template given the
 // current placeholder values. Pure; substitution never throws.
+// #1310 r4 null-safety: guard against partial/malformed template objects so a
+// bad template degrades gracefully instead of white-screening the modal.
 function deriveFromTemplate(
   template: TaskTemplateRead,
   values: Record<string, string>,
 ): { description: string; ac: { text: string }[] } {
   return {
-    description: substitutePlaceholders(template.description_template, values),
-    ac: template.acceptance_criteria_template.map((row) => ({
-      text: substitutePlaceholders(row.text, values),
-    })),
+    description: substitutePlaceholders(String(template.description_template ?? ""), values),
+    ac: (Array.isArray(template.acceptance_criteria_template)
+      ? template.acceptance_criteria_template
+      : []
+    )
+      .filter((row) => row && typeof row.text === "string")
+      .map((row) => ({
+        text: substitutePlaceholders(row.text, values),
+      })),
   };
 }
 
@@ -322,7 +329,10 @@ export function NewTaskModal({
     setSelectedTemplateId(t.id);
     const values: Record<string, string> = {};
     setPlaceholderValues(values);
-    setPriority(t.default_priority);
+    // #1310 r4 — mirror the MODAL_TASK_TYPES guard: only apply default_priority
+    // when it maps to a real option; an out-of-range value (e.g. 99) is silently
+    // ignored so the current valid priority is kept. (#1310 round-4)
+    if (PRIORITY_OPTIONS.some((o) => o.value === t.default_priority)) setPriority(t.default_priority);
     // Map default_task_type onto the modal's union ONLY when it's a value the
     // <select> can show; 'audit' / unknowns are ignored (current type kept).
     if ((MODAL_TASK_TYPES as readonly string[]).includes(t.default_task_type)) {
@@ -551,9 +561,9 @@ export function NewTaskModal({
             {/* #1310 — one text input per placeholder of the chosen template.
                 Live substitution: each edit re-derives description + AC. */}
             {selectedTemplate !== null &&
-              selectedTemplate.placeholders.length > 0 && (
+              (selectedTemplate.placeholders ?? []).length > 0 && (
                 <div className="mt-3 flex flex-col gap-2" data-new-task-placeholders>
-                  {selectedTemplate.placeholders.map((key) => (
+                  {(selectedTemplate.placeholders ?? []).map((key) => (
                     <label
                       key={key}
                       className="block text-xs font-medium text-zinc-700 dark:text-zinc-300"
@@ -754,7 +764,8 @@ export function NewTaskModal({
                 is selected; seeded from the template (substituted), then freely
                 editable. Non-empty rows are sent on submit as `pending` ACs. */}
             {/* #1310 — AC editor shown only when a template is selected; standalone manual AC entry is out of scope for this task. */}
-            {selectedTemplateId !== null && (
+            {/* #1310 r4 — gate on resolved template (same source as placeholder editor) so a stale id can't render the AC editor without its template. */}
+            {selectedTemplate !== null && (
               <div className="mt-3 flex flex-col gap-2" data-new-task-ac-editor>
                 <span className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
                   Acceptance criteria{" "}

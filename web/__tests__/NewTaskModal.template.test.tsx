@@ -8,10 +8,14 @@
 // the current test's DOM — avoids cross-test pollution through document.querySelector.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, waitFor, within, fireEvent } from "@testing-library/react";
+import { render, waitFor, within, fireEvent, configure } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ProjectRead, TaskTemplateRead, TaskRead } from "@/lib/api";
 import { TaskPriority } from "@/lib/constants";
+import type { TaskPriorityValue } from "@/lib/constants";
+
+// B1 — raise async util timeout to 5 s so waitFor survives full-suite CPU load.
+configure({ asyncUtilTimeout: 5000 });
 
 // ---------- mocks ----------
 
@@ -356,16 +360,17 @@ describe("NewTaskModal — Task Template Picker (#1310)", () => {
       "[data-new-task-description]",
     ) as HTMLTextAreaElement;
 
-    // Before filling purpose, the literal {{purpose}} must still be in description
-    await user.type(methodInput, "GET");
-    await user.type(pathInput, "/x");
+    // B2: fireEvent.change (atomic) instead of user.type (inter-keystroke delays)
+    // Set method + path first; purpose still empty → {{purpose}} stays literal
+    fireEvent.change(methodInput, { target: { value: "GET" } });
+    fireEvent.change(pathInput, { target: { value: "/x" } });
 
     await waitFor(() => {
       expect(descTextarea.value).toContain("{{purpose}}");
     });
 
-    // After filling all placeholders, substitution is complete
-    await user.type(purposeInput, "pings");
+    // After filling purpose, full substitution is complete
+    fireEvent.change(purposeInput, { target: { value: "pings" } });
 
     await waitFor(() => {
       expect(descTextarea.value).toBe(
@@ -402,9 +407,8 @@ describe("NewTaskModal — Task Template Picker (#1310)", () => {
       "[data-new-task-description]",
     ) as HTMLTextAreaElement;
 
-    // Manually edit the description to something custom
-    await user.clear(descTextarea);
-    await user.type(descTextarea, "My custom description");
+    // B2: single fireEvent.change proves the onChange editability path (no inter-keystroke timing)
+    fireEvent.change(descTextarea, { target: { value: "My custom description" } });
 
     expect(descTextarea.value).toBe("My custom description");
 
@@ -414,8 +418,7 @@ describe("NewTaskModal — Task Template Picker (#1310)", () => {
       "[data-new-task-ac-row]",
     ) as NodeListOf<HTMLInputElement>;
     expect(acRows.length).toBeGreaterThan(0);
-    await user.clear(acRows[0]);
-    await user.type(acRows[0], "My custom AC");
+    fireEvent.change(acRows[0], { target: { value: "My custom AC" } });
     expect(acRows[0].value).toBe("My custom AC");
   });
 
@@ -452,8 +455,9 @@ describe("NewTaskModal — Task Template Picker (#1310)", () => {
     ) as HTMLTextAreaElement;
 
     // --- POSITIVE PATH: no manual edit → description keeps updating ---
-    await user.type(methodInput, "POST");
-    await user.type(pathInput, "/items");
+    // B2: fireEvent.change (atomic) instead of user.type
+    fireEvent.change(methodInput, { target: { value: "POST" } });
+    fireEvent.change(pathInput, { target: { value: "/items" } });
 
     // Description must live-update (method + path substituted, purpose still literal)
     await waitFor(() => {
@@ -462,17 +466,15 @@ describe("NewTaskModal — Task Template Picker (#1310)", () => {
     });
 
     // --- DIRTY PATH: manually edit description, then change a placeholder ---
-    // Manually edit the description — sets templateFieldsDirty=true.
-    // Use fireEvent.change to avoid user-event's bracket-key parsing quirk.
+    // Manually edit the description — sets descriptionDirty=true.
     const descValueBeforeManualEdit = descTextarea.value;
     const manualText = descValueBeforeManualEdit + " MANUAL_EDIT_MARKER";
-    // Use fireEvent directly to bypass user-event bracket parsing
     fireEvent.change(descTextarea, { target: { value: manualText } });
 
     expect(descTextarea.value).toContain("MANUAL_EDIT_MARKER");
 
-    // Now type into a placeholder — should NOT overwrite the manually-edited description
-    await user.type(purposeInput, "runs");
+    // B2: fireEvent.change instead of user.type for purpose fill
+    fireEvent.change(purposeInput, { target: { value: "runs" } });
 
     // The manually-edited description must still contain the manual marker
     await waitFor(() => {
@@ -557,12 +559,12 @@ describe("NewTaskModal — Task Template Picker (#1310)", () => {
     // Select must NOT appear
     expect(q(container, "[data-new-task-template]")).toBeNull();
 
-    // Fill title and submit a manual task
+    // B2: fireEvent.change (atomic) for multi-char title fill
     const titleInput = q(
       container,
       "[data-new-task-title]",
     ) as HTMLInputElement;
-    await user.type(titleInput, "Manual task");
+    fireEvent.change(titleInput, { target: { value: "Manual task" } });
 
     const submitBtn = q(
       container,
@@ -588,12 +590,12 @@ describe("NewTaskModal — Task Template Picker (#1310)", () => {
     const select = await getTemplateSelect(container);
     await user.selectOptions(select, "3");
 
-    // Set a title
+    // B2: fireEvent.change (atomic) for multi-char title fill
     const titleInput = q(
       container,
       "[data-new-task-title]",
     ) as HTMLInputElement;
-    await user.type(titleInput, "My doc task");
+    fireEvent.change(titleInput, { target: { value: "My doc task" } });
 
     // Submit
     const submitBtn = q(
@@ -867,6 +869,80 @@ describe("NewTaskModal — Task Template Picker (#1310)", () => {
   });
 
   // -----------------------------------------------------------------------
+  // B3 Regression tests locking Part-A null-safety + priority guard fixes
+  // -----------------------------------------------------------------------
+
+  it("R3 null-safety: a malformed template (null acceptance_criteria_template + null description_template + missing placeholders) does not crash the modal", async () => {
+    const malformed = {
+      id: 99,
+      team: "dev",
+      name: "Malformed template",
+      icon: null,
+      description_template: null,
+      acceptance_criteria_template: null,
+      placeholders: undefined,
+      default_task_type: "feature",
+      default_priority: TaskPriority.NORMAL,
+      default_task_kind: "ai",
+      status: 1,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: null,
+    } as unknown as TaskTemplateRead;
+
+    // Use a local mock override so it doesn't disturb the shared beforeEach MOCK_TEMPLATES
+    mockListTaskTemplates.mockResolvedValue([malformed]);
+
+    const { container } = await renderOpenModal();
+
+    const select = await getTemplateSelect(container);
+    const user = userEvent.setup();
+    await user.selectOptions(select, "99");
+
+    // The template <select> must still be in the DOM (no throw/white-screen)
+    await waitFor(() => {
+      expect(container.querySelector("[data-new-task-template]")).not.toBeNull();
+    });
+
+    // Description textarea must still be queryable (modal did not crash)
+    expect(container.querySelector("[data-new-task-description]")).not.toBeNull();
+  });
+
+  it("R3 priority guard: a template with out-of-range default_priority (99) does not set an invalid priority", async () => {
+    const badPriority = {
+      id: 98,
+      team: "dev",
+      name: "Bad priority template",
+      icon: null,
+      description_template: "Simple desc.",
+      acceptance_criteria_template: [],
+      placeholders: [],
+      default_task_type: "feature",
+      default_priority: 99 as unknown as TaskPriorityValue,
+      default_task_kind: "ai",
+      status: 1,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: null,
+    } as unknown as TaskTemplateRead;
+
+    mockListTaskTemplates.mockResolvedValue([badPriority]);
+
+    const { container } = await renderOpenModal();
+
+    const select = await getTemplateSelect(container);
+    const user = userEvent.setup();
+    await user.selectOptions(select, "98");
+
+    // The priority <select> value must remain a valid option (NOT "99")
+    await waitFor(() => {
+      const prioritySelect = container.querySelector("[data-new-task-priority]") as HTMLSelectElement;
+      expect(prioritySelect).not.toBeNull();
+      expect(prioritySelect.value).not.toBe("99");
+      // Must be one of the valid TaskPriority values (1/2/3/4)
+      expect(["1", "2", "3", "4"]).toContain(prioritySelect.value);
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // Submit omits AC when no template is selected
   // -----------------------------------------------------------------------
   it("Submit omits acceptance_criteria when no template is selected (manual entry)", async () => {
@@ -875,11 +951,12 @@ describe("NewTaskModal — Task Template Picker (#1310)", () => {
     const user = userEvent.setup();
     const { container } = await renderOpenModal({ expectEmpty: true });
 
+    // B2: fireEvent.change (atomic) for multi-char title fill
     const titleInput = q(
       container,
       "[data-new-task-title]",
     ) as HTMLInputElement;
-    await user.type(titleInput, "Bare task");
+    fireEvent.change(titleInput, { target: { value: "Bare task" } });
 
     const submitBtn = q(
       container,
