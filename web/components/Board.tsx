@@ -255,6 +255,11 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
   const [milestoneFilter, setMilestoneFilter] = useState<"all" | "none" | number>("all");
   const [milestones, setMilestones] = useState<MilestoneRead[]>([]);
 
+  // #pagination — DONE column: render only the first N tasks; "Load more" adds 50.
+  // Resets when the underlying DONE set changes materially (filter change, SSE update).
+  const DONE_PAGE = 50;
+  const [visibleDoneCount, setVisibleDoneCount] = useState(DONE_PAGE);
+
   // #1288 — Switch-driven modal open state for project controls group.
   const [terminateModalOpen, setTerminateModalOpen] = useState(false);
   const [pauseModalOpen, setPauseModalOpen] = useState(false);
@@ -423,6 +428,15 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
   }, [tasks, showAudit, milestoneFilter]);
 
   const grouped = useMemo(() => groupByStatus(visibleTasks), [visibleTasks]);
+
+  // Reset DONE pagination whenever the DONE set changes materially (milestone/audit
+  // filter toggle or SSE refresh that changes the set size or leading task).
+  const doneTasks = grouped.get(TaskStatus.DONE) ?? [];
+  const _doneResetKey = `${doneTasks.length}:${doneTasks[0]?.id ?? ""}`;
+  useEffect(() => {
+    setVisibleDoneCount(DONE_PAGE);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [_doneResetKey]);
 
   const selectedTask = useMemo(
     () =>
@@ -809,18 +823,25 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
             data-board="dnd"
             className="grid flex-1 grid-cols-1 gap-3 md:grid-cols-3 lg:min-h-0 lg:grid-cols-5 lg:overflow-hidden"
           >
-            {COLUMNS.map((col) => (
-              <BoardColumn
-                key={col.key}
-                columnId={col.key}
-                statuses={col.statuses}
-                label={col.label}
-                tasks={col.statuses.flatMap((s) => grouped.get(s) ?? [])}
-                onOpenDetail={onOpenDetail}
-                sortable={col.statuses.includes(TaskStatus.TODO)}
-                highlightedTaskId={highlightedTaskId}
-              />
-            ))}
+            {COLUMNS.map((col) => {
+              const colTasks = col.statuses.flatMap((s) => grouped.get(s) ?? []);
+              const isDone = col.statuses.includes(TaskStatus.DONE);
+              const renderedTasks = isDone ? colTasks.slice(0, visibleDoneCount) : colTasks;
+              return (
+                <BoardColumn
+                  key={col.key}
+                  columnId={col.key}
+                  statuses={col.statuses}
+                  label={col.label}
+                  tasks={renderedTasks}
+                  totalCount={isDone ? colTasks.length : undefined}
+                  onLoadMore={isDone && colTasks.length > visibleDoneCount ? () => setVisibleDoneCount((n) => n + DONE_PAGE) : undefined}
+                  onOpenDetail={onOpenDetail}
+                  sortable={col.statuses.includes(TaskStatus.TODO)}
+                  highlightedTaskId={highlightedTaskId}
+                />
+              );
+            })}
           </div>
         </DndContext>
       )}

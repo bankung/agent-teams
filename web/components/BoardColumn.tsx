@@ -25,12 +25,18 @@ type Props = {
   // card in this column, the Board passes the id down so the card renders
   // a 2-second ring-pulse highlight. null = no highlight.
   highlightedTaskId?: number | null;
+  // #pagination — when set, the header count shows this total (not tasks.length)
+  // and the footer "Load more" button is rendered while onLoadMore is defined.
+  totalCount?: number;
+  onLoadMore?: () => void;
 };
 
-export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, sortable = false, highlightedTaskId = null }: Props) {
+export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, sortable = false, highlightedTaskId = null, totalCount, onLoadMore }: Props) {
   const { isOver, setNodeRef } = useDroppable({ id: columnId });
   const taskIds = tasks.map((t) => t.id);
   const dropHighlight = isOver ? " ring-2 ring-blue-400/50" : "";
+  const displayCount = totalCount ?? tasks.length;
+  const remaining = totalCount !== undefined ? totalCount - tasks.length : 0;
   return (
     <section
       ref={setNodeRef}
@@ -46,7 +52,7 @@ export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, so
           ·
         </span>
         <span className="text-xs tabular-nums text-zinc-500 dark:text-zinc-400">
-          {tasks.length}
+          {displayCount}
         </span>
       </header>
       <SortableContext items={taskIds} strategy={verticalListSortingStrategy}>
@@ -67,6 +73,15 @@ export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, so
                 highlighted={highlightedTaskId === task.id}
               />
             ))
+          )}
+          {onLoadMore && (
+            <button
+              type="button"
+              onClick={onLoadMore}
+              className="mt-1 w-full rounded py-1.5 text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 transition-colors"
+            >
+              Load more ({remaining} more)
+            </button>
           )}
         </div>
       </SortableContext>
