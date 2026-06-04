@@ -1,12 +1,26 @@
 // Smoke tests for GanttView — client component.
-// Strategy: mock next/link; pass representative MilestoneDetail props and
-// assert key structural elements (empty state, rail rows, bars, diamonds).
+//
+// Wave A.2c: GanttView absorbed the milestone-management surface (the dedicated
+// /milestones page + MilestonesView were removed). These tests now cover BOTH
+// the timeline rendering AND the folded-in management affordances (New milestone
+// button, per-rail Edit/Delete, the Unassigned drag-source pool). The still-
+// relevant assertions from the deleted MilestonesView.test.tsx live here now.
+//
+// Strategy: mock next/navigation (useRouter), next/link, @/lib/api (listTasks —
+// called lazily on pool-open, not on mount), and the two milestone modals
+// (MilestoneFormModal / MilestoneDeleteModal — tested elsewhere, they each do
+// their own fetches).
 
 import { describe, it, expect, vi, beforeAll } from "vitest";
 import { render, screen } from "@testing-library/react";
 import type { MilestoneDetail } from "@/lib/api";
 
 // ---------- mocks ----------
+
+// next/navigation — useRouter is the only hook GanttView calls.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }),
+}));
 
 vi.mock("next/link", () => ({
   default: ({
@@ -22,6 +36,24 @@ vi.mock("next/link", () => ({
       {children}
     </a>
   ),
+}));
+
+// @/lib/api — prevent real fetch; listTasks is called lazily on pool-open.
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return {
+    ...actual,
+    listTasks: vi.fn().mockResolvedValue([]),
+    patchTask: vi.fn(),
+  };
+});
+
+// Stub heavy sub-modals — they each do their own fetches and are tested elsewhere.
+vi.mock("@/components/MilestoneFormModal", () => ({
+  MilestoneFormModal: () => null,
+}));
+vi.mock("@/components/MilestoneDeleteModal", () => ({
+  MilestoneDeleteModal: () => null,
 }));
 
 // ---------- helpers ----------
@@ -55,7 +87,7 @@ describe("GanttView — smoke", () => {
   });
 
   it("renders the empty-state when milestones=[]", () => {
-    render(<GanttView projectName="my-project" milestones={[]} />);
+    render(<GanttView projectId={1} projectName="my-project" milestones={[]} />);
     const el = document.querySelector("[data-gantt-empty]");
     expect(el).not.toBeNull();
     expect(el?.textContent).toMatch(/no milestones yet/i);
@@ -63,16 +95,15 @@ describe("GanttView — smoke", () => {
 
   it("renders the gantt section when milestones are provided", () => {
     render(
-      <GanttView
-        projectName="my-project"
-        milestones={[makeDetail()]}
-      />,
+      <GanttView projectId={1} projectName="my-project" milestones={[makeDetail()]} />,
     );
     expect(document.querySelector("[data-gantt-view]")).not.toBeNull();
   });
 
   it("data-gantt-view has correct aria-label", () => {
-    render(<GanttView projectName="my-project" milestones={[makeDetail()]} />);
+    render(
+      <GanttView projectId={1} projectName="my-project" milestones={[makeDetail()]} />,
+    );
     const section = document.querySelector("[data-gantt-view]");
     expect(section?.getAttribute("aria-label")).toBe("Gantt timeline for my-project");
   });
@@ -82,7 +113,7 @@ describe("GanttView — smoke", () => {
       makeDetail({ id: 1, title: "Alpha" }),
       makeDetail({ id: 2, title: "Beta", start_date: "2026-07-01", target_date: "2026-07-31" }),
     ];
-    render(<GanttView projectName="my-project" milestones={milestones} />);
+    render(<GanttView projectId={1} projectName="my-project" milestones={milestones} />);
     expect(document.querySelector("[data-gantt-rail-row='1']")).not.toBeNull();
     expect(document.querySelector("[data-gantt-rail-row='2']")).not.toBeNull();
   });
@@ -90,20 +121,24 @@ describe("GanttView — smoke", () => {
   it("renders milestone title in the rail", () => {
     render(
       <GanttView
+        projectId={1}
         projectName="my-project"
         milestones={[makeDetail({ title: "Milestone Alpha" })]}
       />,
     );
-    // Title appears in both the rail link AND the bar tooltip span — use queryAllBy.
+    // Title appears in both the rail AND the bar tooltip span — use queryAllBy.
     const matches = screen.getAllByText("Milestone Alpha");
     expect(matches.length).toBeGreaterThanOrEqual(1);
-    // The rail link specifically
-    expect(document.querySelector("[data-gantt-rail-row='1'] a")).toHaveTextContent("Milestone Alpha");
+    // The rail row specifically.
+    expect(
+      document.querySelector("[data-gantt-rail-row='1']")?.textContent,
+    ).toContain("Milestone Alpha");
   });
 
   it("renders a MilestoneStatusBadge inside each rail row", () => {
     render(
       <GanttView
+        projectId={1}
         projectName="my-project"
         milestones={[makeDetail({ milestone_status: "active" })]}
       />,
@@ -113,10 +148,7 @@ describe("GanttView — smoke", () => {
 
   it("renders a timeline row for each milestone", () => {
     render(
-      <GanttView
-        projectName="my-project"
-        milestones={[makeDetail({ id: 42 })]}
-      />,
+      <GanttView projectId={1} projectName="my-project" milestones={[makeDetail({ id: 42 })]} />,
     );
     expect(document.querySelector("[data-gantt-row='42']")).not.toBeNull();
   });
@@ -124,6 +156,7 @@ describe("GanttView — smoke", () => {
   it("renders a bar (gantt-bar) for a fully-dated milestone (start + target)", () => {
     render(
       <GanttView
+        projectId={1}
         projectName="my-project"
         milestones={[makeDetail({ id: 1, start_date: "2026-06-01", target_date: "2026-06-30" })]}
       />,
@@ -134,6 +167,7 @@ describe("GanttView — smoke", () => {
   it("renders a diamond (gantt-diamond) for a target-only milestone", () => {
     render(
       <GanttView
+        projectId={1}
         projectName="my-project"
         milestones={[makeDetail({ id: 5, start_date: null, target_date: "2026-06-20" })]}
       />,
@@ -144,6 +178,7 @@ describe("GanttView — smoke", () => {
   it("renders 'no dates' label for an undated milestone", () => {
     render(
       <GanttView
+        projectId={1}
         projectName="my-project"
         milestones={[makeDetail({ id: 7, start_date: null, target_date: null })]}
       />,
@@ -154,6 +189,7 @@ describe("GanttView — smoke", () => {
   it("renders the milestone count header", () => {
     render(
       <GanttView
+        projectId={1}
         projectName="my-project"
         milestones={[makeDetail({ id: 1 }), makeDetail({ id: 2, title: "B" })]}
       />,
@@ -162,18 +198,19 @@ describe("GanttView — smoke", () => {
   });
 
   it("singular form for 1 milestone", () => {
-    render(<GanttView projectName="my-project" milestones={[makeDetail()]} />);
+    render(<GanttView projectId={1} projectName="my-project" milestones={[makeDetail()]} />);
     expect(screen.getByText(/1 milestone$/i)).toBeInTheDocument();
   });
 
   it("shows 'No dated milestones' hint when all milestones have no dates", () => {
     render(
       <GanttView
+        projectId={1}
         projectName="my-project"
         milestones={[makeDetail({ start_date: null, target_date: null })]}
       />,
     );
-    // Text appears in both the header hint span AND the timeline axis span — at least one must be present.
+    // Text appears in both the header hint span AND the timeline axis span.
     const matches = screen.getAllByText(/no dated milestones/i);
     expect(matches.length).toBeGreaterThanOrEqual(1);
   });
@@ -181,11 +218,62 @@ describe("GanttView — smoke", () => {
   it("renders progress info in the rail row (done/total)", () => {
     render(
       <GanttView
+        projectId={1}
         projectName="my-project"
         milestones={[makeDetail({ rollup: { total: 10, done: 3, by_process_status: {}, progress_pct: 30 } })]}
       />,
     );
     // "3/10 done · 30%"
     expect(screen.getByText(/3\/10 done/)).toBeInTheDocument();
+  });
+});
+
+// Wave A.2c — milestone-management affordances folded into the Gantt view (these
+// assertions carried over from the deleted MilestonesView.test.tsx).
+describe("GanttView — milestone management (Wave A.2c)", () => {
+  let GanttView: typeof import("@/components/GanttView").GanttView;
+
+  beforeAll(async () => {
+    const mod = await import("@/components/GanttView");
+    GanttView = mod.GanttView;
+  });
+
+  it("renders the 'New milestone' button (even with no milestones)", () => {
+    render(<GanttView projectId={1} projectName="my-project" milestones={[]} />);
+    const btn = document.querySelector("[data-new-milestone-trigger]");
+    expect(btn).not.toBeNull();
+    expect(btn?.textContent).toMatch(/new milestone/i);
+  });
+
+  it("renders Edit + Delete affordances on each rail row", () => {
+    render(
+      <GanttView projectId={1} projectName="my-project" milestones={[makeDetail({ id: 9 })]} />,
+    );
+    const row = document.querySelector("[data-gantt-rail-row='9']");
+    expect(row?.querySelector("[data-milestone-edit]")).not.toBeNull();
+    expect(row?.querySelector("[data-milestone-delete]")).not.toBeNull();
+  });
+
+  it("renders the Unassigned drag-source pool", () => {
+    render(
+      <GanttView projectId={1} projectName="my-project" milestones={[makeDetail()]} />,
+    );
+    expect(
+      document.querySelector("[data-milestone-unassigned-zone]"),
+    ).not.toBeNull();
+    expect(screen.getByText(/unassigned/i)).toBeInTheDocument();
+  });
+
+  it("rail row carries milestone id + status data attributes", () => {
+    render(
+      <GanttView
+        projectId={1}
+        projectName="my-project"
+        milestones={[makeDetail({ id: 3, milestone_status: "released" })]}
+      />,
+    );
+    const row = document.querySelector("[data-gantt-rail-row='3']");
+    expect(row?.getAttribute("data-milestone-id")).toBe("3");
+    expect(row?.getAttribute("data-milestone-status")).toBe("released");
   });
 });

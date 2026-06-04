@@ -81,7 +81,11 @@ export default async function ProjectGanttPage({ params }: Props) {
       </header>
 
       <div className="mx-auto w-full max-w-6xl">
-        <GanttView projectName={project.name} milestones={milestones} />
+        <GanttView
+          projectId={project.id}
+          projectName={project.name}
+          milestones={milestones}
+        />
       </div>
     </main>
   );

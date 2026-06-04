@@ -254,7 +254,9 @@ export function CalendarView({
   }, [milestones]);
 
   const boardHref = `/p/${encodeURIComponent(projectName)}`;
-  const milestonesHref = `/p/${encodeURIComponent(projectName)}/milestones`;
+  // Wave A.2c — the dedicated /milestones page was removed; the Gantt view is
+  // now the milestone home. Milestone deadline chips deep-link there.
+  const milestonesHref = `/p/${encodeURIComponent(projectName)}/gantt`;
   const calendarHref = `/p/${encodeURIComponent(projectName)}/calendar`;
 
   const goToMonth = (target: YearMonth) => {

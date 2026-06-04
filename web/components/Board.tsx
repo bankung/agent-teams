@@ -539,16 +539,9 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
             Dashboard
           </Link>
           <Sep />
-          {/* #1868 — per-project Milestones surface (X-Project-Id scoped).
-              KEPT as a nav link (Wave A retains the milestones page); Calendar +
-              Gantt text links removed — they now live in the ViewSwitcher. */}
-          <Link
-            href={`/p/${encodeURIComponent(project.name)}/milestones`}
-            className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
-          >
-            Milestones
-          </Link>
-          <Sep />
+          {/* Wave A.2c — the dedicated /milestones page was removed; milestone
+              management now lives in the Gantt view (reachable via the
+              ViewSwitcher below). The former "Milestones" nav link is gone. */}
           <span className="text-zinc-600 dark:text-zinc-400">
             team: <span className="text-zinc-900 dark:text-zinc-100">{project.team}</span>
           </span>
