@@ -28,6 +28,7 @@ from src.models.base import Base
 
 if TYPE_CHECKING:
     from src.models.milestone import Milestone
+    from src.models.project_resource import ProjectResource
     from src.models.projects_audit import ProjectsAudit
     from src.models.task import Task
     from src.models.transaction import Transaction
@@ -360,6 +361,17 @@ class Project(Base):
     # tells SQLAlchemy to let the DB handle the cascade).
     milestones: Mapped[list["Milestone"]] = relationship(
         "Milestone",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    # Kanban #1302 — per-project file/URL attachments. Cascade-delete mirrors
+    # `tasks` / `milestones`; the DB-side ON DELETE CASCADE on
+    # project_resources.project_id is the load-bearing invariant
+    # (passive_deletes=True lets the DB handle the cascade).
+    resources: Mapped[list["ProjectResource"]] = relationship(
+        "ProjectResource",
         back_populates="project",
         cascade="all, delete-orphan",
         passive_deletes=True,

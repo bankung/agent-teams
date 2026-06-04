@@ -348,6 +348,26 @@ class MilestoneStatus:
     ALL: tuple[str, ...] = (PLANNED, ACTIVE, RELEASED, CANCELLED)
 
 
+class ResourceKind:
+    """project_resources.kind — 'file'/'link' (#1302).
+
+    The discriminator for a project resource attachment. Stored as TEXT NOT NULL
+    + a CHECK; mirror of migration 0059 (intentionally duplicated — see
+    standards/sqlalchemy/migrations.md).
+
+    Per-kind required fields (enforced by the DB CHECK
+    `ck_project_resources_kind_fields` + the Pydantic model_validator on
+    ResourceCreate):
+      - 'file' → `filename` MUST be present (the stored object's name).
+      - 'link' → `url` MUST be present (the external URL).
+    """
+
+    FILE = "file"
+    LINK = "link"
+
+    ALL: tuple[str, ...] = (FILE, LINK)
+
+
 class SessionStatus:
     """sessions.status — 'active'/'compacting'/'closed' (#716). 'closed' is terminal.
     Mirror of migration 0008.

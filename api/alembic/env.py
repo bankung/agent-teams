@@ -17,12 +17,12 @@ from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from src.models.base import Base
-# Import all model modules so their tables register on Base.metadata
-from src.models import credential as _credential  # noqa: F401
-from src.models import project as _project  # noqa: F401
-from src.models import session as _session  # noqa: F401
-from src.models import task as _task  # noqa: F401
-from src.models import tool_call as _tool_call  # noqa: F401
+# Import all model modules so their tables register on Base.metadata.
+# `src.models` __init__ imports every model module — using it guarantees all
+# mappers (and string-based back_populates targets like ProjectResource) are
+# registered before configure(), avoiding partial-registration drift in
+# autogenerate (compare_type / compare_server_default).
+from src import models as _models  # noqa: F401
 from src.settings import get_settings
 
 config = context.config

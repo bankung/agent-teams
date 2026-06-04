@@ -7,6 +7,11 @@ from src.schemas.project import (
     ProjectRead,
     ProjectUpdate,
 )
+from src.schemas.project_resource import (
+    ResourceCreate,
+    ResourceRead,
+    ResourceUpdate,
+)
 from src.schemas.task import (
     TaskCreate,
     TaskRead,
@@ -30,6 +35,9 @@ __all__ = [
     "ProjectRead",
     "ProjectUpdate",
     "ProposedTask",
+    "ResourceCreate",
+    "ResourceRead",
+    "ResourceUpdate",
     "TaskCreate",
     "TaskRead",
     "TaskUpdate",

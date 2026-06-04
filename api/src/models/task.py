@@ -54,6 +54,7 @@ from src.models.base import Base
 if TYPE_CHECKING:
     from src.models.milestone import Milestone
     from src.models.project import Project
+    from src.models.project_resource import ProjectResource
 
 
 class Task(Base):
@@ -488,6 +489,17 @@ class Task(Base):
     # rollup endpoint aggregates via a GROUP BY query, not this relationship.
     milestone: Mapped["Milestone | None"] = relationship(
         "Milestone", back_populates="tasks"
+    )
+
+    # Kanban #1302: resources pinned to this task (optional). NOT a
+    # cascade-delete relationship — the DB-side ON DELETE SET NULL on
+    # project_resources.task_id DETACHES resources when a task is hard-deleted
+    # (the resource survives, unpinned). passive_deletes=True tells SQLAlchemy
+    # to let the DB handle the SET NULL rather than loading + nulling itself.
+    resources: Mapped[list["ProjectResource"]] = relationship(
+        "ProjectResource",
+        back_populates="task",
+        passive_deletes=True,
     )
 
     # Self-referential adjacency-list (SQLAlchemy "Adjacency List" pattern).
