@@ -17,6 +17,11 @@ from src.schemas.task import (
     TaskRead,
     TaskUpdate,
 )
+from src.schemas.task_template import (
+    TaskTemplateCreate,
+    TaskTemplateRead,
+    TaskTemplateUpdate,
+)
 from src.schemas.transaction import (
     TransactionCreate,
     TransactionRead,
@@ -40,6 +45,9 @@ __all__ = [
     "ResourceUpdate",
     "TaskCreate",
     "TaskRead",
+    "TaskTemplateCreate",
+    "TaskTemplateRead",
+    "TaskTemplateUpdate",
     "TaskUpdate",
     "TransactionCreate",
     "TransactionRead",

@@ -44,6 +44,7 @@ from src.routers import projects as projects_router
 from src.routers import scaffold as scaffold_router
 from src.routers import sessions as sessions_router
 from src.routers import settings as settings_router
+from src.routers import task_templates as task_templates_router
 from src.routers import tasks as tasks_router
 from src.routers import teams as teams_router
 from src.routers import tool_calls as tool_calls_router
@@ -357,6 +358,9 @@ def create_app() -> FastAPI:
     app.include_router(handoff_templates_router.router, prefix="/api")
     # Kanban #1868 — per-project milestones CRUD + rollup (X-Project-Id scoped).
     app.include_router(milestones_router.router, prefix="/api")
+    # Kanban #1303 — per-team task-template CRUD (GLOBAL config, no X-Project-Id;
+    # POST/PATCH/DELETE operator-gated). Powers the forthcoming UI picker (X.6).
+    app.include_router(task_templates_router.router, prefix="/api")
     # Kanban #955.A — Web Push subscription CRUD (browser PushManager endpoints).
     app.include_router(push_router.router, prefix="/api")
     # Kanban #1192 — ntfy push-notification fire endpoint (POST /api/push/fire).
