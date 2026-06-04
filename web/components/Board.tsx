@@ -42,7 +42,7 @@ import { KillProjectModal } from "@/components/KillProjectModal";
 import { NewTaskDropdown } from "@/components/NewTaskDropdown";
 import { PausedBanner } from "@/components/PausedBanner";
 import { PauseProjectModal } from "@/components/PauseProjectModal";
-import { ProjectConsentBanner } from "@/components/ProjectConsentBanner";
+import { ProjectConsentGrantModal } from "@/components/ProjectConsentGrantModal";
 import { PlatformSettingsModal } from "@/components/PlatformSettingsModal";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { SourcesBadge } from "@/components/SourcesBadge";
@@ -542,7 +542,7 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
           {/* Wave A (#2) — Inbox as an icon link (was a text link). Cross-project
               approval inbox; lightweight <Link> (no polling badge — the
               dashboard carries the live count). */}
-          <HeaderIconLink href="/inbox" icon="backlog" label="Inbox" />
+          <HeaderIconLink href="/inbox" icon="mail" label="Inbox" />
           {/* Wave A (#2) — per-project Settings as an icon link (was a text
               link). #1349 nudge-threshold + future knobs. Distinct from the
               platform Integrations plug icon in the right cluster. */}
@@ -606,35 +606,6 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
                 ))}
               </select>
             </label>
-          )}
-          {/* #1781 — audit-filter as a compact icon button (shield/filter +
-              count badge). Still toggles setShowAudit; amber when ON;
-              aria-pressed. Hidden when count=0 (#1238 GOV3 behaviour kept). */}
-          {auditTaskCount > 0 && (
-            <HeaderIconBtn
-              icon="shield-filter"
-              label={
-                showAudit
-                  ? `Hide audit tasks (${auditTaskCount})`
-                  : `Show audit tasks (${auditTaskCount})`
-              }
-              onClick={() => setShowAudit((v) => !v)}
-              active={showAudit}
-              ariaPressed={showAudit}
-              count={auditTaskCount}
-              tone="amber"
-              dataAttr="data-audit-task-toggle"
-            />
-          )}
-          {/* #1781 — scheduled/template noise as a display-only clock icon +
-              count badge. Hidden when count=0 (#1726 behaviour kept). */}
-          {scheduledTaskCount > 0 && (
-            <HeaderIconBtn
-              icon="clock"
-              label={`Scheduled / template tasks (${scheduledTaskCount})`}
-              count={scheduledTaskCount}
-              dataAttr="data-scheduled-task-badge"
-            />
           )}
           <Sep />
           <ConnectionStateBadge
@@ -759,27 +730,81 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
         {/* #1211 / #1238 GOV3 — amber strip above the consent banner when paused.
             (Renders nothing when is_paused=false.) */}
         <PausedBanner project={project} />
-        <ProjectConsentBanner
-          project={project}
-          hasHeadlessTask={hasHeadlessTask}
-        />
       </header>
-      {/* Wave A (#5/#3a) — toolbar row directly under the consent ("Enable
-          headless auto-run") banner and above the kanban columns. Left: the
-          live "NNN tasks" count (moved out of the nav); right: the +New
-          dropdown (moved out of the nav right-cluster). Same NewTaskDropdown
-          instance/behaviour as before. */}
+      {/* Wave A.1 — toolbar row: left cluster (task-count + audit + scheduled
+          chips), centre (inline headless control), right (+New).
+          Audit/scheduled moved here from nav row; headless banner condensed
+          from standalone full-width section. */}
       <div
-        className="mb-3 flex flex-wrap items-center justify-between gap-2"
+        className="mb-3 flex flex-wrap items-center gap-2"
         data-board-toolbar-row
       >
+        {/* Left cluster: task count + task-context filter chips */}
         <span
           className="text-sm tabular-nums text-zinc-500 dark:text-zinc-400"
           data-board-task-count
         >
           {visibleTasks.length} task{visibleTasks.length === 1 ? "" : "s"}
         </span>
-        <NewTaskDropdown project={project} onPushToast={pushToast} />
+        {/* Audit-filter chip — amber toggle; hidden when count=0. */}
+        {auditTaskCount > 0 && (
+          <HeaderIconBtn
+            icon="shield-filter"
+            label={
+              showAudit
+                ? `Hide audit tasks (${auditTaskCount})`
+                : `Show audit tasks (${auditTaskCount})`
+            }
+            onClick={() => setShowAudit((v) => !v)}
+            active={showAudit}
+            ariaPressed={showAudit}
+            count={auditTaskCount}
+            tone="amber"
+            dataAttr="data-audit-task-toggle"
+          />
+        )}
+        {/* Scheduled/template chip — display-only; hidden when count=0. */}
+        {scheduledTaskCount > 0 && (
+          <HeaderIconBtn
+            icon="clock"
+            label={`Scheduled / template tasks (${scheduledTaskCount})`}
+            count={scheduledTaskCount}
+            dataAttr="data-scheduled-task-badge"
+          />
+        )}
+        {/* Inline headless control — replaces the standalone
+            ProjectConsentBanner section. Shows consent date when granted;
+            shows a compact "Headless: off · Enable" chip when not granted
+            (clicking opens the same ProjectConsentGrantModal). The
+            hasHeadlessTask warning is surfaced as an amber inline badge. */}
+        {project.auto_run_consent_at !== null ? (
+          <span
+            className="inline-flex items-center gap-1.5 rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs text-emerald-800 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300"
+            data-headless-status="granted"
+          >
+            Headless: on · {project.auto_run_consent_at.slice(0, 10)}
+            {hasHeadlessTask && (
+              <span className="font-semibold text-amber-700 dark:text-amber-300">⚠ active</span>
+            )}
+          </span>
+        ) : (
+          <span
+            className="inline-flex items-center gap-0 rounded border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"
+            data-headless-status="off"
+          >
+            Headless: off
+            {hasHeadlessTask && (
+              <span className="ml-1.5 text-amber-700 dark:text-amber-300">⚠</span>
+            )}
+            <ProjectConsentGrantModal
+              project={{ id: project.id, name: project.name }}
+            />
+          </span>
+        )}
+        {/* +New — pushed to the right end of the toolbar row. */}
+        <span className="ml-auto">
+          <NewTaskDropdown project={project} onPushToast={pushToast} />
+        </span>
       </div>
       {view === "list" ? (
         <ListView

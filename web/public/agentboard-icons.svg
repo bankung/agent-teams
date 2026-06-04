@@ -262,6 +262,12 @@
     <polyline points="6 9 12 15 18 9"/>
   </symbol>
 
+  <!-- mail: envelope / inbox link -->
+  <symbol id="icon-mail" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2" y="4" width="20" height="16" rx="2"/>
+    <polyline points="2,4 12,13 22,4"/>
+  </symbol>
+
 
   <!-- ═══════════════════════════════════════
        V2 — APP ICONS (native sizes)
