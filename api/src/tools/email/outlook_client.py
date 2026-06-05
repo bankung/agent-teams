@@ -411,3 +411,121 @@ def trash_messages(creds: dict[str, Any], message_ids: list[str]) -> tuple[list[
                 }
             )
     return trashed, errors
+
+
+def mark_read(creds: dict[str, Any], message_ids: list[str], read: bool) -> tuple[list[str], list[dict]]:
+    """Set isRead on each message. Returns (modified_ids, errors).
+
+    read=True  -> isRead=true  (mark read).
+    read=False -> isRead=false (mark unread).
+
+    Graph has no label model; read/unread is the `isRead` boolean property —
+    equivalent of Gmail's UNREAD label add/remove via modify_labels.
+
+    Per-message failures do NOT abort the loop (mirrors `trash_messages`).
+    Errors entry shape: {message_id, error_class, status}.
+    """
+    access_token = _acquire_silent(creds)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    modified: list[str] = []
+    errors: list[dict] = []
+    for mid in message_ids:
+        url = f"{_GRAPH_BASE}/me/messages/{mid}"
+        body = {"isRead": read}
+        try:
+            resp = _graph_request_with_retry("PATCH", url, headers=headers, json_body=body)
+            if 200 <= resp.status_code < 300:
+                modified.append(mid)
+            else:
+                errors.append(
+                    {
+                        "message_id": mid,
+                        "error_class": "HTTPError",
+                        "status": resp.status_code,
+                    }
+                )
+        except Exception as exc:
+            errors.append(
+                {
+                    "message_id": mid,
+                    "error_class": type(exc).__name__,
+                    "status": None,
+                }
+            )
+    return modified, errors
+
+
+def archive(creds: dict[str, Any], message_ids: list[str]) -> tuple[list[str], list[dict]]:
+    """Move each message to the Archive folder. Returns (modified_ids, errors).
+
+    Uses the Graph well-known folder name "archive" as the destinationId.
+    Equivalent of Gmail removing the INBOX label (archiving without deleting).
+
+    Per-message failures do NOT abort the loop (mirrors `trash_messages`).
+    Errors entry shape: {message_id, error_class, status}.
+    """
+    access_token = _acquire_silent(creds)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    modified: list[str] = []
+    errors: list[dict] = []
+    for mid in message_ids:
+        url = f"{_GRAPH_BASE}/me/messages/{mid}/move"
+        body = {"destinationId": "archive"}
+        try:
+            resp = _graph_request_with_retry("POST", url, headers=headers, json_body=body)
+            if 200 <= resp.status_code < 300:
+                modified.append(mid)
+            else:
+                errors.append(
+                    {
+                        "message_id": mid,
+                        "error_class": "HTTPError",
+                        "status": resp.status_code,
+                    }
+                )
+        except Exception as exc:
+            errors.append(
+                {
+                    "message_id": mid,
+                    "error_class": type(exc).__name__,
+                    "status": None,
+                }
+            )
+    return modified, errors
+
+
+def save_draft(creds: dict[str, Any], *, to: str, subject: str, body: str) -> dict:
+    """Create a draft message (no send) via Graph POST /me/messages.
+
+    Returns {"draft_id": <id>, "message_id": <id>}. The Graph message id
+    serves as both draft_id and message_id (unlike Gmail which has a separate
+    Draft envelope id). Equivalent of Gmail's save_draft.
+
+    The created message is in the Drafts folder and will NOT be sent until
+    the operator explicitly moves it through the send flow (a higher-tier action).
+    """
+    access_token = _acquire_silent(creds)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    payload = {
+        "subject": subject,
+        "body": {"contentType": "Text", "content": body},
+        "toRecipients": [{"emailAddress": {"address": to}}],
+    }
+    url = f"{_GRAPH_BASE}/me/messages"
+    resp = _graph_request_with_retry("POST", url, headers=headers, json_body=payload)
+    resp.raise_for_status()
+    data = resp.json()
+    msg_id = data.get("id")
+    return {"draft_id": msg_id, "message_id": msg_id}

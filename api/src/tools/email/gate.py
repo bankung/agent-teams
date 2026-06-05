@@ -18,8 +18,11 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Daily cap counter — module-level dict keyed by (project_id, date_str).
 # Persists for the lifetime of the api container process only.
@@ -79,7 +82,6 @@ def log_audit(
 
     Schema: {ts, project_id, provider, action, units, success, error_code?}
     """
-    _AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
     row = {
         "ts": datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat() + "Z",
         "project_id": project_id,
@@ -90,8 +92,14 @@ def log_audit(
     }
     if error_code:
         row["error_code"] = error_code
-    with _AUDIT_PATH.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(row, separators=(",", ":")) + "\n")
+    try:
+        _AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _AUDIT_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, separators=(",", ":")) + "\n")
+    except OSError as exc:
+        # Audit is observability, not correctness — a disk hiccup must never
+        # raise out of log_audit and turn a successful email action into a 500.
+        logger.warning("gate.log_audit: write failed (best-effort guard): %s", exc)
 
 
 def check_bulk_threshold(count: int, force: bool = False) -> tuple[bool, dict]:

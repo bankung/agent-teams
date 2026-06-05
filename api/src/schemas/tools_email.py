@@ -310,3 +310,112 @@ class OutlookTrashResponse(BaseModel):
     trashed_count: int
     trashed_ids: list[str]
     errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Outlook — Tier-1 modify actions (Kanban #1917: mark read/unread, archive, draft)
+# ---------------------------------------------------------------------------
+#
+# Mirrors the Gmail Tier-1 schema block above. Gate composition is identical:
+# Layer-0 role grant + modify tier (OPEN) + daily-cap. Provider = "outlook".
+
+
+def _validate_outlook_message_ids(message_ids: list[str]) -> list[str]:
+    """Bound + allowlist check for an explicit Outlook/Graph message-id list.
+
+    Mirrors `_validate_message_ids` for Gmail but uses the Outlook 512-char
+    bound (Graph ids are longer than Gmail hex ids, ~150 chars empirically).
+    Raises ValueError on any violation (Pydantic surfaces it as a 422).
+
+    NOTE: _MID_ALLOWED already excludes / ? # \\ . whitespace AND CRLF — so
+    path-traversal, URL-segment injection, and header injection are blocked
+    here. Do NOT widen the regex without a security review.
+    """
+    if not isinstance(message_ids, list) or len(message_ids) == 0:
+        raise ValueError("message_ids must be a non-empty list.")
+    if len(message_ids) > 1000:
+        raise ValueError("message_ids list cannot exceed 1000 entries per call.")
+    for mid in message_ids:
+        if not isinstance(mid, str) or not (1 <= len(mid) <= 512):
+            raise ValueError("each message_id must be a non-empty string <=512 chars.")
+        if not _MID_ALLOWED.fullmatch(mid):
+            raise ValueError(
+                "message_ids contain disallowed characters; allowed: A-Z a-z 0-9 _ - = +"
+            )
+    return message_ids
+
+
+class OutlookMarkRequest(BaseModel):
+    """Mark Outlook messages read/unread (`modify` tier).
+
+    `read=True`  -> isRead=true  (mark read).
+    `read=False` -> isRead=false (mark unread).
+
+    Graph has no label model; isRead is the boolean property equivalent of
+    Gmail's UNREAD label add/remove.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_ids: list[str] = Field(
+        ..., description="Explicit Outlook/Graph message id list to mark."
+    )
+    read: bool = Field(
+        ..., description="True = mark read (isRead=true); False = mark unread (isRead=false)."
+    )
+
+    @model_validator(mode="after")
+    def _check_ids(self) -> "OutlookMarkRequest":
+        _validate_outlook_message_ids(self.message_ids)
+        return self
+
+
+class OutlookArchiveRequest(BaseModel):
+    """Archive Outlook messages — move to well-known folder 'archive' (`modify` tier)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_ids: list[str] = Field(
+        ..., description="Explicit Outlook/Graph message id list to archive."
+    )
+
+    @model_validator(mode="after")
+    def _check_ids(self) -> "OutlookArchiveRequest":
+        _validate_outlook_message_ids(self.message_ids)
+        return self
+
+
+class OutlookModifyResponse(BaseModel):
+    """Result of a mark/archive (modify) call. Reports modified ids + per-id errors."""
+
+    modified_count: int
+    modified_ids: list[str]
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class OutlookDraftRequest(BaseModel):
+    """Create an Outlook DRAFT (no send) — `modify` tier.
+
+    Mirrors `GmailDraftRequest`. A draft lives in the Drafts folder until the
+    operator explicitly sends it (a higher-tier action carrying operator-proof).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    to: str = Field(
+        ..., min_length=1, max_length=998,
+        description="Recipient address line. Operator-supplied; not validated as a strict addr-spec.",
+    )
+    subject: str = Field(
+        default="", max_length=998, description="Draft subject line."
+    )
+    body: str = Field(
+        default="", max_length=100_000, description="Draft plain-text body."
+    )
+
+
+class OutlookDraftResponse(BaseModel):
+    """Result of a save-draft call. Reports the created Graph message id."""
+
+    draft_id: str
+    message_id: str | None = None

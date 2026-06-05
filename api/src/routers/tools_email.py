@@ -49,8 +49,13 @@ from src.schemas.tools_email import (
     GmailModifyResponse,
     GmailTrashRequest,
     GmailTrashResponse,
+    OutlookArchiveRequest,
     OutlookAuthStartResponse,
     OutlookCallbackResponse,
+    OutlookDraftRequest,
+    OutlookDraftResponse,
+    OutlookMarkRequest,
+    OutlookModifyResponse,
     OutlookTrashRequest,
     OutlookTrashResponse,
     UsageResponse,
@@ -237,10 +242,10 @@ def _write_action_audit(
         _EMAIL_ACTIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
         with _EMAIL_ACTIONS_PATH.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, separators=(",", ":")) + "\n")
-    except OSError:
+    except OSError as exc:
         # Audit is observability, not correctness — never let a disk hiccup
         # turn a successful action into a 500.
-        pass
+        logger.warning("_write_action_audit: write failed (best-effort): %s", exc)
 
 # Source-text-locked: pinned by the #1859 smoke tests (verbatim detail assert).
 # The `tier` is interpolated so the agent's log shows exactly which tier was
@@ -1082,9 +1087,235 @@ async def outlook_trash(
         success=len(trashed) > 0,
         error_code=None if not errors else "partial_failure",
     )
+    _write_action_audit(
+        agent_role=agent_role,
+        action="trash",
+        tier=EmailTier.DELETE,
+        message_ids=trashed,
+        approval_mode="operator_proof",
+        result="success" if len(trashed) > 0 else ("partial" if errors else "noop"),
+    )
 
     return OutlookTrashResponse(
         trashed_count=len(trashed),
         trashed_ids=trashed,
         errors=errors,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Outlook — Tier-1 modify actions (Kanban #1917: mark read/unread, archive, draft)
+# ---------------------------------------------------------------------------
+# Gate chain (byte-for-byte same ORDER as Gmail Tier-1):
+#   Layer-0 _enforce_tool_grant_or_403 → tier gate _enforce_operator_tier_or_403(MODIFY)
+#   → (_bulk_check_or_400 for mark/archive) → _require_outlook_creds
+#   → _outlook_cap_check_or_429 → execute → gate.log_audit("outlook"…)
+#   → _write_action_audit(…)
+# Both MODIFY_UNITS_PER_MESSAGE and _DRAFT_UNITS_PER_CALL are shared with Gmail
+# (provider-agnostic constants defined above the Gmail routes).
+
+
+@router.post("/outlook/mark", response_model=OutlookModifyResponse)
+async def outlook_mark(
+    body: OutlookMarkRequest,
+    force: bool = Query(default=False, description="Bypass the bulk-threshold gate."),
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> OutlookModifyResponse:
+    """Mark Outlook messages read/unread via isRead PATCH (`modify` tier — OPEN).
+
+    Layer 0 (#1799): `outlook.mark` must be granted to the X-Agent-Role.
+    Tier gate (#1859): `modify` is OPEN — no operator-proof required.
+
+    read=True  -> isRead=true (mark read); read=False -> isRead=false (mark unread).
+    """
+    # Layer 0 (#1799) — tool-governance gate.
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "outlook.mark"
+    )
+    # Tier gate (#1859) — `modify` is OPEN; no-op, kept in Layer-0 -> tier order.
+    _enforce_operator_tier_or_403(EmailTier.MODIFY, operator_proof)
+
+    ids = list(body.message_ids)
+    # Layer 3 — bulk-threshold gate.
+    _bulk_check_or_400(len(ids), force)
+    creds = await _require_outlook_creds(session_project_id, session)
+
+    total_units = _MODIFY_UNITS_PER_MESSAGE * len(ids)
+    _outlook_cap_check_or_429(session_project_id, total_units, "mark")
+
+    try:
+        modified, errors = await run_in_threadpool(
+            outlook_client.mark_read, creds, ids, body.read
+        )
+    except Exception as exc:
+        gate.log_audit(
+            "outlook", session_project_id, "mark", total_units,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("outlook mark batch failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "outlook_mark_failed", "class": type(exc).__name__},
+        ) from exc
+
+    gate.log_audit(
+        "outlook", session_project_id, "mark", total_units,
+        success=len(modified) > 0,
+        error_code=None if not errors else "partial_failure",
+    )
+    _write_action_audit(
+        agent_role=agent_role,
+        action="mark_read" if body.read else "mark_unread",
+        tier=EmailTier.MODIFY,
+        message_ids=modified,
+        approval_mode="auto",
+        result="success" if len(modified) > 0 else ("partial" if errors else "noop"),
+    )
+    return OutlookModifyResponse(
+        modified_count=len(modified), modified_ids=modified, errors=errors
+    )
+
+
+@router.post("/outlook/archive", response_model=OutlookModifyResponse)
+async def outlook_archive(
+    body: OutlookArchiveRequest,
+    force: bool = Query(default=False, description="Bypass the bulk-threshold gate."),
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> OutlookModifyResponse:
+    """Archive Outlook messages — move to well-known 'archive' folder (`modify` tier — OPEN).
+
+    Gate ordering identical to /outlook/mark: Layer-0 (`outlook.archive`) THEN
+    the tier gate (no-op for `modify`), then bulk-threshold gate (Layer 3).
+    """
+    # Layer 0 (#1799) — tool-governance gate.
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "outlook.archive"
+    )
+    # Tier gate (#1859) — `modify` is OPEN; no-op, kept in Layer-0 -> tier order.
+    _enforce_operator_tier_or_403(EmailTier.MODIFY, operator_proof)
+
+    ids = list(body.message_ids)
+    # Layer 3 — bulk-threshold gate.
+    _bulk_check_or_400(len(ids), force)
+    creds = await _require_outlook_creds(session_project_id, session)
+
+    total_units = _MODIFY_UNITS_PER_MESSAGE * len(ids)
+    _outlook_cap_check_or_429(session_project_id, total_units, "archive")
+
+    try:
+        modified, errors = await run_in_threadpool(
+            outlook_client.archive, creds, ids
+        )
+    except Exception as exc:
+        gate.log_audit(
+            "outlook", session_project_id, "archive", total_units,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("outlook archive batch failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "outlook_archive_failed", "class": type(exc).__name__},
+        ) from exc
+
+    gate.log_audit(
+        "outlook", session_project_id, "archive", total_units,
+        success=len(modified) > 0,
+        error_code=None if not errors else "partial_failure",
+    )
+    _write_action_audit(
+        agent_role=agent_role,
+        action="archive",
+        tier=EmailTier.MODIFY,
+        message_ids=modified,
+        approval_mode="auto",
+        result="success" if len(modified) > 0 else ("partial" if errors else "noop"),
+    )
+    return OutlookModifyResponse(
+        modified_count=len(modified), modified_ids=modified, errors=errors
+    )
+
+
+@router.post("/outlook/draft", response_model=OutlookDraftResponse)
+async def outlook_draft(
+    body: OutlookDraftRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> OutlookDraftResponse:
+    """Create an Outlook DRAFT — no send (`modify` tier — OPEN).
+
+    A draft is recoverable: it sits in Drafts until the operator explicitly
+    sends it (a higher-tier action that DOES carry operator-proof). Gate ordering
+    identical to /outlook/mark: Layer-0 (`outlook.draft`) THEN the tier gate (no-op).
+    """
+    # Layer 0 (#1799) — tool-governance gate.
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "outlook.draft"
+    )
+    # Tier gate (#1859) — `modify` is OPEN; no-op, kept in Layer-0 -> tier order.
+    _enforce_operator_tier_or_403(EmailTier.MODIFY, operator_proof)
+
+    creds = await _require_outlook_creds(session_project_id, session)
+
+    _outlook_cap_check_or_429(session_project_id, _DRAFT_UNITS_PER_CALL, "draft")
+
+    try:
+        created = await run_in_threadpool(
+            outlook_client.save_draft,
+            creds,
+            to=body.to,
+            subject=body.subject,
+            body=body.body,
+        )
+    except Exception as exc:
+        gate.log_audit(
+            "outlook", session_project_id, "draft", _DRAFT_UNITS_PER_CALL,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("outlook draft create failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "outlook_draft_failed", "class": type(exc).__name__},
+        ) from exc
+
+    draft_id = created.get("draft_id")
+    if draft_id is None:
+        # Upstream returned an empty/missing id — treat as upstream failure.
+        gate.log_audit(
+            "outlook", session_project_id, "draft", _DRAFT_UNITS_PER_CALL,
+            success=False, error_code="empty_draft_response",
+        )
+        _write_action_audit(
+            agent_role=agent_role,
+            action="draft",
+            tier=EmailTier.MODIFY,
+            message_ids=[],
+            approval_mode="auto",
+            result="error",
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "empty_draft_response", "hint": "Outlook Graph returned no message id"},
+        )
+    gate.log_audit(
+        "outlook", session_project_id, "draft", _DRAFT_UNITS_PER_CALL,
+        success=True,
+    )
+    _write_action_audit(
+        agent_role=agent_role,
+        action="draft",
+        tier=EmailTier.MODIFY,
+        message_ids=[draft_id],
+        approval_mode="auto",
+        result="success",
+    )
+    return OutlookDraftResponse(
+        draft_id=draft_id, message_id=created.get("message_id")
     )
