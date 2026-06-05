@@ -118,6 +118,69 @@ Lead: (spawns agents from another-project's team, uses another-project's standar
 
 ---
 
+## 6. Secretary email actions
+
+**Status: Tier-1 + 2 shipped (Kanban #1585).** Tier-3 (reply/forward/send) is a future follow-up (needs Gmail OAuth go-live).
+
+**What it is:** Only `secretary*` agents can perform mailbox actions (Gmail + Outlook) — mark read/unread, archive, trash, draft — via the gated `/api/tools/email/*` path. No other agent (dev-*, novel-*, content-*, sem-*) has email-write capability. The access pattern combines three enforcement layers:
+
+1. **Layer-0 role grant** — the agent's role must be listed in the project's `config.tool_grants` to access a given email tool (e.g., `gmail.trash`).
+2. **Tier gate** — different actions have different approval modes (see "Tier model" below).
+3. **Chrome-MCP hook** — a `PreToolUse` backstop (`secretary-email-action-gate.ps1`) prevents non-secretary agents from using Chrome-MCP mailbox actions.
+
+**Tier model:** Actions fall into two approval modes:
+
+| Tier | Actions | Approval mode | Status |
+|---|---|---|---|
+| **Tier-1 (open)** | `mark_read`, `mark_unread`, `archive`, `draft` | Auto-approve | Shipped |
+| **Tier-2 (operator-proof)** | `trash` (move to Trash / Deleted Items) | Operator-proof required | Shipped |
+| **Tier-3 (future)** | `reply`, `send_internal`, `external_send` | Operator-proof + out-of-band confirm | In dev (Gmail OAuth pending) |
+
+Tier-1 fires with no prompt; the agent calls the endpoint and succeeds immediately. Tier-2 requires operator-proof: the agent must present the `X-Operator-Token` header matching the server's `OPERATOR_ACTION_KEY` (set in the api `.env`). If the key is unset, the gate is dormant (fail-open) — existing workflows are unaffected until you activate enforcement by setting the key.
+
+**Permanent delete is ALWAYS denied** (neither auto nor operator-proof unlocks it).
+
+**Authorization status check:** Query `GET /api/tools/email/auth/<provider>/status` (where `<provider>` is `gmail` or `outlook`) to see if the OAuth credentials are live for the current project.
+
+**Audit log (AC8):** Every Tier-1/2 action appends one JSONL row to `_runtime/email-actions.jsonl`:
+```
+{ts, agent_role, action, tier, message_ids, approval_mode, result}
+```
+
+Rotation (weekly → archive → gzip after 90 days, prune after 1 year) is dogfooded as a `bin/email-audit-rotate.ps1` script, typically triggered by a weekly Kanban recurring task.
+
+**Current quota:** All email tools are scoped per project and consume daily Gmail API units. See `GET /api/tools/email/gmail/usage` for the current snapshot (trash = 20 units per message, mark/archive = 5 per message, draft = 10 per call; list = 5 per call).
+
+**Example (secretary marks <your-account> messages as read):**
+```
+agent_role: secretary-mail-analyst
+X-Project-Id: 1
+POST /api/tools/email/gmail/mark
+{
+  "message_ids": ["msg-id-1", "msg-id-2"],
+  "read": true
+}
+→ 200 OK, 2 marked
+→ audit row written (approval_mode="auto")
+```
+
+**Example (secretary trashes with Tier-2 operator-proof):**
+```
+agent_role: secretary-mail-analyst
+X-Project-Id: 1
+X-Operator-Token: <key from OPERATOR_ACTION_KEY>
+POST /api/tools/email/gmail/trash
+{
+  "message_ids": ["msg-id-3"]
+}
+→ 200 OK, 1 trashed
+→ audit row written (approval_mode="operator_proof")
+```
+
+See `_runtime/secretary-email-policy.json` for the complete tier → action mapping.
+
+---
+
 ## Reading more
 
 - **Kanban task structure:** see [README.md](README.md#what-happens-next) — tasks are the unit of work; acceptance criteria unlock structured handoff
