@@ -102,6 +102,34 @@ The installer is safe to re-run; services keep running after you close the termi
 
 ---
 
+## Slash-command skills (tn-*)
+
+These are reusable Claude Code commands that encode Kanban API conventions, preventing common mistakes (missing project_id, incomplete acceptance criteria, status-change guard violations). They activate after a Claude Code restart and are auto-detected on live-reload.
+
+| Command | What it does |
+|---------|-------------|
+| **Tasks** | |
+| `/tn-task-create <description>` | Create a Kanban task correctly (project_id in request body, acceptance_criteria at creation). |
+| `/tn-task <id>` | Show one task with its acceptance criteria (read-only). |
+| `/tn-tasks-next [N]` | List the next N actionable tasks (current milestone first, blockers first, then priority; N defaults 10). |
+| `/tn-task-done <id>` | Verify every acceptance criterion, then flip the task to DONE (refuses if any criterion is unmet). |
+| `/tn-task-update <id> <changes>` | Guarded status/priority update (BLOCKED only via blocked_by; status changes carry a reason; DONE is redirected to /tn-task-done). |
+| `/tn-task-attach <task> <milestone>` | Attach a task to a milestone (same-project checked). |
+| **Milestones** | |
+| `/tn-milestone-create <title>` | Create a milestone (defaults to "planned"). |
+| `/tn-milestone-done <id>` | Release a milestone after checking its child tasks are complete. |
+| `/tn-milestones` | List milestones with their task rollup (done/total, progress %). |
+| **Workflow** | |
+| `/tn-intense-review <scope>` | 2-round adversarial review + test-hardening pass (reviewers + determinism loop). |
+| `/tn-spec <idea>` | 2 rounds of spec pushback + revision before creating a task. |
+| **Project** | |
+| `/tn-bind <project>` | Bind the session to a project by name (resolves + persists the active project). |
+| `/tn-audit [project]` | On-demand project health audit (3 metrics + continue/review/pause). |
+
+Each skill lives at `.claude/skills/<name>/SKILL.md` and is invoked as `/<name>` in Claude Code.
+
+---
+
 ## Learn more
 
 Companion docs go deep so this README stays scannable:
