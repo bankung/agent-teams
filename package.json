@@ -1,0 +1,28 @@
+{
+  "name": "@bankung/agent-teams",
+  "version": "0.1.0",
+  "description": "CLI launcher for the agent-teams AI Kanban platform (Model B — clone + local Docker build).",
+  "license": "MIT",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "agent-teams": "cli/index.js"
+  },
+  "files": [
+    "cli/",
+    "README.md"
+  ],
+  "keywords": [
+    "agent-teams",
+    "kanban",
+    "claude",
+    "ai",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bankung/agent-teams.git"
+  }
+}
