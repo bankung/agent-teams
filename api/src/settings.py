@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     # Operator generates a fresh keypair ONCE via api/scripts/generate_vapid_keys.py
     # and pastes the output into .env. The private key MUST NOT be committed.
     # Subject is `mailto:...` or `https://...` per RFC 8292 (default in
-    # .env.example is `mailto:bankung99@gmail.com`).
+    # .env.example is `mailto:admin@example.com` — operator must override in .env).
     #
     # Defaults are empty so an unconfigured deployment surfaces the
     # `missing_env_VAPID_*` adapter detail (router falls through cleanly) — same

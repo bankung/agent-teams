@@ -56,16 +56,24 @@ Options:
   --help, -h       Print this message.
   --version, -v    Print version.
   --yes            Skip interactive confirmation for reset.
+  --images, --pull (up only) Pull pre-built images from GHCR instead of
+                    building from source. Requires no git clone — the CLI ships
+                    docker-compose.images.yml and .env.example. Images must be
+                    published to GHCR by the release CI first. Set
+                    AGENT_TEAMS_VERSION in .env to pin a specific release tag
+                    (default: latest).
 
 Prerequisites:
   Docker Desktop (or Docker Engine) must be installed and running.
-  git must be installed and on PATH (required for standalone/clone mode).
+  git must be installed and on PATH (required for standalone/clone mode only;
+  NOT required when using --images).
   Neither Docker nor git is installed by this CLI.
   Docker: https://docs.docker.com/get-docker/
   git:    https://git-scm.com/downloads
 
 Examples:
-  npx @bankung/agent-teams up
+  npx @bankung/agent-teams up                    # clone + build from source
+  npx @bankung/agent-teams up --images           # pull pre-built GHCR images
   npx @bankung/agent-teams status
   npx @bankung/agent-teams down
   npx @bankung/agent-teams reset --yes
@@ -74,6 +82,7 @@ Examples:
 Bin alias: the package exposes the \`agent-teams\` bin alias.
 After a global install (\`npm install -g @bankung/agent-teams\`) you can run:
   agent-teams up
+  agent-teams up --images
 `.trim();
 
 // ---------------------------------------------------------------------------
@@ -101,6 +110,36 @@ Next steps:
 Need help? See README.md or run:  npx @bankung/agent-teams --help
 =========================================================================
 `);
+}
+
+// ---------------------------------------------------------------------------
+// Images-compose resolution (--images / --pull mode)
+//
+// docker-compose.images.yml is shipped inside the npm package (alongside
+// .env.example) so `npx @bankung/agent-teams up --images` works from an
+// EMPTY directory — no git clone needed.
+//
+// Search order:
+//   1. PKG_PARENT/docker-compose.images.yml  (in-repo or package-root mode)
+//   2. process.cwd()/docker-compose.images.yml (user ran from repo dir)
+//
+// Returns the absolute path to the compose file, or throws if not found.
+// ---------------------------------------------------------------------------
+function resolveImagesCompose() {
+  const candidates = [
+    path.join(PKG_PARENT, 'docker-compose.images.yml'),
+    path.join(process.cwd(), 'docker-compose.images.yml'),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  throw new Error(
+    'docker-compose.images.yml not found.\n' +
+    '  Searched:\n' +
+    candidates.map((c) => `    ${c}`).join('\n') + '\n' +
+    '  The file ships with the npm package — try reinstalling:\n' +
+    '    npm install -g @bankung/agent-teams'
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -245,7 +284,10 @@ async function runTierStep(repoRoot) {
 // Subcommand: up
 // ---------------------------------------------------------------------------
 async function cmdUp(argv) {
-  // Optional positional argument: targetDir for standalone clone
+  // Flags
+  const useImages = argv.includes('--images') || argv.includes('--pull');
+
+  // Optional positional argument: targetDir for standalone clone (ignored in --images mode)
   const positional = argv.filter((a) => !a.startsWith('-'));
   const targetDir  = positional[0] || null;
 
@@ -253,6 +295,12 @@ async function cmdUp(argv) {
   const docker = checkDocker();
   if (!docker.ok) die(docker.message, 1);
   log('Docker daemon OK.');
+
+  if (useImages) {
+    // --images / --pull mode: pull pre-built GHCR images — no clone needed.
+    await cmdUpImages(argv);
+    return;
+  }
 
   // 2. Resolve repo root (IN-REPO or STANDALONE/clone)
   const repoRoot = await resolveRepoRoot(targetDir);
@@ -303,19 +351,155 @@ async function cmdUp(argv) {
 }
 
 // ---------------------------------------------------------------------------
+// Subcommand: up --images (pull mode)
+//
+// Pulls pre-built images from GHCR and starts the stack using
+// docker-compose.images.yml. No git clone required. The compose file and
+// .env.example are shipped inside the npm package.
+// ---------------------------------------------------------------------------
+async function cmdUpImages(_argv) {
+  // Resolve the bundled images-compose file (shipped with the npm package).
+  let imagesCompose;
+  try {
+    imagesCompose = resolveImagesCompose();
+  } catch (err) {
+    die(err.message, 1);
+  }
+  log(`Using images compose: ${imagesCompose}`);
+
+  // The env file lives next to the compose file (package root) in standalone
+  // mode, or at the repo root in in-repo mode. Both are the same directory.
+  const envRoot = path.dirname(imagesCompose);
+
+  // Scaffold .env from .env.example (ships with the package).
+  ensureEnv(envRoot);
+
+  // SEC-4: Non-fatal production-readiness WARN after .env scaffold.
+  // Reads the .env (if present) to detect weak / dev defaults before exposing
+  // the images stack. Never halts — operator must decide.
+  (function warnIfInsecure() {
+    const envFile = path.join(envRoot, '.env');
+    if (!fs.existsSync(envFile)) return;
+    try {
+      const raw = fs.readFileSync(envFile, 'utf8');
+      const get = (key) => {
+        const m = raw.match(new RegExp(`^${key}=(.*)$`, 'm'));
+        return m ? m[1].trim() : '';
+      };
+      const secretKey = get('SECRET_KEY');
+      const appEnv    = get('APP_ENV');
+      const appDebug  = get('APP_DEBUG');
+      const warns = [];
+      if (!secretKey || secretKey.includes('dev-secret') || secretKey.length < 32) {
+        warns.push('  - SECRET_KEY is empty or weak. Generate a strong random value before going live.');
+      }
+      if (appEnv === 'development') {
+        warns.push('  - APP_ENV=development is set. Change to "production" for public deployments.');
+      }
+      if (appDebug === 'true') {
+        warns.push('  - APP_DEBUG=true is set. Disable before exposing the stack to the internet.');
+      }
+      if (warns.length) {
+        process.stderr.write(
+          '\nWARN: Production-readiness issues detected in .env:\n' +
+          warns.join('\n') + '\n' +
+          'Set secure values in .env before exposing this stack publicly.\n\n'
+        );
+      }
+    } catch (_) { /* best-effort; never fatal */ }
+  })();
+
+  // Pull images first.
+  log('Pulling images from GHCR (docker compose pull)...');
+  const pullExit = await compose(['pull'], {}, { cwd: envRoot }, imagesCompose);
+  if (pullExit !== 0) die('docker compose pull failed. Check the output above.', 2);
+
+  // Start stack (no --build — images already pulled).
+  log('Starting services (docker compose up -d)...');
+  const upExit = await compose(['up', '-d'], {}, { cwd: envRoot }, imagesCompose);
+  if (upExit !== 0) die('docker compose up failed. Inspect the output above.', 2);
+
+  // Schema migration.
+  log('Running schema migration...');
+  log('  (MIGRATION_TARGET=live bypasses the live-DB guard — safe on fresh or idempotent re-run)');
+  const migrateExit = await compose(
+    ['exec', '-T', '-e', 'MIGRATION_TARGET=live', 'api', 'alembic', 'upgrade', 'head'],
+    {},
+    { cwd: envRoot },
+    imagesCompose
+  );
+  if (migrateExit !== 0) die('Schema migration failed. Check logs: docker compose -f docker-compose.images.yml logs api', 5);
+
+  // Wait for API healthy.
+  const apiPort  = readEnvPort(envRoot, 'API_PORT', '8456');
+  const healthUrl = `http://localhost:${apiPort}/api/projects`;
+  log(`Waiting for API at ${healthUrl} (cap 60s)...`);
+  const healthy = await waitForHealthy(healthUrl, { timeoutMs: 60000, intervalMs: 5000 });
+  if (!healthy) die('API did not become healthy within 60s. Check logs: docker compose -f docker-compose.images.yml logs api', 3);
+  log('API healthy.');
+
+  // Seed (idempotent).
+  log('Running seed...');
+  log('  (SEED_TARGET=production bypasses the L11 guard — safe on fresh or idempotent re-run)');
+  const seedExit = await compose(
+    ['exec', '-T', '-e', 'SEED_TARGET=production', 'api', 'python', '-m', 'scripts.seed'],
+    {},
+    { cwd: envRoot },
+    imagesCompose
+  );
+  if (seedExit !== 0) die('Seed failed. Check logs: docker compose -f docker-compose.images.yml logs api', 4);
+
+  // Tier preset — only fires when bin/ is present (not shipped in npm package).
+  if (fs.existsSync(path.join(envRoot, 'bin'))) {
+    await runTierStep(envRoot);
+  } else {
+    log('Tier setup scripts (bin/) not present in this install — skipping tier step.');
+    log('  To configure Claude Code tiers, clone the repo: https://github.com/bankung/agent-teams');
+  }
+
+  // Banner + open browser.
+  banner();
+  const webPort  = readEnvPort(envRoot, 'WEB_PORT', '5431');
+  openUrl(`http://localhost:${webPort}/p/agent-teams`);
+}
+
+// ---------------------------------------------------------------------------
 // Subcommand: down
 // ---------------------------------------------------------------------------
 async function cmdDown() {
   const docker = checkDocker();
   if (!docker.ok) die(docker.message, 1);
 
-  // Resolve repo root so compose cwd is correct in standalone mode too.
-  // For down we don't need to clone — if no compose file exists, nothing to stop.
-  const composeFile = path.join(PKG_PARENT, 'docker-compose.yml');
-  const repoRoot = fs.existsSync(composeFile) ? PKG_PARENT : process.cwd();
+  // Resolution order:
+  //   1. docker-compose.yml at PKG_PARENT  → in-repo mode (normal dev build)
+  //   2. docker-compose.images.yml          → standalone --images mode
+  //   3. docker-compose.yml at cwd          → fallback
+  //   4. neither found                       → graceful exit
+  const devCompose    = path.join(PKG_PARENT, 'docker-compose.yml');
+  let imagesComposePath = null;
+  try { imagesComposePath = resolveImagesCompose(); } catch (_) { /* not found */ }
+
+  let repoRoot     = null;
+  let composeArg   = null; // null = use default docker-compose.yml discovery
+
+  if (fs.existsSync(devCompose)) {
+    repoRoot = PKG_PARENT;
+    // composeArg stays null — docker compose will pick docker-compose.yml
+  } else if (imagesComposePath) {
+    repoRoot   = path.dirname(imagesComposePath);
+    composeArg = imagesComposePath;
+  } else {
+    const cwdCompose = path.join(process.cwd(), 'docker-compose.yml');
+    if (fs.existsSync(cwdCompose)) {
+      repoRoot = process.cwd();
+    } else {
+      log('Nothing to stop — no compose file found.');
+      process.exit(0);
+    }
+  }
 
   log('Stopping services (volumes preserved)...');
-  const code = await compose(['down'], {}, { cwd: repoRoot });
+  const code = await compose(['down'], {}, { cwd: repoRoot }, composeArg);
   process.exit(code);
 }
 
@@ -326,12 +510,27 @@ async function cmdStatus() {
   const docker = checkDocker();
   if (!docker.ok) die(docker.message, 1);
 
-  const composeFile = path.join(PKG_PARENT, 'docker-compose.yml');
-  const repoRoot = fs.existsSync(composeFile) ? PKG_PARENT : process.cwd();
+  // Mirror cmdDown resolution: prefer dev compose, fall back to images compose.
+  const devCompose    = path.join(PKG_PARENT, 'docker-compose.yml');
+  let imagesComposePath = null;
+  try { imagesComposePath = resolveImagesCompose(); } catch (_) { /* not found */ }
+
+  let repoRoot   = null;
+  let composeArg = null;
+
+  if (fs.existsSync(devCompose)) {
+    repoRoot = PKG_PARENT;
+  } else if (imagesComposePath) {
+    repoRoot   = path.dirname(imagesComposePath);
+    composeArg = imagesComposePath;
+  } else {
+    const cwdCompose = path.join(process.cwd(), 'docker-compose.yml');
+    repoRoot = fs.existsSync(cwdCompose) ? process.cwd() : PKG_PARENT;
+  }
 
   // Show `docker compose ps` output
   log('Container status:');
-  await compose(['ps'], {}, { cwd: repoRoot });
+  await compose(['ps'], {}, { cwd: repoRoot }, composeArg);
 
   // Probe API
   const apiPort  = readEnvPort(repoRoot, 'API_PORT', '8456');

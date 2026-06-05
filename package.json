@@ -1,7 +1,7 @@
 {
   "name": "@bankung/agent-teams",
   "version": "0.1.0",
-  "description": "CLI launcher for the agent-teams AI Kanban platform (Model B — clone + local Docker build).",
+  "description": "CLI launcher for the agent-teams AI Kanban platform (pull pre-built images, or clone + build locally).",
   "license": "MIT",
   "type": "commonjs",
   "engines": {
@@ -12,7 +12,9 @@
   },
   "files": [
     "cli/",
-    "README.md"
+    "README.md",
+    "docker-compose.images.yml",
+    ".env.example"
   ],
   "keywords": [
     "agent-teams",

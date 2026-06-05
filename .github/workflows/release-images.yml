@@ -1,0 +1,84 @@
+# .github/workflows/release-images.yml
+#
+# Build and push agent-teams service images to GHCR on every `v*` release tag.
+# Also runnable manually via workflow_dispatch (no tag required — tags as "latest").
+#
+# Images published:
+#   ghcr.io/bankung/agent-teams-api:<version>        + :latest
+#   ghcr.io/bankung/agent-teams-web:<version>        + :latest
+#   ghcr.io/bankung/agent-teams-langgraph:<version>  + :latest
+#
+# The web image uses web/Dockerfile.prod (multi-stage standalone Next.js build).
+# api and langgraph use their existing single-stage Dockerfiles with no --reload.
+
+name: Release — Build & Push Images to GHCR
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    name: Build and push ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: api
+            context: ./api
+            dockerfile: ./api/Dockerfile
+            image: ghcr.io/bankung/agent-teams-api
+
+          - service: web
+            context: ./web
+            dockerfile: ./web/Dockerfile.prod
+            image: ghcr.io/bankung/agent-teams-web
+
+          - service: langgraph
+            context: ./langgraph
+            dockerfile: ./langgraph/Dockerfile
+            image: ghcr.io/bankung/agent-teams-langgraph
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4  # TODO pin to SHA
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3  # TODO pin to SHA
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          # On a tag push: refs/tags/v1.2.3 → "1.2.3"
+          # On workflow_dispatch (no tag): fall back to "latest"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3  # TODO pin to SHA
+
+      - name: Build and push ${{ matrix.service }}
+        uses: docker/build-push-action@v5  # TODO pin to SHA
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ matrix.image }}:${{ steps.version.outputs.version }}
+            ${{ matrix.image }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

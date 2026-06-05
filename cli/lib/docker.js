@@ -59,18 +59,21 @@ function checkDocker() {
 }
 
 /**
- * Run `docker compose -p agent-teams <args>` with stdio inherited.
+ * Run `docker compose -p agent-teams [-f <composeFile>] <args>` with stdio inherited.
  * Returns exit code (integer). Streams all output directly to the terminal.
  *
- * @param {string[]} args        Arguments after `compose -p agent-teams`
+ * @param {string[]} args        Arguments after the compose preamble
  * @param {object}   [env]       Additional env vars to merge (e.g. { MIGRATION_TARGET: 'live' })
  * @param {object}   [spawnOpts] Extra options forwarded to spawn() (e.g. { cwd: repoRoot })
+ * @param {string}   [composeFile] Optional path to an alternate compose file (e.g. docker-compose.images.yml).
+ *                                 When omitted, Docker uses the default docker-compose.yml discovery.
  */
-function compose(args, env = {}, spawnOpts = {}) {
+function compose(args, env = {}, spawnOpts = {}, composeFile = null) {
+  const fileArgs = composeFile ? ['-f', composeFile] : [];
   return new Promise((resolve) => {
     const child = spawn(
       'docker',
-      ['compose', '-p', 'agent-teams', ...args],
+      ['compose', '-p', 'agent-teams', ...fileArgs, ...args],
       {
         stdio: 'inherit',
         shell: false,

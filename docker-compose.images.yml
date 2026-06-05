@@ -1,0 +1,177 @@
+# docker-compose.images.yml — pull-based prod stack for agent-teams.
+#
+# Used by `npx @bankung/agent-teams up --images` to pull pre-built images from
+# GHCR instead of building from source. No git clone required — the CLI ships
+# this file and .env.example in the npm package.
+#
+# Usage:
+#   docker compose -p agent-teams -f docker-compose.images.yml pull
+#   docker compose -p agent-teams -f docker-compose.images.yml up -d
+#
+# Images are published by the GitHub Actions workflow
+# .github/workflows/release-images.yml on every `v*` tag push.
+# Set AGENT_TEAMS_VERSION to pin a specific release (default: latest).
+#
+# SYNC NOTICE: Keep env blocks, ports, healthchecks, and depends_on in sync
+# with docker-compose.yml. The two files share the same env contract — any
+# new env var added to docker-compose.yml must also be added here.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: agent-teams-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: agent_teams
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - agent-teams-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d agent_teams"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    image: ghcr.io/bankung/agent-teams-api:${AGENT_TEAMS_VERSION:-latest}
+    container_name: agent-teams-api
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/agent_teams
+      APP_ENV: ${APP_ENV:-production}
+      APP_DEBUG: ${APP_DEBUG:-false}
+      REPO_ROOT: /repo
+      LANGGRAPH_LLM_PROVIDER: ${LANGGRAPH_LLM_PROVIDER:-anthropic}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+      BACKUP_S3_ACCESS_KEY_ID: ${BACKUP_S3_ACCESS_KEY_ID:-}
+      BACKUP_S3_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET_ACCESS_KEY:-}
+      BACKUP_AGE_PUBKEY: ${BACKUP_AGE_PUBKEY:-}
+      BACKUP_S3_REGION: ${BACKUP_S3_REGION:-us-east-1}
+      BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-}
+      BACKUP_S3_PREFIX: ${BACKUP_S3_PREFIX:-agent-teams/}
+      SECRET_KEY: ${SECRET_KEY:-}
+      GMAIL_SMTP_HOST: ${GMAIL_SMTP_HOST:-smtp.gmail.com}
+      GMAIL_SMTP_PORT: ${GMAIL_SMTP_PORT:-587}
+      GMAIL_SMTP_USER: ${GMAIL_SMTP_USER:-}
+      GMAIL_SMTP_APP_PASSWORD: ${GMAIL_SMTP_APP_PASSWORD:-}
+      GMAIL_SMTP_FROM: ${GMAIL_SMTP_FROM:-}
+      DIGEST_EMAIL_RECIPIENT: ${DIGEST_EMAIL_RECIPIENT:-}
+      DIGEST_EMAIL_ENABLED: ${DIGEST_EMAIL_ENABLED:-false}
+      WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:5431}
+      NTFY_BASE_URL: ${NTFY_BASE_URL:-https://ntfy.sh}
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_ACCESS_TOKEN: ${NTFY_ACCESS_TOKEN:-}
+      PUSH_ENABLED: ${PUSH_ENABLED:-false}
+      BACKUP_CRON_RULE: ${BACKUP_CRON_RULE:-0 3 * * *}
+      BACKUP_TIMEZONE: ${BACKUP_TIMEZONE:-UTC}
+      BACKUP_KEEP_DAILY: ${BACKUP_KEEP_DAILY:-30}
+      BACKUP_KEEP_MONTHLY: ${BACKUP_KEEP_MONTHLY:-12}
+      BACKUP_DRY_RUN: ${BACKUP_DRY_RUN:-false}
+      HEALTH_MONITOR_DISABLED: ${HEALTH_MONITOR_DISABLED:-}
+      HEALTH_MONITOR_INTERVAL_MINUTES: ${HEALTH_MONITOR_INTERVAL_MINUTES:-15}
+      HEALTH_MONITOR_API_BASE: ${HEALTH_MONITOR_API_BASE:-http://localhost:8456}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.com}
+      PYTEST_DB_PASSWORD: ${PYTEST_DB_PASSWORD:-}
+      CREDENTIALS_MASTER_KEY: ${CREDENTIALS_MASTER_KEY:-}
+      OPERATOR_ACTION_KEY: ${OPERATOR_ACTION_KEY:-}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:8456/api/tools/email/auth/gmail/callback}
+      EMAIL_TOOLS_DAILY_UNITS_CAP: ${EMAIL_TOOLS_DAILY_UNITS_CAP:-5000}
+      EMAIL_TOOLS_BULK_THRESHOLD: ${EMAIL_TOOLS_BULK_THRESHOLD:-100}
+      EMAIL_TOOLS_AUDIT_PATH: ${EMAIL_TOOLS_AUDIT_PATH:-/repo/_scratch/email-tools-audit.jsonl}
+      AZURE_OAUTH_CLIENT_ID: ${AZURE_OAUTH_CLIENT_ID:-}
+      AZURE_OAUTH_CLIENT_SECRET: ${AZURE_OAUTH_CLIENT_SECRET:-}
+      AZURE_OAUTH_TENANT: ${AZURE_OAUTH_TENANT:-consumers}
+      AZURE_OAUTH_REDIRECT_URI: ${AZURE_OAUTH_REDIRECT_URI:-http://localhost:8456/api/tools/email/auth/outlook/callback}
+    ports:
+      - "${API_PORT:-8456}:8456"
+    volumes:
+      # Named volume gives /repo a writable, persisted filesystem so scaffold/
+      # session/resource/audit writes (REPO_ROOT=/repo) succeed without a source
+      # bind-mount. Data persists across restarts; no repo source is exposed.
+      - agent-teams-repo-data:/repo
+    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8456"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8456/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  web:
+    image: ghcr.io/bankung/agent-teams-web:${AGENT_TEAMS_VERSION:-latest}
+    container_name: agent-teams-web
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # NEXT_PUBLIC_* vars are baked at image build time (next build ARGs), not
+      # injected at container runtime — setting them here has no effect on the
+      # client bundle. Only runtime-effective server-side vars belong here.
+      INTERNAL_API_URL: ${INTERNAL_API_URL:-http://api:8456}
+    ports:
+      - "${WEB_PORT:-5431}:5431"
+    # No source bind-mount — standalone bundle is baked into the image.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:5431 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  langgraph:
+    image: ghcr.io/bankung/agent-teams-langgraph:${AGENT_TEAMS_VERSION:-latest}
+    container_name: agent-teams-langgraph
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    environment:
+      DATABASE_URI: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/agent_teams?options=-c%20search_path=langgraph
+      LANGGRAPH_LLM_PROVIDER: ${LANGGRAPH_LLM_PROVIDER:-anthropic}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      LANGGRAPH_DEEPSEEK_MODEL: ${LANGGRAPH_DEEPSEEK_MODEL:-deepseek-chat}
+      LANGGRAPH_DEEPSEEK_BASE_URL: ${LANGGRAPH_DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      LANGGRAPH_PROJECT_ID: ${LANGGRAPH_PROJECT_ID:-1}
+      LANGGRAPH_POLL_INTERVAL_SEC: ${LANGGRAPH_POLL_INTERVAL_SEC:-30}
+      LANGGRAPH_KANBAN_API_BASE: ${LANGGRAPH_KANBAN_API_BASE:-http://api:8456}
+      LANGGRAPH_CONTEXT_TOKEN_BUDGET: ${LANGGRAPH_CONTEXT_TOKEN_BUDGET:-60000}
+      HITL_DEMO_ENABLED: ${HITL_DEMO_ENABLED:-}
+      # REPO_ROOT intentionally absent: langgraph uses baked paths / LANGGRAPH_*
+      # vars and does not write to /repo. No volume mount is needed here.
+    ports:
+      - "${LANGGRAPH_PORT:-8465}:8000"
+    # No source bind-mount — code is baked into the image.
+    command: ["uvicorn", "graph:app", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ok')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  agent-teams-pgdata:
+  # Writable persistence for /repo inside the api container (REPO_ROOT=/repo).
+  # Allows scaffold/session/resource/audit writes without a source bind-mount.
+  agent-teams-repo-data:

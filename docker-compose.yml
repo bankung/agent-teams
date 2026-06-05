@@ -104,7 +104,7 @@ services:
       # TELEGRAM_BOT_TOKEN). Subject is `mailto:...` or `https://...` (RFC 8292).
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
-      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:bankung99@gmail.com}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.com}
       # pytest_runner role password (Kanban #1109 — L4 prevention layer for
       # the 2026-05-17 dev-DB-wipe incident). Used by the alembic migration
       # 0034_pytest_runner_role to create the role with the matching password,
@@ -241,6 +241,11 @@ services:
       # `extra_hosts: ["host.docker.internal:host-gateway"]` to this service.
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      # Kanban #1086 — DeepSeek provider. Only consulted when
+      # LANGGRAPH_LLM_PROVIDER=deepseek. Requires DEEPSEEK_API_KEY.
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      LANGGRAPH_DEEPSEEK_MODEL: ${LANGGRAPH_DEEPSEEK_MODEL:-deepseek-chat}
+      LANGGRAPH_DEEPSEEK_BASE_URL: ${LANGGRAPH_DEEPSEEK_BASE_URL:-https://api.deepseek.com}
       # Kanban #852 — background worker config. The worker polls the api
       # service (compose-internal hostname `api`, port 8456). LANGGRAPH_PROJECT_ID
       # is REQUIRED — the lifespan refuses to start without it.
