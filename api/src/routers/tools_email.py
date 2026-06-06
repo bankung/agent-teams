@@ -40,6 +40,11 @@ from src.db import get_session
 from src.models.project import Project
 from src.schemas.tools_email import (
     AuthStatusResponse,
+    CalendarEvent,
+    CalendarEventsRequest,
+    CalendarEventsResponse,
+    FreeBusyRequest,
+    FreeBusyResponse,
     GmailArchiveRequest,
     GmailAttachmentRequest,
     GmailAttachmentResponse,
@@ -85,7 +90,13 @@ from src.services.session_project import (
 from src.services.operator_auth import OperatorDecision, require_operator_proof
 from src.services.notify_ntfy import send_push
 from src.services.tool_grants import GrantDecision, check_grant
-from src.tools.email import gate, gmail_client, outlook_client, token_store
+from src.tools.email import (
+    calendar_client,
+    gate,
+    gmail_client,
+    outlook_client,
+    token_store,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1191,6 +1202,178 @@ async def gmail_attachment(
         success=True,
     )
     return GmailAttachmentResponse.model_validate(data)
+
+
+# ---------------------------------------------------------------------------
+# Google Calendar — READ actions (Kanban #1942: list-events + freebusy)
+# ---------------------------------------------------------------------------
+#
+# READ tier — auto-approve: no operator-proof, no _write_action_audit. Gate
+# chain mirrors the Gmail read routes byte-for-byte:
+#   Layer-0 tool-grant → tier gate (no-op for READ) → auth → cap → upstream →
+#   gate.log_audit (units trail only).
+#
+# Reuses the EXISTING Google creds (provider "gmail") via _require_creds — the
+# calendar.readonly scope rides on the same OAuth principal once the operator
+# re-consents. Provider string in the units audit is "google_calendar" so the
+# trail distinguishes calendar calls from mail calls.
+#
+# INSUFFICIENT SCOPE: a token granted before the calendar.readonly scope was
+# added raises calendar_client.CalendarScopeError → HTTP 412 with a fixed
+# "re-consent needed" detail. No token detail is leaked.
+#
+# PRIVACY: event summaries, attendee emails, locations, and busy intervals MUST
+# NOT appear in gate.log_audit, any logger call, or HTTP error detail. Only
+# type(exc).__name__ (or the fixed scope-error signal) is used in error paths.
+
+_CALENDAR_EVENTS_UNITS_PER_CALL = 5    # one events.list call.
+_CALENDAR_FREEBUSY_UNITS_PER_CALL = 5  # one freebusy.query call.
+_CALENDAR_PROVIDER = "google_calendar"  # units-audit provider tag.
+
+# Source-text-locked fixed detail for the insufficient-scope path. No token
+# detail — only the actionable re-consent hint.
+_DETAIL_CALENDAR_SCOPE_NOT_GRANTED = {
+    "error": "calendar_scope_not_granted",
+    "hint": "re-consent OAuth",
+}
+
+
+@router.post("/calendar/events", response_model=CalendarEventsResponse)
+async def calendar_events(
+    body: CalendarEventsRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> CalendarEventsResponse:
+    """List Google Calendar events in a time window. READ tier — auto-approve.
+
+    Layer 0 (#1799): `calendar.events` must be granted to the X-Agent-Role (if
+    the role is restricted). Fires first.
+
+    Tier gate (#1859): READ is OPEN — no operator-proof required.
+
+    INSUFFICIENT SCOPE: if the stored Google token lacks calendar.readonly
+    (operator has not re-consented), the Calendar API 403s → CalendarScopeError
+    → HTTP 412 {error: calendar_scope_not_granted, hint: re-consent OAuth}.
+
+    PRIVACY: summaries, attendee emails, locations MUST NOT appear in
+    gate.log_audit, any logger call, or HTTP error detail.
+    """
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "calendar.events"
+    )
+    _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
+
+    creds = await _require_creds(session_project_id, session)
+    _cap_check_or_429(session_project_id, _CALENDAR_EVENTS_UNITS_PER_CALL, "events")
+
+    try:
+        items = await run_in_threadpool(
+            calendar_client.list_events,
+            creds,
+            body.time_min,
+            body.time_max,
+            body.calendar_id,
+            body.max_results,
+        )
+    except calendar_client.CalendarScopeError as exc:
+        gate.log_audit(
+            _CALENDAR_PROVIDER, session_project_id, "events",
+            _CALENDAR_EVENTS_UNITS_PER_CALL,
+            success=False, error_code="CalendarScopeError",
+        )
+        # 412 Precondition Failed — the calendar.readonly scope is the unmet
+        # precondition. Fixed detail; no token/event data leaked.
+        raise HTTPException(
+            status_code=412, detail=_DETAIL_CALENDAR_SCOPE_NOT_GRANTED
+        ) from exc
+    except Exception as exc:
+        gate.log_audit(
+            _CALENDAR_PROVIDER, session_project_id, "events",
+            _CALENDAR_EVENTS_UNITS_PER_CALL,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("calendar events failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "calendar_events_failed", "class": type(exc).__name__},
+        ) from exc
+
+    gate.log_audit(
+        _CALENDAR_PROVIDER, session_project_id, "events",
+        _CALENDAR_EVENTS_UNITS_PER_CALL, success=True,
+    )
+    events = [CalendarEvent.model_validate(ev) for ev in items]
+    return CalendarEventsResponse(events=events, count=len(events))
+
+
+@router.post("/calendar/freebusy", response_model=FreeBusyResponse)
+async def calendar_freebusy(
+    body: FreeBusyRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> FreeBusyResponse:
+    """Query free/busy intervals per calendar. READ tier — auto-approve.
+
+    Layer 0 (#1799): `calendar.freebusy` must be granted to the X-Agent-Role (if
+    the role is restricted). Fires first.
+
+    Tier gate (#1859): READ is OPEN — no operator-proof required.
+
+    INSUFFICIENT SCOPE: CalendarScopeError → HTTP 412 (re-consent needed).
+
+    PRIVACY: busy intervals are timing data — they MUST NOT appear in
+    gate.log_audit, any logger call, or HTTP error detail.
+    """
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "calendar.freebusy"
+    )
+    _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
+
+    creds = await _require_creds(session_project_id, session)
+    _cap_check_or_429(session_project_id, _CALENDAR_FREEBUSY_UNITS_PER_CALL, "freebusy")
+
+    try:
+        fb_result = await run_in_threadpool(
+            calendar_client.freebusy,
+            creds,
+            body.time_min,
+            body.time_max,
+            body.calendars,
+        )
+    except calendar_client.CalendarScopeError as exc:
+        gate.log_audit(
+            _CALENDAR_PROVIDER, session_project_id, "freebusy",
+            _CALENDAR_FREEBUSY_UNITS_PER_CALL,
+            success=False, error_code="CalendarScopeError",
+        )
+        raise HTTPException(
+            status_code=412, detail=_DETAIL_CALENDAR_SCOPE_NOT_GRANTED
+        ) from exc
+    except Exception as exc:
+        gate.log_audit(
+            _CALENDAR_PROVIDER, session_project_id, "freebusy",
+            _CALENDAR_FREEBUSY_UNITS_PER_CALL,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("calendar freebusy failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "calendar_freebusy_failed", "class": type(exc).__name__},
+        ) from exc
+
+    gate.log_audit(
+        _CALENDAR_PROVIDER, session_project_id, "freebusy",
+        _CALENDAR_FREEBUSY_UNITS_PER_CALL, success=True,
+    )
+    # FIX-2 (#1942): freebusy now returns {"busy": ..., "errors": ...} — unpack both.
+    return FreeBusyResponse(
+        busy=fb_result["busy"],
+        errors=fb_result.get("errors"),
+    )
 
 
 # >>> #1608 OUTLOOK ROUTES BELOW — append-only zone for parallel dev coordination

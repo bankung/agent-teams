@@ -9,6 +9,7 @@ Shared base classes live above the provider-specific blocks.
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -17,6 +18,22 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # Gmail IDs are hex. Both fit within [A-Za-z0-9_\-=+]. The slash character is
 # the primary injection vector (rewriting the Graph URL path).
 _MID_ALLOWED = re.compile(r"^[A-Za-z0-9_\-=+]+$")
+
+# FIX-3 (#1942): RFC3339 timestamp format guard for Calendar time_min / time_max.
+# Rejects obviously-malformed strings early (422) rather than propagating a 502
+# from the Calendar API. Accepts both Z and numeric offset forms.
+_RFC3339_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}([.\d]+)?(Z|[+\-]\d{2}:?\d{2})$"
+)
+
+
+def _parse_rfc3339(ts: str) -> datetime:
+    """Parse an RFC3339 timestamp to a timezone-aware datetime.
+
+    Normalises trailing 'Z' to '+00:00' so `datetime.fromisoformat` (Python
+    3.10) accepts it without a separate import.
+    """
+    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
 # ---------------------------------------------------------------------------
@@ -30,6 +47,10 @@ class AuthStatusResponse(BaseModel):
     authenticated: bool
     email: str | None = None
     expires_at: str | None = None
+    # Kanban #1942: True iff the Google token carries calendar.readonly (operator
+    # has re-consented; Calendar tools available). Defaults False — Outlook +
+    # un-re-consented Gmail tokens leave it False without breaking their summary.
+    calendar_readonly: bool = False
 
 
 class UsageResponse(BaseModel):
@@ -741,3 +762,159 @@ class GmailAttachmentResponse(BaseModel):
     mime_type: str | None = None
     size: int
     data_base64: str
+
+
+# ---------------------------------------------------------------------------
+# Kanban #1942 — Google Calendar READ schemas (list-events + freebusy)
+# ---------------------------------------------------------------------------
+#
+# READ tier: auto-approve (no operator-proof). Event summaries, attendee emails,
+# locations, and busy intervals are returned in the response but MUST NOT appear
+# in any log, audit trail, or error detail.
+
+# RFC3339 timestamp bound — refuse obviously-garbage values early. A real
+# RFC3339 stamp ("2026-06-06T00:00:00Z" or with offset) is well under 64 chars.
+_RFC3339_MAX = 64
+# Calendar id bound — "primary", an email address, or a calendar-id string.
+_CAL_ID_MAX = 1024
+
+
+class CalendarEventsRequest(BaseModel):
+    """List Google Calendar events in a time window. READ tier — auto-approve."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    time_min: str = Field(
+        ...,
+        min_length=1,
+        max_length=_RFC3339_MAX,
+        pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}([.\d]+)?(Z|[+\-]\d{2}:?\d{2})$",
+        description="RFC3339 lower bound (inclusive), e.g. '2026-06-06T00:00:00Z'.",
+    )
+    time_max: str = Field(
+        ...,
+        min_length=1,
+        max_length=_RFC3339_MAX,
+        pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}([.\d]+)?(Z|[+\-]\d{2}:?\d{2})$",
+        description="RFC3339 upper bound (exclusive), e.g. '2026-06-07T00:00:00Z'.",
+    )
+    calendar_id: str = Field(
+        default="primary",
+        min_length=1,
+        max_length=_CAL_ID_MAX,
+        description="Calendar id — 'primary', an email, or a calendar-id string.",
+    )
+    max_results: int = Field(
+        default=50,
+        ge=1,
+        le=250,
+        description="Maximum number of events to return (1–250).",
+    )
+
+    @model_validator(mode="after")
+    def _check_time_ordering(self) -> "CalendarEventsRequest":
+        """Reject requests where time_min >= time_max (empty or inverted window)."""
+        try:
+            t_min = _parse_rfc3339(self.time_min)
+            t_max = _parse_rfc3339(self.time_max)
+        except ValueError as exc:
+            raise ValueError(f"time_min/time_max could not be parsed as RFC3339: {exc}") from exc
+        if t_min >= t_max:
+            raise ValueError("time_min must be strictly before time_max.")
+        return self
+
+
+class CalendarAttendee(BaseModel):
+    """A single event attendee. email/display_name MUST NOT be logged."""
+
+    email: str | None = None
+    display_name: str | None = None
+
+
+class CalendarEvent(BaseModel):
+    """A single calendar event. summary/attendees/location MUST NOT be logged."""
+
+    id: str | None = None
+    summary: str | None = None
+    start: str | None = None
+    end: str | None = None
+    attendees: list[CalendarAttendee] = Field(default_factory=list)
+    location: str | None = None
+    all_day: bool = False
+
+
+class CalendarEventsResponse(BaseModel):
+    """Result of a list-events call. Event content MUST NOT be logged."""
+
+    events: list[CalendarEvent]
+    count: int
+
+
+class FreeBusyRequest(BaseModel):
+    """Query free/busy intervals for one or more calendars. READ tier."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    time_min: str = Field(
+        ...,
+        min_length=1,
+        max_length=_RFC3339_MAX,
+        pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}([.\d]+)?(Z|[+\-]\d{2}:?\d{2})$",
+        description="RFC3339 lower bound (inclusive).",
+    )
+    time_max: str = Field(
+        ...,
+        min_length=1,
+        max_length=_RFC3339_MAX,
+        pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}([.\d]+)?(Z|[+\-]\d{2}:?\d{2})$",
+        description="RFC3339 upper bound (exclusive).",
+    )
+    calendars: list[str] = Field(
+        default_factory=lambda: ["primary"],
+        description="Calendar ids to query (defaults to ['primary']).",
+    )
+
+    @model_validator(mode="after")
+    def _check_calendars_and_ordering(self) -> "FreeBusyRequest":
+        # FIX-3 (#1942): validate time ordering — time_min must be before time_max.
+        try:
+            t_min = _parse_rfc3339(self.time_min)
+            t_max = _parse_rfc3339(self.time_max)
+        except ValueError as exc:
+            raise ValueError(f"time_min/time_max could not be parsed as RFC3339: {exc}") from exc
+        if t_min >= t_max:
+            raise ValueError("time_min must be strictly before time_max.")
+        # Bound the list + each id so a huge/garbage payload is refused early.
+        if not isinstance(self.calendars, list) or len(self.calendars) == 0:
+            raise ValueError("calendars must be a non-empty list.")
+        if len(self.calendars) > 50:
+            raise ValueError("calendars list cannot exceed 50 entries per call.")
+        for cid in self.calendars:
+            if not isinstance(cid, str) or not (1 <= len(cid) <= _CAL_ID_MAX):
+                raise ValueError(
+                    f"each calendar id must be a non-empty string <={_CAL_ID_MAX} chars."
+                )
+        return self
+
+
+class FreeBusyInterval(BaseModel):
+    """A single busy interval. Timing data MUST NOT be logged."""
+
+    start: str | None = None
+    end: str | None = None
+
+
+class FreeBusyResponse(BaseModel):
+    """Busy intervals + per-calendar errors. MUST NOT be logged.
+
+    busy:   {calendar_id: [busy intervals]}  — always present; empty list = no
+            busy blocks (but check errors first — an error means the calendar
+            was inaccessible, NOT that it was genuinely free).
+    errors: {calendar_id: [reason strings]}  — present only when one or more
+            calendars returned an error (e.g. "notFound"). Reason strings only;
+            NO PII / raw upstream bodies beyond the calendar id already supplied
+            by the caller.
+    """
+
+    busy: dict[str, list[FreeBusyInterval]]
+    errors: dict[str, list[str]] | None = None

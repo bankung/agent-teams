@@ -196,6 +196,49 @@ POST /api/tools/email/gmail/trash
 
 See `_runtime/secretary-email-policy.json` for the complete tier → action mapping.
 
+### Calendar (read-only)
+
+**Status: Tier-0 shipped.** Two read-only calendar tools (`list-events` and `freebusy`) are auto-approved and share the same Google OAuth principal as Gmail (secretary email tools).
+
+**What it is:** Secretary agents can query Google Calendar — list upcoming events, check attendees, locations, or busy intervals — for scheduling decisions. No write capability (create/modify/delete are not exposed). Both tools are READ tier (auto-approve, privacy-safe).
+
+**Prerequisites — OAuth scope update:** The existing Gmail OAuth token does NOT include calendar access. To enable calendar tools, **re-run the Gmail OAuth consent** via `POST /api/tools/email/auth/gmail/start` and complete the consent flow. The new consent will request `calendar.readonly` in addition to existing mail scopes; set `include_granted_scopes=true` to keep both. Until re-consent, calendar calls return **HTTP 412** with error `calendar_scope_not_granted`. Check status anytime via `GET /api/tools/email/auth/gmail/status` — it will report `calendar_readonly: true/false`.
+
+**The two tools:**
+
+- **list-events** — `POST /api/tools/email/calendar/events`. Body: `{time_min, time_max, calendar_id?="primary", max_results?=50}`. Times are RFC3339 strings (e.g., `2026-06-06T09:00:00Z`); `time_min` must be before `time_max`. Returns `{events: [{id, summary, start, end, attendees:[{email, display_name}], location, all_day}], count}`. Use case: list meetings in a date range, check who is invited, find a time slot for a new meeting.
+
+- **freebusy** — `POST /api/tools/email/calendar/freebusy`. Body: `{time_min, time_max, calendars?=["primary"]}`. Returns `{busy: {calendar_id: [{start, end}]}, errors?: {calendar_id: [reason]}}`. The `errors` field surfaces any calendar that couldn't be read (so a failed calendar is not mistaken for "free time"). Use case: check team availability across multiple calendars, find gaps in your schedule, block time before scheduling meetings.
+
+**Example (list upcoming events):**
+```
+X-Project-Id: 1
+POST /api/tools/email/calendar/events
+{
+  "time_min": "2026-06-06T09:00:00Z",
+  "time_max": "2026-06-06T17:00:00Z",
+  "calendar_id": "primary",
+  "max_results": 10
+}
+→ 200 OK
+{
+  "events": [
+    {
+      "id": "event-123",
+      "summary": "Team standup",
+      "start": "2026-06-06T10:00:00Z",
+      "end": "2026-06-06T10:30:00Z",
+      "attendees": [{"email": "<your-account>", "display_name": "You"}],
+      "location": "Zoom",
+      "all_day": false
+    }
+  ],
+  "count": 1
+}
+```
+
+**Privacy note:** Calendar event content (summaries, attendees, locations, busy times) is returned to the caller but **never written to the audit log or echoed in errors**. Only a units-trail row (no content) is recorded.
+
 ---
 
 ## Reading more

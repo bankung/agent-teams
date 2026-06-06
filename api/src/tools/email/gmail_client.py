@@ -51,7 +51,23 @@ _ID_RE = re.compile(r"^[A-Za-z0-9_\-=+]+$")
 
 # Full mail scope — covers read, modify, trash, send, labels, drafts. One
 # consent prompt covers every future endpoint we'd add for the operator.
-SCOPES = ["https://mail.google.com/"]
+#
+# Kanban #1942: calendar.readonly added so the SAME Google OAuth principal can
+# also drive the secretary's read-only Calendar tools (list-events + freebusy)
+# for conflict detection. RE-CONSENT PREREQUISITE: a token granted under the
+# old single-scope list does NOT carry calendar.readonly — the operator must
+# re-run the OAuth dance (POST /api/tools/email/auth/gmail/start) to grant the
+# new scope. include_granted_scopes="true" in auth_start preserves the existing
+# mail access across that re-consent, so re-consenting is additive (no Gmail
+# capability is lost). Until re-consent, the Calendar API raises an
+# insufficient-permission error which calendar_client maps to CalendarScopeError.
+SCOPES = [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/calendar.readonly",
+]
+# The Calendar scope value, exposed so the auth-status projection can report
+# whether the stored token actually carries it (i.e. whether re-consent is done).
+CALENDAR_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
 
 # Pending OAuth flows — state -> (flow_obj, project_id, created_at_utc).
 # Bounded by a 10-min TTL prune on each new start.
@@ -148,16 +164,39 @@ def auth_callback(code: str, state: str) -> tuple[int, Credentials]:
 def creds_summary(creds: object) -> dict:
     """Project the stored Credentials into a status dict for token_store.
 
-    Returns {email, expires_at}. Best-effort — Google's Credentials object
-    doesn't carry email by default (it's encoded in the id_token if requested,
-    which we don't). We fetch the user's email via the Gmail profile endpoint
-    on first lookup if needed; for the Karpathy cut we just return None for
-    email and expose expiry.
+    Returns {email, expires_at, calendar_readonly}. Best-effort — Google's
+    Credentials object doesn't carry email by default (it's encoded in the
+    id_token if requested, which we don't). We fetch the user's email via the
+    Gmail profile endpoint on first lookup if needed; for the Karpathy cut we
+    just return None for email and expose expiry.
+
+    `calendar_readonly` (#1942): True iff the stored token's granted scopes
+    include calendar.readonly — i.e. the operator has re-consented and the
+    Calendar tools are available. Best-effort: reads `creds.scopes` (no upstream
+    call). Returns False when scopes are absent/unknown so a caller never assumes
+    calendar access it doesn't have.
     """
     if not isinstance(creds, Credentials):
-        return {"email": None, "expires_at": None}
+        return {"email": None, "expires_at": None, "calendar_readonly": False}
     expires_at = creds.expiry.isoformat() + "Z" if creds.expiry else None
-    return {"email": _safe_profile_email(creds), "expires_at": expires_at}
+    return {
+        "email": _safe_profile_email(creds),
+        "expires_at": expires_at,
+        "calendar_readonly": _has_calendar_scope(creds),
+    }
+
+
+def _has_calendar_scope(creds: Credentials) -> bool:
+    """True iff the stored token's granted scopes include calendar.readonly.
+
+    Best-effort, no upstream call: reads the `scopes` attribute Google stores on
+    the Credentials object. Returns False on any absence/uncertainty.
+    """
+    try:
+        scopes = getattr(creds, "scopes", None) or []
+        return CALENDAR_READONLY_SCOPE in scopes
+    except Exception:  # pragma: no cover — defensive
+        return False
 
 
 def _safe_profile_email(creds: Credentials) -> str | None:
