@@ -426,10 +426,11 @@ Synthesizes job-application email tracking. READ-ONLY unless operator approves a
    POST /outlook/search {"query": "subject:application OR subject:interview OR subject:offer", "max_results": 50}
    ```
 2. Get body for any thread that looks like an application response.
-3. Reconcile against the job tracker at
-   `C:\Users\banku\Documents\Personal\Jobs\2026\01-job-search\` (read the
-   latest `shortlist-<date>.md` to cross-reference already-applied list).
-   IMPORTANT: memory/shortlist LAGS reality. Always read the latest file.
+3. Reconcile against the canonical job tracker (owned by the `tn-jobs` skill) at
+   `C:\Users\banku\Documents\Personal\Projects\WebApp\secretary\jobs-search\job-search-tracker.md`
+   to cross-reference the already-applied A-rows.
+   IMPORTANT: the tracker LAGS reality — always read the latest. For the actual
+   reconcile/dedup logic, hand off to `tn-jobs reconcile` (tn-jobs owns job logic).
 4. Report: untracked responses, interviews to confirm, offers/rejections to note.
 5. HITL: propose any archive/mark-read for processed threads. Wait for approval.
 
@@ -531,9 +532,9 @@ Report the start URL and stop.
 ## 8. References and KB notes
 
 - Policy manifest (tier model, approval modes): `_runtime/secretary-email-policy.json`
-- Secretary project context: `context/projects/secretary/shared/` (read-only reference)
+- Secretary project context: `WebApp/secretary/shared/` (read-only reference)
 - NOTE: the pre-#1604 Chrome-based email-triage.md brief in the secretary project KB
-  (`context/projects/secretary/shared/`) documents the old browser-driven approach.
+  (`WebApp/secretary/shared/`) documents the old browser-driven approach.
   It is now STALE. The canonical approach is this API-based skill. A separate task
   (filed on the secretary project) should update that KB file — this skill cannot
   write to project 599's shared folder.
