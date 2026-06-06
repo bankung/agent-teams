@@ -65,6 +65,11 @@ class GmailTrashRequest(BaseModel):
 
     Exactly one of (query, message_ids) must be set — enforced by a model
     validator so the wire contract is unambiguous.
+
+    Set `dry_run=True` to preview which messages WOULD be trashed without
+    moving anything. The operator-proof gate is skipped for dry_run (read-only
+    preview); Layer-0 role grant still fires. List-unit cost is still paid in
+    query mode (the upstream list call happens to resolve the id set).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -78,6 +83,14 @@ class GmailTrashRequest(BaseModel):
     message_ids: list[str] | None = Field(
         default=None,
         description="Explicit Gmail message id list (XOR with `query`).",
+    )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "Preview mode: resolve which messages WOULD be trashed and return "
+            "would_affect_count + would_affect_ids without moving anything. "
+            "Skips the operator-proof gate; Layer-0 role grant still fires."
+        ),
     )
 
     @model_validator(mode="after")
@@ -112,11 +125,19 @@ class GmailTrashRequest(BaseModel):
 
 
 class GmailTrashResponse(BaseModel):
-    """Result of a trash call. Reports trashed ids + any per-id errors."""
+    """Result of a trash call. Reports trashed ids + any per-id errors.
+
+    On a normal trash: dry_run=False, would_affect_count/ids are None.
+    On a dry_run:      dry_run=True, trashed_count=0, trashed_ids=[],
+                       would_affect_count=N, would_affect_ids=[...].
+    """
 
     trashed_count: int
     trashed_ids: list[str]
     errors: list[dict[str, Any]] = Field(default_factory=list)
+    dry_run: bool = False
+    would_affect_count: int | None = None
+    would_affect_ids: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +276,11 @@ class OutlookTrashRequest(BaseModel):
     hits Graph it is KQL-quote-escaped and URL-encoded (#1721). The `$search`
     KQL syntax is NOT identical to Gmail's; the operator supplies the correct
     format (we do not translate between the two).
+
+    Set `dry_run=True` to preview which messages WOULD be trashed without
+    moving anything. The operator-proof gate is skipped for dry_run (read-only
+    preview); Layer-0 role grant still fires. List-unit cost is still paid in
+    query mode (the upstream list call happens to resolve the id set).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -272,6 +298,14 @@ class OutlookTrashRequest(BaseModel):
     message_ids: list[str] | None = Field(
         default=None,
         description="Explicit Outlook/Graph message id list (XOR with `query`).",
+    )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "Preview mode: resolve which messages WOULD be trashed and return "
+            "would_affect_count + would_affect_ids without moving anything. "
+            "Skips the operator-proof gate; Layer-0 role grant still fires."
+        ),
     )
 
     @model_validator(mode="after")
@@ -305,11 +339,19 @@ class OutlookTrashRequest(BaseModel):
 
 
 class OutlookTrashResponse(BaseModel):
-    """Result of a move-to-Deleted-Items call. Reports trashed ids + per-id errors."""
+    """Result of a move-to-Deleted-Items call. Reports trashed ids + per-id errors.
+
+    On a normal trash: dry_run=False, would_affect_count/ids are None.
+    On a dry_run:      dry_run=True, trashed_count=0, trashed_ids=[],
+                       would_affect_count=N, would_affect_ids=[...].
+    """
 
     trashed_count: int
     trashed_ids: list[str]
     errors: list[dict[str, Any]] = Field(default_factory=list)
+    dry_run: bool = False
+    would_affect_count: int | None = None
+    would_affect_ids: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------

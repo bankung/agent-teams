@@ -2126,3 +2126,290 @@ async def test_gmail_attachment_not_found_404(client, monkeypatch):
     # NEGATIVE: must NOT be 502 (generic path) or 413 (size path).
     assert resp.status_code != 502
     assert resp.status_code != 413
+
+
+# ===========================================================================
+# Kanban #1941 — dry_run preview for /gmail/trash and /outlook/trash
+# ===========================================================================
+#
+# Tests use separate project ids to stay hermetic from other test blocks.
+# Fixtures mirror the existing per-provider store-cleanup patterns.
+
+_PROJ_DR_G = 9992   # Gmail dry_run tests
+_PROJ_DR_OL = 9991  # Outlook dry_run tests
+_HDR_DR_G = {"X-Project-Id": str(_PROJ_DR_G)}
+_HDR_DR_OL = {"X-Project-Id": str(_PROJ_DR_OL)}
+
+
+@pytest.fixture(autouse=True)
+def _clean_dryrun_stores():
+    """Clear in-memory stores for both dry_run project ids between tests."""
+    from src.tools.email import gate, token_store
+    import datetime as _dt
+    today = _dt.datetime.now(_dt.UTC).date().isoformat()
+    for key in [("gmail", _PROJ_DR_G), ("outlook", _PROJ_DR_OL)]:
+        token_store._CACHE.pop(key, None)
+    for key in [(_PROJ_DR_G, today), (_PROJ_DR_OL, today)]:
+        gate._DAILY_UNITS.pop(key, None)
+    yield
+    for key in [("gmail", _PROJ_DR_G), ("outlook", _PROJ_DR_OL)]:
+        token_store._CACHE.pop(key, None)
+    for key in [(_PROJ_DR_G, today), (_PROJ_DR_OL, today)]:
+        gate._DAILY_UNITS.pop(key, None)
+
+
+def _seed_gmail_dryrun_creds(monkeypatch):
+    from src.tools.email import token_store
+    from unittest.mock import MagicMock
+    from google.oauth2.credentials import Credentials as RealCreds
+    import datetime as _dt
+    creds = MagicMock(spec=RealCreds)
+    creds.expiry = _dt.datetime(2099, 1, 1, 0, 0, 0)
+    creds._at_email_cache = "test@gmail.com"
+    token_store._CACHE[("gmail", _PROJ_DR_G)] = creds
+    monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "1000")
+
+
+def _seed_outlook_dryrun_creds(monkeypatch):
+    from src.tools.email import token_store
+    import time
+    token_store._CACHE[("outlook", _PROJ_DR_OL)] = {
+        "access_token": "fake-dryrun-token",
+        "expires_in": 3600,
+        "_acquired_at": time.time(),
+    }
+    monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "1000")
+
+
+# ---------------------------------------------------------------------------
+# Gmail dry_run — message_ids mode
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_gmail_trash_dryrun_message_ids_returns_preview_no_move(client, monkeypatch):
+    """AC (#1941): /gmail/trash dry_run=true with message_ids returns preview; trash NOT called.
+
+    POSITIVE: would_affect_count == len(ids) and would_affect_ids == ids.
+    NEGATIVE: trash_messages is never called (no mutation).
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_gmail_dryrun_creds(monkeypatch)
+    from src.tools.email import gmail_client
+
+    trash_calls: list = []
+    monkeypatch.setattr(
+        gmail_client, "trash_messages",
+        lambda c, ids: trash_calls.append(ids) or (list(ids), []),
+    )
+
+    ids_to_preview = ["abc123", "def456", "ghi789"]
+    resp = await client.post(
+        f"{_BASE}/gmail/trash",
+        headers=_HDR_DR_G,
+        json={"message_ids": ids_to_preview, "dry_run": True},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # Preview shape assertions.
+    assert body["dry_run"] is True
+    assert body["trashed_count"] == 0
+    assert body["trashed_ids"] == []
+    assert body["would_affect_count"] == len(ids_to_preview)
+    assert body["would_affect_ids"] == ids_to_preview
+
+    # NEGATIVE lock: trash_messages must NOT have been called.
+    assert trash_calls == [], "trash_messages must NOT run on dry_run"
+
+
+@pytest.mark.asyncio
+async def test_gmail_trash_dryrun_succeeds_without_operator_proof_when_gate_active(
+    client, monkeypatch
+):
+    """AC (#1941): dry_run=true succeeds with gate ACTIVE + NO operator-proof token.
+
+    Proves the operator-proof gate is skipped for the preview path.
+    NEGATIVE: trash_messages never called.
+    """
+    monkeypatch.setenv(_KEY_ENV, _TOKEN)   # gate ACTIVE — would 403 a real trash
+    _seed_gmail_dryrun_creds(monkeypatch)
+    from src.tools.email import gmail_client
+
+    trash_calls: list = []
+    monkeypatch.setattr(
+        gmail_client, "trash_messages",
+        lambda c, ids: trash_calls.append(ids) or (list(ids), []),
+    )
+
+    resp = await client.post(
+        f"{_BASE}/gmail/trash",
+        headers=_HDR_DR_G,  # NO X-Operator-Token header
+        json={"message_ids": ["abc123"], "dry_run": True},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["dry_run"] is True
+    assert body["would_affect_count"] == 1
+    assert trash_calls == [], "trash_messages must NOT run on dry_run"
+
+
+@pytest.mark.asyncio
+async def test_gmail_trash_dryrun_query_mode_returns_preview_no_move(client, monkeypatch):
+    """AC (#1941): /gmail/trash dry_run=true in query mode resolves ids and returns preview.
+
+    list_message_ids is called (id resolution happens; list units charged).
+    trash_messages is NOT called.
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_gmail_dryrun_creds(monkeypatch)
+    from src.tools.email import gmail_client
+
+    resolved_ids = ["qid1", "qid2"]
+    list_calls: list = []
+    trash_calls: list = []
+
+    monkeypatch.setattr(
+        gmail_client, "list_message_ids",
+        lambda creds, query, max_results: (list_calls.append(query), resolved_ids)[1],
+    )
+    monkeypatch.setattr(
+        gmail_client, "trash_messages",
+        lambda c, ids: trash_calls.append(ids) or (list(ids), []),
+    )
+
+    resp = await client.post(
+        f"{_BASE}/gmail/trash",
+        headers=_HDR_DR_G,
+        json={"query": "from:spam@x.com", "dry_run": True},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["dry_run"] is True
+    assert body["trashed_count"] == 0
+    assert body["would_affect_count"] == len(resolved_ids)
+    assert set(body["would_affect_ids"]) == set(resolved_ids)
+
+    # NEGATIVE: trash_messages must NOT run.
+    assert trash_calls == [], "trash_messages must NOT run on dry_run"
+    # POSITIVE: list_message_ids DID run (id resolution happens).
+    assert len(list_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Outlook dry_run — message_ids mode
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_outlook_trash_dryrun_message_ids_returns_preview_no_move(client, monkeypatch):
+    """AC (#1941): /outlook/trash dry_run=true with message_ids returns preview; trash NOT called.
+
+    POSITIVE: would_affect_count == len(ids) and would_affect_ids == ids.
+    NEGATIVE: trash_messages is never called.
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_outlook_dryrun_creds(monkeypatch)
+    from src.tools.email import outlook_client
+
+    trash_calls: list = []
+    monkeypatch.setattr(
+        outlook_client, "trash_messages",
+        lambda c, ids: trash_calls.append(ids) or (list(ids), []),
+    )
+
+    ids_to_preview = ["olId1", "olId2"]
+    resp = await client.post(
+        f"{_BASE}/outlook/trash",
+        headers=_HDR_DR_OL,
+        json={"message_ids": ids_to_preview, "dry_run": True},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert body["dry_run"] is True
+    assert body["trashed_count"] == 0
+    assert body["trashed_ids"] == []
+    assert body["would_affect_count"] == len(ids_to_preview)
+    assert body["would_affect_ids"] == ids_to_preview
+
+    # NEGATIVE lock: trash_messages must NOT have been called.
+    assert trash_calls == [], "trash_messages must NOT run on dry_run"
+
+
+@pytest.mark.asyncio
+async def test_outlook_trash_dryrun_succeeds_without_operator_proof_when_gate_active(
+    client, monkeypatch
+):
+    """AC (#1941): Outlook dry_run=true succeeds with gate ACTIVE + NO operator-proof token.
+
+    Proves the operator-proof gate is skipped for the Outlook preview path.
+    NEGATIVE: trash_messages never called.
+    """
+    monkeypatch.setenv(_KEY_ENV, _TOKEN)   # gate ACTIVE
+    _seed_outlook_dryrun_creds(monkeypatch)
+    from src.tools.email import outlook_client
+
+    trash_calls: list = []
+    monkeypatch.setattr(
+        outlook_client, "trash_messages",
+        lambda c, ids: trash_calls.append(ids) or (list(ids), []),
+    )
+
+    resp = await client.post(
+        f"{_BASE}/outlook/trash",
+        headers=_HDR_DR_OL,  # NO X-Operator-Token header
+        json={"message_ids": ["olId1"], "dry_run": True},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["dry_run"] is True
+    assert body["would_affect_count"] == 1
+    assert trash_calls == [], "trash_messages must NOT run on dry_run"
+
+
+@pytest.mark.asyncio
+async def test_outlook_trash_dryrun_query_mode_returns_preview_no_move(client, monkeypatch):
+    """AC (#1941 NIT-2): /outlook/trash dry_run=true in query mode resolves ids and returns preview.
+
+    list_message_ids is called once (id resolution happens; list units charged).
+    trash_messages is NOT called (no mutation).
+
+    POSITIVE: would_affect_count == len(fake ids) and dry_run is True.
+    NEGATIVE: trash_messages never called.
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_outlook_dryrun_creds(monkeypatch)
+    from src.tools.email import outlook_client
+
+    resolved_ids = ["olQid1", "olQid2", "olQid3"]
+    list_calls: list = []
+    trash_calls: list = []
+
+    monkeypatch.setattr(
+        outlook_client, "list_message_ids",
+        lambda creds, query, max_results: (list_calls.append(query), resolved_ids)[1],
+    )
+    monkeypatch.setattr(
+        outlook_client, "trash_messages",
+        lambda c, ids: trash_calls.append(ids) or (list(ids), []),
+    )
+
+    resp = await client.post(
+        f"{_BASE}/outlook/trash",
+        headers=_HDR_DR_OL,
+        json={"query": "from:spam@x.com", "dry_run": True},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert body["dry_run"] is True
+    assert body["trashed_count"] == 0
+    assert body["trashed_ids"] == []
+    assert body["would_affect_count"] == len(resolved_ids)
+    assert set(body["would_affect_ids"]) == set(resolved_ids)
+
+    # NEGATIVE: trash_messages must NOT run on dry_run.
+    assert trash_calls == [], "trash_messages must NOT run on dry_run"
+    # POSITIVE: list_message_ids DID run exactly once (id resolution happens).
+    assert len(list_calls) == 1

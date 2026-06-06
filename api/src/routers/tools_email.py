@@ -532,7 +532,9 @@ async def gmail_trash(
     # Tier gate (#1859) — trash = `delete` tier (above read). Operator-proof
     # required AFTER Layer-0; 403 if absent (when the gate is ACTIVE). Dormant
     # when OPERATOR_ACTION_KEY is unset (fail-open).
-    _enforce_operator_tier_or_403(EmailTier.DELETE, operator_proof)
+    # dry_run is a read-only preview — the operator-proof gate is SKIPPED.
+    if not body.dry_run:
+        _enforce_operator_tier_or_403(EmailTier.DELETE, operator_proof)
 
     # FIX-6 (#1609): message_ids mode — bulk-check before auth so the payload
     # safety rail is observable without OAuth setup. query mode still requires
@@ -542,7 +544,14 @@ async def gmail_trash(
 
         # If no ids, exit early — no trash work to do.
         if not ids:
-            return GmailTrashResponse(trashed_count=0, trashed_ids=[], errors=[])
+            return GmailTrashResponse(
+                trashed_count=0,
+                trashed_ids=[],
+                errors=[],
+                dry_run=body.dry_run,
+                would_affect_count=0 if body.dry_run else None,
+                would_affect_ids=[] if body.dry_run else None,
+            )
 
         # Layer 3 — bulk threshold fires BEFORE auth in message_ids mode.
         _bulk_check_or_400(len(ids), force)
@@ -554,6 +563,7 @@ async def gmail_trash(
         creds = await _require_creds(session_project_id, session)
 
         # Pay list units before we know the count — this is honest accounting.
+        # dry_run still pays list units (the upstream list call happens).
         _cap_check_or_429(session_project_id, _LIST_UNITS_PER_CALL, "list")
         try:
             ids = await run_in_threadpool(
@@ -576,10 +586,32 @@ async def gmail_trash(
 
         # If the query matched nothing, exit early — no trash work to do.
         if not ids:
-            return GmailTrashResponse(trashed_count=0, trashed_ids=[], errors=[])
+            return GmailTrashResponse(
+                trashed_count=0,
+                trashed_ids=[],
+                errors=[],
+                dry_run=body.dry_run,
+                would_affect_count=0 if body.dry_run else None,
+                would_affect_ids=[] if body.dry_run else None,
+            )
 
         # Layer 3 — bulk threshold fires AFTER list in query mode (count unknown before).
         _bulk_check_or_400(len(ids), force)
+
+    # dry_run: return preview without moving anything. No trash units charged,
+    # no trash_messages call, no _write_action_audit (nothing happened).
+    if body.dry_run:
+        gate.log_audit(
+            "gmail", session_project_id, "trash_dryrun", 0, success=True,
+        )
+        return GmailTrashResponse(
+            trashed_count=0,
+            trashed_ids=[],
+            errors=[],
+            dry_run=True,
+            would_affect_count=len(ids),
+            would_affect_ids=list(ids),
+        )
 
     # Layer 1 — daily-units cap for the trash workload.
     total_units = _TRASH_UNITS_PER_MESSAGE * len(ids)
@@ -1329,13 +1361,22 @@ async def outlook_trash(
     # Tier gate (#1859) — trash = `delete` tier (above read). Operator-proof
     # required AFTER Layer-0; 403 if absent (when the gate is ACTIVE). Dormant
     # when OPERATOR_ACTION_KEY is unset (fail-open).
-    _enforce_operator_tier_or_403(EmailTier.DELETE, operator_proof)
+    # dry_run is a read-only preview — the operator-proof gate is SKIPPED.
+    if not body.dry_run:
+        _enforce_operator_tier_or_403(EmailTier.DELETE, operator_proof)
 
     if body.message_ids is not None:
         ids = list(body.message_ids)
 
         if not ids:
-            return OutlookTrashResponse(trashed_count=0, trashed_ids=[], errors=[])
+            return OutlookTrashResponse(
+                trashed_count=0,
+                trashed_ids=[],
+                errors=[],
+                dry_run=body.dry_run,
+                would_affect_count=0 if body.dry_run else None,
+                would_affect_ids=[] if body.dry_run else None,
+            )
 
         # FIX-6 (#1609): Layer 3 — bulk threshold fires BEFORE auth in message_ids mode.
         _bulk_check_or_400(len(ids), force)
@@ -1347,6 +1388,7 @@ async def outlook_trash(
         creds = await _require_outlook_creds(session_project_id, session)
 
         # Pay list units before we know the count — honest accounting.
+        # dry_run still pays list units (the upstream list call happens).
         _outlook_cap_check_or_429(session_project_id, _OUTLOOK_LIST_UNITS_PER_CALL, "list")
         try:
             ids = await run_in_threadpool(
@@ -1368,10 +1410,32 @@ async def outlook_trash(
         )
 
         if not ids:
-            return OutlookTrashResponse(trashed_count=0, trashed_ids=[], errors=[])
+            return OutlookTrashResponse(
+                trashed_count=0,
+                trashed_ids=[],
+                errors=[],
+                dry_run=body.dry_run,
+                would_affect_count=0 if body.dry_run else None,
+                would_affect_ids=[] if body.dry_run else None,
+            )
 
         # Layer 3 — bulk threshold fires AFTER list in query mode (count unknown before).
         _bulk_check_or_400(len(ids), force)
+
+    # dry_run: return preview without moving anything. No trash units charged,
+    # no trash_messages call, no _write_action_audit (nothing happened).
+    if body.dry_run:
+        gate.log_audit(
+            "outlook", session_project_id, "trash_dryrun", 0, success=True,
+        )
+        return OutlookTrashResponse(
+            trashed_count=0,
+            trashed_ids=[],
+            errors=[],
+            dry_run=True,
+            would_affect_count=len(ids),
+            would_affect_ids=list(ids),
+        )
 
     # Layer 1 — daily-units cap for the trash workload.
     total_units = _OUTLOOK_TRASH_UNITS_PER_MESSAGE * len(ids)
