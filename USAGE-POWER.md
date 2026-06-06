@@ -139,6 +139,8 @@ Lead: (spawns agents from another-project's team, uses another-project's standar
 
 READ tier fires with no prompt and succeeds immediately — only a units-trail row (no email content) is recorded; see the Privacy note below. Tier-1 fires with no prompt; the agent calls the endpoint and succeeds immediately. Tier-2 requires operator-proof: the agent must present the `X-Operator-Token` header matching the server's `OPERATOR_ACTION_KEY` (set in the api `.env`). If the key is unset, the gate is dormant (fail-open) — existing workflows are unaffected until you activate enforcement by setting the key.
 
+**Dry-run preview for trash:** Both Gmail and Outlook `trash` endpoints accept `dry_run: true` in the request body, which returns `{would_affect_count, would_affect_ids, dry_run: true}` without deleting anything. The preview does NOT require operator-proof (it is read-only); use it to confirm blast radius before the actual deletion.
+
 **Permanent delete is ALWAYS denied** (neither auto nor operator-proof unlocks it).
 
 **READ tier actions — search and get:**
