@@ -419,3 +419,169 @@ class OutlookDraftResponse(BaseModel):
 
     draft_id: str
     message_id: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Kanban #1939 — READ schemas (search + get) — Gmail + Outlook
+# ---------------------------------------------------------------------------
+#
+# READ tier: auto-approve (no operator-proof). Body content is returned in the
+# response but MUST NOT appear in any log, audit trail, or error detail.
+
+
+class GmailSearchRequest(BaseModel):
+    """Search Gmail and return metadata (no body). READ tier — auto-approve."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(
+        ...,
+        min_length=1,
+        max_length=1024,
+        description="Gmail search query — e.g. 'from:foo@bar.com is:unread'.",
+    )
+    max_results: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="Maximum number of messages to return (1–50).",
+    )
+
+
+class GmailSearchItem(BaseModel):
+    """Metadata for a single Gmail message returned by search."""
+
+    id: str
+    thread_id: str | None = None
+    from_: str | None = Field(default=None, alias="from")
+    subject: str | None = None
+    date: str | None = None
+    snippet: str | None = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class GmailSearchResponse(BaseModel):
+    """Result of a Gmail search call — metadata only (no body)."""
+
+    results: list[GmailSearchItem]
+    count: int
+
+
+class GmailGetRequest(BaseModel):
+    """Fetch the full content of a single Gmail message by id. READ tier."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str = Field(
+        ...,
+        description="Gmail message id (hex, e.g. '18b3f1a2c9d4e5f6').",
+    )
+
+    @model_validator(mode="after")
+    def _check_id(self) -> "GmailGetRequest":
+        # FIX-7 (#1939): Pydantic coerces to str before mode="after" validators;
+        # no need for isinstance check.
+        mid = self.message_id
+        if not (1 <= len(mid) <= 64):
+            raise ValueError("message_id must be a non-empty string <=64 chars.")
+        if not _MID_ALLOWED.fullmatch(mid):
+            raise ValueError(
+                "message_id contains disallowed characters; allowed: A-Z a-z 0-9 _ - = +"
+            )
+        return self
+
+
+class GmailGetResponse(BaseModel):
+    """Full content of a single Gmail message. body_text MUST NOT be logged."""
+
+    id: str
+    thread_id: str | None = None
+    from_: str | None = Field(default=None, alias="from")
+    to: str | None = None
+    subject: str | None = None
+    date: str | None = None
+    body_text: str
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class OutlookSearchRequest(BaseModel):
+    """Search Outlook/Graph and return metadata (no body). READ tier — auto-approve."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(
+        ...,
+        min_length=1,
+        max_length=1024,
+        description=(
+            "Microsoft Graph $search KQL query — "
+            "e.g. 'from:foo@bar.com AND subject:invoice'. "
+            "Syntax is NOT identical to Gmail."
+        ),
+    )
+    max_results: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="Maximum number of messages to return (1–50).",
+    )
+
+
+class OutlookSearchItem(BaseModel):
+    """Metadata for a single Outlook message returned by search."""
+
+    id: str
+    thread_id: str | None = None
+    from_: str | None = Field(default=None, alias="from")
+    subject: str | None = None
+    date: str | None = None
+    snippet: str | None = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class OutlookSearchResponse(BaseModel):
+    """Result of an Outlook search call — metadata only (no body)."""
+
+    results: list[OutlookSearchItem]
+    count: int
+
+
+class OutlookGetRequest(BaseModel):
+    """Fetch the full content of a single Outlook message by id. READ tier."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str = Field(
+        ...,
+        description="Outlook/Graph message id (base64url, typically ~150 chars).",
+    )
+
+    @model_validator(mode="after")
+    def _check_id(self) -> "OutlookGetRequest":
+        # FIX-7 (#1939): Pydantic coerces to str before mode="after" validators;
+        # no need for isinstance check.
+        mid = self.message_id
+        if not (1 <= len(mid) <= 512):
+            raise ValueError("message_id must be a non-empty string <=512 chars.")
+        if not _MID_ALLOWED.fullmatch(mid):
+            raise ValueError(
+                "message_id contains disallowed characters; allowed: A-Z a-z 0-9 _ - = +"
+            )
+        return self
+
+
+class OutlookGetResponse(BaseModel):
+    """Full content of a single Outlook message. body_text MUST NOT be logged."""
+
+    id: str
+    thread_id: str | None = None
+    from_: str | None = Field(default=None, alias="from")
+    to: str | None = None
+    subject: str | None = None
+    date: str | None = None
+    body_text: str
+
+    model_config = ConfigDict(populate_by_name=True)

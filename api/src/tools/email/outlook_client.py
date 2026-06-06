@@ -36,8 +36,10 @@ Karpathy cuts (matches Gmail):
 from __future__ import annotations
 
 import datetime
+import html
 import logging
 import os
+import re
 import secrets
 import time
 from typing import Any
@@ -46,6 +48,11 @@ import httpx
 import msal
 
 logger = logging.getLogger(__name__)
+
+# FIX-2 (#1939): defense-in-depth id validation inside the client.
+# Same charset as Gmail _ID_RE plus the 512-char Outlook length bound.
+# Defined independently here to avoid a router/schema import cycle.
+_ID_RE = re.compile(r"^[A-Za-z0-9_\-=+]+$")
 
 # Mail.ReadWrite — the minimal Graph scope that covers reading folders and
 # moving messages to Deleted Items. Form expected by msal: bare permission
@@ -500,6 +507,158 @@ def archive(creds: dict[str, Any], message_ids: list[str]) -> tuple[list[str], l
                 }
             )
     return modified, errors
+
+
+# ---------------------------------------------------------------------------
+# Kanban #1939 — READ endpoints (search + get)
+# ---------------------------------------------------------------------------
+
+
+def search_messages(
+    creds: dict[str, Any], query: str, max_results: int = 10
+) -> list[dict]:
+    """Search the mailbox using Graph $search and return metadata for up to max_results messages.
+
+    Extends the `list_message_ids` pattern: requests $select=id,conversationId,
+    from,subject,receivedDateTime,bodyPreview so the FIRST call already carries
+    all metadata (no second per-message round-trip unlike Gmail's metadata mode).
+
+    Returns a list of:
+      {id, thread_id, from, subject, date, snippet}
+
+    ConsistencyLevel: eventual is REQUIRED by Graph for $search — omitting it
+    yields 400. The nextLink SSRF guard from list_message_ids is applied here too.
+
+    PRIVACY: bodyPreview is a short system-generated preview (not the full body).
+    It is surfaced in the response only, never written to any log or audit trail.
+
+    Caller is responsible for cap enforcement BEFORE invoking.
+    """
+    # FIX-6 (#1939): schema caps max_results at 50; $top already covers it.
+    # The while/nextLink pagination loop never iterated a second time (50 < 1000).
+    # Replace with a single Graph request — simpler, no nextLink SSRF surface here.
+    access_token = _acquire_silent(creds)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "ConsistencyLevel": "eventual",
+    }
+    # KQL phrase-escape: internal double-quotes doubled per KQL spec.
+    escaped_query = query.replace('"', '""')
+    params: dict[str, Any] = {
+        "$search": f'"{escaped_query}"',
+        "$select": "id,conversationId,from,subject,receivedDateTime,bodyPreview",
+        "$top": max_results,
+    }
+    url = f"{_GRAPH_BASE}/me/messages"
+    resp = _graph_request_with_retry("GET", url, headers=headers, params=params)
+    resp.raise_for_status()
+    data = resp.json()
+
+    results: list[dict] = []
+    for msg in (data.get("value", []) or [])[:max_results]:
+        # Graph `from` field shape: {"emailAddress": {"name": ..., "address": ...}}
+        from_obj = msg.get("from") or {}
+        from_addr = (from_obj.get("emailAddress") or {})
+        from_str = from_addr.get("address") or from_addr.get("name")
+        results.append(
+            {
+                "id": msg.get("id"),
+                "thread_id": msg.get("conversationId"),
+                "from": from_str,
+                "subject": msg.get("subject"),
+                "date": msg.get("receivedDateTime"),
+                "snippet": msg.get("bodyPreview"),
+            }
+        )
+    return results
+
+
+def get_message(creds: dict[str, Any], message_id: str) -> dict:
+    """Fetch a single Outlook message and return its content.
+
+    Uses Graph GET /me/messages/{id} with $select for relevant fields plus the
+    `Prefer: outlook.body-content-type="text"` header so Graph returns the body
+    as plain text (not HTML). Falls back to stripping HTML tags if the response
+    comes back as HTML despite the Prefer header.
+
+    Returns:
+      {id, thread_id, from, to, subject, date, body_text}
+
+    PRIVACY: body_text MUST NOT be logged, written to any audit trail, or echoed
+    in error responses. Error paths use only type(exc).__name__.
+
+    Caller is responsible for cap enforcement BEFORE invoking.
+    """
+    # FIX-2 (#1939): defense-in-depth — validate id before interpolating into URL.
+    # Outlook ids are up to 512 chars; same charset as Gmail.
+    if not (1 <= len(message_id) <= 512) or not _ID_RE.fullmatch(message_id):
+        raise ValueError("invalid message_id")
+
+    access_token = _acquire_silent(creds)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        # Ask Graph to return the body as plain text; some accounts still return
+        # HTML depending on the message — the caller gets whatever is available.
+        "Prefer": 'outlook.body-content-type="text"',
+    }
+    params: dict[str, Any] = {
+        "$select": "id,conversationId,from,toRecipients,subject,receivedDateTime,body",
+    }
+    url = f"{_GRAPH_BASE}/me/messages/{message_id}"
+    resp = _graph_request_with_retry("GET", url, headers=headers, params=params)
+    resp.raise_for_status()
+    data = resp.json()
+
+    # from field: {"emailAddress": {"address": ..., "name": ...}}
+    from_obj = data.get("from") or {}
+    from_addr_obj = from_obj.get("emailAddress") or {}
+    from_str = from_addr_obj.get("address") or from_addr_obj.get("name")
+
+    # toRecipients: list of {"emailAddress": {"address": ..., "name": ...}}
+    to_parts = []
+    for rec in data.get("toRecipients", []) or []:
+        addr_obj = (rec.get("emailAddress") or {})
+        addr = addr_obj.get("address") or addr_obj.get("name")
+        if addr:
+            to_parts.append(addr)
+    to_str = ", ".join(to_parts) if to_parts else None
+
+    body_obj = data.get("body") or {}
+    body_text = body_obj.get("content", "") or ""
+    # If Graph returned HTML despite the Prefer header, strip tags minimally.
+    if body_obj.get("contentType", "").lower() == "html" and "<" in body_text:
+        body_text = _strip_html(body_text)
+
+    return {
+        "id": data.get("id"),
+        "thread_id": data.get("conversationId"),
+        "from": from_str,
+        "to": to_str,
+        "subject": data.get("subject"),
+        "date": data.get("receivedDateTime"),
+        "body_text": body_text,
+    }
+
+
+def _strip_html(raw_html: str) -> str:
+    """Minimal HTML tag stripper for fallback body-content-type conversion.
+
+    Removes <...> tags then decodes HTML entities with stdlib html.unescape
+    (covers &quot;, &apos;, numeric entities, etc.). Not a full sanitiser —
+    just enough to present readable text when Graph ignores the Prefer header.
+
+    FIX-3 (#1939): cap input to 500_000 chars to guard against pathologically
+    large bodies; use html.unescape instead of manual entity replacement.
+    PRIVACY: return value must never be logged.
+    """
+    # FIX-3 (#1939): cap input size before processing.
+    if len(raw_html) > 500_000:
+        raw_html = raw_html[:500_000]
+    text = re.sub(r"<[^>]+>", "", raw_html)
+    text = html.unescape(text)
+    return text
 
 
 def save_draft(creds: dict[str, Any], *, to: str, subject: str, body: str) -> dict:

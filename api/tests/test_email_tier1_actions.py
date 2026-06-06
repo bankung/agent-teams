@@ -1186,3 +1186,464 @@ def test_log_audit_does_not_raise_on_mkdir_oserror(monkeypatch):
 
     result = gate.log_audit("outlook", 2, "archive", 5, success=False)
     assert result is None
+
+
+# ===========================================================================
+# Kanban #1939 — READ endpoints: search + get (Gmail + Outlook)
+# ===========================================================================
+#
+# Gate chain under test: Layer-0 → tier(READ, no-op) → auth → cap → client →
+# gate.log_audit. NO _write_action_audit for reads (mutations only).
+#
+# Privacy assertion (body_text never in audit): gate.log_audit records only
+# {provider, action, units, success, error_code?} — body_text must NOT appear.
+#
+# Tests use two separate project ids to stay hermetic from the MODIFY blocks
+# above, which use _PROJ=9997 and _PROJ_OL=9996.
+
+_PROJ_GS = 9995  # Gmail search/get tests
+_PROJ_OS = 9994  # Outlook search/get tests
+_HDR_GS = {"X-Project-Id": str(_PROJ_GS)}
+_HDR_OS = {"X-Project-Id": str(_PROJ_OS)}
+
+
+def _fake_gmail_creds_read() -> object:
+    from unittest.mock import MagicMock
+    from google.oauth2.credentials import Credentials as RealCreds
+    import datetime as _dt
+    creds = MagicMock(spec=RealCreds)
+    creds.expiry = _dt.datetime(2099, 1, 1, 0, 0, 0)
+    creds._at_email_cache = "test@gmail.com"
+    return creds
+
+
+def _fake_outlook_creds_read() -> dict:
+    import time
+    return {
+        "access_token": "fake-outlook-read-token",
+        "expires_in": 3600,
+        "_acquired_at": time.time(),
+    }
+
+
+@pytest.fixture(autouse=True)
+def _clean_read_stores():
+    """Clear the in-memory stores for both read-test project ids between tests."""
+    from src.tools.email import gate, token_store
+    import datetime as _dt
+    today = _dt.datetime.now(_dt.UTC).date().isoformat()
+    for key in [("gmail", _PROJ_GS), ("outlook", _PROJ_OS)]:
+        token_store._CACHE.pop(key, None)
+    for key in [(_PROJ_GS, today), (_PROJ_OS, today)]:
+        gate._DAILY_UNITS.pop(key, None)
+    yield
+    for key in [("gmail", _PROJ_GS), ("outlook", _PROJ_OS)]:
+        token_store._CACHE.pop(key, None)
+    for key in [(_PROJ_GS, today), (_PROJ_OS, today)]:
+        gate._DAILY_UNITS.pop(key, None)
+
+
+def _seed_gmail_read_creds(monkeypatch):
+    from src.tools.email import token_store
+    token_store._CACHE[("gmail", _PROJ_GS)] = _fake_gmail_creds_read()
+    monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "1000")
+
+
+def _seed_outlook_read_creds(monkeypatch):
+    from src.tools.email import token_store
+    token_store._CACHE[("outlook", _PROJ_OS)] = _fake_outlook_creds_read()
+    monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "1000")
+
+
+# ===== Gmail search =====
+
+
+@pytest.mark.asyncio
+async def test_gmail_search_success_returns_metadata_shape(client, monkeypatch, _actions_to_tmp):
+    """AC: /gmail/search returns 200 with the expected metadata shape.
+
+    POSITIVE: search_messages is called; result includes all metadata fields.
+    NO body_text in the response (metadata-only endpoint).
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_gmail_read_creds(monkeypatch)
+    from src.tools.email import gmail_client
+
+    fake_items = [
+        {"id": "msg001", "thread_id": "thr001", "from": "alice@x.com",
+         "subject": "Hello", "date": "Mon, 1 Jan 2024 10:00:00 +0000", "snippet": "Hi there"},
+    ]
+    monkeypatch.setattr(
+        gmail_client, "search_messages",
+        lambda creds, query, max_results: fake_items,
+    )
+
+    resp = await client.post(
+        f"{_BASE}/gmail/search",
+        headers=_HDR_GS,
+        json={"query": "from:alice@x.com", "max_results": 10},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["count"] == 1
+    item = body["results"][0]
+    assert item["id"] == "msg001"
+    assert item["thread_id"] == "thr001"
+    assert item["from"] == "alice@x.com"
+    assert item["subject"] == "Hello"
+    assert item["snippet"] == "Hi there"
+    assert "body_text" not in item
+
+
+@pytest.mark.asyncio
+async def test_gmail_search_layer0_denial_403(client, monkeypatch):
+    """AC: /gmail/search 403s on Layer-0 grant denial; search_messages NOT called."""
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_gmail_read_creds(monkeypatch)
+    from src.tools.email import gmail_client
+    from src.services import tool_grants as tg
+
+    real_check = tg.check_grant
+
+    def _deny_check(config, role, tool_name, *, project_id=None):
+        if role == "locked-role":
+            return tg.GrantDecision.DENY
+        return real_check(config, role, tool_name, project_id=project_id)
+
+    monkeypatch.setattr(tools_email, "check_grant", _deny_check)
+    called: list = []
+    monkeypatch.setattr(
+        gmail_client, "search_messages",
+        lambda *a, **k: called.append(1) or [],
+    )
+
+    resp = await client.post(
+        f"{_BASE}/gmail/search",
+        headers={**_HDR_GS, "X-Agent-Role": "locked-role"},
+        json={"query": "test"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert "tool_grant_denied" in resp.json()["detail"]
+    assert called == [], "search_messages must NOT run when Layer-0 denies"
+
+
+@pytest.mark.asyncio
+async def test_gmail_search_401_no_auth(client, monkeypatch):
+    """/gmail/search returns 401 when no Gmail creds are present."""
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "1000")
+    # Deliberately do NOT seed Gmail creds for _PROJ_GS.
+    resp = await client.post(
+        f"{_BASE}/gmail/search", headers=_HDR_GS, json={"query": "test"},
+    )
+    assert resp.status_code == 401, resp.text
+
+
+@pytest.mark.asyncio
+async def test_gmail_search_cap_429(client, monkeypatch):
+    """/gmail/search returns 429 when the daily cap is exhausted."""
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_gmail_read_creds(monkeypatch)
+    monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "0")
+
+    resp = await client.post(
+        f"{_BASE}/gmail/search", headers=_HDR_GS, json={"query": "test"},
+    )
+    assert resp.status_code == 429, resp.text
+
+
+# ===== Gmail get =====
+
+
+@pytest.mark.asyncio
+async def test_gmail_get_success_returns_body(client, monkeypatch, _actions_to_tmp):
+    """AC: /gmail/get returns 200 with the expected shape including body_text.
+
+    POSITIVE: get_message is called; response contains body_text.
+    PRIVACY: audit JSONL row does NOT contain body_text.
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_gmail_read_creds(monkeypatch)
+    from src.tools.email import gmail_client, gate
+
+    secret_body = "Secret message content for test"
+    fake_msg = {
+        "id": "msg001", "thread_id": "thr001",
+        "from": "alice@x.com", "to": "bob@y.com",
+        "subject": "Hello", "date": "Mon, 1 Jan 2024 10:00:00 +0000",
+        "body_text": secret_body,
+    }
+    monkeypatch.setattr(
+        gmail_client, "get_message",
+        lambda creds, message_id: fake_msg,
+    )
+
+    # Redirect gate audit to tmp so we can assert privacy.
+    import json as _json
+    from pathlib import Path as _Path
+    audit_rows: list[dict] = []
+
+    def _fake_log_audit(provider, pid, action, units, success, error_code=None):
+        audit_rows.append({"provider": provider, "action": action,
+                           "units": units, "success": success})
+
+    monkeypatch.setattr(gate, "log_audit", _fake_log_audit)
+
+    resp = await client.post(
+        f"{_BASE}/gmail/get", headers=_HDR_GS,
+        json={"message_id": "msg001"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["id"] == "msg001"
+    assert body["body_text"] == secret_body
+    assert body["from"] == "alice@x.com"
+
+    # PRIVACY: audit rows must NOT contain body_text.
+    for row in audit_rows:
+        row_str = _json.dumps(row)
+        assert secret_body not in row_str, (
+            f"body_text leaked into audit row: {row_str}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_gmail_get_401_no_auth(client, monkeypatch):
+    """/gmail/get returns 401 when no Gmail creds are present."""
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "1000")
+    resp = await client.post(
+        f"{_BASE}/gmail/get", headers=_HDR_GS,
+        json={"message_id": "abc123def456"},
+    )
+    assert resp.status_code == 401, resp.text
+
+
+# ===== Outlook search =====
+
+
+@pytest.mark.asyncio
+async def test_outlook_search_success_returns_metadata_shape(client, monkeypatch, _actions_to_tmp):
+    """AC: /outlook/search returns 200 with the expected metadata shape.
+
+    POSITIVE: search_messages is called; result includes all metadata fields.
+    NO body_text in response (metadata-only endpoint).
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_outlook_read_creds(monkeypatch)
+    from src.tools.email import outlook_client
+
+    fake_items = [
+        {"id": "olMsg001", "thread_id": "olConv001", "from": "alice@x.com",
+         "subject": "Invoice Q1", "date": "2024-01-01T10:00:00Z", "snippet": "Please find"},
+    ]
+    monkeypatch.setattr(
+        outlook_client, "search_messages",
+        lambda creds, query, max_results: fake_items,
+    )
+
+    resp = await client.post(
+        f"{_BASE}/outlook/search",
+        headers=_HDR_OS,
+        json={"query": "from:alice@x.com", "max_results": 10},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["count"] == 1
+    item = body["results"][0]
+    assert item["id"] == "olMsg001"
+    assert item["thread_id"] == "olConv001"
+    assert item["from"] == "alice@x.com"
+    assert item["subject"] == "Invoice Q1"
+    assert item["snippet"] == "Please find"
+    assert "body_text" not in item
+
+
+@pytest.mark.asyncio
+async def test_outlook_search_layer0_denial_403(client, monkeypatch):
+    """AC: /outlook/search 403s on Layer-0 grant denial; search_messages NOT called."""
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_outlook_read_creds(monkeypatch)
+    from src.tools.email import outlook_client
+    from src.services import tool_grants as tg
+
+    real_check = tg.check_grant
+
+    def _deny_check(config, role, tool_name, *, project_id=None):
+        if role == "locked-role":
+            return tg.GrantDecision.DENY
+        return real_check(config, role, tool_name, project_id=project_id)
+
+    monkeypatch.setattr(tools_email, "check_grant", _deny_check)
+    called: list = []
+    monkeypatch.setattr(
+        outlook_client, "search_messages",
+        lambda *a, **k: called.append(1) or [],
+    )
+
+    resp = await client.post(
+        f"{_BASE}/outlook/search",
+        headers={**_HDR_OS, "X-Agent-Role": "locked-role"},
+        json={"query": "test"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert "tool_grant_denied" in resp.json()["detail"]
+    assert called == [], "search_messages must NOT run when Layer-0 denies"
+
+
+@pytest.mark.asyncio
+async def test_outlook_search_401_no_auth(client, monkeypatch):
+    """/outlook/search returns 401 when no Outlook creds are present."""
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "1000")
+    resp = await client.post(
+        f"{_BASE}/outlook/search", headers=_HDR_OS, json={"query": "test"},
+    )
+    assert resp.status_code == 401, resp.text
+
+
+@pytest.mark.asyncio
+async def test_outlook_search_cap_429(client, monkeypatch):
+    """/outlook/search returns 429 when the daily cap is exhausted."""
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_outlook_read_creds(monkeypatch)
+    monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "0")
+
+    resp = await client.post(
+        f"{_BASE}/outlook/search", headers=_HDR_OS, json={"query": "test"},
+    )
+    assert resp.status_code == 429, resp.text
+
+
+# ===== Outlook get =====
+
+
+@pytest.mark.asyncio
+async def test_outlook_get_success_returns_body(client, monkeypatch, _actions_to_tmp):
+    """AC: /outlook/get returns 200 with the expected shape including body_text.
+
+    POSITIVE: get_message is called; response contains body_text.
+    PRIVACY: audit row does NOT contain body_text.
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_outlook_read_creds(monkeypatch)
+    from src.tools.email import outlook_client, gate
+
+    secret_body = "Outlook secret message body content"
+    fake_msg = {
+        "id": "olMsg001", "thread_id": "olConv001",
+        "from": "alice@x.com", "to": "bob@y.com",
+        "subject": "Invoice", "date": "2024-01-01T10:00:00Z",
+        "body_text": secret_body,
+    }
+    monkeypatch.setattr(
+        outlook_client, "get_message",
+        lambda creds, message_id: fake_msg,
+    )
+
+    import json as _json
+    audit_rows: list[dict] = []
+
+    def _fake_log_audit(provider, pid, action, units, success, error_code=None):
+        audit_rows.append({"provider": provider, "action": action,
+                           "units": units, "success": success})
+
+    monkeypatch.setattr(gate, "log_audit", _fake_log_audit)
+
+    resp = await client.post(
+        f"{_BASE}/outlook/get", headers=_HDR_OS,
+        json={"message_id": "olMsg001"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["id"] == "olMsg001"
+    assert body["body_text"] == secret_body
+    assert body["from"] == "alice@x.com"
+
+    # PRIVACY: audit rows must NOT contain body_text.
+    for row in audit_rows:
+        row_str = _json.dumps(row)
+        assert secret_body not in row_str, (
+            f"body_text leaked into audit row: {row_str}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_outlook_get_401_no_auth(client, monkeypatch):
+    """/outlook/get returns 401 when no Outlook creds are present."""
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "1000")
+    resp = await client.post(
+        f"{_BASE}/outlook/get", headers=_HDR_OS,
+        json={"message_id": "olMsg001"},
+    )
+    assert resp.status_code == 401, resp.text
+
+
+# ===========================================================================
+# FIX-8 (#1939) — message_id validation-rejection coverage (Gmail + Outlook)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_gmail_get_invalid_chars_message_id_422(client, monkeypatch):
+    """FIX-8: /gmail/get rejects message_id with disallowed chars (path-traversal) → 422.
+
+    NEGATIVE lock: the upstream get_message is never called.
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_gmail_read_creds(monkeypatch)
+
+    resp = await client.post(
+        f"{_BASE}/gmail/get",
+        headers=_HDR_GS,
+        json={"message_id": "../etc/passwd"},
+    )
+    assert resp.status_code == 422, f"expected 422, got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.asyncio
+async def test_gmail_get_oversized_message_id_422(client, monkeypatch):
+    """FIX-8: /gmail/get rejects message_id exceeding 64 chars → 422."""
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_gmail_read_creds(monkeypatch)
+
+    oversized_id = "A" * 65  # exceeds Gmail 64-char bound
+    resp = await client.post(
+        f"{_BASE}/gmail/get",
+        headers=_HDR_GS,
+        json={"message_id": oversized_id},
+    )
+    assert resp.status_code == 422, f"expected 422, got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.asyncio
+async def test_outlook_get_invalid_chars_message_id_422(client, monkeypatch):
+    """FIX-8: /outlook/get rejects message_id with disallowed chars (path-traversal) → 422.
+
+    NEGATIVE lock: the upstream get_message is never called.
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_outlook_read_creds(monkeypatch)
+
+    resp = await client.post(
+        f"{_BASE}/outlook/get",
+        headers=_HDR_OS,
+        json={"message_id": "../etc/passwd"},
+    )
+    assert resp.status_code == 422, f"expected 422, got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.asyncio
+async def test_outlook_get_oversized_message_id_422(client, monkeypatch):
+    """FIX-8: /outlook/get rejects message_id exceeding 512 chars → 422."""
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_outlook_read_creds(monkeypatch)
+
+    oversized_id = "A" * 513  # exceeds Outlook 512-char bound
+    resp = await client.post(
+        f"{_BASE}/outlook/get",
+        headers=_HDR_OS,
+        json={"message_id": oversized_id},
+    )
+    assert resp.status_code == 422, f"expected 422, got {resp.status_code}: {resp.text}"

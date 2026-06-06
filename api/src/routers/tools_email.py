@@ -45,8 +45,13 @@ from src.schemas.tools_email import (
     GmailCallbackResponse,
     GmailDraftRequest,
     GmailDraftResponse,
+    GmailGetRequest,
+    GmailGetResponse,
     GmailMarkRequest,
     GmailModifyResponse,
+    GmailSearchRequest,
+    GmailSearchResponse,
+    GmailSearchItem,
     GmailTrashRequest,
     GmailTrashResponse,
     OutlookArchiveRequest,
@@ -54,8 +59,13 @@ from src.schemas.tools_email import (
     OutlookCallbackResponse,
     OutlookDraftRequest,
     OutlookDraftResponse,
+    OutlookGetRequest,
+    OutlookGetResponse,
     OutlookMarkRequest,
     OutlookModifyResponse,
+    OutlookSearchRequest,
+    OutlookSearchResponse,
+    OutlookSearchItem,
     OutlookTrashRequest,
     OutlookTrashResponse,
     UsageResponse,
@@ -847,6 +857,119 @@ async def gmail_draft(
     )
 
 
+# ---------------------------------------------------------------------------
+# Gmail — READ actions (Kanban #1939: search + get)
+# ---------------------------------------------------------------------------
+#
+# READ tier — auto-approve: no operator-proof, no _write_action_audit. Gate
+# chain: Layer-0 tool-grant → tier gate (no-op for READ) → auth → cap →
+# upstream → gate.log_audit (units trail only; NO body/query in audit).
+#
+# Unit costs — small READ cost to account for upstream API calls:
+#   search: 5 units per call (one list + up to max_results metadata fetches;
+#           we charge flat 5 to keep it simple, matching _LIST_UNITS_PER_CALL).
+#   get:    5 units per call (one full-message fetch).
+
+_SEARCH_UNITS_PER_CALL = 5  # same magnitude as _LIST_UNITS_PER_CALL.
+_GET_UNITS_PER_MESSAGE = 5  # one full-message GET.
+
+
+@router.post("/gmail/search", response_model=GmailSearchResponse)
+async def gmail_search(
+    body: GmailSearchRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> GmailSearchResponse:
+    """Search Gmail and return message metadata (no body). READ tier — auto-approve.
+
+    Layer 0 (#1799): `gmail.search` must be granted to the X-Agent-Role (if the
+    role is restricted). Fires first.
+
+    Tier gate (#1859): READ is OPEN — no operator-proof required. The call is
+    still made in the same Layer-0 → tier order for uniformity (no-op here).
+
+    PRIVACY: query, subject, sender, snippet MUST NOT appear in gate.log_audit
+    or any logger call. Only {provider, action, units, success} are recorded.
+    """
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "gmail.search"
+    )
+    _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
+
+    creds = await _require_creds(session_project_id, session)
+    _cap_check_or_429(session_project_id, _SEARCH_UNITS_PER_CALL, "search")
+
+    try:
+        items = await run_in_threadpool(
+            gmail_client.search_messages, creds, body.query, body.max_results
+        )
+    except Exception as exc:
+        gate.log_audit(
+            "gmail", session_project_id, "search", _SEARCH_UNITS_PER_CALL,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("gmail search failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "gmail_search_failed", "class": type(exc).__name__},
+        ) from exc
+
+    gate.log_audit(
+        "gmail", session_project_id, "search", _SEARCH_UNITS_PER_CALL, success=True,
+    )
+    search_items = [GmailSearchItem.model_validate(m) for m in items]
+    return GmailSearchResponse(results=search_items, count=len(search_items))
+
+
+@router.post("/gmail/get", response_model=GmailGetResponse)
+async def gmail_get(
+    body: GmailGetRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> GmailGetResponse:
+    """Fetch the full content of a single Gmail message. READ tier — auto-approve.
+
+    Layer 0 (#1799): `gmail.get` must be granted to the X-Agent-Role (if the
+    role is restricted). Fires first.
+
+    Tier gate (#1859): READ is OPEN — no operator-proof required.
+
+    PRIVACY: body_text MUST NOT appear in gate.log_audit, any logger call, or
+    HTTP error detail. Only type(exc).__name__ is used in error paths.
+    """
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "gmail.get"
+    )
+    _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
+
+    creds = await _require_creds(session_project_id, session)
+    _cap_check_or_429(session_project_id, _GET_UNITS_PER_MESSAGE, "get")
+
+    try:
+        data = await run_in_threadpool(
+            gmail_client.get_message, creds, body.message_id
+        )
+    except Exception as exc:
+        gate.log_audit(
+            "gmail", session_project_id, "get", _GET_UNITS_PER_MESSAGE,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("gmail get failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "gmail_get_failed", "class": type(exc).__name__},
+        ) from exc
+
+    gate.log_audit(
+        "gmail", session_project_id, "get", _GET_UNITS_PER_MESSAGE, success=True,
+    )
+    return GmailGetResponse.model_validate(data)
+
+
 # >>> #1608 OUTLOOK ROUTES BELOW — append-only zone for parallel dev coordination
 
 
@@ -1319,3 +1442,111 @@ async def outlook_draft(
     return OutlookDraftResponse(
         draft_id=draft_id, message_id=created.get("message_id")
     )
+
+
+# ---------------------------------------------------------------------------
+# Outlook — READ actions (Kanban #1939: search + get)
+# ---------------------------------------------------------------------------
+#
+# READ tier — auto-approve: no operator-proof, no _write_action_audit. Gate
+# chain mirrors Gmail read routes byte-for-byte but uses the outlook provider
+# + _outlook_cap_check_or_429 + _require_outlook_creds.
+#
+# Unit costs mirror the Gmail READ constants (provider-agnostic cost parity).
+_OUTLOOK_SEARCH_UNITS_PER_CALL = 5  # one Graph $search call.
+_OUTLOOK_GET_UNITS_PER_MESSAGE = 5  # one full-message GET.
+
+
+@router.post("/outlook/search", response_model=OutlookSearchResponse)
+async def outlook_search(
+    body: OutlookSearchRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> OutlookSearchResponse:
+    """Search Outlook and return message metadata (no body). READ tier — auto-approve.
+
+    Layer 0 (#1799): `outlook.search` must be granted to the X-Agent-Role (if the
+    role is restricted). Fires first.
+
+    Tier gate (#1859): READ is OPEN — no operator-proof required.
+
+    PRIVACY: query, subject, sender, snippet MUST NOT appear in gate.log_audit
+    or any logger call. Only {provider, action, units, success} are recorded.
+    """
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "outlook.search"
+    )
+    _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
+
+    creds = await _require_outlook_creds(session_project_id, session)
+    _outlook_cap_check_or_429(session_project_id, _OUTLOOK_SEARCH_UNITS_PER_CALL, "search")
+
+    try:
+        items = await run_in_threadpool(
+            outlook_client.search_messages, creds, body.query, body.max_results
+        )
+    except Exception as exc:
+        gate.log_audit(
+            "outlook", session_project_id, "search", _OUTLOOK_SEARCH_UNITS_PER_CALL,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("outlook search failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "outlook_search_failed", "class": type(exc).__name__},
+        ) from exc
+
+    gate.log_audit(
+        "outlook", session_project_id, "search", _OUTLOOK_SEARCH_UNITS_PER_CALL, success=True,
+    )
+    search_items = [OutlookSearchItem.model_validate(m) for m in items]
+    return OutlookSearchResponse(results=search_items, count=len(search_items))
+
+
+@router.post("/outlook/get", response_model=OutlookGetResponse)
+async def outlook_get(
+    body: OutlookGetRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> OutlookGetResponse:
+    """Fetch the full content of a single Outlook message. READ tier — auto-approve.
+
+    Layer 0 (#1799): `outlook.get` must be granted to the X-Agent-Role (if the
+    role is restricted). Fires first.
+
+    Tier gate (#1859): READ is OPEN — no operator-proof required.
+
+    PRIVACY: body_text MUST NOT appear in gate.log_audit, any logger call, or
+    HTTP error detail. Only type(exc).__name__ is used in error paths.
+    """
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "outlook.get"
+    )
+    _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
+
+    creds = await _require_outlook_creds(session_project_id, session)
+    _outlook_cap_check_or_429(session_project_id, _OUTLOOK_GET_UNITS_PER_MESSAGE, "get")
+
+    try:
+        data = await run_in_threadpool(
+            outlook_client.get_message, creds, body.message_id
+        )
+    except Exception as exc:
+        gate.log_audit(
+            "outlook", session_project_id, "get", _OUTLOOK_GET_UNITS_PER_MESSAGE,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("outlook get failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "outlook_get_failed", "class": type(exc).__name__},
+        ) from exc
+
+    gate.log_audit(
+        "outlook", session_project_id, "get", _OUTLOOK_GET_UNITS_PER_MESSAGE, success=True,
+    )
+    return OutlookGetResponse.model_validate(data)

@@ -28,9 +28,11 @@ Project-id binding:
 
 from __future__ import annotations
 
+import base64
 import datetime
 import logging
 import os
+import re
 import secrets
 from typing import Any
 
@@ -41,6 +43,11 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 logger = logging.getLogger(__name__)
+
+# FIX-2 (#1939): defense-in-depth id validation inside the client.
+# Mirror _MID_ALLOWED in schemas/tools_email.py — defined independently here
+# to avoid a router/schema import cycle.
+_ID_RE = re.compile(r"^[A-Za-z0-9_\-=+]+$")
 
 # Full mail scope — covers read, modify, trash, send, labels, drafts. One
 # consent prompt covers every future endpoint we'd add for the operator.
@@ -319,7 +326,6 @@ def save_draft(creds: Credentials, *, to: str, subject: str, body: str) -> dict:
     higher-tier action. The MIME message is built with stdlib `email.message`
     (UTF-8, base64url-encoded) — no extra dependency.
     """
-    import base64
     from email.message import EmailMessage
 
     service = _build_service(creds)
@@ -341,3 +347,158 @@ def save_draft(creds: Credentials, *, to: str, subject: str, body: str) -> dict:
 
 
 # TODO(#1585 follow-up): Outlook parity for modify_labels/save_draft (mark/archive/draft).
+
+
+# ---------------------------------------------------------------------------
+# Kanban #1939 — READ endpoints (search + get)
+# ---------------------------------------------------------------------------
+
+
+def search_messages(
+    creds: Credentials, query: str, max_results: int = 10
+) -> list[dict]:
+    """Search the mailbox and return metadata for up to max_results messages.
+
+    Uses `users.messages.list` (q=query) to get ids, then fetches each with
+    `format=metadata` (metadataHeaders=From,Subject,Date) so we get preview-
+    level metadata without pulling full bodies.
+
+    Returns a list of:
+      {id, thread_id, from, subject, date, snippet}
+
+    Cost: 5 units for the list call + 5 per metadata-fetch (each is cheap).
+    Caller is responsible for cap enforcement BEFORE invoking.
+    """
+    service = _build_service(creds)
+
+    # 1. List message ids.
+    # FIX-5 (#1939): schema already bounds max_results to <=50; drop redundant cap.
+    list_resp = (
+        service.users()
+        .messages()
+        .list(userId="me", q=query, maxResults=max_results)
+        .execute()
+    )
+    items = list_resp.get("messages", []) or []
+    ids = [m["id"] for m in items[:max_results]]
+
+    if not ids:
+        return []
+
+    # 2. Fetch metadata for each id.
+    results: list[dict] = []
+    for mid in ids:
+        try:
+            msg = (
+                service.users()
+                .messages()
+                .get(
+                    userId="me",
+                    id=mid,
+                    format="metadata",
+                    metadataHeaders=["From", "Subject", "Date"],
+                )
+                .execute()
+            )
+            headers = {
+                h["name"].lower(): h["value"]
+                for h in (msg.get("payload", {}).get("headers", []) or [])
+            }
+            results.append(
+                {
+                    "id": msg.get("id"),
+                    "thread_id": msg.get("threadId"),
+                    "from": headers.get("from"),
+                    "subject": headers.get("subject"),
+                    "date": headers.get("date"),
+                    "snippet": msg.get("snippet"),
+                }
+            )
+        except HttpError as e:
+            logger.warning(
+                "search_messages: metadata fetch failed for id=%s: %s",
+                mid,
+                type(e).__name__,
+            )
+        except Exception as e:
+            logger.warning(
+                "search_messages: unexpected error for id=%s: %s",
+                mid,
+                type(e).__name__,
+            )
+    return results
+
+
+def get_message(creds: Credentials, message_id: str) -> dict:
+    """Fetch a single message in full and return its content.
+
+    Uses `users.messages.get` with format=full. Walks the MIME tree to
+    extract the text/plain part as body_text (falls back to an empty
+    string if no plain-text part is found).
+
+    Returns:
+      {id, thread_id, from, to, subject, date, body_text}
+
+    PRIVACY: body_text MUST NOT be logged, written to any audit trail,
+    or echoed in error responses. Error paths use only type(exc).__name__.
+
+    Caller is responsible for cap enforcement BEFORE invoking.
+    """
+    # FIX-2 (#1939): defense-in-depth — validate id before interpolating into URL.
+    if not _ID_RE.fullmatch(message_id):
+        raise ValueError("invalid message_id")
+
+    service = _build_service(creds)
+    msg = (
+        service.users()
+        .messages()
+        .get(userId="me", id=message_id, format="full")
+        .execute()
+    )
+
+    headers = {
+        h["name"].lower(): h["value"]
+        for h in (msg.get("payload", {}).get("headers", []) or [])
+    }
+
+    body_text = _extract_plain_text(msg.get("payload", {}))
+
+    return {
+        "id": msg.get("id"),
+        "thread_id": msg.get("threadId"),
+        "from": headers.get("from"),
+        "to": headers.get("to"),
+        "subject": headers.get("subject"),
+        "date": headers.get("date"),
+        "body_text": body_text,
+    }
+
+
+def _extract_plain_text(payload: dict, depth: int = 0) -> str:
+    """Walk a Gmail MIME payload tree and return the first text/plain body.
+
+    Returns an empty string if no text/plain part is found.
+    PRIVACY: this function's return value must never be logged.
+
+    FIX-1 (#1939): depth guard — bail out past 20 levels to prevent a
+    pathologically nested MIME payload from causing unbounded recursion.
+    """
+    # FIX-1 (#1939): bound recursion depth.
+    if depth > 20:
+        return ""
+
+    mime_type = payload.get("mimeType", "")
+    if mime_type == "text/plain":
+        data = (payload.get("body") or {}).get("data", "")
+        if data:
+            try:
+                return base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")
+            except Exception:
+                return ""
+        return ""
+    # Recurse into parts.
+    for part in payload.get("parts", []) or []:
+        text = _extract_plain_text(part, depth + 1)
+        if text:
+            return text
+    return ""

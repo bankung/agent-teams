@@ -128,17 +128,26 @@ Lead: (spawns agents from another-project's team, uses another-project's standar
 2. **Tier gate** — different actions have different approval modes (see "Tier model" below).
 3. **Chrome-MCP hook** — a `PreToolUse` backstop (`secretary-email-action-gate.ps1`) prevents non-secretary agents from using Chrome-MCP mailbox actions.
 
-**Tier model:** Actions fall into two approval modes:
+**Tier model:** Actions fall into three approval modes:
 
 | Tier | Actions | Approval mode | Status |
 |---|---|---|---|
+| **READ (open)** | `search`, `get` | Auto-approve | Shipped |
 | **Tier-1 (open)** | `mark_read`, `mark_unread`, `archive`, `draft` | Auto-approve | Shipped |
 | **Tier-2 (operator-proof)** | `trash` (move to Trash / Deleted Items) | Operator-proof required | Shipped |
 | **Tier-3 (future)** | `reply`, `send_internal`, `external_send` | Operator-proof + out-of-band confirm | In dev (Gmail OAuth pending) |
 
-Tier-1 fires with no prompt; the agent calls the endpoint and succeeds immediately. Tier-2 requires operator-proof: the agent must present the `X-Operator-Token` header matching the server's `OPERATOR_ACTION_KEY` (set in the api `.env`). If the key is unset, the gate is dormant (fail-open) — existing workflows are unaffected until you activate enforcement by setting the key.
+READ tier fires with no prompt and succeeds immediately — only a units-trail row (no email content) is recorded; see the Privacy note below. Tier-1 fires with no prompt; the agent calls the endpoint and succeeds immediately. Tier-2 requires operator-proof: the agent must present the `X-Operator-Token` header matching the server's `OPERATOR_ACTION_KEY` (set in the api `.env`). If the key is unset, the gate is dormant (fail-open) — existing workflows are unaffected until you activate enforcement by setting the key.
 
 **Permanent delete is ALWAYS denied** (neither auto nor operator-proof unlocks it).
+
+**READ tier actions — search and get:**
+
+- **search** — `POST /api/tools/email/{gmail,outlook}/search`. Body: `{query, max_results}` (max_results capped ≤50 per request). Returns message **metadata only**: `[{id, thread_id, from, subject, date, snippet}]`. No email body or attachment content. Use case: preview messages before a bulk action (trash, archive), or find specific threads without reading the full content.
+
+- **get** — `POST /api/tools/email/{gmail,outlook}/get`. Body: `{message_id}`. Returns headers + full plain-text **body_text** of a single message. Use case: read the full content of a specific message to make decisions (e.g., extract a code, check approval status, verify sender details).
+
+**Privacy note:** Both endpoints return email content (headers, subject, sender, body) to the caller, but the query, subject, sender, body, and snippet are **never written to the audit log or echoed in error responses**. Only the units trail `{provider, action, units, success}` (no content) is recorded by `gate.log_audit` (in `_scratch/email-tools-audit.jsonl`); READ operations do NOT write the action trail (`_runtime/email-actions.jsonl`, which is for mutations only). This lets the secretary read email content without exposing PII to the audit trail.
 
 **Authorization status check:** Query `GET /api/tools/email/auth/<provider>/status` (where `<provider>` is `gmail` or `outlook`) to see if the OAuth credentials are live for the current project.
 
