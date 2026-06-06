@@ -45,6 +45,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 
 from audit import record_tool_invocation
 from config import resolve_api_base, resolve_project_id, utc_now
+from gemini_schema import sanitize_tools_for_gemini
 from hitl import request_user_input  # noqa: F401 — re-exported for specialist authors
 from llm import (
     build_cached_system_content,
@@ -768,6 +769,24 @@ def _bind_tools_safely(
         provider = resolve_provider()
     except Exception:
         provider = "?"
+
+    # Kanban #1951 — Gemini native function-calling is stricter than the
+    # OpenAI-compat shim: every `array` schema (top-level, nested, or inside
+    # anyOf/any_of) must carry an `items` with a concrete type, else the FIRST
+    # tool-bound model call 400s (`...any_of[1].items: missing field`). Sanitize
+    # the tool schemas ONLY on the google bind path so other providers'
+    # bind surface stays byte-identical. The sanitizer touches the DECLARED
+    # schema only — tool runtime contracts are unchanged (execution goes
+    # through GLOBAL_REGISTRY, not the bound langchain tool).
+    if provider == "google":
+        tools, fixed = sanitize_tools_for_gemini(tools)
+        if fixed:
+            logger.info(
+                "specialist_node: gemini schema sanitizer fixed array-without-items "
+                "in tools=%s (project=%s)",
+                ", ".join(sorted(fixed)),
+                project_id,
+            )
 
     try:
         return model.bind_tools(tools)

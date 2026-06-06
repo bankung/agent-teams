@@ -1,27 +1,35 @@
 """Multi-provider chat-model factory.
 
-Reads `LANGGRAPH_LLM_PROVIDER` (`anthropic` | `openai` | `ollama`, default
-`anthropic`) plus the matching API key (or base URL, for ollama) + optional
-model override, returns a langchain `BaseChatModel`. Lifespan in `graph.py`
-calls `make_chat_model().invoke("ping")` during boot so any misconfiguration
-surfaces BEFORE the container is marked healthy — better than a healthy
-container that crashes on first /invoke.
+Reads `LANGGRAPH_LLM_PROVIDER` (`anthropic` | `openai` | `ollama` |
+`deepseek` | `google`, default `anthropic`) plus the matching API key (or
+base URL, for ollama) + optional model override, returns a langchain
+`BaseChatModel`. Lifespan in `graph.py` calls `make_chat_model().invoke("ping")`
+during boot so any misconfiguration surfaces BEFORE the container is marked
+healthy — better than a healthy container that crashes on first /invoke.
 
 Public surface (kept stable so callers — nodes.py, graph.py lifespan — don't
 break across provider swaps):
 
 - `make_chat_model(model: str | None = None) -> BaseChatModel`
-- `resolve_provider() -> Literal["anthropic", "openai", "ollama"]`
+- `resolve_provider() -> Literal["anthropic", "openai", "ollama", "deepseek", "google"]`
 - `resolve_model(provider: str | None = None) -> str`
 - `DEFAULT_ANTHROPIC_MODEL`, `DEFAULT_OPENAI_MODEL`,
-  `DEFAULT_OLLAMA_MODEL`, `DEFAULT_OLLAMA_BASE_URL` (module constants)
+  `DEFAULT_OLLAMA_MODEL`, `DEFAULT_OLLAMA_BASE_URL`,
+  `DEFAULT_GOOGLE_MODEL` (module constants)
 
-Provider SDKs (`langchain_anthropic`, `langchain_openai`, `langchain_ollama`)
-are imported INSIDE the matching branch so an Anthropic-only deployment does
-not pay the OpenAI/Ollama import cost at startup. `max_retries=1` is set for
-anthropic + openai — dev wants a fast failure signal; prod can override
-per-call via the model's `with_retry()` API without touching this factory.
-Ollama runs locally so `max_retries` is left at the langchain default.
+Provider SDKs (`langchain_anthropic`, `langchain_openai`, `langchain_ollama`,
+`langchain_google_genai`) are imported INSIDE the matching branch so an
+Anthropic-only deployment does not pay the other SDKs' import cost at startup.
+`max_retries=1` is set for anthropic + openai + google — dev wants a fast
+failure signal; prod can override per-call via the model's `with_retry()` API
+without touching this factory. Ollama runs locally so `max_retries` is left
+at the langchain default.
+
+`google` provider note (Kanban #1951): uses `ChatGoogleGenerativeAI` from the
+native `langchain-google-genai` SDK which round-trips Gemini's
+`thought_signature` correctly. The OpenAI-compat endpoint (`openai` provider +
+OPENAI_BASE_URL=generativelanguage…) drops `thought_signature` on turn 2 and
+returns HTTP 400 on multi-turn tool-calling — use `google` for Gemini.
 """
 
 from __future__ import annotations
@@ -252,9 +260,13 @@ DEFAULT_OLLAMA_BASE_URL = "http://host.docker.internal:11434"
 # deepseek-chat = V3 (fast, cheap). deepseek-reasoner = R1 (chain-of-thought).
 DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+# Google / Gemini native (Kanban #1951) — ChatGoogleGenerativeAI via
+# langchain-google-genai. gemini-flash-latest has quota on the operator's key;
+# gemini-2.0-flash has quota=0 — do NOT default to it.
+DEFAULT_GOOGLE_MODEL = "gemini-flash-latest"
 
-_SUPPORTED_PROVIDERS = ("anthropic", "openai", "ollama", "deepseek")
-ProviderName = Literal["anthropic", "openai", "ollama", "deepseek"]
+_SUPPORTED_PROVIDERS = ("anthropic", "openai", "ollama", "deepseek", "google")
+ProviderName = Literal["anthropic", "openai", "ollama", "deepseek", "google"]
 
 # Strict model-name regex for anthropic/openai — lowercase letters, digits,
 # dot, hyphen. Catches obvious typos (`claude_sonnet_4_6` with underscores,
@@ -284,7 +296,7 @@ def resolve_provider() -> ProviderName:
         raise RuntimeError(
             f"Unknown LANGGRAPH_LLM_PROVIDER: {raw!r}; "
             f"expected one of {list(_SUPPORTED_PROVIDERS)}. "
-            "Set LANGGRAPH_LLM_PROVIDER=anthropic, openai, ollama, or deepseek in .env "
+            "Set LANGGRAPH_LLM_PROVIDER=anthropic, openai, ollama, deepseek, or google in .env "
             "and restart the container (docker compose restart langgraph)."
         )
     return raw  # type: ignore[return-value]
@@ -319,6 +331,9 @@ def resolve_model(provider: str | None = None) -> str:
     elif p == "deepseek":
         model = os.getenv("LANGGRAPH_DEEPSEEK_MODEL", DEFAULT_DEEPSEEK_MODEL).strip()
         env_var = "LANGGRAPH_DEEPSEEK_MODEL"
+    elif p == "google":
+        model = os.getenv("GOOGLE_MODEL", DEFAULT_GOOGLE_MODEL).strip()
+        env_var = "GOOGLE_MODEL"
     else:
         raise RuntimeError(
             f"Unknown provider {p!r} passed to resolve_model(); "
@@ -350,6 +365,8 @@ def _require_api_key(provider: ProviderName) -> str:
         env_var = "ANTHROPIC_API_KEY"
     elif provider == "deepseek":
         env_var = "DEEPSEEK_API_KEY"
+    elif provider == "google":
+        env_var = "GOOGLE_API_KEY"
     else:
         env_var = "OPENAI_API_KEY"
     key = os.getenv(env_var, "").strip()
@@ -407,6 +424,17 @@ def make_chat_model(model: str | None = None) -> BaseChatModel:
 
         base_url = os.getenv("LANGGRAPH_DEEPSEEK_BASE_URL", DEFAULT_DEEPSEEK_BASE_URL).strip() or DEFAULT_DEEPSEEK_BASE_URL
         return ChatOpenAI(model=chosen_model, api_key=api_key, base_url=base_url, max_retries=1)
+
+    if provider == "google":
+        # Kanban #1951 — native Gemini path. ChatGoogleGenerativeAI uses the
+        # google-generativeai SDK which correctly round-trips thought_signature
+        # on multi-turn tool-calling. The OpenAI-compat endpoint drops
+        # thought_signature on turn 2 and returns HTTP 400 — do NOT use
+        # OPENAI_BASE_URL + ChatOpenAI for Gemini if tool-calling is needed.
+        api_key = _require_api_key(provider)
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        return ChatGoogleGenerativeAI(model=chosen_model, google_api_key=api_key, max_retries=1)
 
     # provider == "ollama" — resolve_provider() guarantees membership, so the
     # final branch is reachable iff the value is "ollama".

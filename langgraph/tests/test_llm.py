@@ -19,6 +19,7 @@ from llm import (
     DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_DEEPSEEK_BASE_URL,
     DEFAULT_DEEPSEEK_MODEL,
+    DEFAULT_GOOGLE_MODEL,
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OPENAI_MODEL,
@@ -49,6 +50,9 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "DEEPSEEK_API_KEY",
         "LANGGRAPH_DEEPSEEK_MODEL",
         "LANGGRAPH_DEEPSEEK_BASE_URL",
+        # Kanban #1951 — Google / Gemini env-vars scrubbed for the same reason.
+        "GOOGLE_API_KEY",
+        "GOOGLE_MODEL",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -78,6 +82,10 @@ def test_resolve_provider_default_is_anthropic() -> None:
         "deepseek",
         "DeepSeek",
         "  deepseek  ",
+        # Kanban #1951 — google provider accepted with same normalization rules.
+        "google",
+        "Google",
+        "  google  ",
     ],
 )
 def test_resolve_provider_accepts_normalized_values(
@@ -96,11 +104,12 @@ def test_resolve_provider_rejects_unknown(monkeypatch: pytest.MonkeyPatch, value
     assert "Unknown LANGGRAPH_LLM_PROVIDER" in msg
     # Error message must point the operator at the fix — all valid values must
     # appear so the operator sees the full menu when picking a fix.
-    # Kanban #891 added ollama; #1086 added deepseek.
+    # Kanban #891 added ollama; #1086 added deepseek; #1951 added google.
     assert "anthropic" in msg
     assert "openai" in msg
     assert "ollama" in msg
     assert "deepseek" in msg
+    assert "google" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -256,12 +265,15 @@ def test_default_model_constants_are_canonical() -> None:
     # Kanban #1086 — deepseek defaults pinned here to catch a future drift.
     assert DEFAULT_DEEPSEEK_MODEL == "deepseek-chat"
     assert DEFAULT_DEEPSEEK_BASE_URL == "https://api.deepseek.com"
+    # Kanban #1951 — google/gemini default pinned here to catch a future drift.
+    assert DEFAULT_GOOGLE_MODEL == "gemini-flash-latest"
     # Constants must themselves pass the model-name regex (catches a future
     # typo in this file).
     assert llm._MODEL_NAME_RE.match(DEFAULT_ANTHROPIC_MODEL)
     assert llm._MODEL_NAME_RE.match(DEFAULT_OPENAI_MODEL)
     assert llm._OLLAMA_MODEL_NAME_RE.match(DEFAULT_OLLAMA_MODEL)
     assert llm._MODEL_NAME_RE.match(DEFAULT_DEEPSEEK_MODEL)
+    assert llm._MODEL_NAME_RE.match(DEFAULT_GOOGLE_MODEL)
 
 
 # ---------------------------------------------------------------------------
@@ -457,3 +469,60 @@ def test_make_chat_model_unknown_provider_still_raises(monkeypatch: pytest.Monke
     with pytest.raises(RuntimeError) as excinfo:
         make_chat_model()
     assert "Unknown LANGGRAPH_LLM_PROVIDER" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# Google / Gemini native provider (Kanban #1951) — ChatGoogleGenerativeAI.
+# Construction-only: ChatGoogleGenerativeAI does NOT call the API in __init__,
+# so these tests pass without a real GOOGLE_API_KEY (as long as the SDK is
+# installed in the container where they run).
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_provider_accepts_google(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "google")
+    assert resolve_provider() == "google"
+
+
+def test_resolve_model_default_google(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "google")
+    assert resolve_model() == DEFAULT_GOOGLE_MODEL
+
+
+def test_resolve_model_override_google_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GOOGLE_MODEL env-var override is honored."""
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "google")
+    monkeypatch.setenv("GOOGLE_MODEL", "gemini-2.5-flash")
+    assert resolve_model() == "gemini-2.5-flash"
+
+
+def test_require_api_key_reads_google_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_require_api_key reads GOOGLE_API_KEY for the google provider."""
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "google")
+    # Key unset → RuntimeError naming GOOGLE_API_KEY (not OPENAI/ANTHROPIC).
+    with pytest.raises(RuntimeError) as excinfo:
+        make_chat_model()
+    msg = str(excinfo.value)
+    assert "GOOGLE_API_KEY" in msg
+    assert "unset or empty" in msg
+    assert "ANTHROPIC_API_KEY" not in msg
+    assert "OPENAI_API_KEY" not in msg
+
+
+def test_make_chat_model_google_happy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default Google path: returns ChatGoogleGenerativeAI with gemini-flash-latest."""
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "google")
+    monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSy-fake-not-real")
+    model = make_chat_model()
+    assert type(model).__name__ == "ChatGoogleGenerativeAI"
+    # ChatGoogleGenerativeAI exposes the model name on `.model`.
+    assert getattr(model, "model", None) == DEFAULT_GOOGLE_MODEL
+
+
+def test_make_chat_model_google_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Caller passes model= explicitly; GOOGLE_MODEL env is ignored."""
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "google")
+    monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSy-fake-not-real")
+    monkeypatch.setenv("GOOGLE_MODEL", "gemini-2.5-flash")
+    model = make_chat_model(model="gemini-flash-latest")
+    assert getattr(model, "model", None) == "gemini-flash-latest"
