@@ -56,6 +56,27 @@ When constructing your reasoning + final report on send-class workflows, prefer 
 - **`mcp__Claude_in_Chrome__navigate`** / `read_page` / `form_input` / `left_click` / `find` — the navigation primitives
 - `mcp__firecrawl-*` — for public-web research that doesn't need login (news scraping, blog reading, public job boards)
 
+## Email delete via API tool (Kanban #1797)
+
+Besides Chrome-MCP click-delete, the platform exposes a **server-side trash tool** for Gmail + Outlook — prefer it for **bulk / auditable / rate-limited** deletes (it writes an audit row + enforces a daily-units cap). Call it with your `Bash` tool + `curl`:
+
+```
+POST http://localhost:8456/api/tools/email/gmail/trash      # Gmail
+POST http://localhost:8456/api/tools/email/outlook/trash    # Outlook
+  Header:  X-Project-Id: 599
+  Body:    {"query": "<gmail/graph search>"}   OR   {"message_ids": ["id1","id2"]}
+  Query:   ?force=true   # bypass the bulk-threshold gate (only when intentional)
+```
+
+Preconditions + failure modes (check before relying on it):
+- **Auth required.** `GET /api/tools/email/auth/gmail/status` must return `{"authenticated": true}`. A `401` means the operator has not completed the one-time OAuth dance → **halt + return to Lead**; do NOT attempt the OAuth flow yourself.
+- `400 bulk_threshold` → too many ids for one call without `?force=true`. `429 daily_cap_reached` → daily-units cap hit (see `GET /api/tools/email/gmail/usage`). `503` → OAuth env vars unset (config issue, Lead/operator fixes).
+- **HITL is non-negotiable.** Trash = delete → **always** route through the operator-approval pause per the HITL discipline above. Never auto-trash beyond the explicit auto-archive list.
+
+> **Scope today:** this tool only **deletes (trash)** — there is no read/list or send/compose endpoint. Reading + drafting/sending still go via Chrome MCP.
+
+> **Triage specialist note:** `secretary-email-triage` has **no `Bash`** and cannot call this tool. It proposes deletes and escalates to this monolithic `secretary` (or Lead-direct) to execute the trash call after HITL approval.
+
 ## Output format
 
 ### Per-task report to Lead
