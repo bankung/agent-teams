@@ -7,13 +7,16 @@ is intentionally dumb here because Kanban #852 (Kanban integration) will move
 real routing logic into the API poll loop; this node is a placeholder that
 keeps the graph topology honest.
 
-`backend_specialist_node` is the production specialist (#977/#979/#980/#981):
-it constructs the LLM via `make_chat_model()`, binds the global tool registry
-via `model.bind_tools(...)`, then runs a multi-turn tool-use loop with the
-permission gate + sandbox guards + audit-trail wiring layered around every
-tool invocation. See `_run_tool_use_loop` for the full sequence + safety
-primitives. Other specialist stubs return a canned "not implemented" message
-so the graph can be exercised end-to-end for any role without crashing.
+All five specialist nodes (#977/#979/#980/#981 backend; #1944 promotes the
+other four) are produced by `make_specialist_node(agent_name)` — a single
+factory so there is no copy-paste. Each node constructs the LLM via
+`make_chat_model()`, binds the global tool registry via `model.bind_tools(...)`,
+then runs a multi-turn tool-use loop with the permission gate + sandbox guards
++ audit-trail wiring layered around every tool invocation. See
+`_run_tool_use_loop` for the full sequence + safety primitives. The ONLY
+per-role difference is the `agent_name` threaded into
+`build_cached_system_content(...)`, which bundles that role's `.claude/agents/
+dev-<role>.md` definition into the cached system prefix.
 
 All nodes return PARTIAL state dicts. LangGraph merges them via the reducer
 declared on each TypedDict field (messages → add_messages; everything else →
@@ -184,10 +187,40 @@ _SYSTEM_PROMPT = (
 )
 
 
-async def backend_specialist_node(state: AgentState) -> dict:
-    """Production specialist with tool-use loop (Kanban #977/#979/#980/#981).
+def _role_from_agent_name(agent_name: str) -> str:
+    """Derive the supervisor's node-name slug from an agent definition name.
 
-    Sequence:
+    The graph registers nodes under bare role slugs (`frontend`, `backend`,
+    `devops`, `tester`, `reviewer`) while the agent definitions live under
+    `dev-<role>.md`. Strip the leading `dev-` so the factory-built node's
+    `__name__`/`__qualname__` reads `<role>_specialist_node` — matching the
+    pre-factory module-level names (graph wiring + checkpoints unchanged).
+
+    The QA role's agent file is `dev-tester` but the supervisor node is
+    `tester`; the `dev-` strip handles that mapping uniformly. Unknown shapes
+    fall back to the agent_name itself so the node is still named, never blank.
+    """
+    role = agent_name[len("dev-"):] if agent_name.startswith("dev-") else agent_name
+    return role or agent_name
+
+
+def make_specialist_node(agent_name: str):
+    """Factory — return a production specialist node bound to `agent_name`.
+
+    Single source of truth for ALL five specialists (Kanban #1944). The
+    returned async node is byte-for-byte the pre-factory `backend_specialist_node`
+    logic; the ONLY parameterized value is `agent_name`, threaded into
+    `build_cached_system_content(...)` so each role gets its own agent
+    definition bundled into the cached system prefix. Everything else —
+    `_SYSTEM_PROMPT`, `team="dev"`, tool-loop, permission gate, sandbox,
+    audit, usage accounting — is identical across roles.
+
+    Backend parity (Kanban #1944 AC4): `make_specialist_node("dev-backend")`
+    reproduces the exact SystemMessage + HumanMessage shape the #907
+    prompt-shape tests pin, because the prompt constant + team + agent_name
+    are unchanged from the inlined version.
+
+    Per-node sequence (unchanged from the original backend node):
       1. Resolve the per-project `tools_config` from the Kanban API
          (sourced from `projects.tools_config`). On fetch failure we fall
          back to None — the permission gate then rejects every tool call,
@@ -211,66 +244,82 @@ async def backend_specialist_node(state: AgentState) -> dict:
            sees the result.
       4. After MAX iterations exhausted → halt with `TOOL_LOOP_HALT_REASON`.
 
-    The prompt-shape regression tests (#907) pin the SystemMessage +
-    HumanMessage content; those assertions still hold because the prompt
-    constant lives at module scope and the initial messages are the same.
+    The agent definition is loaded via `build_cached_system_content`, which
+    DEGRADES GRACEFULLY (WARN log, empty section) on a missing playbook — a
+    role with no `dev-<role>.md` still runs, it just omits that bundle slice.
     """
-    brief = state.get("brief", "")
-    task_id = state.get("task_id")
-    # Project id sourced from LANGGRAPH_PROJECT_ID — the engine container is
-    # bound to a single project. A future multi-project engine would fetch
-    # task → project_id via the api.
-    project_id = resolve_project_id()
-    tools_config = await _fetch_tools_config(project_id)
-    working_path, repo_root = _resolve_paths(project_id)
 
-    ctx = InvokeContext(
-        task_id=task_id,
-        project_id=project_id,
-        repo_root=repo_root or "/repo",
-        working_path=working_path,
-        host_allowlist=list((tools_config or {}).get("http_hosts") or []),
-    )
+    async def _specialist_node(state: AgentState) -> dict:
+        brief = state.get("brief", "")
+        task_id = state.get("task_id")
+        # Project id sourced from LANGGRAPH_PROJECT_ID — the engine container
+        # is bound to a single project. A future multi-project engine would
+        # fetch task → project_id via the api.
+        project_id = resolve_project_id()
+        tools_config = await _fetch_tools_config(project_id)
+        working_path, repo_root = _resolve_paths(project_id)
 
-    model = make_chat_model()
-    # Feature-flag tool binding by provider. Ollama returns a model that
-    # doesn't support tool-use; bind_tools may raise or silently drop the
-    # tools. We try, and on failure log + fall back to the no-tools path.
-    bound = _bind_tools_safely(model, project_id, tools_config)
+        ctx = InvokeContext(
+            task_id=task_id,
+            project_id=project_id,
+            repo_root=repo_root or "/repo",
+            working_path=working_path,
+            host_allowlist=list((tools_config or {}).get("http_hosts") or []),
+        )
 
-    # Kanban #1116 — wrap role brief with safety prelude (L22 prevention).
-    # Kanban #1186 — inflate stable context (safety prelude + CLAUDE.md + team
-    # playbook + agent definition) and attach `cache_control: ephemeral` on
-    # the stable bundle block. Stable prefix lands ~10K tokens (above the 1024
-    # minimum); role_brief remains a separate non-cached block per-call. On
-    # non-anthropic providers (openai/ollama) the helper returns a flat string
-    # so the message shape stays compatible with those providers' formatters.
-    initial_messages: list[Any] = [
-        SystemMessage(
-            content=build_cached_system_content(
-                _SYSTEM_PROMPT, team="dev", agent_name="dev-backend"
-            )
-        ),
-        HumanMessage(content=brief),
-    ]
+        model = make_chat_model()
+        # Feature-flag tool binding by provider. Ollama returns a model that
+        # doesn't support tool-use; bind_tools may raise or silently drop the
+        # tools. We try, and on failure log + fall back to the no-tools path.
+        bound = _bind_tools_safely(model, project_id, tools_config)
 
-    if bound is None:
-        # No tools available (ollama, or registry empty, or bind_tools raised).
-        # Preserve the pre-#981 single-shot path so the worker still completes
-        # task that don't need tools.
-        response = await _ainvoke_model(model, initial_messages)
-        content = _stringify_content(response.content)
-        inp, out, cr, cc = _extract_usage(response)
-        return {
-            "messages": [response],
-            "final_result": content,
-            "usage_input_tokens": inp,
-            "usage_output_tokens": out,
-            "usage_cache_read_tokens": cr,
-            "usage_cache_creation_tokens": cc,
-        }
+        # Kanban #1116 — wrap role brief with safety prelude (L22 prevention).
+        # Kanban #1186 — inflate stable context (safety prelude + CLAUDE.md +
+        # team playbook + agent definition) and attach `cache_control:
+        # ephemeral` on the stable bundle block. Stable prefix lands ~10K
+        # tokens (above the 1024 minimum); role_brief remains a separate
+        # non-cached block per-call. On non-anthropic providers (openai/ollama)
+        # the helper returns a flat string so the message shape stays
+        # compatible with those providers' formatters.
+        # Kanban #1944 — `agent_name` is the ONLY per-role parameter; the
+        # rest of this node is identical across all five specialists.
+        initial_messages: list[Any] = [
+            SystemMessage(
+                content=build_cached_system_content(
+                    _SYSTEM_PROMPT, team="dev", agent_name=agent_name
+                )
+            ),
+            HumanMessage(content=brief),
+        ]
 
-    return await _run_tool_use_loop(bound, initial_messages, ctx, tools_config)
+        if bound is None:
+            # No tools available (ollama, or registry empty, or bind_tools
+            # raised). Preserve the pre-#981 single-shot path so the worker
+            # still completes tasks that don't need tools.
+            response = await _ainvoke_model(model, initial_messages)
+            content = _stringify_content(response.content)
+            inp, out, cr, cc = _extract_usage(response)
+            return {
+                "messages": [response],
+                "final_result": content,
+                "usage_input_tokens": inp,
+                "usage_output_tokens": out,
+                "usage_cache_read_tokens": cr,
+                "usage_cache_creation_tokens": cc,
+            }
+
+        return await _run_tool_use_loop(
+            bound, initial_messages, ctx, tools_config
+        )
+
+    # Mirror make_stub_node — set the node's name from the role slug so
+    # LangGraph checkpoints / logs read `<role>_specialist_node`. Keeping the
+    # module-level binding name (below) identical to the pre-factory names
+    # means graph.py imports + supervisor routing are unchanged.
+    role = _role_from_agent_name(agent_name)
+    _specialist_node.__name__ = f"{role}_specialist_node"
+    _specialist_node.__qualname__ = f"{role}_specialist_node"
+    return _specialist_node
 
 
 # ---------------------------------------------------------------------------
@@ -920,36 +969,17 @@ def _resolve_paths(project_id: int | None) -> tuple[str | None, str | None]:
     return working_path, repo_root
 
 
-def make_stub_node(role_name: str):
-    """Factory — returns a LangGraph node function for a not-yet-implemented
-    specialist.  Keeps the graph well-formed (every conditional-edge target
-    exists and returns) so #852 can smoke-test routing for every role code
-    before #853 fills these in.
-
-    The returned function is identical in behavior to the four individual
-    wrapper functions that previously existed; the response text is
-    byte-identical.
-    """
-    msg = (
-        f"{role_name} specialist not implemented yet "
-        "(Kanban #850 ships backend only; full multi-provider rollout in #853)"
-    )
-
-    def _stub_node(state: AgentState) -> dict:  # noqa: ARG001
-        return {
-            "messages": [AIMessage(content=msg)],
-            "final_result": msg,
-        }
-
-    _stub_node.__name__ = f"{role_name}_specialist_node"
-    _stub_node.__qualname__ = f"{role_name}_specialist_node"
-    return _stub_node
-
-
-frontend_specialist_node = make_stub_node("frontend")
-devops_specialist_node = make_stub_node("devops")
-tester_specialist_node = make_stub_node("tester")
-reviewer_specialist_node = make_stub_node("reviewer")
+# Kanban #1944 — ALL FIVE specialists come from the single factory above.
+# Each is byte-for-byte identical except its bundled agent definition
+# (`agent_name`). The module-level names match the pre-factory bindings so
+# graph.py imports + supervisor routing (`route_from_supervisor`) are
+# unchanged. The QA role's node is `tester` but its agent file is `dev-tester`
+# (handled by `_role_from_agent_name`).
+backend_specialist_node = make_specialist_node("dev-backend")
+frontend_specialist_node = make_specialist_node("dev-frontend")
+devops_specialist_node = make_specialist_node("dev-devops")
+tester_specialist_node = make_specialist_node("dev-tester")
+reviewer_specialist_node = make_specialist_node("dev-reviewer")
 
 
 def general_node(state: AgentState) -> dict:
