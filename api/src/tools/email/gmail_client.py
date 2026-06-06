@@ -54,20 +54,35 @@ _ID_RE = re.compile(r"^[A-Za-z0-9_\-=+]+$")
 #
 # Kanban #1942: calendar.readonly added so the SAME Google OAuth principal can
 # also drive the secretary's read-only Calendar tools (list-events + freebusy)
-# for conflict detection. RE-CONSENT PREREQUISITE: a token granted under the
-# old single-scope list does NOT carry calendar.readonly — the operator must
-# re-run the OAuth dance (POST /api/tools/email/auth/gmail/start) to grant the
-# new scope. include_granted_scopes="true" in auth_start preserves the existing
-# mail access across that re-consent, so re-consenting is additive (no Gmail
-# capability is lost). Until re-consent, the Calendar API raises an
-# insufficient-permission error which calendar_client maps to CalendarScopeError.
+# for conflict detection.
+#
+# Kanban #1963: calendar.events ADDED for the Calendar WRITE tools (create-event
+# + respond/RSVP) on the PROPER `/api/tools/calendar` base. calendar.events is a
+# read-write scope on events; it is a STRICT superset of calendar.readonly for
+# the operations we perform (insert + patch + get), so a token carrying
+# calendar.events can satisfy BOTH the READ and the WRITE calendar tools. We keep
+# calendar.readonly in the list too so the auth-status `calendar_readonly`
+# projection (which checks for the readonly scope string) keeps working and a
+# READ-only re-consent path stays available.
+#
+# RE-CONSENT PREREQUISITE: a token granted under an OLDER scope list does NOT
+# carry the new scopes — the operator must re-run the OAuth dance
+# (POST /api/tools/email/auth/gmail/start) to grant them. include_granted_scopes=
+# "true" in auth_start preserves existing access across that re-consent, so
+# re-consenting is additive (no Gmail / earlier Calendar capability is lost).
+# Until re-consent, the Calendar API raises an insufficient-permission error which
+# calendar_client maps to CalendarScopeError → HTTP 412. LIVE create/respond
+# verification is OUT OF SCOPE for #1963 (build + mocked tests only) — a go-live
+# followup must confirm re-consent grants calendar.events before WRITE tools work.
 SCOPES = [
     "https://mail.google.com/",
     "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
 ]
-# The Calendar scope value, exposed so the auth-status projection can report
-# whether the stored token actually carries it (i.e. whether re-consent is done).
+# The Calendar scope values, exposed so the auth-status projection can report
+# whether the stored token actually carries them (i.e. whether re-consent is done).
 CALENDAR_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
+CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 
 # Pending OAuth flows — state -> (flow_obj, project_id, created_at_utc).
 # Bounded by a 10-min TTL prune on each new start.

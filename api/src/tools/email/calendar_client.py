@@ -1,23 +1,32 @@
-"""Google Calendar READ client (Kanban #1942).
+"""Google Calendar client (Kanban #1942 READ; #1963 WRITE).
 
-Read-only Calendar tools for the secretary's calendar-prep / conflict-detection
-workflow — list-events + freebusy — so conflict detection happens server-side
-(pure data) instead of via a Chrome browser session.
+Calendar tools for the secretary's calendar-prep / conflict-detection / scheduling
+workflow:
+  - READ  (#1942): list-events + freebusy — server-side conflict detection (pure
+    data) instead of via a Chrome browser session.
+  - WRITE (#1963): create-event + respond (RSVP) — server-side scheduling.
 
 Reuses the EXISTING Google OAuth principal: the stored `google.oauth2.
 credentials.Credentials` object (token_store provider key "gmail") drives the
-Calendar API exactly as gmail_client drives the Gmail API. The only extra
-requirement is the calendar.readonly scope — added to gmail_client.SCOPES — which
-takes effect on the next operator RE-CONSENT (include_granted_scopes=true keeps
-mail access). Until re-consent, a stored token lacks calendar.readonly and the
-Calendar API raises an insufficient-permission 403; this module catches that and
-raises `CalendarScopeError` so the route returns a clear "re-consent needed"
-error (HTTP 412) WITHOUT leaking token details.
+Calendar API exactly as gmail_client drives the Gmail API.
 
-PRIVACY: event summaries, attendee emails, locations, and free/busy details are
-returned in the response body but MUST NEVER be logged, written to any audit
-trail, or echoed in error responses. Error paths surface only type(exc).__name__
-(handled by the caller) or the fixed scope-error signal.
+SCOPES (gmail_client.SCOPES):
+  - READ  needs `calendar.readonly` (added #1942).
+  - WRITE needs `calendar.events`   (added #1963) — a STRICT superset capability
+    for insert/patch. Both take effect on the next operator RE-CONSENT
+    (include_granted_scopes=true keeps mail access). Until re-consent, a stored
+    token lacks the required scope and the Calendar API raises an
+    insufficient-permission 403; this module catches that and raises
+    `CalendarScopeError` so the route returns a clear "re-consent needed" error
+    (HTTP 412) WITHOUT leaking token details. The SAME CalendarScopeError covers
+    both the READ-scope gap and the WRITE-scope gap — a token with only
+    calendar.readonly that attempts events.insert gets the same insufficient-scope
+    403 → 412 mapping.
+
+PRIVACY: event summaries, attendee emails, locations, descriptions, and free/busy
+details are returned in the response body but MUST NEVER be logged, written to any
+audit trail, or echoed in error responses. Error paths surface only
+type(exc).__name__ (handled by the caller) or the fixed scope-error signal.
 """
 
 from __future__ import annotations
@@ -156,7 +165,11 @@ def list_events(
         start = start_obj.get("dateTime") or start_obj.get("date")
         end = end_obj.get("dateTime") or end_obj.get("date")
         attendees = [
-            {"email": a.get("email"), "display_name": a.get("displayName")}
+            {
+                "email": a.get("email"),
+                "display_name": a.get("displayName"),
+                "response_status": a.get("responseStatus"),
+            }
             for a in (ev.get("attendees", []) or [])
         ]
         events.append(
@@ -240,3 +253,141 @@ def freebusy(
     if errors_out:
         result["errors"] = errors_out
     return result
+
+
+# ---------------------------------------------------------------------------
+# WRITE actions (Kanban #1963) — create-event + respond (RSVP)
+# ---------------------------------------------------------------------------
+#
+# WRITE-tier — the route gates these behind operator-proof. Both need the
+# calendar.events scope (added to gmail_client.SCOPES #1963); an insufficient
+# scope surfaces as CalendarScopeError → HTTP 412 (re-consent), exactly like the
+# READ paths. The caller is responsible for the gate chain + cap BEFORE invoking.
+
+# Google's response-status enum (events resource). Maps the provider-neutral
+# accept|decline|tentative vocabulary to the Calendar API values.
+_RESPONSE_STATUS_MAP = {
+    "accept": "accepted",
+    "decline": "declined",
+    "tentative": "tentative",
+}
+
+
+def create_event(
+    creds: Credentials,
+    *,
+    title: str,
+    start: str,
+    end: str,
+    timezone: str,
+    calendar_id: str = "primary",
+    location: str | None = None,
+    description: str | None = None,
+    attendees: list[str] | None = None,
+) -> dict:
+    """Create a calendar event via events.insert. WRITE.
+
+    start / end are RFC3339 timestamps; `timezone` is the IANA tz name applied to
+    both (Calendar API uses the {dateTime, timeZone} start/end shape for timed
+    events). `attendees` is an optional list of email addresses to invite.
+
+    Returns {"event_id": <id>, "html_link": <htmlLink|None>}.
+
+    Raises CalendarScopeError if the stored token lacks calendar.events (caller
+    maps to HTTP 412). Other upstream failures propagate for the caller's 502 path.
+
+    PRIVACY: title / location / description / attendees MUST NOT be logged.
+    """
+    service = _build_service(creds)
+    body: dict = {
+        "summary": title,
+        "start": {"dateTime": start, "timeZone": timezone},
+        "end": {"dateTime": end, "timeZone": timezone},
+    }
+    if location is not None:
+        body["location"] = location
+    if description is not None:
+        body["description"] = description
+    if attendees:
+        body["attendees"] = [{"email": a} for a in attendees]
+    try:
+        ev = (
+            service.events()
+            .insert(calendarId=calendar_id, body=body)
+            .execute()
+        )
+    except HttpError as exc:
+        if _is_scope_error(exc):
+            logger.warning("calendar create_event: token lacks calendar scope")
+            raise CalendarScopeError("calendar scope not granted") from exc
+        raise
+    return {"event_id": ev.get("id"), "html_link": ev.get("htmlLink")}
+
+
+def respond(
+    creds: Credentials,
+    event_id: str,
+    response: str,
+    calendar_id: str = "primary",
+) -> dict:
+    """RSVP to an event by updating the self-attendee's responseStatus. WRITE.
+
+    `response` is one of accept|decline|tentative (the provider-neutral vocab the
+    schema validates). The Calendar API has no dedicated RSVP verb — RSVP is
+    expressed by patching the authenticated user's own attendee entry's
+    responseStatus. We:
+      1. events.get the event,
+      2. find the attendee whose `self` flag is True (the authenticated user),
+      3. events.patch with that attendee's responseStatus set.
+
+    If the user is not an attendee (no `self` entry) the event cannot be RSVP'd —
+    we raise ValueError("not_an_attendee") which the caller maps to a 4xx.
+
+    Returns {"event_id": <id>, "response": <response>}.
+
+    Raises CalendarScopeError if the stored token lacks calendar.events (caller
+    maps to HTTP 412). Other upstream failures propagate for the caller's 502 path.
+
+    PRIVACY: nothing about the event content is returned beyond the id the caller
+    already supplied; nothing is logged.
+    """
+    status_value = _RESPONSE_STATUS_MAP.get(response)
+    if status_value is None:
+        # Defense-in-depth — schema already validates, but never trust blindly.
+        raise ValueError(f"invalid response: {response!r}")
+
+    service = _build_service(creds)
+    try:
+        ev = (
+            service.events()
+            .get(calendarId=calendar_id, eventId=event_id)
+            .execute()
+        )
+    except HttpError as exc:
+        if _is_scope_error(exc):
+            logger.warning("calendar respond(get): token lacks calendar scope")
+            raise CalendarScopeError("calendar scope not granted") from exc
+        raise
+
+    attendees = ev.get("attendees", []) or []
+    self_idx = next(
+        (i for i, a in enumerate(attendees) if a.get("self") is True), None
+    )
+    if self_idx is None:
+        # The authenticated user is not on the guest list — cannot RSVP.
+        raise ValueError("not_an_attendee")
+    attendees[self_idx]["responseStatus"] = status_value
+
+    try:
+        service.events().patch(
+            calendarId=calendar_id,
+            eventId=event_id,
+            body={"attendees": attendees},
+        ).execute()
+    except HttpError as exc:
+        if _is_scope_error(exc):
+            logger.warning("calendar respond(patch): token lacks calendar scope")
+            raise CalendarScopeError("calendar scope not granted") from exc
+        raise
+
+    return {"event_id": event_id, "response": response}

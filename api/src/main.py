@@ -50,6 +50,7 @@ from src.routers import tasks as tasks_router
 from src.routers import teams as teams_router
 from src.routers import tool_calls as tool_calls_router
 from src.routers import tools_email as tools_email_router
+from src.routers import tools_calendar as tools_calendar_router
 from src.routers import tools_directory as tools_directory_router
 from src.routers import transactions as transactions_router
 from src.routers import user_actions as user_actions_router
@@ -382,6 +383,11 @@ def create_app() -> FastAPI:
     # Kanban #1604 — email tools (Gmail trash + OAuth + 3-layer safety gate).
     # #1608 will append Outlook routes to the same router file.
     app.include_router(tools_email_router.router, prefix="/api")
+    # Kanban #1963 — calendar tools (Google + Outlook) at the proper
+    # /api/tools/calendar base: list-events/freebusy (READ) + create-event/respond
+    # (WRITE, operator-proof). Relocates the #1942 Google READ routes off the
+    # email router. Reuses the email gate machinery (Layer-0 + operator-proof).
+    app.include_router(tools_calendar_router.router, prefix="/api")
     # Kanban #1854 — agent-runtime tool directory + missing-tool suggestion.
     app.include_router(tools_directory_router.router, prefix="/api")
     # Kanban #1655 — platform Integrations settings popup (global, no

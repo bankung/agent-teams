@@ -57,7 +57,17 @@ _ID_RE = re.compile(r"^[A-Za-z0-9_\-=+]+$")
 # Mail.ReadWrite — the minimal Graph scope that covers reading folders and
 # moving messages to Deleted Items. Form expected by msal: bare permission
 # name; the library prefixes the resource URL automatically for Graph.
-SCOPES = ["Mail.ReadWrite"]
+#
+# Kanban #1963: Calendars.ReadWrite ADDED for the Calendar tools on the PROPER
+# `/api/tools/calendar` base — covers list (calendarView), getSchedule (freebusy),
+# POST /me/events (create), and the accept/decline/tentativelyAccept RSVP verbs.
+# RE-CONSENT PREREQUISITE: a token granted under the old Mail.ReadWrite-only list
+# does NOT carry Calendars.ReadWrite — the operator must re-run the OAuth dance
+# (POST /api/tools/email/auth/outlook/start, which uses prompt=consent) to grant
+# it. Until re-consent, a Graph calendar call returns an insufficient-scope error
+# which outlook_calendar_client maps to CalendarScopeError → HTTP 412. LIVE
+# create/respond verification is OUT OF SCOPE for #1963 (build + mocked tests).
+SCOPES = ["Mail.ReadWrite", "Calendars.ReadWrite"]
 
 # Microsoft Graph base URL for the v1.0 REST surface.
 _GRAPH_BASE = "https://graph.microsoft.com/v1.0"
