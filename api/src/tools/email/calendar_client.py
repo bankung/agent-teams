@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 class CalendarScopeError(Exception):
-    """Raised when the stored Google token lacks calendar.readonly.
+    """Raised when the stored token lacks a required calendar scope (calendar.readonly or calendar.events).
 
     Signals the route to return HTTP 412 ("re-consent needed"). Carries NO token
     detail — its mere type is the signal; the route emits a fixed message.
@@ -128,9 +128,9 @@ def list_events(
       - start / end are the raw RFC3339 dateTime (timed) OR date (all-day) string.
       - attendees is a list of {email, display_name} dicts (may be empty).
 
-    Raises CalendarScopeError if the stored token lacks calendar.readonly
-    (caller maps to HTTP 412). Other upstream failures propagate as HttpError /
-    Exception for the caller's generic 502 path.
+    Raises CalendarScopeError if the stored token lacks a required calendar scope
+    (calendar.readonly or calendar.events) (caller maps to HTTP 412). Other upstream
+    failures propagate as HttpError / Exception for the caller's generic 502 path.
 
     PRIVACY: the returned summaries / attendees / locations MUST NOT be logged.
     Caller is responsible for cap enforcement BEFORE invoking.
@@ -213,9 +213,9 @@ def freebusy(
     the raw upstream body. Busy intervals are timing data — MUST NOT be logged.
     Caller is responsible for cap enforcement BEFORE invoking.
 
-    Raises CalendarScopeError if the stored token lacks calendar.readonly
-    (caller maps to HTTP 412). Other upstream failures propagate for the
-    caller's generic 502 path.
+    Raises CalendarScopeError if the stored token lacks a required calendar scope
+    (calendar.readonly or calendar.events) (caller maps to HTTP 412). Other upstream
+    failures propagate for the caller's generic 502 path.
     """
     cal_ids = calendars if calendars else ["primary"]
     service = _build_service(creds)

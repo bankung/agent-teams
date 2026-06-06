@@ -28,7 +28,9 @@ trail, or echoed in error responses. Error paths surface only type(exc).__name__
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -37,7 +39,6 @@ from src.tools.email.outlook_client import (
     _GRAPH_BASE,
     _acquire_silent,
     _graph_request_with_retry,
-    _strip_html,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,20 +50,6 @@ _RESPONSE_ACTION_MAP = {
     "tentative": "tentativelyAccept",
 }
 
-# Graph insufficient-scope markers. Graph returns 403 with an ErrorAccessDenied
-# code (and sometimes an "insufficient" narrative) when a valid token lacks the
-# required delegated permission. We match tightly so an unrelated 403 (e.g. a
-# genuinely forbidden calendar) is NOT mis-classified as a scope gap.
-# FIX-3 (#1963): removed "scope" — it was too broad and could misclassify a
-# legitimate non-scope 403 (e.g. calendar-not-shared) as a scope gap → wrong
-# 412 re-consent signal. Keep only the tight access-denied / insufficient markers.
-_SCOPE_MARKERS = (
-    "erroraccessdenied",
-    "insufficient",
-    "does not have permission",
-)
-
-
 def _is_scope_error(resp: httpx.Response) -> bool:
     """True iff a Graph response indicates the token lacks the calendar scope.
 
@@ -70,6 +57,14 @@ def _is_scope_error(resp: httpx.Response) -> bool:
     treated as a scope gap (→ 412 re-consent). A 401 (expired/invalid token) is
     NOT a scope gap — it surfaces as the normal auth path. Other statuses are not
     scope errors.
+
+    Code-based signals (matched against the Graph error CODE field, NOT the message):
+      - "erroraccessdenied" — exact code match
+      - "authorization_requestdenied" — OAuth scope-gap variant (recovered: Round-1 dropped)
+      - "insufficient" in code — matches InsufficientScope / insufficient_scope codes
+
+    Message-based signal (tight phrase, to avoid false-positives from quota messages):
+      - "does not have the required privilege" — only this phrase, not broader "permission" phrases
 
     PRIVACY: only the error code / message text is inspected, never logged.
     """
@@ -80,10 +75,17 @@ def _is_scope_error(resp: httpx.Response) -> bool:
     except (ValueError, httpx.DecodingError):
         return False
     err = body.get("error", {}) if isinstance(body, dict) else {}
-    code = (err.get("code", "") or "") if isinstance(err, dict) else ""
-    message = (err.get("message", "") or "") if isinstance(err, dict) else ""
-    text = f"{code} {message}".lower()
-    return any(m in text for m in _SCOPE_MARKERS)
+    code = ((err.get("code", "") or "") if isinstance(err, dict) else "").lower()
+    message = ((err.get("message", "") or "") if isinstance(err, dict) else "").lower()
+    # Code-based checks: inspect the Graph error CODE field only.
+    if code in ("erroraccessdenied", "authorization_requestdenied"):
+        return True
+    if "insufficient" in code:
+        return True
+    # Message-based check: only the tight privilege phrase (not generic "permission").
+    if "does not have the required privilege" in message:
+        return True
+    return False
 
 
 def _headers(creds: dict[str, Any], *, write: bool = False) -> dict[str, str]:
@@ -196,10 +198,28 @@ def freebusy(
     """
     schedules = calendars if calendars else ["primary"]
     headers = _headers(creds, write=True)
+    # FIX-6 (#1963): UTC-normalize time_min/time_max before sending to Graph.
+    # If the caller passes an offset-aware timestamp (e.g. +07:00), Graph
+    # getSchedule mis-interprets it when we also declare timeZone:"UTC".
+    # Normalise to UTC so the declared timeZone and the dateTime value agree.
+    def _to_utc_str(ts: str) -> str:
+        # Handle trailing Z (Python < 3.11 fromisoformat doesn't accept Z).
+        ts_clean = ts.rstrip("Z") if ts.endswith("Z") else ts
+        try:
+            dt = datetime.fromisoformat(ts_clean)
+        except ValueError:
+            return ts  # pass through unparseable strings unchanged.
+        if dt.tzinfo is None:
+            # Assume UTC for naive timestamps (mirrors Graph expectation).
+            return dt.strftime("%Y-%m-%dT%H:%M:%S")
+        # Convert to UTC and strip the offset.
+        dt_utc = dt.astimezone(timezone.utc)
+        return dt_utc.strftime("%Y-%m-%dT%H:%M:%S")
+
     body = {
         "schedules": schedules,
-        "startTime": {"dateTime": time_min, "timeZone": "UTC"},
-        "endTime": {"dateTime": time_max, "timeZone": "UTC"},
+        "startTime": {"dateTime": _to_utc_str(time_min), "timeZone": "UTC"},
+        "endTime": {"dateTime": _to_utc_str(time_max), "timeZone": "UTC"},
     }
     url = f"{_GRAPH_BASE}/me/calendar/getSchedule"
     resp = _graph_request_with_retry("POST", url, headers=headers, json_body=body)
@@ -218,9 +238,12 @@ def freebusy(
         # An entry with an `error` field means the schedule was inaccessible.
         err = entry.get("error")
         if err:
+            # FIX-3 (#1963): use the Graph error CODE enum (not the message
+            # narrative) to avoid leaking raw Graph text that may carry emails
+            # or internal path info.
             reason = (
-                err.get("message") if isinstance(err, dict) else str(err)
-            ) or "error"
+                err.get("code", "schedule_inaccessible") if isinstance(err, dict) else "schedule_inaccessible"
+            ) or "schedule_inaccessible"
             errors_out[schedule] = [str(reason)]
             busy_out[schedule] = []
             continue
@@ -313,7 +336,11 @@ def respond(
     # sendResponse=True so the organizer is notified of the RSVP (default Outlook
     # behavior); no comment is sent (privacy — no free-text leaves the system).
     body = {"sendResponse": True}
-    url = f"{_GRAPH_BASE}/me/events/{event_id}/{action}"
+    # FIX-1 (#1963): percent-encode the event_id before interpolating into the URL
+    # path. Graph event IDs are base64url-ish and routinely contain '/', which would
+    # break the path segment. A crafted id could also redirect the Graph call.
+    safe_id = quote(event_id, safe="")
+    url = f"{_GRAPH_BASE}/me/events/{safe_id}/{action}"
     resp = _graph_request_with_retry("POST", url, headers=headers, json_body=body)
     _raise_for_scope_or_status(resp)
     # Graph returns 202 with an empty body on success — no JSON to parse.

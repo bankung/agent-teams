@@ -392,7 +392,7 @@ async def create_event(
     _write_action_audit(
         agent_role=agent_role,
         action="calendar_create_event",
-        tier=CalendarTier.WRITE,  # type: ignore[arg-type]  # duck-typed: only .value used
+        tier=CalendarTier.WRITE,  # type: ignore[arg-type]  # TODO(#1963): widen _write_action_audit tier param
         message_ids=[event_id],
         approval_mode="operator_proof",
         result="success",
@@ -470,7 +470,7 @@ async def respond(
     _write_action_audit(
         agent_role=agent_role,
         action=f"calendar_respond_{body.response}",
-        tier=CalendarTier.WRITE,  # type: ignore[arg-type]  # duck-typed: only .value used
+        tier=CalendarTier.WRITE,  # type: ignore[arg-type]  # TODO(#1963): widen _write_action_audit tier param
         message_ids=[body.event_id],
         approval_mode="operator_proof",
         result="success",

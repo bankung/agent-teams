@@ -139,7 +139,7 @@ async def test_list_events_success(client, monkeypatch, provider):
             "summary": "Standup",
             "start": "2026-06-06T09:00:00Z",
             "end": "2026-06-06T09:15:00Z",
-            "attendees": [{"email": "alice@x.com", "display_name": "Alice"}],
+            "attendees": [{"email": "alice@x.com", "display_name": "Alice", "response_status": "accepted"}],
             "location": "Zoom",
             "all_day": False,
         },
@@ -480,11 +480,18 @@ async def test_create_event_insufficient_scope_412(client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_create_event_layer0_denial_403(client, monkeypatch):
-    """create-event 403s on Layer-0 grant denial BEFORE the proof gate; client not run."""
+@pytest.mark.parametrize("provider", ["google", "outlook"])
+async def test_create_event_layer0_denial_403(client, monkeypatch, provider):
+    """FIX-7: create-event 403s on Layer-0 grant denial BEFORE the proof gate;
+    client NOT called — for BOTH providers.
+    """
     monkeypatch.delenv(_KEY_ENV, raising=False)
-    _seed_google(monkeypatch)
-    from src.tools.email import calendar_client as cc
+    if provider == "google":
+        _seed_google(monkeypatch)
+        from src.tools.email import calendar_client as cc
+    else:
+        _seed_outlook(monkeypatch)
+        from src.tools.email import outlook_calendar_client as cc
     from src.services import tool_grants as tg
 
     real_check = tg.check_grant
@@ -499,7 +506,7 @@ async def test_create_event_layer0_denial_403(client, monkeypatch):
     monkeypatch.setattr(cc, "create_event", lambda creds, **k: called.append(1) or {"event_id": "x"})
 
     resp = await client.post(
-        f"{_BASE}/google/create-event",
+        f"{_BASE}/{provider}/create-event",
         headers={**_HDR, "X-Agent-Role": "locked-role"},
         json={
             "title": "x",
@@ -510,7 +517,43 @@ async def test_create_event_layer0_denial_403(client, monkeypatch):
     )
     assert resp.status_code == 403, resp.text
     assert "tool_grant_denied" in resp.json()["detail"]
-    assert called == []
+    assert called == [], "create_event must NOT run when Layer-0 denies"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["google", "outlook"])
+async def test_respond_layer0_denial_403(client, monkeypatch, provider):
+    """FIX-7: respond 403s on Layer-0 grant denial BEFORE the proof gate;
+    client NOT called — for BOTH providers.
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    if provider == "google":
+        _seed_google(monkeypatch)
+        from src.tools.email import calendar_client as cc
+    else:
+        _seed_outlook(monkeypatch)
+        from src.tools.email import outlook_calendar_client as cc
+    from src.services import tool_grants as tg
+
+    real_check = tg.check_grant
+
+    def _deny_check(config, role, tool_name, *, project_id=None):
+        if role == "locked-role":
+            return tg.GrantDecision.DENY
+        return real_check(config, role, tool_name, project_id=project_id)
+
+    monkeypatch.setattr(tools_email, "check_grant", _deny_check)
+    called: list = []
+    monkeypatch.setattr(cc, "respond", lambda *a, **k: called.append(1) or {"event_id": "x", "response": "accept"})
+
+    resp = await client.post(
+        f"{_BASE}/{provider}/respond",
+        headers={**_HDR, "X-Agent-Role": "locked-role"},
+        json={"event_id": "ev-xyz", "response": "accept"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert "tool_grant_denied" in resp.json()["detail"]
+    assert called == [], "respond must NOT run when Layer-0 denies"
 
 
 # ===========================================================================
@@ -774,18 +817,137 @@ def test_outlook_is_scope_error_maps_403_access_denied():
     assert occ._is_scope_error(unauth) is False
 
 
+def test_outlook_scope_error_authorization_request_denied():
+    """Round-2: Authorization_RequestDenied 403 (code) IS a scope error → route 412.
+
+    Round-1 dropped this variant; it must be recovered. This is the real Graph
+    OAuth scope-gap response when delegated permission is missing entirely.
+    """
+    from unittest.mock import MagicMock
+    from src.tools.email import outlook_calendar_client as occ
+
+    def _resp(status, body):
+        r = MagicMock()
+        r.status_code = status
+        r.json.return_value = body
+        return r
+
+    # POSITIVE: Authorization_RequestDenied code → IS scope error.
+    assert occ._is_scope_error(
+        _resp(403, {"error": {"code": "Authorization_RequestDenied", "message": "no scope"}})
+    ) is True
+
+    # Also works case-insensitively.
+    assert occ._is_scope_error(
+        _resp(403, {"error": {"code": "authorization_requestdenied", "message": "no scope"}})
+    ) is True
+
+
+def test_outlook_scope_error_no_false_positive_insufficient_quota_in_message():
+    """Round-2: 'insufficient quota' in the MESSAGE must NOT trigger scope error.
+
+    Before Round-2, 'insufficient' was matched against the concatenated
+    code+message string, so an unrelated 403 whose message contained 'insufficient
+    quota' could be mis-classified as a scope gap → wrong 412. The fix restricts
+    'insufficient' to the CODE field only.
+    """
+    from unittest.mock import MagicMock
+    from src.tools.email import outlook_calendar_client as occ
+
+    def _resp(status, body):
+        r = MagicMock()
+        r.status_code = status
+        r.json.return_value = body
+        return r
+
+    # NEGATIVE: non-scope code + "insufficient quota" in message → NOT scope error.
+    assert occ._is_scope_error(
+        _resp(403, {"error": {"code": "ErrorFolderNotFound",
+                              "message": "insufficient quota for this operation"}})
+    ) is False
+
+
+def test_outlook_scope_error_no_false_positive_calendar_not_shared():
+    """Round-2: 'does not have permission to access this calendar' → NOT scope error.
+
+    This is the calendar-not-shared message. Only the tighter phrase
+    'does not have the required privilege' must trigger a scope match.
+    """
+    from unittest.mock import MagicMock
+    from src.tools.email import outlook_calendar_client as occ
+
+    def _resp(status, body):
+        r = MagicMock()
+        r.status_code = status
+        r.json.return_value = body
+        return r
+
+    # NEGATIVE: calendar-not-shared message → NOT scope error.
+    assert occ._is_scope_error(
+        _resp(403, {"error": {"code": "ErrorCalendarSharingOperationFailed",
+                              "message": "does not have permission to access this calendar"}})
+    ) is False
+
+
+def test_outlook_scope_error_insufficient_scope_code():
+    """Round-2: InsufficientScope / insufficient_scope CODE → IS scope error.
+
+    'insufficient' matched against the code field catches both Graph variants
+    without false-positiving on quota messages that carry 'insufficient' in
+    the message text only.
+    """
+    from unittest.mock import MagicMock
+    from src.tools.email import outlook_calendar_client as occ
+
+    def _resp(status, body):
+        r = MagicMock()
+        r.status_code = status
+        r.json.return_value = body
+        return r
+
+    assert occ._is_scope_error(
+        _resp(403, {"error": {"code": "InsufficientScope", "message": "token lacks permission"}})
+    ) is True
+
+    assert occ._is_scope_error(
+        _resp(403, {"error": {"code": "insufficient_scope", "message": "token lacks permission"}})
+    ) is True
+
+
+def test_outlook_scope_error_required_privilege_message():
+    """Round-2: 'does not have the required privilege' in the message → IS scope error.
+
+    This tight phrase is the one message-level signal kept. Confirm it still works.
+    """
+    from unittest.mock import MagicMock
+    from src.tools.email import outlook_calendar_client as occ
+
+    def _resp(status, body):
+        r = MagicMock()
+        r.status_code = status
+        r.json.return_value = body
+        return r
+
+    assert occ._is_scope_error(
+        _resp(403, {"error": {"code": "Authorization_RequestDenied",
+                              "message": "user does not have the required privilege"}})
+    ) is True
+
+
 # ===========================================================================
 # FIX-1 (#1963) — Outlook event_id with '/' is accepted (length-only check)
 # ===========================================================================
 
 
 def test_outlook_respond_accepts_event_id_with_slash(monkeypatch):
-    """FIX-1: respond() must accept a Graph calendar event_id containing '/'.
+    """FIX-1 + FIX-2: respond() must accept a Graph calendar event_id containing '/'.
 
     Previously _ID_RE (message charset) excluded '/', so every real Graph
     calendar event id raised ValueError → 409. The fix drops the charset
     regex and uses a length-only bound; Graph rejects a truly bad id itself.
     POSITIVE: the upstream _graph_request_with_retry call is reached (not raised).
+    FIX-2: assert the URL passed to _graph_request_with_retry contains %2F
+    (encoded slash), NOT a raw slash in the id segment, proving the id was encoded.
     """
     from unittest.mock import MagicMock, patch
     from src.tools.email import outlook_calendar_client as occ
@@ -804,6 +966,25 @@ def test_outlook_respond_accepts_event_id_with_slash(monkeypatch):
     assert result == {"event_id": slash_id, "response": "accept"}
     # POSITIVE: the upstream client call was reached (id was NOT rejected).
     assert mock_req.called, "upstream must be called — id must NOT raise ValueError"
+    # FIX-2: assert the URL has the slash encoded as %2F, NOT raw.
+    called_url = mock_req.call_args[0][1]  # positional arg[1] = url
+    assert "%2F" in called_url, (
+        f"event_id '/' must be percent-encoded as %2F in the URL; got: {called_url!r}"
+    )
+    assert called_url.endswith("/accept"), (
+        f"URL must end with '/accept'; got: {called_url!r}"
+    )
+    # NEGATIVE: the raw slash from the id must NOT appear in the id path segment.
+    # The URL shape is .../me/events/<safe_id>/accept — isolate the id portion.
+    from src.tools.email.outlook_client import _GRAPH_BASE
+    prefix = f"{_GRAPH_BASE}/me/events/"
+    suffix = "/accept"
+    inner = called_url[len(prefix):]
+    if inner.endswith(suffix):
+        inner = inner[: -len(suffix)]
+    assert "/" not in inner, (
+        f"raw '/' must not appear in the encoded id segment; got segment: {inner!r}"
+    )
 
 
 # ===========================================================================
@@ -812,13 +993,14 @@ def test_outlook_respond_accepts_event_id_with_slash(monkeypatch):
 # ===========================================================================
 
 
-def test_outlook_scope_marker_no_false_positive_on_scope_word():
-    """FIX-3: a 403 whose message contains 'scope' but NOT 'insufficient' /
-    'erroraccessdenied' / 'does not have permission' is NOT a scope error.
+def test_outlook_scope_marker_no_false_positive_on_does_not_have_permission():
+    """FIX-5: a 403 with 'does not have permission to access this calendar' must
+    NOT be classified as a scope error (calendar-not-shared ≠ scope gap → must
+    NOT become 412).
 
-    Before FIX-3 the tuple included 'scope', which caused e.g. a
-    'calendar-not-shared' 403 whose Graph message happened to contain the word
-    'scope' to be mis-classified as a scope gap → wrong 412 re-consent.
+    Before FIX-5 _SCOPE_MARKERS included 'does not have permission', which caused
+    calendar-not-shared 403s to be mis-classified as scope gaps → wrong 412.
+    The marker was replaced with the narrower 'does not have the required privilege'.
     """
     from unittest.mock import MagicMock
     from src.tools.email import outlook_calendar_client as occ
@@ -829,17 +1011,132 @@ def test_outlook_scope_marker_no_false_positive_on_scope_word():
         r.json.return_value = body
         return r
 
-    # 403 whose message contains 'scope' but is NOT a true scope-gap marker.
-    not_scope = _resp(403, {"error": {"code": "CalendarNotShared",
-                                      "message": "Calendar sharing scope is limited."}})
+    # FIX-5: calendar-not-shared 403 — old broad marker matched; new one must NOT.
+    not_scope = _resp(403, {"error": {"code": "ErrorCalendarSharingOperationFailed",
+                                      "message": "user does not have permission to access this calendar"}})
     assert occ._is_scope_error(not_scope) is False, (
-        "'scope' alone in message must NOT trigger scope-error classification (FIX-3)"
+        "'does not have permission to access this calendar' must NOT trigger scope-error "
+        "(FIX-5: calendar-not-shared != scope gap)"
     )
 
-    # Confirm the tight markers still trigger.
-    is_scope = _resp(403, {"error": {"code": "ErrorAccessDenied",
-                                     "message": "insufficient scope grants"}})
-    assert occ._is_scope_error(is_scope) is True
+    # Confirm the tight OAuth scope-gap markers still trigger.
+    is_scope_insufficient = _resp(403, {"error": {"code": "ErrorAccessDenied",
+                                                   "message": "insufficient scope grants"}})
+    assert occ._is_scope_error(is_scope_insufficient) is True
+
+    is_scope_privilege = _resp(403, {"error": {"code": "Authorization_RequestDenied",
+                                               "message": "user does not have the required privilege"}})
+    assert occ._is_scope_error(is_scope_privilege) is True
+
+
+# ===========================================================================
+# FIX-6 (#1963) — freebusy timezone: non-UTC offset is normalized to UTC
+# ===========================================================================
+
+
+def test_outlook_freebusy_error_uses_code_not_message(monkeypatch):
+    """FIX-3: freebusy errors_out must use the Graph error CODE enum, not the
+    raw message narrative (which can carry emails or internal path info).
+
+    NEGATIVE: the raw Graph message string must NOT appear in the errors dict.
+    POSITIVE: the Graph error code string MUST appear.
+    """
+    from unittest.mock import MagicMock, patch
+    from src.tools.email import outlook_calendar_client as occ
+
+    raw_message = "The user alice@internal.example does not have access to this resource."
+    error_code = "ErrorFolderNotFound"
+
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.raise_for_status.return_value = None
+    fake_resp.json.return_value = {
+        "value": [
+            {
+                "scheduleId": "alice@internal.example",
+                "error": {"code": error_code, "message": raw_message},
+            }
+        ]
+    }
+
+    with patch.object(occ, "_graph_request_with_retry", return_value=fake_resp), \
+         patch.object(occ, "_acquire_silent", return_value="fake-token"):
+        result = occ.freebusy(
+            {"access_token": "t"},
+            "2026-06-06T00:00:00Z",
+            "2026-06-07T00:00:00Z",
+            calendars=["alice@internal.example"],
+        )
+
+    errors = result.get("errors", {})
+    assert errors, "errors dict must be populated when Graph returns an error entry"
+
+    reasons = errors.get("alice@internal.example", [])
+    assert reasons, "error reasons must be non-empty for the inaccessible schedule"
+
+    # POSITIVE: error code must appear.
+    assert error_code in reasons, (
+        f"Graph error code {error_code!r} must appear in errors; got {reasons!r}"
+    )
+    # NEGATIVE: raw message with PII must NOT appear.
+    for r in reasons:
+        assert raw_message not in r, (
+            f"raw Graph message (may carry PII) must NOT appear in errors; got {r!r}"
+        )
+
+
+def test_outlook_freebusy_utc_normalizes_offset_timestamp(monkeypatch):
+    """FIX-6: freebusy must send UTC-normalized dateTime even when caller passes
+    a non-UTC offset (e.g. +07:00). Graph getSchedule mis-interprets an offset
+    timestamp when timeZone is declared as UTC.
+
+    Asserts: the body sent to _graph_request_with_retry uses a dateTime without
+    any offset suffix, and timeZone is 'UTC'.
+    """
+    from unittest.mock import MagicMock, patch
+    from src.tools.email import outlook_calendar_client as occ
+
+    time_min_with_offset = "2026-06-06T09:00:00+07:00"  # 02:00 UTC
+    time_max_with_offset = "2026-06-06T17:00:00+07:00"  # 10:00 UTC
+
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.raise_for_status.return_value = None
+    fake_resp.json.return_value = {"value": []}
+
+    captured: list[dict] = []
+
+    def _capture(method, url, *, headers=None, json_body=None, **kwargs):
+        captured.append(json_body or {})
+        return fake_resp
+
+    with patch.object(occ, "_graph_request_with_retry", side_effect=_capture), \
+         patch.object(occ, "_acquire_silent", return_value="fake-token"):
+        occ.freebusy({"access_token": "t"}, time_min_with_offset, time_max_with_offset)
+
+    assert captured, "freebusy must call _graph_request_with_retry"
+    body = captured[0]
+
+    start_dt = body["startTime"]["dateTime"]
+    end_dt = body["endTime"]["dateTime"]
+    start_tz = body["startTime"]["timeZone"]
+    end_tz = body["endTime"]["timeZone"]
+
+    assert start_tz == "UTC", f"startTime.timeZone must be 'UTC'; got {start_tz!r}"
+    assert end_tz == "UTC", f"endTime.timeZone must be 'UTC'; got {end_tz!r}"
+
+    # The UTC-normalized values: +07:00 offset means subtract 7h for UTC.
+    assert start_dt == "2026-06-06T02:00:00", (
+        f"start should normalize +07:00 → UTC 02:00:00; got {start_dt!r}"
+    )
+    assert end_dt == "2026-06-06T10:00:00", (
+        f"end should normalize +07:00 → UTC 10:00:00; got {end_dt!r}"
+    )
+
+    # Confirm no offset suffix leaks into the sent dateTime strings.
+    assert "+" not in start_dt and "+" not in end_dt, (
+        "UTC-normalized datetimes must not carry a '+' offset suffix"
+    )
 
 
 # ===========================================================================
