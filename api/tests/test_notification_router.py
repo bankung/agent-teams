@@ -608,3 +608,79 @@ async def test_fallback_path_uses_repo_root_for_windows_working_path(
     assert _Path(written_path).exists(), (
         f"Fallback file {written_path!r} does not exist on disk."
     )
+
+
+# ---------------------------------------------------------------------------
+# Kanban #1937 — event_kind forwarding through POST /api/notifications/deliver
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_deliver_event_kind_forwarded_to_push_subscription_resolver(
+    client, scaffold_cleanup, monkeypatch, tmp_path
+) -> None:
+    """AC4 (Kanban #1937): POST /api/notifications/deliver accepts event_kind and
+    forwards it to notification_router.deliver() so the push_subscription branch
+    fires.
+
+    Verifies (POSITIVE path):
+    - When kind='web_push' and event_kind='session_waiting', the endpoint returns
+      200 and the push-subscription resolver is invoked (not skipped).
+    - The deliver() call receives the event_kind from the request body.
+
+    Uses monkeypatch on _resolve_push_subscription_targets to capture invocations
+    without needing a live push_subscription row. Any call with a matching
+    event_kind constitutes a pass.
+    """
+    from src.services import notification_router
+
+    proj = await _create_project(client, scaffold_cleanup, working_path=str(tmp_path))
+    task = await _create_task(client, proj["id"])
+
+    resolver_calls: list[str] = []
+
+    async def fake_push_resolver(session, project_id, event_kind):
+        resolver_calls.append(event_kind)
+        # Return an empty list so the fallback path fires (keeps the test
+        # self-contained — no real web_push adapter needed).
+        return []
+
+    monkeypatch.setattr(
+        notification_router,
+        "_resolve_push_subscription_targets",
+        fake_push_resolver,
+    )
+
+    resp = await client.post(
+        "/api/notifications/deliver",
+        headers={"X-Project-Id": str(proj["id"])},
+        json={
+            "task_id": task["id"],
+            "payload": {"message": "Lead is waiting for your input"},
+            "kind": "web_push",
+            "event_kind": "session_waiting",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    # POSITIVE: resolver was called with the forwarded event_kind.
+    assert resolver_calls == ["session_waiting"], (
+        f"Expected _resolve_push_subscription_targets called with 'session_waiting', "
+        f"but got: {resolver_calls}"
+    )
+
+    # NEGATIVE: without event_kind, the resolver is NOT called (backwards-compat).
+    resolver_calls.clear()
+    resp2 = await client.post(
+        "/api/notifications/deliver",
+        headers={"X-Project-Id": str(proj["id"])},
+        json={
+            "task_id": task["id"],
+            "payload": {"message": "no event_kind"},
+            "kind": "web_push",
+        },
+    )
+    assert resp2.status_code == 200, resp2.text
+    assert resolver_calls == [], (
+        "Resolver must NOT be called when event_kind is omitted (backwards-compat)."
+    )

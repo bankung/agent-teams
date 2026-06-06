@@ -367,6 +367,18 @@
           }
         ]
       }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/notify-session-waiting.ps1\"",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
