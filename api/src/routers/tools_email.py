@@ -41,17 +41,25 @@ from src.models.project import Project
 from src.schemas.tools_email import (
     AuthStatusResponse,
     GmailArchiveRequest,
+    GmailAttachmentRequest,
+    GmailAttachmentResponse,
     GmailAuthStartResponse,
     GmailCallbackResponse,
     GmailDraftRequest,
     GmailDraftResponse,
     GmailGetRequest,
     GmailGetResponse,
+    GmailLabel,
+    GmailLabelsRequest,
+    GmailLabelsResponse,
     GmailMarkRequest,
     GmailModifyResponse,
     GmailSearchRequest,
     GmailSearchResponse,
     GmailSearchItem,
+    GmailThreadMessage,
+    GmailThreadRequest,
+    GmailThreadResponse,
     GmailTrashRequest,
     GmailTrashResponse,
     OutlookArchiveRequest,
@@ -968,6 +976,189 @@ async def gmail_get(
         "gmail", session_project_id, "get", _GET_UNITS_PER_MESSAGE, success=True,
     )
     return GmailGetResponse.model_validate(data)
+
+
+# ---------------------------------------------------------------------------
+# Gmail — READ extras (Kanban #1940: thread + labels + attachment)
+# ---------------------------------------------------------------------------
+#
+# READ tier — same gate chain as search/get: Layer-0 tool-grant → tier gate
+# (no-op for READ) → auth → cap → upstream → gate.log_audit (units only).
+# NO _write_action_audit (reads). NO body/filename/data in any log or error.
+
+_THREAD_UNITS_PER_CALL = 5      # rough; mirrors _LIST_UNITS_PER_CALL
+_LABELS_UNITS_PER_CALL = 5      # rough; mirrors _LIST_UNITS_PER_CALL
+_ATTACHMENT_UNITS_PER_CALL = 5  # rough; mirrors _LIST_UNITS_PER_CALL
+
+
+@router.post("/gmail/thread", response_model=GmailThreadResponse)
+async def gmail_thread(
+    body: GmailThreadRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> GmailThreadResponse:
+    """Fetch all messages in a Gmail thread by thread id. READ tier — auto-approve.
+
+    Layer 0 (#1799): `gmail.thread` must be granted to the X-Agent-Role (if
+    the role is restricted). Fires first.
+
+    Tier gate (#1859): READ is OPEN — no operator-proof required.
+
+    PRIVACY: body_text MUST NOT appear in gate.log_audit, any logger call, or
+    HTTP error detail. Only type(exc).__name__ is used in error paths.
+    """
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "gmail.thread"
+    )
+    _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
+
+    creds = await _require_creds(session_project_id, session)
+    _cap_check_or_429(session_project_id, _THREAD_UNITS_PER_CALL, "thread")
+
+    try:
+        data = await run_in_threadpool(
+            gmail_client.get_thread, creds, body.thread_id
+        )
+    except Exception as exc:
+        gate.log_audit(
+            "gmail", session_project_id, "thread", _THREAD_UNITS_PER_CALL,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("gmail thread failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "gmail_thread_failed", "class": type(exc).__name__},
+        ) from exc
+
+    gate.log_audit(
+        "gmail", session_project_id, "thread", _THREAD_UNITS_PER_CALL, success=True,
+    )
+    messages = [GmailThreadMessage.model_validate(m) for m in data["messages"]]
+    return GmailThreadResponse(
+        thread_id=data["thread_id"],
+        messages=messages,
+        count=len(messages),
+    )
+
+
+@router.post("/gmail/labels", response_model=GmailLabelsResponse)
+async def gmail_labels(
+    body: GmailLabelsRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> GmailLabelsResponse:
+    """List all Gmail labels for the authenticated account. READ tier — auto-approve.
+
+    Layer 0 (#1799): `gmail.labels` must be granted to the X-Agent-Role (if
+    the role is restricted). Fires first.
+
+    Tier gate (#1859): READ is OPEN — no operator-proof required.
+
+    PRIVACY: label names MUST NOT appear in gate.log_audit or any logger call.
+    Only type(exc).__name__ is used in error paths.
+    """
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "gmail.labels"
+    )
+    _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
+
+    creds = await _require_creds(session_project_id, session)
+    _cap_check_or_429(session_project_id, _LABELS_UNITS_PER_CALL, "labels")
+
+    try:
+        items = await run_in_threadpool(gmail_client.list_labels, creds)
+    except Exception as exc:
+        gate.log_audit(
+            "gmail", session_project_id, "labels", _LABELS_UNITS_PER_CALL,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("gmail labels failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "gmail_labels_failed", "class": type(exc).__name__},
+        ) from exc
+
+    gate.log_audit(
+        "gmail", session_project_id, "labels", _LABELS_UNITS_PER_CALL, success=True,
+    )
+    labels = [GmailLabel.model_validate(lbl) for lbl in items]
+    return GmailLabelsResponse(labels=labels, count=len(labels))
+
+
+@router.post("/gmail/attachment", response_model=GmailAttachmentResponse)
+async def gmail_attachment(
+    body: GmailAttachmentRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> GmailAttachmentResponse:
+    """Fetch a Gmail message attachment by message id + attachment id. READ tier.
+
+    Layer 0 (#1799): `gmail.attachment` must be granted to the X-Agent-Role
+    (if the role is restricted). Fires first.
+
+    Tier gate (#1859): READ is OPEN — no operator-proof required.
+
+    SIZE CAP: attachments over 10 MB are refused with 413 — data is never
+    fetched or returned. Only {error, max_mb} are in the 413 detail body.
+
+    PRIVACY: filename, mime_type, and data_base64 MUST NOT appear in
+    gate.log_audit, any logger call, or HTTP error detail. Only
+    type(exc).__name__ is used in error paths.
+    """
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "gmail.attachment"
+    )
+    _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
+
+    creds = await _require_creds(session_project_id, session)
+    _cap_check_or_429(session_project_id, _ATTACHMENT_UNITS_PER_CALL, "attachment")
+
+    try:
+        data = await run_in_threadpool(
+            gmail_client.get_attachment, creds, body.message_id, body.attachment_id
+        )
+    except gmail_client.AttachmentTooLargeError as exc:
+        gate.log_audit(
+            "gmail", session_project_id, "attachment", _ATTACHMENT_UNITS_PER_CALL,
+            success=False, error_code="AttachmentTooLargeError",
+        )
+        # PRIVACY: do NOT include filename or size in the 413 detail.
+        raise HTTPException(
+            status_code=413,
+            detail={"error": "attachment_too_large", "max_mb": 10},
+        ) from exc
+    except gmail_client.AttachmentNotFoundError as exc:
+        gate.log_audit(
+            "gmail", session_project_id, "attachment", _ATTACHMENT_UNITS_PER_CALL,
+            success=False, error_code="AttachmentNotFoundError",
+        )
+        # PRIVACY: do NOT include attachment_id or message_id in the 404 detail.
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "attachment_not_found"},
+        ) from exc
+    except Exception as exc:
+        gate.log_audit(
+            "gmail", session_project_id, "attachment", _ATTACHMENT_UNITS_PER_CALL,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("gmail attachment failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "gmail_attachment_failed", "class": type(exc).__name__},
+        ) from exc
+
+    gate.log_audit(
+        "gmail", session_project_id, "attachment", _ATTACHMENT_UNITS_PER_CALL,
+        success=True,
+    )
+    return GmailAttachmentResponse.model_validate(data)
 
 
 # >>> #1608 OUTLOOK ROUTES BELOW — append-only zone for parallel dev coordination

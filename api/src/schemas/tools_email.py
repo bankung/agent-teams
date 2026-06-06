@@ -585,3 +585,117 @@ class OutlookGetResponse(BaseModel):
     body_text: str
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+# ---------------------------------------------------------------------------
+# Kanban #1940 — READ extras schemas (thread + labels + attachment) — Gmail
+# ---------------------------------------------------------------------------
+#
+# READ tier: auto-approve (no operator-proof). Body content, filenames, and
+# attachment data MUST NOT appear in any log, audit trail, or error detail.
+
+
+class GmailThreadRequest(BaseModel):
+    """Fetch all messages in a Gmail thread by thread id. READ tier."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    thread_id: str = Field(
+        ...,
+        description="Gmail thread id (hex, same character class as message id).",
+    )
+
+    @model_validator(mode="after")
+    def _check_id(self) -> "GmailThreadRequest":
+        tid = self.thread_id
+        if not (1 <= len(tid) <= 64):
+            raise ValueError("thread_id must be a non-empty string <=64 chars.")
+        if not _MID_ALLOWED.fullmatch(tid):
+            raise ValueError(
+                "thread_id contains disallowed characters; allowed: A-Z a-z 0-9 _ - = +"
+            )
+        return self
+
+
+class GmailThreadMessage(BaseModel):
+    """A single message within a Gmail thread. body_text MUST NOT be logged."""
+
+    id: str
+    from_: str | None = Field(default=None, alias="from")
+    to: str | None = None
+    subject: str | None = None
+    date: str | None = None
+    body_text: str
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class GmailThreadResponse(BaseModel):
+    """All messages in a Gmail thread."""
+
+    thread_id: str
+    messages: list[GmailThreadMessage]
+    count: int
+
+
+class GmailLabelsRequest(BaseModel):
+    """List all Gmail labels for the authenticated account. READ tier (empty body ok)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class GmailLabel(BaseModel):
+    """A single Gmail label."""
+
+    id: str
+    name: str
+    type: str | None = None
+
+
+class GmailLabelsResponse(BaseModel):
+    """All Gmail labels for the account."""
+
+    labels: list[GmailLabel]
+    count: int
+
+
+class GmailAttachmentRequest(BaseModel):
+    """Fetch a Gmail message attachment by message id + attachment id. READ tier."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str = Field(
+        ...,
+        description="Gmail message id (hex, e.g. '18b3f1a2c9d4e5f6').",
+    )
+    attachment_id: str = Field(
+        ...,
+        description="Gmail attachment id (from payload.parts[].body.attachmentId).",
+    )
+
+    @model_validator(mode="after")
+    def _check_ids(self) -> "GmailAttachmentRequest":
+        mid = self.message_id
+        if not (1 <= len(mid) <= 512):
+            raise ValueError("message_id must be a non-empty string <=512 chars.")
+        if not _MID_ALLOWED.fullmatch(mid):
+            raise ValueError(
+                "message_id contains disallowed characters; allowed: A-Z a-z 0-9 _ - = +"
+            )
+        att = self.attachment_id
+        if not (1 <= len(att) <= 512):
+            raise ValueError("attachment_id must be a non-empty string <=512 chars.")
+        if not _MID_ALLOWED.fullmatch(att):
+            raise ValueError(
+                "attachment_id contains disallowed characters; allowed: A-Z a-z 0-9 _ - = +"
+            )
+        return self
+
+
+class GmailAttachmentResponse(BaseModel):
+    """Content of a Gmail attachment. filename + data_base64 MUST NOT be logged."""
+
+    filename: str | None = None
+    mime_type: str | None = None
+    size: int
+    data_base64: str

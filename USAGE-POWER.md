@@ -147,7 +147,13 @@ READ tier fires with no prompt and succeeds immediately — only a units-trail r
 
 - **get** — `POST /api/tools/email/{gmail,outlook}/get`. Body: `{message_id}`. Returns headers + full plain-text **body_text** of a single message. Use case: read the full content of a specific message to make decisions (e.g., extract a code, check approval status, verify sender details).
 
-**Privacy note:** Both endpoints return email content (headers, subject, sender, body) to the caller, but the query, subject, sender, body, and snippet are **never written to the audit log or echoed in error responses**. Only the units trail `{provider, action, units, success}` (no content) is recorded by `gate.log_audit` (in `_scratch/email-tools-audit.jsonl`); READ operations do NOT write the action trail (`_runtime/email-actions.jsonl`, which is for mutations only). This lets the secretary read email content without exposing PII to the audit trail.
+- **get-thread** (Gmail only) — `POST /api/tools/email/gmail/thread`. Body: `{thread_id}`. Returns the entire conversation: `{thread_id, messages: [{id, from, to, subject, date, body_text}]}`. Use case: read a full email thread for context, follow a discussion chain, verify approvals across messages.
+
+- **list-labels** (Gmail only) — `POST /api/tools/email/gmail/labels`. Body: `{}`. Returns `[{id, name, type}]`. Use case: discover label IDs before marking or archiving (e.g., find the "invoices" label to organize by category).
+
+- **get-attachment** (Gmail only) — `POST /api/tools/email/gmail/attachment`. Body: `{message_id, attachment_id}`. Returns `{filename, mime_type, size, data_base64}`. **Size cap: attachments over 10 MB are refused with HTTP 413** (no data returned). Use case: retrieve a file from an email for processing or storage.
+
+**Privacy note:** All READ endpoints return email content (headers, subject, sender, body, attachment metadata) to the caller, but these fields are **never written to the audit log or echoed in error responses**. Only the units trail `{provider, action, units, success}` (no content) is recorded by `gate.log_audit` (in `_scratch/email-tools-audit.jsonl`); READ operations do NOT write the action trail (`_runtime/email-actions.jsonl`, which is for mutations only). This lets the secretary read email content without exposing PII to the audit trail.
 
 **Authorization status check:** Query `GET /api/tools/email/auth/<provider>/status` (where `<provider>` is `gmail` or `outlook`) to see if the OAuth credentials are live for the current project.
 

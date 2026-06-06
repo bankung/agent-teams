@@ -1647,3 +1647,482 @@ async def test_outlook_get_oversized_message_id_422(client, monkeypatch):
         json={"message_id": oversized_id},
     )
     assert resp.status_code == 422, f"expected 422, got {resp.status_code}: {resp.text}"
+
+
+# ===========================================================================
+# Kanban #1940 — READ extras: thread + labels + attachment (Gmail)
+# ===========================================================================
+#
+# Gate chain: Layer-0 tool-grant → tier(READ, no-op) → auth → cap → client →
+# gate.log_audit. NO _write_action_audit (reads only).
+#
+# Tests use a separate project id to stay hermetic.
+
+_PROJ_1940 = 9993
+_HDR_1940 = {"X-Project-Id": str(_PROJ_1940)}
+
+
+@pytest.fixture(autouse=True)
+def _clean_1940_stores():
+    """Clear in-memory stores for _PROJ_1940 between tests."""
+    from src.tools.email import gate, token_store
+    import datetime as _dt
+    today = _dt.datetime.now(_dt.UTC).date().isoformat()
+    token_store._CACHE.pop(("gmail", _PROJ_1940), None)
+    gate._DAILY_UNITS.pop((_PROJ_1940, today), None)
+    yield
+    token_store._CACHE.pop(("gmail", _PROJ_1940), None)
+    gate._DAILY_UNITS.pop((_PROJ_1940, today), None)
+
+
+def _seed_1940_creds(monkeypatch):
+    from src.tools.email import token_store
+    from unittest.mock import MagicMock
+    from google.oauth2.credentials import Credentials as RealCreds
+    import datetime as _dt
+    creds = MagicMock(spec=RealCreds)
+    creds.expiry = _dt.datetime(2099, 1, 1, 0, 0, 0)
+    creds._at_email_cache = "test@gmail.com"
+    token_store._CACHE[("gmail", _PROJ_1940)] = creds
+    monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "1000")
+
+
+# ---------------------------------------------------------------------------
+# /gmail/thread
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_gmail_thread_success_returns_messages(client, monkeypatch, _actions_to_tmp):
+    """AC: /gmail/thread returns 200 with {thread_id, messages, count}.
+
+    POSITIVE: get_thread is called; response contains body_text for each message.
+    PRIVACY: audit row does NOT contain body_text.
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_1940_creds(monkeypatch)
+    from src.tools.email import gmail_client, gate
+
+    secret_body = "Thread body content for test"
+    fake_thread = {
+        "thread_id": "thr001",
+        "messages": [
+            {
+                "id": "msg001",
+                "from": "alice@x.com",
+                "to": "bob@y.com",
+                "subject": "Re: hello",
+                "date": "Mon, 1 Jan 2024 10:00:00 +0000",
+                "body_text": secret_body,
+            },
+            {
+                "id": "msg002",
+                "from": "bob@y.com",
+                "to": "alice@x.com",
+                "subject": "Re: hello",
+                "date": "Tue, 2 Jan 2024 10:00:00 +0000",
+                "body_text": "Reply body",
+            },
+        ],
+    }
+    monkeypatch.setattr(
+        gmail_client, "get_thread",
+        lambda creds, thread_id: fake_thread,
+    )
+
+    import json as _json
+    audit_rows: list[dict] = []
+
+    def _fake_log_audit(provider, pid, action, units, success, error_code=None):
+        audit_rows.append({"provider": provider, "action": action,
+                           "units": units, "success": success})
+
+    monkeypatch.setattr(gate, "log_audit", _fake_log_audit)
+
+    resp = await client.post(
+        f"{_BASE}/gmail/thread", headers=_HDR_1940,
+        json={"thread_id": "thr001"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["thread_id"] == "thr001"
+    assert body["count"] == 2
+    assert len(body["messages"]) == 2
+    assert body["messages"][0]["id"] == "msg001"
+    assert body["messages"][0]["body_text"] == secret_body
+    assert body["messages"][0]["from"] == "alice@x.com"
+
+    # PRIVACY: body_text must NOT appear in audit rows.
+    for row in audit_rows:
+        row_str = _json.dumps(row)
+        assert secret_body not in row_str, f"body_text leaked into audit row: {row_str}"
+
+
+@pytest.mark.asyncio
+async def test_gmail_thread_401_no_auth(client, monkeypatch):
+    """/gmail/thread returns 401 when no Gmail creds are present."""
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "1000")
+    resp = await client.post(
+        f"{_BASE}/gmail/thread", headers=_HDR_1940,
+        json={"thread_id": "thr001"},
+    )
+    assert resp.status_code == 401, resp.text
+
+
+@pytest.mark.asyncio
+async def test_gmail_thread_layer0_denial_403(client, monkeypatch):
+    """AC: /gmail/thread 403s on Layer-0 grant denial; get_thread NOT called."""
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_1940_creds(monkeypatch)
+    from src.tools.email import gmail_client
+    from src.services import tool_grants as tg
+
+    real_check = tg.check_grant
+
+    def _deny_check(config, role, tool_name, *, project_id=None):
+        if role == "locked-role":
+            return tg.GrantDecision.DENY
+        return real_check(config, role, tool_name, project_id=project_id)
+
+    monkeypatch.setattr(tools_email, "check_grant", _deny_check)
+    called: list = []
+    monkeypatch.setattr(
+        gmail_client, "get_thread",
+        lambda *a, **k: called.append(1) or {"thread_id": "x", "messages": []},
+    )
+
+    resp = await client.post(
+        f"{_BASE}/gmail/thread",
+        headers={**_HDR_1940, "X-Agent-Role": "locked-role"},
+        json={"thread_id": "thr001"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert "tool_grant_denied" in resp.json()["detail"]
+    assert called == [], "get_thread must NOT run when Layer-0 denies"
+
+
+# ---------------------------------------------------------------------------
+# /gmail/labels
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_gmail_labels_success_returns_label_list(client, monkeypatch, _actions_to_tmp):
+    """AC: /gmail/labels returns 200 with {labels, count}.
+
+    POSITIVE: list_labels is called; response has correct shape.
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_1940_creds(monkeypatch)
+    from src.tools.email import gmail_client
+
+    fake_labels = [
+        {"id": "INBOX", "name": "INBOX", "type": "system"},
+        {"id": "Label_42", "name": "Work", "type": "user"},
+    ]
+    monkeypatch.setattr(
+        gmail_client, "list_labels",
+        lambda creds: fake_labels,
+    )
+
+    resp = await client.post(
+        f"{_BASE}/gmail/labels", headers=_HDR_1940, json={},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["count"] == 2
+    assert len(body["labels"]) == 2
+    assert body["labels"][0]["id"] == "INBOX"
+    assert body["labels"][0]["name"] == "INBOX"
+    assert body["labels"][0]["type"] == "system"
+    assert body["labels"][1]["id"] == "Label_42"
+
+
+@pytest.mark.asyncio
+async def test_gmail_labels_401_no_auth(client, monkeypatch):
+    """/gmail/labels returns 401 when no Gmail creds are present."""
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "1000")
+    resp = await client.post(
+        f"{_BASE}/gmail/labels", headers=_HDR_1940, json={},
+    )
+    assert resp.status_code == 401, resp.text
+
+
+@pytest.mark.asyncio
+async def test_gmail_labels_layer0_denial_403(client, monkeypatch):
+    """AC: /gmail/labels 403s on Layer-0 grant denial; list_labels NOT called."""
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_1940_creds(monkeypatch)
+    from src.tools.email import gmail_client
+    from src.services import tool_grants as tg
+
+    real_check = tg.check_grant
+
+    def _deny_check(config, role, tool_name, *, project_id=None):
+        if role == "locked-role":
+            return tg.GrantDecision.DENY
+        return real_check(config, role, tool_name, project_id=project_id)
+
+    monkeypatch.setattr(tools_email, "check_grant", _deny_check)
+    called: list = []
+    monkeypatch.setattr(
+        gmail_client, "list_labels",
+        lambda *a, **k: called.append(1) or [],
+    )
+
+    resp = await client.post(
+        f"{_BASE}/gmail/labels",
+        headers={**_HDR_1940, "X-Agent-Role": "locked-role"},
+        json={},
+    )
+    assert resp.status_code == 403, resp.text
+    assert "tool_grant_denied" in resp.json()["detail"]
+    assert called == [], "list_labels must NOT run when Layer-0 denies"
+
+
+# ---------------------------------------------------------------------------
+# /gmail/attachment
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_gmail_attachment_success_returns_data(client, monkeypatch, _actions_to_tmp):
+    """AC: /gmail/attachment returns 200 with {filename, mime_type, size, data_base64}.
+
+    POSITIVE: get_attachment is called; response has correct shape.
+    PRIVACY: audit row does NOT contain filename or data.
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_1940_creds(monkeypatch)
+    from src.tools.email import gmail_client, gate
+
+    secret_filename = "secret_invoice.pdf"
+    secret_data = "SGVsbG8gV29ybGQ="  # base64url of "Hello World"
+
+    fake_att = {
+        "filename": secret_filename,
+        "mime_type": "application/pdf",
+        "size": 12345,
+        "data_base64": secret_data,
+    }
+    monkeypatch.setattr(
+        gmail_client, "get_attachment",
+        lambda creds, message_id, attachment_id: fake_att,
+    )
+
+    import json as _json
+    audit_rows: list[dict] = []
+
+    def _fake_log_audit(provider, pid, action, units, success, error_code=None):
+        audit_rows.append({"provider": provider, "action": action,
+                           "units": units, "success": success})
+
+    monkeypatch.setattr(gate, "log_audit", _fake_log_audit)
+
+    resp = await client.post(
+        f"{_BASE}/gmail/attachment", headers=_HDR_1940,
+        json={"message_id": "msg001", "attachment_id": "att001"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["filename"] == secret_filename
+    assert body["mime_type"] == "application/pdf"
+    assert body["size"] == 12345
+    assert body["data_base64"] == secret_data
+
+    # PRIVACY: filename and data must NOT appear in audit rows.
+    for row in audit_rows:
+        row_str = _json.dumps(row)
+        assert secret_filename not in row_str, f"filename leaked into audit row: {row_str}"
+        assert secret_data not in row_str, f"data leaked into audit row: {row_str}"
+
+
+@pytest.mark.asyncio
+async def test_gmail_attachment_oversize_returns_413(client, monkeypatch, _actions_to_tmp):
+    """AC: /gmail/attachment returns 413 when the attachment exceeds 10 MB.
+
+    NEGATIVE lock: the 413 detail must be {error, max_mb} only — NO filename/data.
+    PRIVACY: audit row must NOT contain filename or any attachment content.
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_1940_creds(monkeypatch)
+    from src.tools.email import gmail_client, gate
+
+    import json as _json
+    audit_rows: list[dict] = []
+
+    def _fake_log_audit(provider, pid, action, units, success, error_code=None):
+        audit_rows.append({"provider": provider, "action": action,
+                           "units": units, "success": success,
+                           "error_code": error_code})
+
+    monkeypatch.setattr(gate, "log_audit", _fake_log_audit)
+
+    secret_filename = "huge_video.mp4"
+
+    def _raise_too_large(creds, message_id, attachment_id):
+        raise gmail_client.AttachmentTooLargeError(
+            f"attachment {secret_filename} is 15 MB, exceeds cap"
+        )
+
+    monkeypatch.setattr(gmail_client, "get_attachment", _raise_too_large)
+
+    resp = await client.post(
+        f"{_BASE}/gmail/attachment", headers=_HDR_1940,
+        json={"message_id": "msg001", "attachment_id": "att001"},
+    )
+    assert resp.status_code == 413, f"expected 413, got {resp.status_code}: {resp.text}"
+    detail = resp.json()["detail"]
+    assert detail["error"] == "attachment_too_large"
+    assert detail["max_mb"] == 10
+    # PRIVACY: 413 detail must NOT contain filename or attachment-specific data.
+    detail_str = _json.dumps(detail)
+    assert secret_filename not in detail_str, f"filename leaked into 413 detail: {detail_str}"
+
+    # PRIVACY: audit row must NOT contain filename.
+    for row in audit_rows:
+        row_str = _json.dumps(row)
+        assert secret_filename not in row_str, f"filename leaked into audit row: {row_str}"
+
+
+@pytest.mark.asyncio
+async def test_gmail_attachment_401_no_auth(client, monkeypatch):
+    """/gmail/attachment returns 401 when no Gmail creds are present."""
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    monkeypatch.setenv("EMAIL_TOOLS_DAILY_UNITS_CAP", "1000")
+    resp = await client.post(
+        f"{_BASE}/gmail/attachment", headers=_HDR_1940,
+        json={"message_id": "msg001", "attachment_id": "att001"},
+    )
+    assert resp.status_code == 401, resp.text
+
+
+@pytest.mark.asyncio
+async def test_gmail_attachment_layer0_denial_403(client, monkeypatch):
+    """AC: /gmail/attachment 403s on Layer-0 grant denial; get_attachment NOT called."""
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_1940_creds(monkeypatch)
+    from src.tools.email import gmail_client
+    from src.services import tool_grants as tg
+
+    real_check = tg.check_grant
+
+    def _deny_check(config, role, tool_name, *, project_id=None):
+        if role == "locked-role":
+            return tg.GrantDecision.DENY
+        return real_check(config, role, tool_name, project_id=project_id)
+
+    monkeypatch.setattr(tools_email, "check_grant", _deny_check)
+    called: list = []
+    monkeypatch.setattr(
+        gmail_client, "get_attachment",
+        lambda *a, **k: called.append(1) or {},
+    )
+
+    resp = await client.post(
+        f"{_BASE}/gmail/attachment",
+        headers={**_HDR_1940, "X-Agent-Role": "locked-role"},
+        json={"message_id": "msg001", "attachment_id": "att001"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert "tool_grant_denied" in resp.json()["detail"]
+    assert called == [], "get_attachment must NOT run when Layer-0 denies"
+
+
+# ===========================================================================
+# FIX-D (#1940) — 422 validation-rejection tests (thread + attachment)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_gmail_thread_invalid_chars_422(client, monkeypatch):
+    """FIX-D: /gmail/thread rejects thread_id with disallowed chars → 422.
+
+    NEGATIVE lock: get_thread is never called.
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_1940_creds(monkeypatch)
+
+    resp = await client.post(
+        f"{_BASE}/gmail/thread",
+        headers=_HDR_1940,
+        json={"thread_id": "../etc/passwd"},
+    )
+    assert resp.status_code == 422, f"expected 422, got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.asyncio
+async def test_gmail_thread_oversized_422(client, monkeypatch):
+    """FIX-D: /gmail/thread rejects thread_id exceeding 64 chars → 422."""
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_1940_creds(monkeypatch)
+
+    oversized_id = "A" * 65  # exceeds 64-char bound
+    resp = await client.post(
+        f"{_BASE}/gmail/thread",
+        headers=_HDR_1940,
+        json={"thread_id": oversized_id},
+    )
+    assert resp.status_code == 422, f"expected 422, got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.asyncio
+async def test_gmail_attachment_invalid_chars_422(client, monkeypatch):
+    """FIX-D: /gmail/attachment rejects message_id with disallowed chars → 422.
+
+    NEGATIVE lock: get_attachment is never called.
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_1940_creds(monkeypatch)
+
+    resp = await client.post(
+        f"{_BASE}/gmail/attachment",
+        headers=_HDR_1940,
+        json={"message_id": "../etc/passwd", "attachment_id": "att001"},
+    )
+    assert resp.status_code == 422, f"expected 422, got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.asyncio
+async def test_gmail_attachment_oversized_422(client, monkeypatch):
+    """FIX-D: /gmail/attachment rejects message_id exceeding 512 chars → 422."""
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_1940_creds(monkeypatch)
+
+    oversized_id = "A" * 513  # exceeds 512-char bound
+    resp = await client.post(
+        f"{_BASE}/gmail/attachment",
+        headers=_HDR_1940,
+        json={"message_id": oversized_id, "attachment_id": "att001"},
+    )
+    assert resp.status_code == 422, f"expected 422, got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.asyncio
+async def test_gmail_attachment_not_found_404(client, monkeypatch):
+    """FIX-D: /gmail/attachment returns 404 when get_attachment raises AttachmentNotFoundError.
+
+    NEGATIVE lock: must NOT be 502 (generic) when the specific not-found exception fires.
+    POSITIVE: detail is {error: attachment_not_found} with no ids or filenames.
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    _seed_1940_creds(monkeypatch)
+    from src.tools.email import gmail_client
+
+    def _raise_not_found(creds, message_id, attachment_id):
+        raise gmail_client.AttachmentNotFoundError("attachment_id not found in message")
+
+    monkeypatch.setattr(gmail_client, "get_attachment", _raise_not_found)
+
+    resp = await client.post(
+        f"{_BASE}/gmail/attachment", headers=_HDR_1940,
+        json={"message_id": "msg001", "attachment_id": "att001"},
+    )
+    assert resp.status_code == 404, f"expected 404, got {resp.status_code}: {resp.text}"
+    detail = resp.json()["detail"]
+    assert detail["error"] == "attachment_not_found"
+    # NEGATIVE: must NOT be 502 (generic path) or 413 (size path).
+    assert resp.status_code != 502
+    assert resp.status_code != 413

@@ -474,6 +474,175 @@ def get_message(creds: Credentials, message_id: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Kanban #1940 — READ extras (get_thread, list_labels, get_attachment)
+# ---------------------------------------------------------------------------
+
+
+# Size cap for attachment fetch: refuse data retrieval beyond this limit.
+_ATTACHMENT_SIZE_CAP_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+class AttachmentTooLargeError(Exception):
+    """Raised when an attachment exceeds _ATTACHMENT_SIZE_CAP_BYTES."""
+
+
+class AttachmentNotFoundError(Exception):
+    """Raised when the attachment_id is not found in the message MIME tree."""
+
+
+def get_thread(creds: Credentials, thread_id: str) -> dict:
+    """Fetch all messages in a Gmail thread and return their content.
+
+    Uses `users.threads().get(format="full")` to pull the full thread.
+    Each message is mapped using the same header-extract + _extract_plain_text
+    logic as `get_message`.
+
+    Returns:
+      {thread_id, messages: [{id, from, to, subject, date, body_text}]}
+
+    PRIVACY: body_text values MUST NOT be logged, audited, or echoed in errors.
+    Caller is responsible for cap enforcement BEFORE invoking.
+    """
+    # Defense-in-depth: validate id before interpolating into URL.
+    if not _ID_RE.fullmatch(thread_id):
+        raise ValueError("invalid thread_id")
+
+    service = _build_service(creds)
+    thread = (
+        service.users()
+        .threads()
+        .get(userId="me", id=thread_id, format="full")
+        .execute()
+    )
+
+    messages = []
+    for msg in thread.get("messages", []) or []:
+        headers = {
+            h["name"].lower(): h["value"]
+            for h in (msg.get("payload", {}).get("headers", []) or [])
+        }
+        body_text = _extract_plain_text(msg.get("payload", {}))
+        messages.append(
+            {
+                "id": msg.get("id"),
+                "from": headers.get("from"),
+                "to": headers.get("to"),
+                "subject": headers.get("subject"),
+                "date": headers.get("date"),
+                "body_text": body_text,
+            }
+        )
+
+    return {"thread_id": thread_id, "messages": messages}
+
+
+def list_labels(creds: Credentials) -> list[dict]:
+    """List all Gmail labels for the authenticated account.
+
+    Uses `users.labels().list(userId="me")`. Returns a list of:
+      [{id, name, type}]
+
+    `type` is the Gmail label type string (e.g. "system", "user") if present.
+    Caller is responsible for cap enforcement BEFORE invoking.
+    """
+    service = _build_service(creds)
+    resp = service.users().labels().list(userId="me").execute()
+    result = []
+    for lbl in resp.get("labels", []) or []:
+        result.append(
+            {
+                "id": lbl.get("id", ""),
+                "name": lbl.get("name", ""),
+                "type": lbl.get("type"),
+            }
+        )
+    return result
+
+
+def get_attachment(creds: Credentials, message_id: str, attachment_id: str) -> dict:
+    """Fetch a single Gmail attachment and return its content as base64url data.
+
+    Validates both ids with _ID_RE (defense-in-depth). Fetches the message
+    with format="full" to locate the attachment part (by body.attachmentId)
+    and read its filename, mimeType, and size. If size exceeds 10 MB, raises
+    AttachmentTooLargeError before fetching data.
+
+    Returns:
+      {filename, mime_type, size, data_base64}
+
+    PRIVACY: filename, mime_type, and data_base64 MUST NOT be logged, audited,
+    or echoed in error responses. Error paths use only type(exc).__name__.
+    Caller is responsible for cap enforcement BEFORE invoking.
+    """
+    # Defense-in-depth: validate both ids before interpolating into URLs.
+    if not _ID_RE.fullmatch(message_id):
+        raise ValueError("invalid message_id")
+    if not _ID_RE.fullmatch(attachment_id):
+        raise ValueError("invalid attachment_id")
+
+    service = _build_service(creds)
+
+    # Step 1: fetch the message to find the attachment part metadata.
+    msg = (
+        service.users()
+        .messages()
+        .get(userId="me", id=message_id, format="full")
+        .execute()
+    )
+
+    # Walk the MIME tree to find the part with the matching attachmentId.
+    filename: str | None = None
+    mime_type: str | None = None
+    size: int = 0
+
+    def _find_part(payload: dict, depth: int = 0) -> bool:
+        """Recursively search for the part with body.attachmentId == attachment_id."""
+        nonlocal filename, mime_type, size
+        if depth > 20:
+            return False
+        body = payload.get("body") or {}
+        if body.get("attachmentId") == attachment_id:
+            filename = payload.get("filename") or None
+            mime_type = payload.get("mimeType") or None
+            size = body.get("size", 0)
+            return True
+        for part in payload.get("parts", []) or []:
+            if _find_part(part, depth + 1):
+                return True
+        return False
+
+    found = _find_part(msg.get("payload", {}))
+    if not found:
+        raise AttachmentNotFoundError("attachment_id not found in message")
+
+    # Step 2: size cap check before fetching data (pre-fetch guard on metadata size).
+    if size > _ATTACHMENT_SIZE_CAP_BYTES:
+        raise AttachmentTooLargeError("attachment exceeds size cap")
+
+    # Step 3: fetch the attachment data.
+    att = (
+        service.users()
+        .messages()
+        .attachments()
+        .get(userId="me", messageId=message_id, id=attachment_id)
+        .execute()
+    )
+    data_base64 = att.get("data", "")
+
+    # FIX-A: post-fetch guard — base64 expands ~33%; bound the actual returned
+    # payload in case Gmail-reported metadata size was stale/inaccurate.
+    if len(data_base64) > _ATTACHMENT_SIZE_CAP_BYTES * 4 // 3 + 1024:
+        raise AttachmentTooLargeError("attachment exceeds size cap")
+
+    return {
+        "filename": filename,
+        "mime_type": mime_type,
+        "size": size,
+        "data_base64": data_base64,
+    }
+
+
 def _extract_plain_text(payload: dict, depth: int = 0) -> str:
     """Walk a Gmail MIME payload tree and return the first text/plain body.
 
