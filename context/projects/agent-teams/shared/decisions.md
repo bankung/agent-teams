@@ -18,6 +18,19 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-06-07 — #2044 Dashboard layout locked as canonical UI baseline (visual-regression reference)
+**Scope:** frontend
+**Decision:** The CURRENT dashboard layout is the **canonical visual baseline** — operator approval 2026-06-07 ("the proportion of this design is perfect, keep this as reference"). Future UI work MUST NOT regress this structure (top→bottom):
+> 1. **Header bar (single row):** project switcher `agent-teams ▾` · `Dashboard` · `team: dev` · Milestone dropdown (`All milestones`) · `● live` indicator · view tabs `Board / List / Calendar / Gantt` · right-edge icon cluster (mail · settings · columns · power · help · light/dark/system theme toggle).
+> 2. **Summary row — 2 equal columns:** LEFT = `USAGE` card (collapsible `▸`): `A·est $X · B·actual $Y · N runs` + budget-warned badge. RIGHT = `PROGRESS` card split into `BURNDOWN` (N remaining + line chart) | `VELOCITY` (N completed + bar chart).
+> 3. **Toolbar row:** `<N> tasks` count · shield badge · clock badge · `Headless: off` toggle + `ENABLE HEADLESS AUTO-RUN` · right-edge `+ NEW ▾`.
+> 4. **Kanban board — 5 equal-width columns:** `NEW TASKS` · `IN PROGRESS` · `REVIEW` · `BLOCKED` · `DONE`; each column header = `NAME · COUNT`; columns scroll independently. Card = `#id` · title · priority chip (low/normal/high) · optional task-type tag · `blocked_by` ref chip (e.g. `⊘ #1187`) · copy + assignee icons.
+> 5. **Footer:** `AUDIT HISTORY` bar (collapsible, count badge).
+
+Key proportions to preserve: header is ONE row; summary is 2-col (USAGE | PROGRESS, roughly equal); board is 5-col equal width; consistent card density. Image reference: [`reference/dashboard-layout-baseline-2026-06-07.webp`](reference/dashboard-layout-baseline-2026-06-07.webp) (see `reference/README.md`).
+**Reasoning:** capture a known-good visual contract so later frontend changes have an explicit regression target instead of an implicit "looked fine before." Textual spec is the durable record (survives even if the PNG is missing); the image is the at-a-glance reference.
+**Implications:** frontend tasks touching the dashboard shell (header / summary cards / board columns / footer) should diff against this baseline. Tracked by #2044. NOTE: pasted screenshot bytes were not recoverable from disk by Lead — operator drops the PNG at the referenced path (AC#3 of #2044 stays open until then).
+
 ## 2026-06-07 — #1261 GOV2 followups: vs_cap null wording + audit_report on TaskCreate
 **Scope:** backend + auditor-prompt
 **Decision:** (1) `audit_report: dict | None = None` added to `TaskCreate` (`api/src/schemas/task.py`, mirroring `TaskUpdate`) — a `task_type='audit'` task can now carry its report in a SINGLE POST (was POST+PATCH; field was silently Pydantic-dropped). No migration (column already on ORM); no router change (model_dump passthrough). (2) `.claude/agents/project-auditor.md` Report-schema `vs_cap` relaxed to `<float 0..N> | null` + formula note: when `budget_daily_usd` is null, `vs_cap=null` and the budget metric is excluded from the breach count (`budget_no_cap_configured`).
