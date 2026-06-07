@@ -195,8 +195,9 @@ async def test_gmail_auth_start_503_when_env_unset(client, monkeypatch) -> None:
     resp = await client.post(f"{_BASE}/auth/gmail/start", headers=_HDR)
     assert resp.status_code == 503
     detail = resp.json()["detail"]
-    # Confirm the error is config-missing, not some other 5xx cause.
-    assert "GOOGLE_OAUTH_CLIENT_ID" in detail or "Gmail OAuth not configured" in detail
+    # #2045 fix: detail is now a fixed opaque string (env-var names go to server
+    # logs only — not echoed to the caller). Confirm the fixed string is present.
+    assert detail == "oauth_not_configured; check server logs"
 
 
 @pytest.mark.asyncio
@@ -236,7 +237,9 @@ async def test_outlook_auth_start_503_when_env_unset(client, monkeypatch) -> Non
     resp = await client.post(f"{_BASE}/auth/outlook/start", headers=_HDR)
     assert resp.status_code == 503
     detail = resp.json()["detail"]
-    assert "AZURE_OAUTH_CLIENT_ID" in detail or "Outlook OAuth not configured" in detail
+    # #2045 fix: detail is now a fixed opaque string (env-var names go to server
+    # logs only — not echoed to the caller). Confirm the fixed string is present.
+    assert detail == "oauth_not_configured; check server logs"
 
 
 @pytest.mark.asyncio

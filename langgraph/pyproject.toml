@@ -61,7 +61,7 @@ test = [
 # Flat-layout: each .py at the langgraph/ root is a top-level module inside
 # the container (WORKDIR /app; sources copied to /app/*.py). #850 added
 # state, nodes, llm alongside the existing graph module; #852 adds worker.
-py-modules = ["graph", "state", "nodes", "llm", "worker", "hitl", "content_safety"]
+py-modules = ["graph", "state", "nodes", "llm", "worker", "hitl", "content_safety", "gemini_schema"]
 
 [tool.pytest.ini_options]
 # Run with `pytest tests/` from /app inside the container, or

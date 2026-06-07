@@ -391,8 +391,12 @@ async def gmail_auth_start(
     try:
         auth_url = gmail_client.auth_start(session_project_id)
     except RuntimeError as exc:
-        # Missing env vars — surface as 503 (config issue, not client fault).
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # Missing env vars — log internally, do not leak path/env-var hints to caller.
+        logger.warning("gmail oauth start: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="oauth_not_configured; check server logs",
+        ) from exc
     return GmailAuthStartResponse(auth_url=auth_url)
 
 
@@ -410,16 +414,12 @@ async def gmail_auth_callback(
     """
     try:
         project_id, creds = await run_in_threadpool(gmail_client.auth_callback, code, state)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        # Token exchange failure — Google rejected the code, network blip, etc.
-        # Don't leak the upstream error string (may contain client_secret in
-        # certain transport-error paths); log internally, return 400.
-        logger.warning("gmail oauth callback failed: %s", type(exc).__name__)
+        # Don't leak upstream error strings (may contain client_secret or env hints).
+        logger.warning("gmail oauth callback: %s", exc)
         raise HTTPException(
             status_code=400,
-            detail="oauth_callback_failed; restart at POST /api/tools/email/auth/gmail/start",
+            detail="oauth_callback_failed: unknown or expired state; restart flow",
         ) from exc
 
     await token_store.put("gmail", project_id, creds, session)
@@ -1221,7 +1221,12 @@ async def outlook_auth_start(
     try:
         auth_url = outlook_client.auth_start(session_project_id)
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # Missing env vars — log internally, do not leak path/env-var hints to caller.
+        logger.warning("outlook oauth start: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="oauth_not_configured; check server logs",
+        ) from exc
     return OutlookAuthStartResponse(auth_url=auth_url)
 
 

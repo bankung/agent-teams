@@ -40,10 +40,12 @@ try {
 $hookMessage = ''
 try {
     $stdinRaw = [Console]::In.ReadToEnd()
+    if ($stdinRaw -and $stdinRaw.Length -gt 4096) { $stdinRaw = $stdinRaw.Substring(0, 4096) }
     if ($stdinRaw) {
         $hookPayload = $stdinRaw | ConvertFrom-Json -ErrorAction Stop
         if ($hookPayload.PSObject.Properties.Name -contains 'message') {
             $hookMessage = [string]$hookPayload.message
+            if ($hookMessage.Length -gt 200) { $hookMessage = $hookMessage.Substring(0, 200) }
         }
     }
 } catch { <# best-effort; proceed with empty message #> }
@@ -86,16 +88,17 @@ $downstreamBlockCount = 0
 if ($taskId) {
     try {
         # Tasks that list THIS task as their blocked_by blocker and are not DONE/CANCELLED.
+        # Reverse-lookup endpoint (index ix_tasks_blocked_by) — already returns only
+        # tasks blocked by $taskId, so no all-tasks fetch + client filter (#2046).
         $blockedJson = & curl.exe --silent --max-time 4 `
             -H "X-Project-Id: $projectId" `
-            "http://localhost:8456/api/tasks?limit=500" 2>$null
+            "http://localhost:8456/api/tasks/$taskId/blocks" 2>$null
 
         if ($LASTEXITCODE -eq 0 -and $blockedJson) {
-            $allTasks = $blockedJson | ConvertFrom-Json -ErrorAction Stop
-            if ($allTasks) {
+            $blockers = $blockedJson | ConvertFrom-Json -ErrorAction Stop
+            if ($blockers) {
                 $downstreamBlockCount = @(
-                    $allTasks | Where-Object {
-                        $_.blocked_by -eq $taskId -and
+                    $blockers | Where-Object {
                         $_.process_status -notin @(5, 6)   # not DONE or CANCELLED
                     }
                 ).Count

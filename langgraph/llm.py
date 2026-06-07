@@ -386,7 +386,7 @@ def make_chat_model(model: str | None = None) -> BaseChatModel:
         model: optional override; if None, resolved via `resolve_model()`.
 
     Returns:
-        A langchain `BaseChatModel` (`ChatAnthropic`, `ChatOpenAI`, or `ChatOllama`).
+        A langchain `BaseChatModel` (`ChatAnthropic`, `ChatOpenAI`, `ChatGoogleGenerativeAI`, `ChatOpenAI (DeepSeek-compat)`, or `ChatOllama`).
 
     Raises:
         RuntimeError: provider unknown, API key missing (anthropic/openai

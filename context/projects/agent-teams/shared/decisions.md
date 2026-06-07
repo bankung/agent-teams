@@ -18,6 +18,12 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-06-07 — #2047 operator-proof gate: 0.6.0 ships as documented known-gap
+**Scope:** security + release
+**Decision:** (operator-confirmed 2026-06-07) For 0.6.0 the operator-proof gate stays FAIL-OPEN/DORMANT by default (no `OPERATOR_ACTION_KEY` set) — accepted as a **documented known-gap** for the single-operator, local-first profile. Consistent with the 2026-06-02 #1852 design (threat = agent drift, not host adversary; a single operator owns the host, and an unset key cannot be forged by the agent). A startup WARNING (#2045) now surfaces the dormant state in the api logs.
+**Activation deferred** to the multi-user / #1275 operator sign-off flow: set `OPERATOR_ACTION_KEY` in api `.env` + add it to the api service env in `docker-compose.yml` + wire `X-Operator-Token` into the operator verify flow. Until then, email/calendar mutations run un-gated by design.
+**Implications:** 0.6.0 release notes MUST state this posture (single-operator known-gap; activate before any multi-user / shared deployment). Closes #2047 (decision = known-gap).
+
 ## 2026-06-07 — #2044 Dashboard layout locked as canonical UI baseline (visual-regression reference)
 **Scope:** frontend
 **Decision:** The CURRENT dashboard layout is the **canonical visual baseline** — operator approval 2026-06-07 ("the proportion of this design is perfect, keep this as reference"). Future UI work MUST NOT regress this structure (top→bottom):

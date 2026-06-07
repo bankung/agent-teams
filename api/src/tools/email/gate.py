@@ -29,8 +29,10 @@ logger = logging.getLogger(__name__)
 _DAILY_UNITS: dict[tuple[int, str], int] = {}
 
 # Audit log path. Configurable via EMAIL_TOOLS_AUDIT_PATH env var; defaults to
-# /repo/_scratch/email-tools-audit.jsonl (the _scratch bind-mount in the container).
-_AUDIT_PATH = Path(os.environ.get("EMAIL_TOOLS_AUDIT_PATH", "/repo/_scratch/email-tools-audit.jsonl"))
+# /repo/_runtime/email-tools-audit.jsonl (durable bind-mount, same dir as the
+# action-audit _runtime/email-actions.jsonl). _scratch is gitignored/excluded
+# from backup — _runtime is the durable path (Kanban #2045, FIX-A3).
+_AUDIT_PATH = Path(os.environ.get("EMAIL_TOOLS_AUDIT_PATH", "/repo/_runtime/email-tools-audit.jsonl"))
 
 
 def _today() -> str:

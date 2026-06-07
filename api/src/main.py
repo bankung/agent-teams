@@ -158,6 +158,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from src.services.credentials_crypto import get_fernet
     get_fernet()
 
+    # Kanban #2045 (FIX-A4) — warn when the operator-proof gate is DORMANT.
+    # OPERATOR_ACTION_KEY absent = fail-open (every email/calendar mutation runs
+    # unprotected). This is the intended design; do NOT raise. Log so the dormant
+    # state is visible in container logs. Set the key to activate the gate.
+    if not os.environ.get("OPERATOR_ACTION_KEY"):
+        logger.warning(
+            "operator-proof gate DORMANT: OPERATOR_ACTION_KEY unset"
+            " — email/calendar mutations are NOT operator-gated"
+            " (fail-open by design; set the key to activate)"
+        )
+
     # #782 — boot SSE broker before scheduler
     await start_listener()
 

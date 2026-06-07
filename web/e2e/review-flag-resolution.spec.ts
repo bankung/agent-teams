@@ -175,6 +175,20 @@ async function softDeleteProject(
   }
 }
 
+async function softDeleteTask(
+  apiCtx: Awaited<ReturnType<typeof playwrightRequest.newContext>>,
+  taskId: number,
+  projectId: number,
+): Promise<void> {
+  const resp = await apiCtx.delete(`${API_BASE}/api/tasks/${taskId}`, {
+    headers: { "X-Project-Id": String(projectId) },
+  });
+  // 204 = deleted, 404 = already gone — both are acceptable
+  if (!resp.ok() && resp.status() !== 404) {
+    console.warn(`softDeleteTask(${taskId}) returned ${resp.status()}`);
+  }
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Test state shared across the suite (set up once, cleaned up once)
 // ────────────────────────────────────────────────────────────────────────────
@@ -236,13 +250,32 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  // Cleanup — runs even on failure. Soft-delete all 3 test projects.
-  const cleanups = [projectA, projectB, projectC].filter(Boolean);
-  for (const p of cleanups) {
-    await softDeleteProject(apiCtx, p.id).catch((err) =>
-      console.error(`Cleanup failed for project ${p.id}:`, err),
-    );
+  // Cleanup — runs even on failure.
+  // Step 1: soft-delete flag tasks first (each wrapped independently so one
+  // failure does not abort the rest).
+  const flagCleanups: Array<{ task: TaskRecord; project: ProjectRecord }> = [
+    { task: flagA, project: projectA },
+    { task: flagB, project: projectB },
+    { task: flagC, project: projectC },
+  ].filter((pair) => pair.task && pair.project);
+  for (const { task, project } of flagCleanups) {
+    try {
+      await softDeleteTask(apiCtx, task.id, project.id);
+    } catch (err) {
+      console.error(`Cleanup failed for flag task ${task.id}:`, err);
+    }
   }
+
+  // Step 2: soft-delete the test projects.
+  const projectCleanups = [projectA, projectB, projectC].filter(Boolean);
+  for (const p of projectCleanups) {
+    try {
+      await softDeleteProject(apiCtx, p.id);
+    } catch (err) {
+      console.error(`Cleanup failed for project ${p.id}:`, err);
+    }
+  }
+
   await apiCtx.dispose();
 });
 

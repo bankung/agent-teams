@@ -179,7 +179,20 @@ def _parse_delimited(data: bytes, ctx: ParseContext, delimiter: str, fmt: str) -
     Robust to a missing trailing newline + quoted fields (uses csv.reader).
     Decodes utf-8 with replacement so a stray byte never blows up the parse.
     row_count is the DATA row count (excludes the header line).
+
+    Files > _CSV_MAX_INLINE_BYTES skip the full decode to avoid OOM on large
+    uploads — mirrors the _JSON_MAX_INLINE_BYTES guard in _parse_json.
     """
+    if len(data) > _CSV_MAX_INLINE_BYTES:
+        return ParseResult(
+            format_detected=fmt,
+            notes=[
+                f"{fmt}: file too large for inline parse "
+                f"({len(data) // (1024 * 1024)} MB > "
+                f"{_CSV_MAX_INLINE_BYTES // (1024 * 1024)} MB limit); "
+                "too_large_for_inline_parse=true"
+            ],
+        )
     try:
         text = data.decode("utf-8", errors="replace")
     except Exception as exc:  # pragma: no cover
@@ -229,6 +242,9 @@ def _parse_tsv(data: bytes, ctx: ParseContext) -> ParseResult:
 # JSON files larger than this threshold are skipped to avoid loading hundreds
 # of MB into RAM (#1309 fix #7). Preview is set null + a tag note is added.
 _JSON_MAX_INLINE_BYTES: int = 50 * 1024 * 1024  # 50 MB
+# CSV/TSV files use the same cap — a giant CSV decode can OOM just as badly
+# as a giant JSON parse. Alias keeps the two in sync.
+_CSV_MAX_INLINE_BYTES: int = _JSON_MAX_INLINE_BYTES
 
 
 def _parse_json(data: bytes, ctx: ParseContext) -> ParseResult:

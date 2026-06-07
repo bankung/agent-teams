@@ -182,6 +182,7 @@ async function resolveRepoRoot(targetDir) {
         cwd: cloneDir,
         stdio: 'inherit',
         shell: false,
+        timeout: 300_000,
       });
       if (pullResult.status !== 0) {
         process.stderr.write('WARN: git pull --ff-only failed — continuing with existing clone.\n');
@@ -203,6 +204,7 @@ async function resolveRepoRoot(targetDir) {
   const cloneResult = spawnSync('git', ['clone', REPO_URL, cloneDir], {
     stdio: 'inherit',
     shell: false,
+    timeout: 300_000,
   });
   if (cloneResult.status !== 0) {
     die('git clone failed. Check the error above. Ensure the repo URL is public and git is on PATH.', 1);

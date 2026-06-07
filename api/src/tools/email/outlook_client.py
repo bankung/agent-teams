@@ -403,6 +403,8 @@ def trash_messages(creds: dict[str, Any], message_ids: list[str]) -> tuple[list[
     trashed: list[str] = []
     errors: list[dict] = []
     for mid in message_ids:
+        if not _ID_RE.fullmatch(mid) or len(mid) > 512:
+            raise ValueError("invalid message_id")
         url = f"{_GRAPH_BASE}/me/messages/{mid}/move"
         # destinationId="deletedItems" is the well-known folder id Graph
         # recognises for the Deleted Items folder.
@@ -451,6 +453,8 @@ def mark_read(creds: dict[str, Any], message_ids: list[str], read: bool) -> tupl
     modified: list[str] = []
     errors: list[dict] = []
     for mid in message_ids:
+        if not _ID_RE.fullmatch(mid) or len(mid) > 512:
+            raise ValueError("invalid message_id")
         url = f"{_GRAPH_BASE}/me/messages/{mid}"
         body = {"isRead": read}
         try:
@@ -494,6 +498,8 @@ def archive(creds: dict[str, Any], message_ids: list[str]) -> tuple[list[str], l
     modified: list[str] = []
     errors: list[dict] = []
     for mid in message_ids:
+        if not _ID_RE.fullmatch(mid) or len(mid) > 512:
+            raise ValueError("invalid message_id")
         url = f"{_GRAPH_BASE}/me/messages/{mid}/move"
         body = {"destinationId": "archive"}
         try:

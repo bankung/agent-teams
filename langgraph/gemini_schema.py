@@ -85,7 +85,7 @@ def _items_is_usable(items: Any) -> bool:
     if items.get("type"):
         return True
     # anyOf/oneOf/$ref item schemas also resolve to a concrete shape downstream.
-    if items.get("anyOf") or items.get("any_of") or items.get("oneOf") or items.get("$ref"):
+    if items.get("anyOf") or items.get("any_of") or items.get("oneOf") or items.get("allOf") or items.get("$ref"):
         return True
     return False
 
