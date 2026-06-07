@@ -28,6 +28,11 @@ node_modules/
 dist/
 build/
 
+# Playwright E2E run artifacts (Kanban #1243) — never committed (config + e2e/ specs ARE committed)
+web/playwright-report/
+web/test-results/
+web/playwright/.cache/
+
 # DB
 *.db
 *.db-journal

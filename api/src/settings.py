@@ -86,6 +86,21 @@ class Settings(BaseSettings):
         alias="HITL_NUDGE_INTERVAL_MINUTES",
     )
 
+    # Kanban #1240 (2026-06-07): TTL (in days) for the daily audit-archive
+    # sweep. A COMPLETED audit task (task_type='audit') whose completed_at is
+    # older than this many days is flipped is_active=false by
+    # services/audit_archive.py (projects with audit_enabled=false are skipped).
+    # Default 30. ge=1 — a zero/negative TTL would archive freshly-completed
+    # audit tasks the same day, defeating the point. The sweep service reads the
+    # value via os.environ at tick time (mirrors recurrence / hitl_nudge) so a
+    # test monkeypatch / .env change applies without a restart-only Settings
+    # singleton; this field documents + validates the canonical default.
+    audit_archive_days: int = Field(
+        default=30,
+        ge=1,
+        alias="AUDIT_ARCHIVE_DAYS",
+    )
+
     @field_validator("cors_allow_origins", mode="before")
     @classmethod
     def _split_csv_origins(cls, v: object) -> object:

@@ -1114,6 +1114,7 @@ export type ResolveFlagAdjustments = {
   approval_policies?: Record<string, unknown> | null;
   hitl_timeout_hours?: number | null;
   audit_enabled?: boolean;
+  description_annotation?: string;
 };
 
 // ResolveFlagBody — POST body for /api/tasks/{flag_id}/resolve-flag.

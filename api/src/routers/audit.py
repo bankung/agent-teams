@@ -146,6 +146,9 @@ async def list_audit_daily_rollup(
             .label("pending_escalation_count"),
         )
         .join(Task, Task.project_id == Project.id)
+        # NOTE (#1240): rollup intentionally INCLUDES is_active=false (archived) audit rows —
+        # this is a historical/analytical view; archived ≠ deleted. The board (GET /api/tasks)
+        # hides them by default, but audit history must retain them.
         .where(
             Task.audit_report.isnot(None),
             Task.status == RecordStatus.ACTIVE,

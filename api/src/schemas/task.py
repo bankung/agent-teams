@@ -558,6 +558,12 @@ class TaskCreate(BaseModel):
     # Free-form partial-work state stored by Lead when auto-run halts mid-task.
     # Used by re-spawn brief on resume. No shape constraint.
     resume_context: dict[str, Any] | None = None
+    # Kanban #1261 (2026-06-07): expose audit_report on TaskCreate so a POST
+    # to a new task_type='audit' task can carry the report in one call (no
+    # follow-up PATCH needed). Mirrors TaskUpdate's declaration exactly —
+    # same type, same optionality, no element-shape validation (the auditor
+    # engine is the only writer in normal operation; free-form JSONB passthrough).
+    audit_report: dict[str, Any] | None = None
     # Kanban #1211 (2026-05-19): GOV3 per-spawn override hatch. Default false
     # — the typical POST path. Operators set true (with a reason >=10 chars)
     # to bypass the 423 gate when the parent project is paused. The router
@@ -1339,6 +1345,13 @@ class TaskRead(BaseModel):
     #   NOT NULL DEFAULT false.
     last_nudge_at: datetime | None = None
     nudge_disabled: bool = False
+
+    # Kanban #1240 (2026-06-07) — auto-archive flag. Backfilled to true (visible)
+    # on existing rows by migration 0061's NOT NULL DEFAULT true. The daily
+    # audit-archive sweep flips this to false on completed audit tasks older
+    # than AUDIT_ARCHIVE_DAYS. Surfaced so the FE can render an "archived" badge
+    # and the ?include_archived archive view can distinguish archived rows.
+    is_active: bool = True
 
 
 class NextAutorunResponse(BaseModel):

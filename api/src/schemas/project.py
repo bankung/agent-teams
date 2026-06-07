@@ -1128,9 +1128,30 @@ class ResolveFlagRequest(BaseModel):
             "Required for action='adjust_continue'. Allowlisted keys: "
             "budget_daily_usd, budget_monthly_usd, budget_total_usd, "
             "health_thresholds, approval_policies, hitl_timeout_hours, "
-            "audit_enabled. Other keys are silently dropped."
+            "audit_enabled, description_annotation. Other keys are silently "
+            "dropped. description_annotation is a meta-key: appends a "
+            "timestamped note to project.description (max 1000 chars)."
         ),
     )
+
+    @field_validator("adjustments")
+    @classmethod
+    def _validate_description_annotation(
+        cls, v: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """Kanban #1244 — validate description_annotation max length when present."""
+        if v is None:
+            return v
+        annotation = v.get("description_annotation")
+        if annotation is not None:
+            if not isinstance(annotation, str):
+                raise ValueError("description_annotation must be a string")
+            if len(annotation) > 1000:
+                raise ValueError(
+                    "description_annotation must be 1000 characters or fewer "
+                    f"(got {len(annotation)})"
+                )
+        return v
 
 
 class ResolveFlagResponse(BaseModel):

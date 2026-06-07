@@ -399,6 +399,18 @@ async def list_tasks(
         default=False,
         description="If true, include soft-deleted (status=0) rows. Debug-only.",
     ),
+    include_archived: bool = Query(
+        default=False,
+        description=(
+            "Kanban #1240: if true, include auto-archived (is_active=false) "
+            "rows. By default archived rows are excluded — the daily "
+            "audit-archive sweep flips is_active=false on completed audit "
+            "tasks older than AUDIT_ARCHIVE_DAYS so they drop off the board. "
+            "Set true to fetch them (e.g. an archive view / audit history). "
+            "Independent of include_deleted (soft-delete) — the two filters "
+            "compose."
+        ),
+    ),
     session: AsyncSession = Depends(get_session),
 ) -> list[Task]:
     # Kanban #695: project scoping comes from the X-Project-Id header (session-
@@ -407,6 +419,14 @@ async def list_tasks(
     stmt = select(Task).where(Task.project_id == session_project_id)
     if not include_deleted:
         stmt = stmt.where(Task.status == RecordStatus.ACTIVE)
+    # Kanban #1240: default-exclude auto-archived rows (is_active=false).
+    # Opt-in via ?include_archived=true (blast-radius guard — existing explicit
+    # callers can still fetch archived rows). Independent of the soft-delete
+    # filter above; the two compose. No interaction with the process_status /
+    # pending / cancelled gates — an archived row is hidden regardless of its
+    # lifecycle code.
+    if not include_archived:
+        stmt = stmt.where(Task.is_active.is_(True))
     if process_status is not None:
         stmt = stmt.where(Task.process_status == process_status)
     elif pending:

@@ -50,7 +50,7 @@ export function TerminateFlagModal({
   onSubmit,
 }: Props) {
   const isMass = targets.length > 1;
-  const single = !isMass ? targets[0] : null;
+  const single = !isMass ? (targets[0] ?? null) : null;
 
   const [typedName, setTypedName] = useState("");
   const [reason, setReason] = useState("");

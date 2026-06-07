@@ -89,6 +89,10 @@ ADJUST_CONTINUE_ALLOWED_KEYS: frozenset[str] = frozenset(
         "approval_policies",
         "hitl_timeout_hours",
         "audit_enabled",
+        # Meta-key: triggers a description APPEND rather than a direct column set.
+        # Validated to max 1000 chars at the Pydantic boundary (ResolveFlagRequest).
+        # Kanban #1244 — AdjustFlagForm annotation support (Path A).
+        "description_annotation",
     }
 )
 
@@ -444,9 +448,26 @@ async def resolve_flag(
         # and the flag stays open + project stays paused.
         project = await _get_active_project_or_404(session, project_id)
         applied: dict[str, Any] = {}
+
+        # Kanban #1244 (Path A) — description_annotation is a meta-key that
+        # triggers a description APPEND, NOT a direct column set (no such column).
+        # Pop it before the setattr loop to avoid an AttributeError crash.
+        annotation = filtered.pop("description_annotation", None)
+
         for key, value in filtered.items():
             setattr(project, key, value)
             applied[key] = value
+
+        if annotation and annotation.strip():
+            # Append a timestamped audit-trail marker to project.description.
+            today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            marker = f"\n\n-- {today_utc} operator adjustment: {annotation.strip()}"
+            project.description = (project.description or "") + marker
+            # Record the annotation in the applied dict so the audit trail
+            # captures it, but use a synthetic key to avoid confusion with
+            # the non-existent column.
+            applied["description_annotation"] = annotation.strip()
+
         result = await _flag_done_and_unpause(
             session=session,
             flag=flag,

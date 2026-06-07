@@ -256,6 +256,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from src.services.hitl_nudge import schedule_nudge_job
     schedule_nudge_job(scheduler)
 
+    # Kanban #1240 (2026-06-07) — daily audit-archive sweep. Registered into
+    # the SAME scheduler instance (no parallel scheduler). Cron defaults to
+    # 03:30 UTC; TTL via AUDIT_ARCHIVE_DAYS (default 30). Flips
+    # tasks.is_active=false on completed audit tasks older than the TTL,
+    # skipping projects with audit_enabled=false.
+    from src.services.audit_archive import schedule_audit_archive_job
+    schedule_audit_archive_job(scheduler)
+
     scheduler.start()
     _scheduler = scheduler
     logger.info(

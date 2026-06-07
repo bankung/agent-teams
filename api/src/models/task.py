@@ -483,6 +483,23 @@ class Task(Base):
         default=False,
     )
 
+    # Kanban #1240 (2026-06-07): auto-archive flag. The daily audit-archive
+    # sweep (services/audit_archive.py) flips this to FALSE on COMPLETED audit
+    # tasks older than AUDIT_ARCHIVE_DAYS (default 30). Orthogonal to `status`
+    # (soft-delete 0/1) and `process_status` (lifecycle 1..6): an archived row
+    # stays status=1 + process_status=5; is_active=false just hides it from the
+    # default board/list view. GET /api/tasks default-excludes is_active=false;
+    # opt-in ?include_archived=true fetches them. NOT NULL DEFAULT true backfills
+    # existing rows to "visible" via migration 0061 (PG 16 metadata-only ADD
+    # COLUMN — no heap rewrite). No DB CHECK (plain boolean — parity with
+    # is_pending / requires_human_review / nudge_disabled).
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+        default=True,
+    )
+
     project: Mapped["Project"] = relationship("Project", back_populates="tasks")
 
     # Kanban #1868: optional milestone grouping. lazy='select' (default) — the
@@ -634,6 +651,22 @@ class Task(Base):
             postgresql_where=text(
                 "scheduled_at IS NOT NULL AND process_status = 1 AND status = 1"
             ),
+        ),
+        # Kanban #1240: audit-archive sweep hot path — WHERE
+        # task_type='audit' AND completed_at < <cutoff>. Mirror of migration
+        # 0061's composite index (keeps ORM autogenerate in lockstep).
+        Index(
+            "ix_tasks_archive_sweep",
+            "task_type",
+            "completed_at",
+        ),
+        # Kanban #1240: tiny partial index for the rare "fetch archived rows"
+        # path (?include_archived=true / archive audit). Mirror of migration
+        # 0061's postgresql_where predicate so the index stays sparse.
+        Index(
+            "ix_tasks_active_archived",
+            "is_active",
+            postgresql_where=text("is_active = false"),
         ),
     )
 
