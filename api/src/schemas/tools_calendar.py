@@ -306,9 +306,6 @@ class CreateEventResponse(BaseModel):
 # WRITE — respond (RSVP)
 # ===========================================================================
 
-# Allowed RSVP responses (provider-neutral vocabulary).
-_RESPONSE_VALUES = frozenset({"accept", "decline", "tentative"})
-
 # Event-id bound — Google ids are short base32hex; Graph ids are long base64url.
 _EVENT_ID_MAX = 1024
 
@@ -342,14 +339,6 @@ class RespondRequest(BaseModel):
         max_length=_CAL_ID_MAX,
         description="Calendar the event lives on (Google only; ignored by Outlook).",
     )
-
-    @model_validator(mode="after")
-    def _check_response(self) -> "RespondRequest":
-        if self.response not in _RESPONSE_VALUES:
-            raise ValueError(
-                f"response must be one of {sorted(_RESPONSE_VALUES)} (got {self.response!r})."
-            )
-        return self
 
 
 class RespondResponse(BaseModel):

@@ -344,17 +344,16 @@ async def create_event(
     client = _client_for(provider)
     try:
         created = await run_in_threadpool(
-            lambda: client.create_event(
-                creds,
-                title=body.title,
-                start=body.start,
-                end=body.end,
-                timezone=body.timezone,
-                calendar_id=body.calendar_id,
-                location=body.location,
-                description=body.description,
-                attendees=body.attendees,
-            )
+            client.create_event,
+            creds,
+            title=body.title,
+            start=body.start,
+            end=body.end,
+            timezone=body.timezone,
+            calendar_id=body.calendar_id,
+            location=body.location,
+            description=body.description,
+            attendees=body.attendees,
         )
     except calendar_client.CalendarScopeError as exc:
         gate.log_audit(
