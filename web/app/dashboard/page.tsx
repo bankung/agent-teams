@@ -26,6 +26,7 @@ import { PnlDashboardSection } from "@/components/PnlDashboardSection";
 import { ReviewSummaryWidget } from "@/components/ReviewSummaryWidget";
 import { FINANCE_PANELS_ENABLED } from "@/lib/featureFlags";
 import { ThemePicker } from "@/components/ThemePicker";
+import { ProductTour } from "@/components/ProductTour";
 
 // Cross-project dashboard — aggregate-first layout (Kanban #869, 2026-05-13).
 // Server Component; fetches batched stats at request time via getProjectsStats.
@@ -423,6 +424,9 @@ export default async function DashboardPage() {
           <NewProjectModal />
           <InboxBadge />
           <FlagBellBadge />
+          {/* #1582 — first-visit product tour: auto-fires once for new users;
+              this button is the always-available "Take the tour" replay. */}
+          <ProductTour />
           <ThemePicker />
         </span>
       </header>

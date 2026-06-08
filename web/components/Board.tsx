@@ -44,6 +44,7 @@ import { PausedBanner } from "@/components/PausedBanner";
 import { PauseProjectModal } from "@/components/PauseProjectModal";
 import { ProjectConsentGrantModal } from "@/components/ProjectConsentGrantModal";
 import { PlatformSettingsModal } from "@/components/PlatformSettingsModal";
+import { ProductTourBoardResume } from "@/components/ProductTourBoardResume";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { SourcesBadge } from "@/components/SourcesBadge";
 import { TaskDetail } from "@/components/TaskDetail";
@@ -862,6 +863,12 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
         />
       )}
       <ToastStack messages={toasts} onDismiss={dismissToast} />
+      {/* #1582 — board phase of the first-visit product tour. Renders null
+          unless the dashboard phase handed off (localStorage baton); then runs
+          the board + task-drawer steps and finalizes the tour. projectName gates
+          the phase to the demo-tour sample project (#1582 H-1/M-1): a stale
+          baton landing on a real board clears itself instead of firing. */}
+      <ProductTourBoardResume projectName={project.name} />
     </main>
   );
 }
