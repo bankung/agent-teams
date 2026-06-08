@@ -18,6 +18,13 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-06-08 — #1005 task_comments: append-only comment thread per task
+**Scope:** backend + frontend + db
+**Decision:** New table `task_comments` (migration `0062_task_comments`) — append-only per-task log: `id, task_id FK CASCADE, author_kind('user'|'agent'|'system'), author_label, body, body_markdown, created_at`. NO update / soft-delete / audit-trigger; removal only via task hard-delete CASCADE. Endpoints `POST /api/tasks/{id}/comments` (`@limiter.limit("30/minute")`) + `GET …?before=<id>&limit=` (≤200). **Cursor = `id`** (BIGSERIAL monotonic → chronological, no created_at tiebreaker); index `ix_task_comments_task_id_id (task_id, id)` (aligned to the `ORDER BY id` so no sort step). Subagent helper `services/task_comment.py::post_task_comment()`. FE: `TaskComments` thread + responsive compose in `TaskDetail`; markdown via a **custom React-element renderer `web/lib/safeMarkdown.tsx`** — NO `dangerouslySetInnerHTML`, NO sanitizer lib, **zero new deps**; raw HTML → escaped text; link/img URL schemes allowlisted (https/mailto), userinfo + js/vbscript/data/protocol-relative rejected.
+**Reasoning:** long handoffs lose context (description rotates; `status_change_reason` keeps only the latest flip). Custom renderer avoids the HTML-sink + sanitizer-misconfig bug class — the element allowlist is the literal set of tags the code constructs, un-widenable by input. Security XSS audit: APPROVE (0 found, 18 payloads blocked).
+**Security gaps (tracked):** `author_kind` is caller-asserted + ungated → **#2058** (gate behind operator-proof if a pipeline ever consumes comments as a trust signal — prompt-injection-via-DB). External `https://` image src = tracking-pixel (operator IP/UA leak) → **#2060** (CSP `img-src` for multi-user). Both single-operator known-gaps now.
+**Implications:** new public endpoint surface; FE owns sanitization (BE stores `body` verbatim). Closes #1005.
+
 ## 2026-06-07 — #2047 operator-proof gate: 0.6.0 ships as documented known-gap
 **Scope:** security + release
 **Decision:** (operator-confirmed 2026-06-07) For 0.6.0 the operator-proof gate stays FAIL-OPEN/DORMANT by default (no `OPERATOR_ACTION_KEY` set) — accepted as a **documented known-gap** for the single-operator, local-first profile. Consistent with the 2026-06-02 #1852 design (threat = agent drift, not host adversary; a single operator owns the host, and an unset key cannot be forged by the agent). A startup WARNING (#2045) now surfaces the dormant state in the api logs.

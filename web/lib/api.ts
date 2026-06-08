@@ -1966,3 +1966,86 @@ export async function deleteMilestone(
     throw new HttpError(response.status, body.detail, message);
   }
 }
+
+// ============================================================================
+// Kanban #1005 (2026-06-08) — append-only task comment thread.
+//
+// Sub-resource of a task (parity with /{task_id}/blocks + /{task_id}/tool-calls):
+// every route is X-Project-Id scoped (the session-bound header is the auth gate;
+// the BE 400s on a task that belongs to a different project). APPEND-ONLY — there
+// is NO PATCH and NO DELETE on comments (AC#7); the only removal path is a task
+// hard-delete CASCADE. Mirror of api/src/schemas/task_comment.py.
+// ============================================================================
+
+// CommentAuthorKind — wire enum mirror of constants.CommentAuthorKind.ALL.
+//   'user'   — a human operator (this UI posts with this kind).
+//   'agent'  — a specialist subagent / Lead progress note.
+//   'system' — an automated event (status flip, audit, scheduler note).
+export type CommentAuthorKindValue = "user" | "agent" | "system";
+
+// TaskCommentRead — one comment row. `body_markdown` flags whether `body`
+// should be rendered as (sanitized) markdown vs plain escaped text. `created_at`
+// is ISO 8601 with timezone. id is BIGSERIAL — monotonic with insertion, so
+// id-ordering IS chronological (the `before` cursor needs no created_at tiebreak).
+export type TaskCommentRead = {
+  id: number;
+  task_id: number;
+  author_kind: CommentAuthorKindValue;
+  author_label: string | null;
+  body: string;
+  body_markdown: boolean;
+  created_at: string;
+};
+
+// TaskCommentCreate — POST body. `author_kind` required (the discriminator);
+// `author_label` optional attribution (max 200 chars BE-side); `body` required
+// (min 1, max 20000 BE-side); `body_markdown` defaults true (matches DB DEFAULT).
+// extra='forbid' on the BE schema — don't send unknown keys.
+export type TaskCommentCreate = {
+  author_kind: CommentAuthorKindValue;
+  author_label?: string;
+  body: string;
+  body_markdown?: boolean;
+};
+
+// BE payload caps (kept in lockstep with schemas/task_comment.py so the FE can
+// gate before submit rather than round-tripping a 422). Exported for the
+// compose box's maxLength / disabled-on-overflow guard.
+export const COMMENT_BODY_MAX = 20_000;
+export const COMMENT_AUTHOR_LABEL_MAX = 200;
+
+// getTaskComments — GET /api/tasks/{id}/comments. Oldest-first (id ASC),
+// chronological. `before` = id cursor (returns rows with id < before) for the
+// "load older" page; omit for the first page. `limit` default 50, max 200.
+// Returns [] for a task with no comments. X-Project-Id scoped.
+export async function getTaskComments(
+  projectId: number,
+  taskId: number,
+  opts: { before?: number; limit?: number } = {},
+): Promise<TaskCommentRead[]> {
+  const qs = new URLSearchParams();
+  if (opts.before !== undefined) qs.set("before", String(opts.before));
+  if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
+  const path = buildPath(`/api/tasks/${taskId}/comments`, qs);
+  return jsonFetch<TaskCommentRead[]>(path, {
+    headers: { "X-Project-Id": String(projectId) },
+  });
+}
+
+// postTaskComment — POST /api/tasks/{id}/comments. 201 + the created row.
+// Rate-limited 30/minute BE-side; the FE serializes posts behind a `posting`
+// flag so a single operator never trips it. X-Project-Id scoped.
+export async function postTaskComment(
+  projectId: number,
+  taskId: number,
+  body: TaskCommentCreate,
+): Promise<TaskCommentRead> {
+  return jsonFetch<TaskCommentRead>(`/api/tasks/${taskId}/comments`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Project-Id": String(projectId),
+    },
+    body: JSON.stringify(body),
+  });
+}

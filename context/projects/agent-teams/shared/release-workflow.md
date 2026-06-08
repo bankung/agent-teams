@@ -37,9 +37,19 @@
    `git log --oneline <prev-tag>..HEAD`):
    `git tag -a vX.Y.0 -m "vX.Y.0 — <summary> + changelog"`
 5. **Push:** `git push origin main && git push origin vX.Y.0`
-6. **(Optional)** GitHub Release once `gh` is installed:
+6. **Update milestones (Kanban):** flip the just-released version milestone →
+   `released` (ONLY when its child tasks are all DONE/CANCELLED — use
+   `/tn-milestone-done`), then set the NEXT version milestone (+ any newly-focused
+   milestones, e.g. `secretary` / `aa-followups`) → `active`. Via
+   `PATCH /api/milestones/{id}` `{"milestone_status": "..."}` or `/tn-milestones`.
+   *(Added #2056 — this step was missing, so the v0.5.1 milestone stayed `active`
+   after release until flipped manually 2026-06-08. Deliberately NOT a git/CI hook:
+   git hooks are local-only + can't map a push → which milestone id; the CI
+   `release-images.yml` runs on GitHub Actions and can't reach the local Kanban at
+   localhost:8456. Milestone-flip belongs in this operator/Lead-run release flow.)*
+7. **(Optional)** GitHub Release once `gh` is installed:
    `gh release create vX.Y.0 --notes-from-tag` (or via the web UI).
-7. **Resume `dev`:** `git checkout dev && git merge main` (keep `dev` caught up).
+8. **Resume `dev`:** `git checkout dev && git merge main` (keep `dev` caught up).
 
 ## Hotfix (between weekly releases)
 1. Make the small/urgent fix on `dev`.
@@ -53,3 +63,8 @@
 - A recruiter sees `main` (the curated weekly release), not `dev`'s churn.
 - Trial status: this is a first run (Kanban #1646). Promote to dev-team
   methodology (`context/teams/dev/`) only if it proves out across a few weeks.
+- **Lesson (2026-06-08):** `main` drifted to ~13 commits past `v0.5.1` (early 0.6.0
+  work merged ad-hoc + the v0.5.1 milestone never flipped). Operator chose to leave it
+  as-is (acceptable for a solo line). Reinforces: run THIS flow at each release (incl.
+  the step-6 milestone flip) so `main HEAD == latest release tag` holds and milestone
+  status stays in sync with git.

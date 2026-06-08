@@ -23,6 +23,7 @@ import { MilestoneCombobox } from "./MilestoneCombobox";
 import { PendingBadge } from "./PendingBadge";
 import { RunModeBadge } from "./RunModeBadge";
 import { TaskKindBadge } from "./TaskKindBadge";
+import { TaskComments } from "./TaskComments";
 import { TaskMuteToggle } from "./TaskMuteToggle";
 import { TaskToolCalls } from "./TaskToolCalls";
 import { ModelTierSelect } from "./ModelTierSelect";
@@ -717,6 +718,11 @@ export function TaskDetail({
 
           {/* #980 — per-task tool-call audit; self-hides when 0 rows */}
           <TaskToolCalls projectId={projectId} taskId={task.id} />
+
+          {/* #1005 — append-only comment thread at the bottom of task detail.
+              Collapsible (default-expanded when >0 comments); compose box posts
+              author_kind="user"; bodies render via the XSS-safe markdown path. */}
+          <TaskComments projectId={projectId} taskId={task.id} />
         </div>
       </aside>
     </div>

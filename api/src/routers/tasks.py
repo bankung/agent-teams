@@ -30,9 +30,11 @@ from src.models.milestone import Milestone
 from src.models.project import Project
 from src.models.session import SessionRun
 from src.models.task import Task
+from src.models.task_comment import TaskComment
 from src.models.transaction import Transaction
 from src.schemas.ai_task import ParseRequest, ParseResponse
 from src.schemas.project import ResolveFlagRequest, ResolveFlagResponse
+from src.schemas.task_comment import TaskCommentCreate, TaskCommentRead
 from src.schemas.task import (
     AcceptanceCriterion,
     DecisionRequest,
@@ -82,6 +84,7 @@ from src.services.operator_auth import (
 )
 from src.services.action_templates import get_template
 from src.services.handoff_spawn import spawn_child_from_handoff
+from src.services.task_comment import post_task_comment
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -726,6 +729,94 @@ async def list_tasks_blocked_by(
         .where(Task.blocked_by == task_id, Task.status == RecordStatus.ACTIVE)
         .order_by(Task.id.asc())
     )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# Kanban #1005 — append-only comment thread per task.
+# Sub-resource of a task (parity with /{task_id}/blocks): every route resolves
+# the task via get_or_404 + asserts it belongs to the session-bound project
+# before touching the thread. APPEND-ONLY (AC#7): POST appends + GET lists; there
+# is intentionally NO PATCH and NO DELETE on comments (deleting the TASK cascades
+# the thread away via the FK ON DELETE CASCADE — that's the only removal path).
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{task_id}/comments",
+    response_model=TaskCommentRead,
+    status_code=http_status.HTTP_201_CREATED,
+)
+@limiter.limit("30/minute")
+async def create_task_comment(
+    request: Request,  # required by slowapi key_func
+    task_id: int,
+    payload: TaskCommentCreate,
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+) -> TaskComment:
+    """Append a comment to a task's thread (Kanban #1005). 201 + the created row.
+
+    404 if `task_id` does not exist; 400 if it belongs to a different project
+    than the session header (mirror of the detail endpoint's sub-resource
+    convention). The append itself goes through services.task_comment.
+    post_task_comment so in-process callers and this endpoint share one path.
+    Soft-deleted tasks (status=0) still accept comments — the thread outlives a
+    soft-delete; only a hard-delete (CASCADE) removes it.
+    """
+    task = await get_or_404(
+        session, Task, detail=f"Task id={task_id} not found", id=task_id
+    )
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+
+    comment = await post_task_comment(
+        session,
+        task_id=task_id,
+        author_kind=payload.author_kind,
+        body=payload.body,
+        author_label=payload.author_label,
+        body_markdown=payload.body_markdown,
+    )
+    await session.commit()
+    await session.refresh(comment)
+    return comment
+
+
+@router.get("/{task_id}/comments", response_model=list[TaskCommentRead])
+async def list_task_comments(
+    task_id: int,
+    session_project_id: int = Depends(require_project_id_header),
+    before: int | None = Query(
+        default=None,
+        ge=1,
+        description=(
+            "Pagination cursor (Kanban #1005): return only comments with "
+            "id < `before`. Because task_comments.id is BIGSERIAL (monotonic "
+            "with insertion order), id-ordering IS chronological — the cursor "
+            "needs no created_at tiebreaker. Omit for the first (oldest) page."
+        ),
+    ),
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+) -> list[TaskComment]:
+    """List a task's comments chronologically (oldest-first), paginated.
+
+    404 if `task_id` does not exist; 400 on a project mismatch (parity with the
+    POST + the /{task_id}/blocks sub-resource convention). `?before=<id>` is the
+    cursor (return rows with id < before); `?limit` bounds the page (default 50,
+    max 200). Ordered by id ASC — chronological, since id is monotonic with
+    insertion. Returns `[]` when the task has no comments.
+    """
+    task = await get_or_404(
+        session, Task, detail=f"Task id={task_id} not found", id=task_id
+    )
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+
+    stmt = select(TaskComment).where(TaskComment.task_id == task_id)
+    if before is not None:
+        stmt = stmt.where(TaskComment.id < before)
+    stmt = stmt.order_by(TaskComment.id.asc()).limit(limit)
     result = await session.execute(stmt)
     return list(result.scalars().all())
 
