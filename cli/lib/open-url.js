@@ -17,7 +17,12 @@ const SAFE_URL_RE = /^https?:\/\/localhost:\d+\/[A-Za-z0-9/_-]*$/;
  * If the URL does not match the safe pattern, the auto-open is skipped
  * and only the printed URL is shown.
  *
- * @param {string} url
+ * SECURITY: This function is only safe for URLs constructed internally by the
+ * CLI (localhost + digit port + restricted path). Never pass user-supplied or
+ * externally-sourced URLs — the SAFE_URL_RE guard is defense-in-depth, not a
+ * general sanitiser.
+ *
+ * @param {string} url  Must be a compiler-controlled localhost URL (see SAFE_URL_RE).
  */
 function openUrl(url) {
   console.log(`\nOpen in your browser: ${url}\n`);

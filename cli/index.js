@@ -169,6 +169,14 @@ async function resolveRepoRoot(targetDir) {
     ? path.resolve(targetDir)
     : path.join(process.cwd(), 'agent-teams');
 
+  // Guard: refuse if cloneDir resolves to a system directory.
+  // Covers POSIX (/etc, /usr, /bin, /sbin, /lib, /boot) and Windows (C:\Windows).
+  const normalClone = cloneDir.replace(/\\/g, '/');
+  const SYSTEM_DIRS_RE = /^(\/etc|\/usr|\/bin|\/sbin|\/lib|\/boot|[A-Za-z]:\/Windows)(\/|$)/i;
+  if (SYSTEM_DIRS_RE.test(normalClone)) {
+    die(`Refusing to clone into a system directory: ${cloneDir}`, 1);
+  }
+
   log(`STANDALONE mode — resolved clone directory: ${cloneDir}`);
 
   if (fs.existsSync(cloneDir)) {
@@ -235,6 +243,8 @@ async function runTierStep(repoRoot) {
 
   const planInput = await new Promise((resolve) => {
     const readline = require('readline');
+    // terminal:false intentional — we wrote the prompt manually above (process.stdout.write)
+    // to avoid readline's built-in prompt echoing; terminal:false suppresses the duplicate.
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
     // We already wrote the prompt above; just read one line.
     rl.once('line', (line) => { rl.close(); resolve(line.trim()); });
@@ -283,6 +293,45 @@ async function runTierStep(repoRoot) {
 }
 
 // ---------------------------------------------------------------------------
+// SEC-4: Production-readiness warnings (shared by cmdUp and cmdUpImages)
+//
+// Non-fatal — operator must decide. Never throws.
+// ---------------------------------------------------------------------------
+function warnIfInsecure(envRoot) {
+  const envFile = path.join(envRoot, '.env');
+  if (!fs.existsSync(envFile)) return;
+  try {
+    const raw = fs.readFileSync(envFile, 'utf8');
+    const get = (key) => {
+      // Escape key to prevent regex injection (hardcoded callers, but defensive).
+      const safeKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const m = raw.match(new RegExp(`^${safeKey}=(.*)$`, 'm'));
+      return m ? m[1].trim() : '';
+    };
+    const secretKey = get('SECRET_KEY');
+    const appEnv    = get('APP_ENV');
+    const appDebug  = get('APP_DEBUG');
+    const warns = [];
+    if (!secretKey || secretKey.includes('dev-secret') || secretKey.length < 32) {
+      warns.push('  - SECRET_KEY is empty or weak. Generate a strong random value before going live.');
+    }
+    if (appEnv === 'development') {
+      warns.push('  - APP_ENV=development is set. Change to "production" for public deployments.');
+    }
+    if (appDebug === 'true') {
+      warns.push('  - APP_DEBUG=true is set. Disable before exposing the stack to the internet.');
+    }
+    if (warns.length) {
+      process.stderr.write(
+        '\nWARN: Production-readiness issues detected in .env:\n' +
+        warns.join('\n') + '\n' +
+        'Set secure values in .env before exposing this stack publicly.\n\n'
+      );
+    }
+  } catch (_) { /* best-effort; never fatal */ }
+}
+
+// ---------------------------------------------------------------------------
 // Subcommand: up
 // ---------------------------------------------------------------------------
 async function cmdUp(argv) {
@@ -309,6 +358,7 @@ async function cmdUp(argv) {
 
   // 3. .env scaffold + CREDENTIALS_MASTER_KEY
   ensureEnv(repoRoot);
+  warnIfInsecure(repoRoot);
 
   // 4. docker compose up -d --build
   log('Building and starting services (docker compose up -d --build)...');
@@ -376,40 +426,8 @@ async function cmdUpImages(_argv) {
   // Scaffold .env from .env.example (ships with the package).
   ensureEnv(envRoot);
 
-  // SEC-4: Non-fatal production-readiness WARN after .env scaffold.
-  // Reads the .env (if present) to detect weak / dev defaults before exposing
-  // the images stack. Never halts — operator must decide.
-  (function warnIfInsecure() {
-    const envFile = path.join(envRoot, '.env');
-    if (!fs.existsSync(envFile)) return;
-    try {
-      const raw = fs.readFileSync(envFile, 'utf8');
-      const get = (key) => {
-        const m = raw.match(new RegExp(`^${key}=(.*)$`, 'm'));
-        return m ? m[1].trim() : '';
-      };
-      const secretKey = get('SECRET_KEY');
-      const appEnv    = get('APP_ENV');
-      const appDebug  = get('APP_DEBUG');
-      const warns = [];
-      if (!secretKey || secretKey.includes('dev-secret') || secretKey.length < 32) {
-        warns.push('  - SECRET_KEY is empty or weak. Generate a strong random value before going live.');
-      }
-      if (appEnv === 'development') {
-        warns.push('  - APP_ENV=development is set. Change to "production" for public deployments.');
-      }
-      if (appDebug === 'true') {
-        warns.push('  - APP_DEBUG=true is set. Disable before exposing the stack to the internet.');
-      }
-      if (warns.length) {
-        process.stderr.write(
-          '\nWARN: Production-readiness issues detected in .env:\n' +
-          warns.join('\n') + '\n' +
-          'Set secure values in .env before exposing this stack publicly.\n\n'
-        );
-      }
-    } catch (_) { /* best-effort; never fatal */ }
-  })();
+  // SEC-4: Non-fatal production-readiness WARN (shared warnIfInsecure — also called from cmdUp).
+  warnIfInsecure(envRoot);
 
   // Pull images first.
   log('Pulling images from GHCR (docker compose pull)...');
@@ -600,7 +618,8 @@ async function cmdReset(argv) {
   if (downCode !== 0) die('docker compose down -v failed.', downCode);
 
   log('Re-running full install...');
-  await cmdUp([]);
+  // F-01: pass the original flags (e.g. --images) so `reset --images` rebuilds via images.
+  await cmdUp(argv);
 }
 
 // ---------------------------------------------------------------------------
@@ -630,7 +649,8 @@ async function main() {
       await cmdStatus();
       break;
     case 'reset':
-      await cmdReset([cmd, ...rest]);
+      // F-02: pass only `rest` — omit the literal "reset" string that was incorrectly injected.
+      await cmdReset(rest);
       break;
     default:
       process.stderr.write(`Unknown command: ${cmd}\n\n`);

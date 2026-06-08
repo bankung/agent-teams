@@ -22,6 +22,8 @@ function ensureEnv(repoRoot) {
   if (!fs.existsSync(envFile)) {
     if (fs.existsSync(envExample)) {
       fs.copyFileSync(envExample, envFile);
+      // chmod 0600: no-op on Windows but protects .env on shared POSIX hosts.
+      try { fs.chmodSync(envFile, 0o600); } catch (_) { /* Windows — ignore */ }
       console.log('==> .env not found — copied from .env.example.');
     } else {
       console.warn('WARN: .env.example not found. You may need to create .env manually.');
@@ -62,7 +64,9 @@ function ensureEnv(repoRoot) {
     content = content.trimEnd() + `\nCREDENTIALS_MASTER_KEY=${fernetKey}\n`;
   }
 
-  fs.writeFileSync(envFile, content, 'utf8');
+  fs.writeFileSync(envFile, content, { encoding: 'utf8', mode: 0o600 });
+  // chmod 0600: defensive belt-and-suspenders in case umask overrode mode above.
+  try { fs.chmodSync(envFile, 0o600); } catch (_) { /* Windows — ignore */ }
 
   console.log('');
   console.log('NOTICE: A new CREDENTIALS_MASTER_KEY has been generated and written to .env.');
@@ -85,7 +89,9 @@ function readEnvPort(repoRoot, varName, fallback) {
   const content = fs.readFileSync(envFile, 'utf8');
   // Find the line for varName, then strip inline comments before matching digits.
   // e.g. `API_PORT=8456 # note` — split at first '#', keep left side, then match.
-  const lineMatch = content.match(new RegExp(`^${varName}=(.*)`, 'm'));
+  // Escape varName to prevent regex injection (caller-controlled string).
+  const safeVarName = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const lineMatch = content.match(new RegExp(`^${safeVarName}=(.*)`, 'm'));
   if (!lineMatch) return fallback;
   const valueRaw  = lineMatch[1].split('#')[0].trim(); // strip inline comment
   const digitMatch = valueRaw.match(/^(\d+)/);

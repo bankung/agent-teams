@@ -42,7 +42,8 @@ function checkDocker() {
   }
 
   // 2. Is the daemon responding? (`docker info` exits non-zero when daemon is down.)
-  const infoResult = spawnSync('docker', ['info'], { stdio: 'pipe', shell: false });
+  // F-04: timeout:10000 prevents a hung daemon from freezing the install indefinitely.
+  const infoResult = spawnSync('docker', ['info'], { stdio: 'pipe', shell: false, timeout: 10000 });
   if (infoResult.status !== 0) {
     return {
       ok: false,

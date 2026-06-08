@@ -93,6 +93,13 @@ if (-not $RuntimeDir) {
     $RuntimeDir = Join-Path $RepoRoot '_runtime'
 }
 
+# FIND-07: Assert $RuntimeDir is an absolute path before any write/delete operations.
+# Rejects relative paths that could silently resolve to unintended locations.
+if ($RuntimeDir -notmatch '^[A-Za-z]:\\') {
+    Write-Err "RuntimeDir must be an absolute Windows path (e.g. C:\\_runtime), got: '$RuntimeDir'"
+    exit 1
+}
+
 $DryTag = if ($DryRun) { '[DRY-RUN] ' } else { '' }
 Write-Log "${DryTag}email-audit-rotate starting.  RuntimeDir=$RuntimeDir"
 

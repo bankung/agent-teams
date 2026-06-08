@@ -16,8 +16,9 @@ const http = require('http');
  */
 function waitForHealthy(url, { timeoutMs = 60000, intervalMs = 5000, probeTimeoutMs = 5000 } = {}) {
   return new Promise((resolve) => {
-    const deadline = Date.now() + timeoutMs;
-    let elapsed = 0;
+    const deadline  = Date.now() + timeoutMs;
+    // F-03: track real wall-clock start so elapsed reflects actual seconds waited.
+    const startedAt = Date.now();
 
     function probe() {
       const req = http.get(url, { timeout: probeTimeoutMs }, (res) => {
@@ -40,8 +41,8 @@ function waitForHealthy(url, { timeoutMs = 60000, intervalMs = 5000, probeTimeou
         resolve(false);
         return;
       }
+      const elapsed = Math.round((Date.now() - startedAt) / 1000);
       process.stdout.write(`    ...still waiting (${elapsed}s elapsed)\n`);
-      elapsed += Math.round(intervalMs / 1000);
       setTimeout(probe, intervalMs);
     }
 
