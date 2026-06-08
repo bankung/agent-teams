@@ -2078,14 +2078,8 @@ async def update_task(
     # Kanban #832: capture resolved interaction_kind before the setattr loop
     # so the auto-unblock check after commit can read it without touching an
     # expired ORM attribute.
-    _resolved_interaction_kind_for_done = (
-        updates.get("interaction_kind") if "interaction_kind" in updates
-        else task.interaction_kind
-    )
-    _resolved_ps_for_done = (
-        updates.get("process_status") if "process_status" in updates
-        else task.process_status
-    )
+    _resolved_interaction_kind_for_done = resolved_interaction_kind
+    _resolved_ps_for_done = resolved_process_status
 
     # Kanban #955.B: capture notification payload values before the setattr
     # loop. After session.commit() the ORM object is expired (async sessions
@@ -2147,19 +2141,10 @@ async def update_task(
                 select(SessionRun).where(SessionRun.task_id == task_id)
             )
             runs = list(runs_result.scalars())
-            # Build a snapshot object that reflects the resolved-final values
-            # for the heuristic — the PATCH may set status_change_reason in
-            # the SAME body that closes the task (the typical use-case).
-            resolved_reason = (
-                updates.get("status_change_reason")
-                if "status_change_reason" in updates
-                else task.status_change_reason
-            )
-
             _snap = _types.SimpleNamespace(
                 title=task.title,
                 description=task.description,
-                status_change_reason=resolved_reason,
+                status_change_reason=_notify_status_change_reason,
             )
             est = estimate_task_cost(_snap, runs)
             updates.setdefault("estimated_input_tokens", est["tokens_in"])
@@ -2988,7 +2973,7 @@ async def delete_task(
         .select_from(Task)
         .where(Task.parent_task_id == task_id, Task.status == RecordStatus.ACTIVE)
     )
-    if active_children_count and active_children_count > 0:
+    if active_children_count > 0:
         raise HTTPException(
             status_code=409,
             detail=f"Cannot delete task — {active_children_count} active subtask(s) reference this task",
