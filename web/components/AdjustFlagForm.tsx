@@ -77,12 +77,12 @@ function parseOptionalNumber(raw: string): number | null {
 }
 
 export function AdjustFlagForm({ project, onSubmit, onCancel }: Props) {
-  // Pre-fill numeric inputs from current project values. Backend stores the
-  // budget triad as JSON strings (Decimal) — render as-is so the operator
-  // sees exactly what's on the wire.
-  const [daily, setDaily] = useState(project.budget_daily_usd ?? "");
-  const [monthly, setMonthly] = useState(project.budget_monthly_usd ?? "");
-  const [total, setTotal] = useState(project.budget_total_usd ?? "");
+  // Budget inputs start EMPTY — "empty = leave unchanged" contract. Existing
+  // values are shown as placeholder text only so the operator can see the
+  // current value without pre-filling a submission.
+  const [daily, setDaily] = useState("");
+  const [monthly, setMonthly] = useState("");
+  const [total, setTotal] = useState("");
 
   // Threshold inputs — pre-fill from project.health_thresholds when present;
   // empty placeholder shows the auditor default.
@@ -179,14 +179,15 @@ export function AdjustFlagForm({ project, onSubmit, onCancel }: Props) {
       touchedAnyThreshold = true;
     }
     if (touchedAnyThreshold) {
-      // Replace-semantics on the BE — merge existing keys we didn't edit so
-      // the operator's adjust doesn't accidentally clear them.
-      const merged: Record<string, number | null> = {};
-      for (const [k, v] of Object.entries(existing)) {
-        if (typeof v === "number" || v === null) merged[k] = v;
-      }
+      // Replace-semantics on the BE — merge ALL existing keys we didn't edit
+      // so the operator's adjust doesn't accidentally clear unrelated keys.
+      // Let the BE validate value types; we must not silently drop non-numeric
+      // values (string / bool) that future BE code might store here.
+      const merged: Record<string, unknown> = { ...existing };
       for (const [k, v] of Object.entries(editedThresholds)) merged[k] = v;
-      adj.health_thresholds = merged;
+      // Cast: merged may contain non-numeric values from existing keys that
+      // the BE added. We preserve them as-is; the BE validates on write.
+      adj.health_thresholds = merged as Record<string, number | null>;
     }
 
     // Annotation — sent as description_annotation in the adjustments dict.
@@ -248,7 +249,11 @@ export function AdjustFlagForm({ project, onSubmit, onCancel }: Props) {
                 setDaily(e.target.value);
                 if (error !== null) setError(null);
               }}
-              placeholder={project.budget_daily_usd ?? "unlimited"}
+              placeholder={
+                project.budget_daily_usd != null
+                  ? `current: $${project.budget_daily_usd}`
+                  : "no limit set"
+              }
               disabled={submitting}
               className="mt-0.5 block w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
               data-adjust-budget-daily
@@ -266,7 +271,11 @@ export function AdjustFlagForm({ project, onSubmit, onCancel }: Props) {
                 setMonthly(e.target.value);
                 if (error !== null) setError(null);
               }}
-              placeholder={project.budget_monthly_usd ?? "unlimited"}
+              placeholder={
+                project.budget_monthly_usd != null
+                  ? `current: $${project.budget_monthly_usd}`
+                  : "no limit set"
+              }
               disabled={submitting}
               className="mt-0.5 block w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
               data-adjust-budget-monthly
@@ -284,7 +293,11 @@ export function AdjustFlagForm({ project, onSubmit, onCancel }: Props) {
                 setTotal(e.target.value);
                 if (error !== null) setError(null);
               }}
-              placeholder={project.budget_total_usd ?? "unlimited"}
+              placeholder={
+                project.budget_total_usd != null
+                  ? `current: $${project.budget_total_usd}`
+                  : "no limit set"
+              }
               disabled={submitting}
               className="mt-0.5 block w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
               data-adjust-budget-total

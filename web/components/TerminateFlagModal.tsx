@@ -59,11 +59,20 @@ export function TerminateFlagModal({
   const [error, setError] = useState<string | null>(null);
 
   const firstInputRef = useRef<HTMLInputElement | null>(null);
+  // Separate ref for the reason textarea used in mass mode — avoids the
+  // double-cast `firstInputRef as unknown as React.RefObject<HTMLTextAreaElement>`.
+  const massReasonRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     if (!open) return;
-    requestAnimationFrame(() => firstInputRef.current?.focus());
-  }, [open]);
+    requestAnimationFrame(() => {
+      if (isMass) {
+        massReasonRef.current?.focus();
+      } else {
+        firstInputRef.current?.focus();
+      }
+    });
+  }, [open, isMass]);
 
   function close() {
     if (submitting) return;
@@ -173,7 +182,7 @@ export function TerminateFlagModal({
           </span>{" "}
           <span className="text-red-600 dark:text-red-400">*</span>
           <textarea
-            ref={isMass ? firstInputRef as unknown as React.RefObject<HTMLTextAreaElement> : undefined}
+            ref={isMass ? massReasonRef : undefined}
             value={reason}
             onChange={(e) => {
               setReason(e.target.value);
