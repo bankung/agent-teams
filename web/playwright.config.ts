@@ -6,9 +6,11 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
-  // Fail fast: if the first retry also fails, abort that test.
-  // No global timeouts that hide flakiness — rely on Playwright auto-waiting.
-  timeout: 30_000,
+  // Per-test timeout: 60 s gives adequate headroom around the 15 s UI waits
+  // (expect.toBeVisible(10s) + not.toBeVisible(15s) + API round-trips).
+  // The prior 30 s left only ~0 s margin after two back-to-back 15 s waits,
+  // causing CI flakes when the dev server was briefly slow. (F-26)
+  timeout: 60_000,
   expect: { timeout: 10_000 },
   // No retries by default — tests must be deterministic.
   retries: 0,

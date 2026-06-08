@@ -60,7 +60,6 @@ async function createTestProject(
       },
       data: {
         name,
-        project_id: 1,  // required in body per API contract
         paths: { web: "/tmp", api: "/tmp", db: "/tmp" },
         team: "general",
         description: `E2E test project for Kanban #1243 run ${RUN_MARKER}`,
@@ -106,6 +105,7 @@ async function createFlagTask(
       process_status: 4,       // BLOCKED — the expected GOV3 flag state
       interaction_kind: "question",
       task_kind: "ai",
+      task_type: "chore",      // GOV3 flags are always chore; default "feature" mismatches production shape
       run_mode: "manual",
       question_payload: {
         is_audit_flag: true,
@@ -234,9 +234,10 @@ test.beforeAll(async () => {
     },
     data: { description: `E2E test project B (budget test) — Kanban #1243 run ${RUN_MARKER}` },
   });
-  // Set budget via the budget endpoint (or inline via PATCH budget fields if available)
-  // The budget fields are not in ProjectUpdateBody (by design per the api.ts comment).
-  // Use the full project update via the admin PATCH that does accept budget fields:
+  // Set budget fields via PATCH /api/projects/{id}. Budget fields (budget_daily_usd,
+  // budget_monthly_usd) ARE accepted by the backend PATCH endpoint; the front-end
+  // api.ts helper (ProjectUpdateBody) omits them as a UI-layer choice, but the
+  // REST contract accepts them directly.
   await apiCtx.patch(`${API_BASE}/api/projects/${projectB.id}`, {
     headers: {
       "Content-Type": "application/json",
@@ -478,17 +479,39 @@ test("Audit: projects_audit has entries for all 3 actions", async () => {
   //
   // Additional observable: GET /api/audit/daily-rollup includes processed-audit
   // counts per project per day — verify the endpoint is reachable (smoke check).
+  // daily-rollup: no `limit` param (endpoint doesn't accept it — F-22 fix).
+  // Use the default 7-day window via omitted query params.
   const rollupResp = await apiCtx.get(
-    `${API_BASE}/api/audit/daily-rollup?limit=50`,
+    `${API_BASE}/api/audit/daily-rollup`,
     { headers: { "X-Project-Id": "1" } },
   );
-  // daily-rollup may or may not include our test projects (depends on BE audit sweep),
-  // but the endpoint must respond with a JSON array (not a 500).
+  // The endpoint must respond with a JSON array (not a 500).
   expect(rollupResp.ok()).toBe(true);
   const contentType = rollupResp.headers()["content-type"] ?? "";
   expect(contentType).toContain("application/json");
   const rollup = await rollupResp.json();
   expect(Array.isArray(rollup)).toBe(true);
+
+  // Shape assertion: every row must have project_id (int), project_name (string),
+  // day (date string), and counts object with the 5 fixed bucket keys.
+  // daily-rollup may return 0 rows (no audit tasks in window) — skip row
+  // assertions when empty, but if rows are present each must be well-formed.
+  for (const row of rollup) {
+    expect(typeof row.project_id).toBe("number");
+    expect(typeof row.project_name).toBe("string");
+    // `day` is an ISO-8601 date string (YYYY-MM-DD) — coerce-check
+    expect(typeof row.day).toBe("string");
+    expect(row.day).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // counts object must have all 5 fixed bucket keys (zero-filled when absent)
+    expect(typeof row.counts).toBe("object");
+    expect(typeof row.counts.pass).toBe("number");
+    expect(typeof row.counts.auto_resolved).toBe("number");
+    expect(typeof row.counts.escalated).toBe("number");
+    expect(typeof row.counts.failed_giveup).toBe("number");
+    expect(typeof row.counts.pending_escalation).toBe("number");
+    // project_id must be a positive integer (no stray 0 or negative rows)
+    expect(row.project_id).toBeGreaterThan(0);
+  }
 
   // tasks_history: verify via tasks endpoint that the flag is DONE (already checked above).
   // The history row itself is an internal DB table — no direct list endpoint.
@@ -499,15 +522,15 @@ test("Audit: projects_audit has entries for all 3 actions", async () => {
 // Cleanup verification
 // ────────────────────────────────────────────────────────────────────────────
 
-test("Cleanup: all 3 test projects are soft-deleted after run", async () => {
-  // afterAll runs cleanup. This test verifies the state from within the suite
-  // by checking the projects are no longer in the active list.
-  // Note: afterAll runs AFTER all tests, but we can verify the state now since
-  // this test runs last in the file.
-
-  // For now, assert the projects exist (cleanup happens after); the afterAll
-  // will do the actual deletion. The verify test is in the afterAll callback.
-  // This test verifies that ALL 3 test project names follow the safe prefix.
+test("Fixture safety: all 3 test project names carry the safe e2e-1243 prefix", async () => {
+  // Verifies the fixture constructor produced correctly-scoped names so that
+  // no selector or cleanup operation can accidentally match a production row.
+  //
+  // Actual deletion (soft-delete via DELETE /api/projects/{id}) is performed
+  // in afterAll, which runs after all tests complete. There is no way to
+  // assert the DELETE returned 204 from within a test that runs before afterAll.
+  // The afterAll cleanup is the authoritative cleanup path; this test guards
+  // only the name-safety invariant.
   for (const p of [projectA, projectB, projectC]) {
     expect(p.name).toMatch(/^e2e-1243-\d+-[123]$/);
   }

@@ -1,8 +1,6 @@
 // Kanban #1243 — Phase 0 trivial smoke: /review page renders without error.
-// NOTE: This smoke is BLOCKED until the TerminateFlagModal.tsx bug is fixed.
-// Bug: single.projectName crashes when targets=[] (undefined !== null evaluates true).
-// File: web/components/TerminateFlagModal.tsx line 158.
-// Fix needed: change `single !== null` to `single != null` (coercive check catches undefined).
+// This smoke test only navigates to /review and checks the summary sentinel —
+// it does NOT interact with TerminateFlagModal. No blocker applies here.
 import { test, expect } from "@playwright/test";
 
 test("review page renders the Review heading", async ({ page }) => {
