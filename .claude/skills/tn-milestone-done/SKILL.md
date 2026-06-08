@@ -27,6 +27,9 @@ The detail response carries a `rollup`: `total` (active child tasks, incl. cance
 
 ## Step 3 — the discipline gate
 - If `progress_pct` is **100** (every non-cancelled child task is DONE) → proceed to Step 4.
+- If `total` equals 0 OR all child tasks are cancelled (`done + cancelled == total`, with zero
+  non-cancelled tasks) → treat as RELEASABLE. Print an operator note: "Milestone has no
+  non-cancelled tasks (all cancelled or none attached) — releasing." Then proceed to Step 4.
 - If **< 100** → there are unfinished child tasks. **WARN**: list the incomplete buckets from
   `by_process_status` and STOP. Ask the operator to confirm before releasing, or finish/attach the
   open tasks first. Do not silently release a milestone with open work.

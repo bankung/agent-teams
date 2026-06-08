@@ -51,13 +51,14 @@ Write the JSON to `_scratch/agent_task_create_payload.json`. Shape (only `projec
   "description": "<description or omit>",
   "task_type": "feature",
   "task_kind": "ai",
-  "priority": 3,
   "acceptance_criteria": [
     {"text": "<verifiable criterion 1>", "status": "pending"},
     {"text": "<verifiable criterion 2>", "status": "pending"}
   ]
 }
 ```
+
+> `priority` is omitted — the API defaults to NORMAL (2). Pass `"priority": 3` for HIGH or `"priority": 4` for URGENT only when the operator signals urgency. (Scale: LOW=1 NORMAL=2 HIGH=3 URGENT=4.)
 
 ## Step 4 — POST it (header AND body both carry project_id)
 
@@ -71,7 +72,8 @@ curl --silent -X POST \
   -w "%{http_code}"
 ```
 
-- HTTP **201/200** → continue to Step 5.
+- HTTP **201** → continue to Step 5.
+- HTTP **200** is NOT a valid success code for POST /api/tasks — treat it as an error (show body verbatim, STOP).
 - HTTP **422** → almost always means `project_id` was missing from the BODY. Open the response file,
   show the raw error verbatim, FIX the payload, retry. Never report success on a non-2xx.
 - Any other non-2xx → show the raw response body verbatim and STOP. Do not claim the task was created.

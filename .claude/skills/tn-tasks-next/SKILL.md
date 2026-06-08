@@ -37,7 +37,9 @@ Build the milestone order:
 curl --silent -H "X-Project-Id: <id>" "http://localhost:8456/api/tasks?pending=true&limit=500" \
   -o _scratch/tn_next_tasks.json -w "%{http_code}"
 ```
-`pending=true` returns process_status != 5 and excludes cancelled. From this pool:
+`pending=true` returns process_status != 5 and excludes cancelled. `limit=500` is the server
+maximum (default is 50; values above 500 return HTTP 422). If the actionable pool may exceed 500,
+paginate with `offset=<n>` and merge the pages before ordering. From this pool:
 - **Actionable** = process_status in {1 TODO, 2 IN_PROGRESS, 3 REVIEW}. EXCLUDE 4 BLOCKED (can't act
   on it yet) — but keep the blocked rows around for blocker detection in the next bullet.
 - **Blocker set** = every `blocked_by` value that appears on ANY task in the pool. An actionable
