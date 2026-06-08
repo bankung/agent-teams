@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from typing import TYPE_CHECKING
 
@@ -105,8 +106,9 @@ async def sweep_old_audit_tasks(session: "AsyncSession") -> dict:
           "cycle_ms": float,
         }
 
-    Caller is responsible for closing the session. The UPDATE is committed
-    here so the audit trigger fires and the row state is durable.
+    Caller is responsible for closing the session. This function commits the
+    UPDATE itself so the audit trigger fires and the row state is durable
+    before returning the summary.
     """
     started = time.monotonic()
     ttl_days = _resolve_ttl_days()
@@ -145,9 +147,9 @@ async def sweep_old_audit_tasks(session: "AsyncSession") -> dict:
     )
     rows = (await session.execute(per_project_stmt)).all()
     per_project: dict[int, int] = {pid: count for pid, count in rows}
-    total_archived = sum(per_project.values())
+    pre_flight_count = sum(per_project.values())
 
-    if total_archived == 0:
+    if pre_flight_count == 0:
         cycle_ms = (time.monotonic() - started) * 1000
         logger.info(
             "audit_archive: sweep found 0 tasks to archive "
@@ -181,8 +183,12 @@ async def sweep_old_audit_tasks(session: "AsyncSession") -> dict:
         .values(is_active=False, updated_at=func.now())
         .execution_options(synchronize_session=False)
     )
-    await session.execute(upd)
+    result = await session.execute(upd)
     await session.commit()
+
+    # F-12: use UPDATE's authoritative rowcount — not the pre-flight SELECT sum
+    # (which is a snapshot that can drift between the SELECT and the UPDATE).
+    total_archived = result.rowcount
 
     cycle_ms = (time.monotonic() - started) * 1000
 
@@ -227,6 +233,60 @@ async def _audit_archive_tick() -> None:
         logger.exception("audit_archive: _audit_archive_tick unhandled error")
 
 
+# FIND-03: 5-field cron pattern (minute hour dom month dow) — each field is
+# one or more non-whitespace characters. This is a structural check; semantic
+# errors (e.g. "99 * * * *") are caught by CronTrigger.from_crontab().
+_CRON_5FIELD_RE = re.compile(r"^(\S+\s+){4}\S+$")
+
+
+def _resolve_cron_rule() -> str:
+    """Validate and return the AUDIT_ARCHIVE_CRON env value.
+
+    Falls back to _AUDIT_ARCHIVE_CRON on missing, malformed, or semantically
+    invalid (next-fire < 1 hour away) values, logging a warning each time.
+    """
+    from apscheduler.triggers.cron import CronTrigger
+    from datetime import datetime, timezone
+
+    raw = os.environ.get("AUDIT_ARCHIVE_CRON")
+    if not raw:
+        return _AUDIT_ARCHIVE_CRON
+
+    if not _CRON_5FIELD_RE.match(raw.strip()):
+        logger.warning(
+            "audit_archive: AUDIT_ARCHIVE_CRON=%r is not a valid 5-field cron "
+            "expression — falling back to default %r",
+            raw,
+            _AUDIT_ARCHIVE_CRON,
+        )
+        return _AUDIT_ARCHIVE_CRON
+
+    # Sanity check: next fire must be at least 1 hour from now.
+    try:
+        trigger = CronTrigger.from_crontab(raw.strip(), timezone="UTC")
+        next_fire = trigger.get_next_fire_time(None, datetime.now(timezone.utc))
+        if next_fire is None or (next_fire - datetime.now(timezone.utc)).total_seconds() < 3600:
+            logger.warning(
+                "audit_archive: AUDIT_ARCHIVE_CRON=%r fires in <1 h (next=%s) "
+                "— falling back to default %r",
+                raw,
+                next_fire,
+                _AUDIT_ARCHIVE_CRON,
+            )
+            return _AUDIT_ARCHIVE_CRON
+    except Exception as exc:
+        logger.warning(
+            "audit_archive: AUDIT_ARCHIVE_CRON=%r failed validation (%s) "
+            "— falling back to default %r",
+            raw,
+            exc,
+            _AUDIT_ARCHIVE_CRON,
+        )
+        return _AUDIT_ARCHIVE_CRON
+
+    return raw.strip()
+
+
 def schedule_audit_archive_job(scheduler: "AsyncIOScheduler") -> None:
     """Register the daily audit-archive sweep into an existing AsyncIOScheduler.
 
@@ -237,7 +297,7 @@ def schedule_audit_archive_job(scheduler: "AsyncIOScheduler") -> None:
     """
     from apscheduler.triggers.cron import CronTrigger
 
-    cron_rule = os.environ.get("AUDIT_ARCHIVE_CRON", _AUDIT_ARCHIVE_CRON)
+    cron_rule = _resolve_cron_rule()
     scheduler.add_job(
         _audit_archive_tick,
         trigger=CronTrigger.from_crontab(cron_rule, timezone="UTC"),

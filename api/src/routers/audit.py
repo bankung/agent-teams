@@ -10,14 +10,15 @@ Cross-project endpoint — takes NO `X-Project-Id` header (parity with
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import Date, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.constants import RecordStatus, TaskStatus
 from src.db import get_session
+from src.middleware.rate_limit import limiter
 from src.models.project import Project
 from src.models.task import Task
 from src.schemas.audit import AuditDailyCounts, AuditDailyRollupEntry
@@ -30,9 +31,17 @@ router = APIRouter(prefix="/audit", tags=["audit"])
 # label ("last 7 days").
 _DEFAULT_WINDOW_DAYS = 7
 
+# FIND-04: cap the maximum allowed window to avoid unbounded aggregation scans.
+_MAX_WINDOW_DAYS = 365
+
+# F-15: JSONB key for the auditor verdict — extracted to avoid magic strings.
+_VERDICT_KEY = "verdict"
+
 
 @router.get("/daily-rollup", response_model=list[AuditDailyRollupEntry])
+@limiter.limit("60/minute")
 async def list_audit_daily_rollup(
+    request: Request,  # required by slowapi key_func — not used in handler body
     from_date: date | None = Query(
         default=None,
         alias="from",
@@ -73,7 +82,9 @@ async def list_audit_daily_rollup(
     Ordering: `project_id ASC, day DESC` — newest day first per project
     matches the FE widget's render order ("today's activity at the top").
     """
-    today = date.today()
+    # F-14: use UTC date — date.today() returns local-TZ date which diverges
+    # from the UTC timestamptz stored in the DB on non-UTC servers.
+    today = datetime.now(timezone.utc).date()
     if from_date is None:
         from_date = today - timedelta(days=_DEFAULT_WINDOW_DAYS)
     if to_date is None:
@@ -83,6 +94,14 @@ async def list_audit_daily_rollup(
         raise HTTPException(
             status_code=422,
             detail="from must be <= to",
+        )
+
+    # FIND-04: cap the window to avoid unbounded aggregation scans.
+    # Auth gap is out of scope for 0.6.0 (single-operator posture) — see #1275.
+    if (to_date - from_date).days > _MAX_WINDOW_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Window exceeds maximum of {_MAX_WINDOW_DAYS} days.",
         )
 
     # The window upper bound is INCLUSIVE on `to_date` — a task touched at
@@ -95,7 +114,7 @@ async def list_audit_daily_rollup(
     # text value, NULL if the key is missing. Wrap as a SQL expression so
     # SQLAlchemy renders the operator literally rather than treating the
     # string as a column.
-    verdict_expr = Task.audit_report.op("->>")("verdict")
+    verdict_expr = Task.audit_report.op("->>")(_VERDICT_KEY)
 
     # `date_trunc('day', updated_at)::date` floors the timestamptz to a UTC
     # calendar date. Cast to SQLAlchemy `Date` so Pydantic receives a
