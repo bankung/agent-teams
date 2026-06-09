@@ -26,5 +26,8 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/bankung/agent-teams.git"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
