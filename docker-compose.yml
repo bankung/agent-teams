@@ -23,6 +23,7 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - agent-teams-pgdata:/var/lib/postgresql/data
+    command: ["postgres", "-c", "max_connections=20", "-c", "shared_buffers=32MB"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d agent_teams"]
       interval: 5s

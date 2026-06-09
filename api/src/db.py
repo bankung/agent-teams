@@ -55,6 +55,8 @@ def _build_engine() -> AsyncEngine:
         echo=settings.app_debug and settings.app_env == "development",
         pool_pre_ping=True,
         future=True,
+        pool_size=3,
+        max_overflow=2,
     )
 
 

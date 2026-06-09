@@ -196,42 +196,63 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Kanban #959 — off-site encrypted backup nightly job. Refuses to schedule
     # when BACKUP_* env vars are unset (default state). Cron in BACKUP_TIMEZONE
     # (defaults to UTC). One job, one run_once() call per fire.
-    from src.services.backup import BackupConfig, BackupRunner
+    #
+    # Deferred import: check the cheap env path first so the backup module
+    # (and transitively boto3 ~15-20MB) is only imported when backup is
+    # actually enabled. If the bucket var is set but the import/config fails,
+    # log + raise to fail-fast at lifespan (don't silently skip).
+    if os.environ.get("BACKUP_S3_BUCKET", ""):
+        try:
+            from src.services.backup import BackupConfig, BackupRunner  # noqa: PLC0415
+            backup_cfg = BackupConfig.from_env()
+        except Exception as exc:
+            logger.error(
+                "backup: BACKUP_S3_BUCKET is set but failed to load backup "
+                "module or config — refusing to start with a broken backup "
+                "configuration. Error: %s",
+                exc,
+            )
+            raise
 
-    backup_cfg = BackupConfig.from_env()
-    if backup_cfg.is_enabled:
-        runner = BackupRunner(backup_cfg)
-        scheduler.add_job(
-            runner.run_once,
-            trigger=CronTrigger.from_crontab(
-                backup_cfg.cron_rule, timezone=backup_cfg.timezone,
-            ),
-            id="backup_nightly",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-        )
-        logger.info(
-            "backup scheduled: cron=%s tz=%s bucket=%s prefix=%s dry_run=%s",
-            backup_cfg.cron_rule, backup_cfg.timezone, backup_cfg.s3_bucket,
-            backup_cfg.s3_prefix, backup_cfg.dry_run,
-        )
+        if backup_cfg.is_enabled:
+            runner = BackupRunner(backup_cfg)
+            scheduler.add_job(
+                runner.run_once,
+                trigger=CronTrigger.from_crontab(
+                    backup_cfg.cron_rule, timezone=backup_cfg.timezone,
+                ),
+                id="backup_nightly",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
+            logger.info(
+                "backup scheduled: cron=%s tz=%s bucket=%s prefix=%s dry_run=%s",
+                backup_cfg.cron_rule, backup_cfg.timezone, backup_cfg.s3_bucket,
+                backup_cfg.s3_prefix, backup_cfg.dry_run,
+            )
 
-        # Kanban #1474 — startup catchup: if the desktop was OFF during the
-        # scheduled window (APScheduler silently skips missed fires by default),
-        # kick off one immediate run if the latest backup is older than the
-        # threshold. Fire-and-forget on the loop so startup is non-blocking.
-        _catchup_max_age_hours = float(
-            os.environ.get("BACKUP_CATCHUP_MAX_AGE_HOURS", "24")
-        )
-        asyncio.create_task(
-            runner.catchup_if_stale(_catchup_max_age_hours),
-            name="backup_catchup",
-        )
-        logger.info(
-            "backup catchup task scheduled: max_age_hours=%.1f",
-            _catchup_max_age_hours,
-        )
+            # Kanban #1474 — startup catchup: if the desktop was OFF during the
+            # scheduled window (APScheduler silently skips missed fires by default),
+            # kick off one immediate run if the latest backup is older than the
+            # threshold. Fire-and-forget on the loop so startup is non-blocking.
+            _catchup_max_age_hours = float(
+                os.environ.get("BACKUP_CATCHUP_MAX_AGE_HOURS", "24")
+            )
+            asyncio.create_task(
+                runner.catchup_if_stale(_catchup_max_age_hours),
+                name="backup_catchup",
+            )
+            logger.info(
+                "backup catchup task scheduled: max_age_hours=%.1f",
+                _catchup_max_age_hours,
+            )
+        else:
+            logger.warning(
+                "Backup disabled — BACKUP_S3_BUCKET is set but one or more of "
+                "BACKUP_S3_ACCESS_KEY_ID, BACKUP_S3_SECRET_ACCESS_KEY, "
+                "BACKUP_AGE_PUBKEY is missing"
+            )
     else:
         logger.warning(
             "Backup disabled — set BACKUP_S3_BUCKET, BACKUP_S3_ACCESS_KEY_ID, "
