@@ -77,6 +77,13 @@ export function ProductTour() {
       if (startedRef.current) return;
       startedRef.current = true;
 
+      // Persist the auto-fire gate immediately so a page refresh never re-triggers
+      // the tour. Replay (auto=false) skips this — isTourCompleted() is not checked
+      // on the replay path anyway (handleReplay resets startedRef and calls
+      // startTour(false) directly). Also suppresses Strict Mode double-invoke: the
+      // second call is blocked by startedRef, so markTourCompleted() runs exactly once.
+      if (auto) markTourCompleted();
+
       // M-3 — tear down any prior driver before building a new one so a replay
       // never leaves a second overlay/popover mounted.
       driverRef.current?.destroy();
