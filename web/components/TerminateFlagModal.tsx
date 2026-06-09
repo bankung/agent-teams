@@ -169,7 +169,7 @@ export function TerminateFlagModal({
               spellCheck={false}
               disabled={submitting}
               aria-invalid={typedName.length > 0 && !nameOk}
-              className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500"
+              className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 aria-[invalid=true]:border-red-500 aria-[invalid=true]:dark:border-red-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500"
               data-terminate-flag-name-input
             />
           </label>
@@ -192,7 +192,7 @@ export function TerminateFlagModal({
             placeholder="Why terminate? Captured into the audit row."
             disabled={submitting}
             aria-invalid={reason.length > 0 && !reasonOk}
-            className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500"
+            className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 aria-[invalid=true]:border-red-500 aria-[invalid=true]:dark:border-red-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500"
             data-terminate-flag-reason
           />
           <span className="mt-0.5 block text-[10px] text-zinc-500 dark:text-zinc-500 tabular-nums">
@@ -214,7 +214,7 @@ export function TerminateFlagModal({
             spellCheck={false}
             disabled={submitting}
             aria-invalid={typedConfirm.length > 0 && !confirmOk}
-            className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500"
+            className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 aria-[invalid=true]:border-red-500 aria-[invalid=true]:dark:border-red-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500"
             data-terminate-flag-confirm-input
           />
         </label>
@@ -228,6 +228,27 @@ export function TerminateFlagModal({
             {error}
           </p>
         )}
+
+        {/* Per-gate checklist — always visible so operator knows what's unmet */}
+        <ul
+          aria-label="Submit requirements"
+          className="mt-3 space-y-0.5 text-[11px]"
+          data-terminate-flag-checklist
+        >
+          {!isMass && (
+            <li className={nameOk ? "text-emerald-600 dark:text-emerald-400" : "text-zinc-400 dark:text-zinc-500"}>
+              {nameOk ? "✓" : "○"} Project name matches
+            </li>
+          )}
+          <li className={reasonOk ? "text-emerald-600 dark:text-emerald-400" : "text-zinc-400 dark:text-zinc-500"}>
+            {reasonOk ? "✓" : "○"} Reason ≥ {REASON_MIN_CHARS} chars{" "}
+            <span className="tabular-nums">({reason.trim().length}/{REASON_MIN_CHARS})</span>
+          </li>
+          <li className={confirmOk ? "text-emerald-600 dark:text-emerald-400" : "text-zinc-400 dark:text-zinc-500"}>
+            {confirmOk ? "✓" : "○"} Typed{" "}
+            <span className="font-mono">{CONFIRM_WORD}</span>
+          </li>
+        </ul>
 
         <div className="mt-4 flex items-center justify-end gap-2">
           <button
