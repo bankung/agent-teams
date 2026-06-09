@@ -23,7 +23,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import "driver.js/dist/driver.css";
 
 import {
   TOUR_BASE_CONFIG,
@@ -89,7 +88,8 @@ export function ProductTour() {
       driverRef.current?.destroy();
       driverRef.current = null;
 
-      // Dynamic import keeps driver.js out of the SSR + initial bundle.
+      // Dynamic imports keep driver.js + its CSS out of the SSR + initial bundle.
+      await import("driver.js/dist/driver.css");
       const { driver } = await import("driver.js");
 
       // H-2 — navigate to the board phase ONLY on an affirmative "Continue →"

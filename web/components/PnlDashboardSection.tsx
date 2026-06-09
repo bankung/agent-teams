@@ -24,6 +24,7 @@ import {
   HttpError,
   type PLCrossProject,
 } from "@/lib/api";
+import { readExpanded, writeExpanded } from "@/lib/collapseState";
 import { formatMoney, parseMoney } from "@/lib/money";
 import {
   RANGE_OPTIONS,
@@ -69,33 +70,6 @@ function ChevronRightIcon() {
       <polyline points="6 4 10 8 6 12" />
     </svg>
   );
-}
-
-// ----- Collapse helpers ------------------------------------------------------
-
-function readExpanded(key: string, defaultCollapsed: boolean): boolean {
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw === null) return !defaultCollapsed;
-    return JSON.parse(raw) !== false;
-  } catch {
-    return !defaultCollapsed;
-  }
-}
-
-function writeExpanded(key: string, next: boolean): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(next));
-    window.dispatchEvent(
-      new StorageEvent("storage", {
-        key,
-        newValue: JSON.stringify(next),
-        storageArea: localStorage,
-      }),
-    );
-  } catch {
-    // localStorage blocked — silently ignore.
-  }
 }
 
 // ----- Component -------------------------------------------------------------

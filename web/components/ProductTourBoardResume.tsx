@@ -31,7 +31,6 @@
 // disconnect timeout).
 
 import { useCallback, useEffect, useRef } from "react";
-import "driver.js/dist/driver.css";
 
 import {
   TOUR_BASE_CONFIG,
@@ -74,6 +73,8 @@ export function ProductTourBoardResume({
     driverRef.current?.destroy();
     driverRef.current = null;
 
+    // Dynamic imports keep driver.js + its CSS out of the initial board bundle.
+    await import("driver.js/dist/driver.css");
     const { driver } = await import("driver.js");
 
     // SECURITY: driver.js renders title/description via innerHTML — static string literals ONLY; never interpolate DB/user values here.

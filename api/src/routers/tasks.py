@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import types as _types
 from datetime import date, datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi import status as http_status
@@ -398,6 +399,32 @@ async def list_tasks(
     ),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    order: Literal["done_lane"] | None = Query(
+        default=None,
+        description=(
+            "Kanban #2112: opt-in ordering mode. Omit (default) → id ASC "
+            "(backward-compatible). 'done_lane' → ORDER BY updated_at DESC, "
+            "id DESC, enabling keyset pagination for the Done column. "
+            "Use with process_status=5 + before_updated_at/before_id."
+        ),
+    ),
+    before_updated_at: datetime | None = Query(
+        default=None,
+        description=(
+            "Kanban #2112: keyset cursor — upper-exclusive bound on updated_at. "
+            "Honored ONLY when order=done_lane. Composite with before_id: returns "
+            "rows where updated_at < before_updated_at OR "
+            "(updated_at = before_updated_at AND id < before_id)."
+        ),
+    ),
+    before_id: int | None = Query(
+        default=None,
+        ge=1,
+        description=(
+            "Kanban #2112: keyset cursor — tiebreaker id component. "
+            "Honored ONLY when order=done_lane AND before_updated_at is set."
+        ),
+    ),
     include_deleted: bool = Query(
         default=False,
         description="If true, include soft-deleted (status=0) rows. Debug-only.",
@@ -461,7 +488,24 @@ async def list_tasks(
         stmt = stmt.where(Task.parent_task_id.is_(None))
     elif parent_task_id is not None:
         stmt = stmt.where(Task.parent_task_id == parent_task_id)
-    stmt = stmt.order_by(Task.id.asc()).limit(limit).offset(offset)
+    # Kanban #2112: opt-in done-lane ordering with keyset pagination.
+    # Default (order != 'done_lane') keeps the existing id ASC + offset pattern
+    # so all existing callers are unaffected.
+    # Caveat: a DONE task whose updated_at mutates between page loads may shift
+    # pages — same reshuffle the client sortDoneLane already exhibits; acceptable.
+    if order == "done_lane":
+        if before_updated_at is not None and before_id is not None:
+            # Composite keyset: strictly after the cursor in DESC order.
+            # (updated_at < cursor_ts) OR (updated_at = cursor_ts AND id < cursor_id)
+            stmt = stmt.where(
+                or_(
+                    Task.updated_at < before_updated_at,
+                    (Task.updated_at == before_updated_at) & (Task.id < before_id),
+                )
+            )
+        stmt = stmt.order_by(Task.updated_at.desc(), Task.id.desc()).limit(limit)
+    else:
+        stmt = stmt.order_by(Task.id.asc()).limit(limit).offset(offset)
     result = await session.execute(stmt)
     return list(result.scalars().all())
 

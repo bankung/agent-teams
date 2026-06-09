@@ -738,6 +738,32 @@ export async function getTask(
   });
 }
 
+// Kanban #2112 — DONE-lane keyset pagination.
+// Fetches one page of DONE tasks ordered by (updated_at DESC, id DESC)
+// matching the sortDoneLane client sort. Cursor = last row of prior page.
+// has-more: returned.length === limit.
+export type DoneLanePageOpts = {
+  limit: number;
+  before_updated_at?: string;
+  before_id?: number;
+};
+export async function listDoneLanePage(
+  projectId: number,
+  opts: DoneLanePageOpts,
+): Promise<TaskRead[]> {
+  const qs = new URLSearchParams();
+  qs.set("process_status", "5");
+  qs.set("order", "done_lane");
+  qs.set("limit", String(opts.limit));
+  if (opts.before_updated_at !== undefined)
+    qs.set("before_updated_at", opts.before_updated_at);
+  if (opts.before_id !== undefined)
+    qs.set("before_id", String(opts.before_id));
+  return jsonFetch<TaskRead[]>(buildPath("/api/tasks", qs), {
+    headers: { "X-Project-Id": String(projectId) },
+  });
+}
+
 // createTask — POST /api/tasks body (Kanban #855 FE). Mirrors
 // api/src/schemas/task.py:TaskCreate. Only the fields the manual-create modal
 // exposes are typed here; backend defaults (task_type='feature', task_kind='ai',
@@ -2048,4 +2074,209 @@ export async function postTaskComment(
     },
     body: JSON.stringify(body),
   });
+}
+
+// ============================================================================
+// Kanban #1309 / #1315 — project Resources (files + links).
+//
+// Two mount shapes on the BE (api/src/routers/resources.py):
+//   * project-scoped (/api/projects/{id}/resources): POST create, GET list.
+//   * resource-scoped (/api/resources/{id}): GET detail, GET preview, DELETE.
+//
+// `kind` is 'file' | 'link' (mirror of constants.ResourceKind.ALL). File rows
+// carry `filename` + `content_type` + `size_bytes`; link rows carry `url`. The
+// open `tags` object holds the verify-and-tag metadata (#1309): files →
+// row_count / col_count / format_detected / schema_detected / preview /
+// est_cost_if_full / hash; links → url_scheme / url_host / head_status / title.
+// The server-internal `stored_path` is stripped before serialization (BE
+// _strip_internal_tags) so it never appears on the wire.
+//
+// CREATE is dual-contract by request content-type (same handler):
+//   * multipart/form-data → FILE upload (file part + kind='file' + task_id? +
+//     label?). DO NOT set Content-Type manually — the browser sets the
+//     multipart boundary. Verify-and-tag runs SYNCHRONOUSLY inside the POST
+//     (store → tag → INSERT → 201 with tags). There is NO server progress
+//     stream; the panel shows an optimistic staged indicator while in-flight.
+//   * application/json → LINK attach ({kind:'link', url, task_id?, label?}).
+//
+// CREATE + DELETE are operator-gated on the BE (fail-OPEN/dormant until
+// OPERATOR_ACTION_KEY is set, mirroring the task_templates gate). 413 when a
+// file exceeds the upload cap.
+// ============================================================================
+
+export const RESOURCE_KINDS = ["file", "link"] as const;
+export type ResourceKindValue = (typeof RESOURCE_KINDS)[number];
+
+// EstCostIfFull — the planning-only LLM cost estimate stashed in a file row's
+// tags (services/resource_verify.estimate_cost_if_full). `usd` is null when the
+// model price is unknown. NEVER a billing figure — `basis` documents the math.
+export type EstCostIfFull = {
+  usd: number | null;
+  approx_tokens: number;
+  model: string;
+  basis: string;
+};
+
+// ResourceTags — the open verify-and-tag metadata object. Every key is optional
+// (the shape differs file vs link, and a parser may be unavailable). Typed as a
+// loose record at the wire boundary; the known keys below are surfaced as chips.
+export type ResourceTags = {
+  // FILE keys (services/resource_verify.verify_and_tag_file)
+  format_detected?: string | null;
+  row_count?: number | null;
+  col_count?: number | null;
+  schema_detected?: string[] | null;
+  preview?: unknown;
+  preview_rows?: number;
+  hash?: string;
+  est_cost_if_full?: EstCostIfFull;
+  parser_unavailable?: boolean;
+  content_type_resolved?: string | null;
+  parse_error?: string;
+  notes?: string;
+  // LINK keys (services/resource_verify.verify_and_tag_link)
+  url_scheme?: string;
+  url_host?: string;
+  head_status?: number | null;
+  title?: string | null;
+  // Open for forward-compat — pipeline may add keys without a schema bump.
+  [k: string]: unknown;
+};
+
+// Resource — mirror of api/src/schemas/project_resource.py:ResourceRead.
+// `filename` / `content_type` / `size_bytes` are file-only (null on links);
+// `url` is link-only (null on files). `tags` is the metadata object above.
+export type Resource = {
+  id: number;
+  project_id: number;
+  task_id: number | null;
+  kind: ResourceKindValue;
+  filename: string | null;
+  url: string | null;
+  content_type: string | null;
+  size_bytes: number | null;
+  label: string | null;
+  tags: ResourceTags;
+  created_at: string; // ISO 8601 with timezone
+  updated_at: string;
+};
+
+// ResourcePreview — mirror of ResourcePreview schema. Read straight off the
+// stored tags (the endpoint NEVER re-reads the file). `preview` is the
+// first-N-rows sample (list of row-objects for CSV/TSV, parsed value for JSON,
+// null when no parser ran). For links the file-stat fields are null.
+export type ResourcePreview = {
+  id: number;
+  kind: ResourceKindValue;
+  filename: string | null;
+  content_type: string | null;
+  format_detected: string | null;
+  row_count: number | null;
+  col_count: number | null;
+  schema_detected: string[] | null;
+  preview: unknown;
+  parser_unavailable: boolean;
+};
+
+type ListResourcesOpts = {
+  task_id?: number;
+  kind?: ResourceKindValue;
+  limit?: number;
+  offset?: number;
+};
+
+// listResources — GET /api/projects/{id}/resources. Newest-first
+// (created_at DESC). Ungated (read-only). Optional task_id pins to one task;
+// kind filters file/link. X-Project-Id scoped (mirrors the tasks router).
+export async function listResources(
+  projectId: number,
+  opts: ListResourcesOpts = {},
+): Promise<Resource[]> {
+  const qs = new URLSearchParams();
+  if (opts.task_id !== undefined) qs.set("task_id", String(opts.task_id));
+  if (opts.kind !== undefined) qs.set("kind", opts.kind);
+  if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
+  if (opts.offset !== undefined) qs.set("offset", String(opts.offset));
+  const path = buildPath(`/api/projects/${projectId}/resources`, qs);
+  return jsonFetch<Resource[]>(path, {
+    headers: { "X-Project-Id": String(projectId) },
+  });
+}
+
+// createResourceFile — POST /api/projects/{id}/resources (multipart/form-data).
+// The browser sets the multipart Content-Type + boundary automatically; we MUST
+// NOT set it manually (a manual header omits the boundary → 422). jsonFetch
+// always forces JSON, so this path uses fetch() directly to send FormData.
+//
+// 201 → the tagged Resource (verify-and-tag is synchronous inside the POST).
+// 413 → file over the upload cap (nothing saved). 403 → operator gate active.
+export async function createResourceFile(
+  projectId: number,
+  file: File,
+  opts: { task_id?: number; label?: string } = {},
+): Promise<Resource> {
+  const form = new FormData();
+  form.set("file", file);
+  form.set("kind", "file");
+  if (opts.task_id !== undefined) form.set("task_id", String(opts.task_id));
+  if (opts.label !== undefined && opts.label !== "") form.set("label", opts.label);
+
+  const url = `${apiBaseUrl()}/api/projects/${projectId}/resources`;
+  const response = await fetch(url, {
+    method: "POST",
+    cache: "no-store",
+    // NOTE: no Content-Type — the browser sets multipart/form-data + boundary.
+    headers: { Accept: "application/json", "X-Project-Id": String(projectId) },
+    body: form,
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { detail?: unknown };
+    const message =
+      formatDetail(body.detail) ?? `${response.status} ${response.statusText}`;
+    throw new HttpError(response.status, body.detail, message);
+  }
+  return (await response.json()) as Resource;
+}
+
+// createResourceLink — POST /api/projects/{id}/resources (application/json).
+// Body {kind:'link', url, task_id?, label?}. 201 → the tagged Resource.
+export async function createResourceLink(
+  projectId: number,
+  body: { url: string; task_id?: number; label?: string },
+): Promise<Resource> {
+  return jsonFetch<Resource>(`/api/projects/${projectId}/resources`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Project-Id": String(projectId),
+    },
+    body: JSON.stringify({ kind: "link", ...body }),
+  });
+}
+
+// getResourcePreview — GET /api/resources/{id}/preview. Ungated. 404 if missing
+// or soft-deleted. No X-Project-Id (resource-scoped, mirrors the BE router).
+export async function getResourcePreview(
+  resourceId: number,
+): Promise<ResourcePreview> {
+  return jsonFetch<ResourcePreview>(`/api/resources/${resourceId}/preview`);
+}
+
+// deleteResource — DELETE /api/resources/{id}. Operator-gated; soft-delete +
+// move file to trash. 204 (no body) on success; idempotent. Returns void.
+export async function deleteResource(resourceId: number): Promise<void> {
+  // DELETE returns 204 (no body) — jsonFetch would explode parsing JSON on an
+  // empty body; call fetch directly (mirrors push.unsubscribe / deleteMilestone).
+  const url = `${apiBaseUrl()}/api/resources/${resourceId}`;
+  const response = await fetch(url, {
+    method: "DELETE",
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { detail?: unknown };
+    const message =
+      formatDetail(body.detail) ?? `${response.status} ${response.statusText}`;
+    throw new HttpError(response.status, body.detail, message);
+  }
 }

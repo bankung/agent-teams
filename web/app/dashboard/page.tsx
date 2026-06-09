@@ -22,10 +22,22 @@ import { EditProjectModal } from "@/components/EditProjectModal";
 import { FlagBellBadge } from "@/components/FlagBellBadge";
 import { InboxBadge } from "@/components/InboxBadge";
 import { NewProjectModal } from "@/components/NewProjectModal";
-import { PnlDashboardSection } from "@/components/PnlDashboardSection";
+import nextDynamic from "next/dynamic";
 import { ReviewSummaryWidget } from "@/components/ReviewSummaryWidget";
 import { FINANCE_PANELS_ENABLED } from "@/lib/featureFlags";
 import { ThemePicker } from "@/components/ThemePicker";
+
+// Kanban #2111 Part 3b — code-split PnlDashboardSection behind finance flag.
+// next/dynamic ensures the component (and its dependencies) are only loaded
+// when FINANCE_PANELS_ENABLED is true; the chunk is absent from the bundle
+// when the flag is off (default).
+const PnlDashboardSection = nextDynamic(
+  () =>
+    import("@/components/PnlDashboardSection").then(
+      (m) => m.PnlDashboardSection,
+    ),
+  { ssr: false },
+);
 import { ProductTour } from "@/components/ProductTour";
 
 // Cross-project dashboard — aggregate-first layout (Kanban #869, 2026-05-13).

@@ -7,7 +7,7 @@
 import { useCallback } from "react";
 import { useRouter } from "next/navigation";
 
-import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
+import { useWildcardRowChanged } from "@/lib/WildcardSSEContext";
 import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
 
 export function DashboardRefresher() {
@@ -15,7 +15,7 @@ export function DashboardRefresher() {
   const onChange = useCallback(() => {
     router.refresh();
   }, [router]);
-  const { connectionState, lastEventAt } = useRowChangedEvents({
+  const { connectionState, lastEventAt } = useWildcardRowChanged({
     onTaskChange: onChange,
     onProjectChange: onChange,
   });
