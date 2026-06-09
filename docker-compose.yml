@@ -1,6 +1,9 @@
-# Dev compose for agent-teams.
-# Phase 3: db + api + web. Production multi-stage Dockerfile for web is deferred
-# to a later slice (dev image only — `next dev` with hot reload via bind mount).
+# Base compose for agent-teams (db + api + web + langgraph).
+# This file is the common base — apply an overlay for your mode:
+#
+#   Dev mode (hot-reload):   docker compose -p agent-teams -f docker-compose.yml -f docker-compose.dev.yml up -d
+#   Lightweight/prod mode:   docker compose -p agent-teams -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#   Back to dev mode:        docker compose -p agent-teams -f docker-compose.yml -f docker-compose.dev.yml up -d
 #
 # First-time install: use ./bin/install.sh (Linux/Mac) or .\bin\install.ps1 (Windows).
 # Manual flow for developers: see readme_dev.md "Live migration procedure".
@@ -186,12 +189,6 @@ services:
       NEXT_PUBLIC_FINANCE_PANELS_ENABLED: ${NEXT_PUBLIC_FINANCE_PANELS_ENABLED:-false}
     ports:
       - "${WEB_PORT:-5431}:5431"
-    volumes:
-      # Bind ./web read-write so source edits hot-reload via `next dev`. Mount node_modules
-      # as an anonymous volume so the host node_modules (if any) doesn't clobber the
-      # container-installed one (Linux/Windows binary mismatch).
-      - ./web:/app
-      - /app/node_modules
     healthcheck:
       # Next dev mode takes ~5-10s for first-request compile; start_period covers it.
       # wget is in alpine base by default; if not, swap to `node -e "require('http').get('http://localhost:5431', r => process.exit(r.statusCode === 200 ? 0 : 1))"`.
@@ -209,6 +206,7 @@ services:
   # server invocation once the real StateGraph is defined.
   # ---------------------------------------------------------------------------
   langgraph:
+    profiles: ["langgraph"]
     build:
       context: ./langgraph
       dockerfile: Dockerfile
