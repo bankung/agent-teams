@@ -872,8 +872,9 @@ export async function parseTaskText(
 // PATCH /api/tasks/{id} — partial update; blocked_by explicit null clears (#771); run_mode #860; status_change_reason #854
 // halt_reason added 2026-05-20 by Kanban #1001 — Halt quick-action sets ps=4 + halt_reason in one PATCH.
 //   PATCH semantics (per #785): key-absent = unchanged; explicit `null` = clear/unhalt; non-empty string = halt.
+// Kanban #2181 — description + acceptance_criteria inline editing from task drawer.
 export type TaskPatch = Partial<
-  Pick<TaskRead, "process_status" | "priority" | "title" | "blocked_by" | "sort_order" | "run_mode">
+  Pick<TaskRead, "process_status" | "priority" | "title" | "blocked_by" | "sort_order" | "run_mode" | "description" | "acceptance_criteria">
 > & {
   new_answer?: string | null;
   new_answer_by?: string | null;
