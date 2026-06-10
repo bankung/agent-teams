@@ -34,7 +34,7 @@ This is applied ONLY on the google bind path (see
   - any tool's RUNTIME contract (http_post still accepts dict/list/str bodies —
     tool execution goes through `GLOBAL_REGISTRY.get(name).invoke(...)`, NOT
     through the bound langchain tool, which is used only to DECLARE the schema),
-  - the bind path of any other provider (anthropic/openai/ollama/deepseek).
+  - the bind path of any other provider (anthropic/openai/ollama).
 
 The langchain genai conversion accepts a plain dict for `args_schema`
 (`_format_base_tool_to_function_declaration` branches on `isinstance(dict)`),
@@ -90,20 +90,32 @@ def _items_is_usable(items: Any) -> bool:
     return False
 
 
-def _sanitize_node(node: Any) -> None:
+def _sanitize_node(node: Any, _visited: set[int] | None = None) -> None:
     """Recursively ensure every array node has a usable `items` (in place).
 
     Walks the standard JSON-schema containers Pydantic + langchain-google-genai
     care about: `properties`, `items`, `anyOf`/`any_of`, `oneOf`, `allOf`,
     `$defs`/`definitions`, and `additionalProperties` (when it is a schema).
     Mutates `node` in place — callers pass a deep copy.
+
+    _visited: id()-based set guards against cyclic schemas (#1961). Default
+    None creates a fresh set at the top-level call; threaded through recursion.
     """
+    # #1961: guard against cycles — id() is stable for dicts alive on the stack.
+    if _visited is None:
+        _visited = set()
+
     if isinstance(node, list):
         for item in node:
-            _sanitize_node(item)
+            _sanitize_node(item, _visited)
         return
     if not isinstance(node, dict):
         return
+
+    node_id = id(node)
+    if node_id in _visited:
+        return
+    _visited.add(node_id)
 
     # Fix THIS node first if it is an array lacking usable items.
     if _is_array_node(node) and not _items_is_usable(node.get("items")):
@@ -113,27 +125,27 @@ def _sanitize_node(node: Any) -> None:
     props = node.get("properties")
     if isinstance(props, dict):
         for sub in props.values():
-            _sanitize_node(sub)
+            _sanitize_node(sub, _visited)
 
     items = node.get("items")
     if isinstance(items, (dict, list)):
-        _sanitize_node(items)
+        _sanitize_node(items, _visited)
 
     for combinator in ("anyOf", "any_of", "oneOf", "allOf"):
         branch = node.get(combinator)
         if isinstance(branch, list):
             for sub in branch:
-                _sanitize_node(sub)
+                _sanitize_node(sub, _visited)
 
     for defs_key in ("$defs", "definitions"):
         defs = node.get(defs_key)
         if isinstance(defs, dict):
             for sub in defs.values():
-                _sanitize_node(sub)
+                _sanitize_node(sub, _visited)
 
     addl = node.get("additionalProperties")
     if isinstance(addl, dict):
-        _sanitize_node(addl)
+        _sanitize_node(addl, _visited)
 
 
 def sanitize_json_schema(schema: dict[str, Any]) -> dict[str, Any]:

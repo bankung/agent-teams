@@ -2262,6 +2262,45 @@ export async function getResourcePreview(
   return jsonFetch<ResourcePreview>(`/api/resources/${resourceId}/preview`);
 }
 
+// ============================================================================
+// Kanban #2135 — GET /api/usage/daily  (LLM spend surface)
+// ============================================================================
+
+// UsageDailyRow — one row in the DailyUsageResponse.rows array.
+// cost_usd is a 4-dp decimal string (same Decimal-as-string convention used
+// elsewhere in this file).
+export type UsageDailyRow = {
+  date: string;       // "YYYY-MM-DD"
+  provider: string;   // "anthropic" | "google" | "unknown" | …
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: string;   // e.g. "0.1234"
+};
+
+export type DailyUsageResponse = {
+  days: number;
+  rows: UsageDailyRow[];
+  total_today_usd: string;   // 4-dp decimal string
+  total_month_usd: string;   // 4-dp decimal string
+  // Kanban #2137 — server UTC date used to bucket total_today_usd.
+  // Optional: absent on API versions that predate this field; component
+  // falls back to client UTC date when missing.
+  today?: string;            // "YYYY-MM-DD" (server UTC)
+};
+
+// getDailyUsage — GET /api/usage/daily?days=N[&project_id=P].
+// No X-Project-Id header — operator-level endpoint (same as /api/pnl).
+export async function getDailyUsage(opts?: {
+  days?: number;
+  project_id?: number;
+}): Promise<DailyUsageResponse> {
+  const qs = new URLSearchParams();
+  if (opts?.days != null) qs.set("days", String(opts.days));
+  if (opts?.project_id != null) qs.set("project_id", String(opts.project_id));
+  return jsonFetch<DailyUsageResponse>(buildPath("/api/usage/daily", qs));
+}
+
 // deleteResource — DELETE /api/resources/{id}. Operator-gated; soft-delete +
 // move file to trash. 204 (no body) on success; idempotent. Returns void.
 export async function deleteResource(resourceId: number): Promise<void> {

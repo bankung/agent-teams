@@ -119,6 +119,49 @@ def test_sanitize_does_not_mutate_input():
     assert out["items"] == {"type": "string"}  # output fixed
 
 
+def test_allof_items_schema_passes_through_unclobbered():
+    """#1961 nit: an items dict containing allOf is USABLE — must NOT be replaced.
+
+    POSITIVE: allOf-items survive the sanitizer intact.
+    NEGATIVE: a genuinely empty items {} on a sibling array IS replaced.
+    """
+    schema = {
+        "type": "object",
+        "properties": {
+            "refs": {
+                "type": "array",
+                "items": {"allOf": [{"type": "string"}, {"minLength": 1}]},
+            },
+            "bare": {"type": "array", "items": {}},
+        },
+    }
+    out = sanitize_json_schema(schema)
+    # allOf-items must survive unchanged.
+    assert out["properties"]["refs"]["items"] == {"allOf": [{"type": "string"}, {"minLength": 1}]}
+    # bare items must be fixed.
+    assert out["properties"]["bare"]["items"] == {"type": "string"}
+
+
+def test_cyclic_schema_terminates():
+    """#1961 nit: a cyclic schema dict does NOT cause infinite recursion.
+
+    copy.deepcopy handles cycles via memo internally, so sanitize_json_schema
+    receives a non-cyclic deep copy — but we also guard _sanitize_node with an
+    id()-based visited set as defence-in-depth. This test builds a shallow cycle
+    (a dict that points back to itself via 'properties') and verifies the call
+    returns without RecursionError.
+    """
+    # Build a cyclic dict WITHOUT deepcopy (simulate a pathological input).
+    import gemini_schema as _mod
+
+    cyclic: dict = {"type": "object", "properties": {}}
+    cyclic["properties"]["self"] = cyclic  # type: ignore[assignment]
+
+    # _sanitize_node operates in-place and should not recurse infinitely.
+    # We call it directly (not through sanitize_json_schema which would deepcopy).
+    _mod._sanitize_node(cyclic)  # must return without RecursionError
+
+
 # ---------------------------------------------------------------------------
 # Layer 2 — real registry tools + genai conversion (provider SDK gated)
 # ---------------------------------------------------------------------------
@@ -140,21 +183,45 @@ pytestmark_genai = pytest.mark.skipif(
 
 @pytestmark_genai
 def test_http_post_flagged_as_needing_sanitizing():
-    """The real registry's http_post is the tool that needs the fix."""
-    from tools import GLOBAL_REGISTRY
+    """sanitize_tools_for_gemini flags a tool whose args_schema contains a
+    bare array (no items).
 
-    lc_tools = GLOBAL_REGISTRY.all_tools_as_langchain()
-    _, fixed = sanitize_tools_for_gemini(lc_tools)
-    assert "http_post" in fixed, fixed
+    Uses a SYNTHETIC tool stub (not from the real registry) so this test is
+    not sensitive to pydantic-version-dependent schema emission.
+    (2026-06-10: on pydantic 2.13.4 the registry path already emits valid
+    items, so the negative "must-be-broken" precondition was vacuous.)
+
+    sanitize_tools_for_gemini accepts any object with name/description and a
+    dict args_schema — no LangChain import needed.
+    """
+    import types
+
+    # A dict args_schema is used verbatim by _tool_json_schema, so we can
+    # inject a bare array without any pydantic / StructuredTool machinery.
+    synthetic = types.SimpleNamespace(
+        name="synthetic_http_post",
+        description="test tool with bare array",
+        args_schema={
+            "type": "object",
+            "properties": {"tags": {"type": "array"}},  # bare: no items
+            "required": ["tags"],
+        },
+    )
+
+    _, fixed = sanitize_tools_for_gemini([synthetic])
+    assert "synthetic_http_post" in fixed, fixed
 
 
 @pytestmark_genai
 def test_all_registry_tools_convert_to_valid_gemini_declarations():
-    """After sanitizing, NO genai array schema anywhere lacks items.type.
+    """After sanitizing the real registry, NO genai array schema lacks items.type.
 
-    Also asserts the UNSANITIZED http_post still reproduces the bug, so the
-    positive assertion can't pass vacuously (the bug is real + the fix fixes
-    it).
+    POSITIVE: sanitized tools convert cleanly to Gemini FunctionDeclarations.
+    The 'unsanitized must reproduce the bug' precondition is dropped — schema
+    emission is pydantic-version-dependent (see 2026-06-10 investigation;
+    pydantic 2.13.4 emits valid items on the registry path, but the runtime
+    per-project builder still hits the bug).  Non-vacuousness is proved via a
+    synthetic bare-array tool in test_http_post_flagged_as_needing_sanitizing.
     """
     from langchain_google_genai._function_utils import (
         convert_to_genai_function_declarations,
@@ -194,11 +261,6 @@ def test_all_registry_tools_convert_to_valid_gemini_declarations():
                 problems += array_problems(fd.parameters, fd.name)
         return problems
 
-    # NEGATIVE: unsanitized tools DO have the bug (proves non-vacuous).
-    assert all_problems(lc_tools), (
-        "expected unsanitized http_post to reproduce the array-without-items bug"
-    )
-
-    # POSITIVE: sanitized tools are fully Gemini-valid.
+    # POSITIVE: after sanitize, the full registry converts with zero bare arrays.
     sanitized, _ = sanitize_tools_for_gemini(lc_tools)
     assert all_problems(sanitized) == [], all_problems(sanitized)

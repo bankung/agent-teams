@@ -339,7 +339,9 @@ async def test_poll_once_graph_raises_marks_blocked(
     blocked = _body(patches[1])
     assert blocked["process_status"] == STATUS_BLOCKED
     assert "halt_reason" in blocked
-    assert "langgraph error" in blocked["halt_reason"]
+    # Kanban #2136: new format is '<kind>:<short_class>: <detail>'
+    # ValueError with no status_code → permanent:unknown
+    assert blocked["halt_reason"].startswith("permanent:unknown:")
     assert "ValueError" in blocked["halt_reason"]
     assert "kapow" in blocked["halt_reason"]
 

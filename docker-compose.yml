@@ -240,11 +240,9 @@ services:
       # `extra_hosts: ["host.docker.internal:host-gateway"]` to this service.
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      # Kanban #1086 — DeepSeek provider. Only consulted when
-      # LANGGRAPH_LLM_PROVIDER=deepseek. Requires DEEPSEEK_API_KEY.
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      LANGGRAPH_DEEPSEEK_MODEL: ${LANGGRAPH_DEEPSEEK_MODEL:-deepseek-chat}
-      LANGGRAPH_DEEPSEEK_BASE_URL: ${LANGGRAPH_DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      # Kanban #2120 — explicit context window for ChatOllama; Ollama server
+      # default (~4 K) silently truncates multi-turn tool-calling conversations.
+      LANGGRAPH_OLLAMA_NUM_CTX: ${LANGGRAPH_OLLAMA_NUM_CTX:-32768}
       # Kanban #1951 — Google / Gemini native provider. Only consulted when
       # LANGGRAPH_LLM_PROVIDER=google. Uses langchain-google-genai (native SDK)
       # which handles thought_signature correctly for multi-turn tool-calling.
@@ -255,6 +253,9 @@ services:
       # service (compose-internal hostname `api`, port 8456). LANGGRAPH_PROJECT_ID
       # is REQUIRED — the lifespan refuses to start without it.
       LANGGRAPH_PROJECT_ID: ${LANGGRAPH_PROJECT_ID:-1}
+      # #2135 — enables #1886 usage metering; empty = reporting disabled;
+      # Lead pins a persistent session id in .env.
+      LANGGRAPH_SESSION_ID: ${LANGGRAPH_SESSION_ID:-}
       LANGGRAPH_POLL_INTERVAL_SEC: ${LANGGRAPH_POLL_INTERVAL_SEC:-30}
       LANGGRAPH_KANBAN_API_BASE: ${LANGGRAPH_KANBAN_API_BASE:-http://api:8456}
       # Kanban #1717 — tool-use loop conversation-history compaction budget

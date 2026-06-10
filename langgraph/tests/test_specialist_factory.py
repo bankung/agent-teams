@@ -237,7 +237,7 @@ def test_promoted_node_returns_real_state_shape(
         "usage_cache_creation_tokens",
     ):
         assert key in out, f"missing {key} — node not on the real tool-loop path"
-    assert out.get("halt_reason") is None
+    assert "halt_reason" not in out
 
 
 # ---------------------------------------------------------------------------

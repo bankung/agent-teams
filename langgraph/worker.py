@@ -41,7 +41,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
+import random
+import re
 import shutil
 import time
 from types import ModuleType
@@ -83,6 +86,68 @@ STATUS_DONE = 5
 # the same cap the Kanban UI's status drawer renders before truncation.
 _REASON_MAX = 400
 _HALT_REASON_MAX = 500
+
+# Kanban #2136 — transient-retry config (resolved at call time from env, not
+# at startup, so tests can monkeypatch without a WorkerConfig roundtrip).
+_DEFAULT_TRANSIENT_RETRIES = 2
+_DEFAULT_RETRY_BACKOFF_SEC = 5.0
+
+
+def classify_exception(exc: BaseException) -> tuple[str, str]:
+    """Map an exception to (kind, short_class) for structured halt taxonomy.
+
+    Kanban #2136.  Classification priority (first match wins):
+      (a) httpx transport errors → transient
+      (b) duck-typed status_code attribute: 429 / 5xx → transient;
+          4xx (400 → bad_request, 401/403 → auth) → permanent
+      (c) class-name heuristics for common SDK rate-limit wrappers
+      (d) default → ('permanent', 'unknown') — fail-safe halts, never retry-loops
+
+    asyncio.CancelledError is NOT passed here (it's re-raised before this point).
+    """
+    # (a) httpx transport exceptions — network-level, always transient
+    if isinstance(exc, httpx.TimeoutException):
+        return ("transient", "timeout")
+    if isinstance(exc, (httpx.ConnectError, httpx.TransportError)):
+        return ("transient", "connection")
+
+    # (b) duck-type status_code — provider SDKs expose it under different attrs
+    status: int | None = None
+    for attr in ("status_code", "code"):
+        val = getattr(exc, attr, None)
+        if isinstance(val, int):
+            status = val
+            break
+    # also check exc.response.status_code (httpx-style wrapped errors)
+    if status is None:
+        resp = getattr(exc, "response", None)
+        if resp is not None:
+            val = getattr(resp, "status_code", None)
+            if isinstance(val, int):
+                status = val
+
+    if status is not None:
+        if status == 429:
+            return ("transient", "rate_limit")
+        if 500 <= status <= 599:
+            return ("transient", "server_error")
+        if status in (401, 403):
+            return ("permanent", "auth")
+        if 400 <= status <= 499:
+            return ("permanent", "bad_request")
+
+    # (c) class-name heuristics for common SDK wrappers that don't expose
+    #     status_code reliably (e.g. anthropic.RateLimitError before httpx wraps)
+    type_name = type(exc).__name__.lower()
+    if "ratelimit" in type_name or "rate_limit" in type_name:
+        return ("transient", "rate_limit")
+    if "timeout" in type_name:
+        return ("transient", "timeout")
+    if "connection" in type_name or "transport" in type_name:
+        return ("transient", "connection")
+
+    # (d) default — fail-safe permanent halt; never retry-loops on unknowns
+    return ("permanent", "unknown")
 
 
 class WorkerConfig:
@@ -392,20 +457,94 @@ async def _poll_once(
     }
     config = {"configurable": {"thread_id": f"task-{task_id}"}}
 
+    # Kanban #2136 — structured halt taxonomy + bounded transient retry.
+    # LangGraph checkpoints make re-invocation safe (idempotent per thread_id).
+    # Retry count / backoff come from env-vars resolved here so tests can
+    # monkeypatch without a WorkerConfig roundtrip.
+    _retries_raw = os.getenv("LANGGRAPH_TRANSIENT_RETRIES", str(_DEFAULT_TRANSIENT_RETRIES))
     try:
-        final_state = await compiled.ainvoke(initial_state, config=config)
-    except asyncio.CancelledError:
-        # Shutdown mid-invoke. The task stays in IN_PROGRESS; the operator can
-        # restart the worker and `next-autorun`'s queue logic / resume_tasks
-        # path (deferred #852b) will recover it.
-        logger.info(
-            "task %d interrupted by worker shutdown; leaving in IN_PROGRESS", task_id
+        _max_retries = max(0, int(_retries_raw))
+    except ValueError:
+        raise RuntimeError(
+            f"LANGGRAPH_TRANSIENT_RETRIES must be a non-negative integer; "
+            f"got {_retries_raw!r}. Unset to use the default ({_DEFAULT_TRANSIENT_RETRIES})."
         )
-        raise
-    except Exception as exc:
-        logger.exception("graph crashed on task %d", task_id)
-        # Truncate but include type + message so the audit trail is useful.
-        halt_msg = f"langgraph error: {type(exc).__name__}: {str(exc)[:_HALT_REASON_MAX]}"
+    _backoff_raw = os.getenv("LANGGRAPH_RETRY_BACKOFF_SEC", str(_DEFAULT_RETRY_BACKOFF_SEC))
+    try:
+        _backoff_base = max(0.0, float(_backoff_raw))
+    except ValueError:
+        raise RuntimeError(
+            f"LANGGRAPH_RETRY_BACKOFF_SEC must be a non-negative number (seconds); "
+            f"got {_backoff_raw!r}. Unset to use the default ({_DEFAULT_RETRY_BACKOFF_SEC})."
+        )
+    final_state: dict[str, Any] | None = None
+    _last_exc: BaseException | None = None
+    _attempts_made = 0
+    for _attempt in range(_max_retries + 1):
+        _attempts_made = _attempt + 1
+        try:
+            final_state = await compiled.ainvoke(initial_state, config=config)
+            _last_exc = None
+            break  # success — exit retry loop
+        except asyncio.CancelledError:
+            # Shutdown mid-invoke. The task stays in IN_PROGRESS; the operator
+            # can restart the worker and `next-autorun`'s queue logic /
+            # resume_tasks path (deferred #852b) will recover it.
+            logger.info(
+                "task %d interrupted by worker shutdown; leaving in IN_PROGRESS",
+                task_id,
+            )
+            raise
+        except Exception as exc:
+            _last_exc = exc
+            kind, short_class = classify_exception(exc)
+            if kind == "transient" and _attempt < _max_retries:
+                # Exponential backoff + small jitter so concurrent workers
+                # don't pile up on the same provider endpoint.
+                delay = _backoff_base * math.pow(2, _attempt) + random.uniform(0, 0.5)
+                logger.warning(
+                    "task %d graph transient error (class=%s attempt=%d/%d); "
+                    "retrying in %.1fs: %s: %s",
+                    task_id,
+                    short_class,
+                    _attempt + 1,
+                    _max_retries + 1,
+                    delay,
+                    type(exc).__name__,
+                    str(exc)[:200],
+                )
+                try:
+                    await asyncio.sleep(delay)
+                except asyncio.CancelledError:
+                    logger.info(
+                        "task %d interrupted during retry sleep; leaving in IN_PROGRESS",
+                        task_id,
+                    )
+                    raise
+            else:
+                # Permanent error or transient retries exhausted.
+                logger.exception("graph crashed on task %d (class=%s)", task_id, short_class)
+                break
+
+    if _last_exc is not None:
+        kind, short_class = classify_exception(_last_exc)
+        retries_done = _attempts_made - 1
+        # Security MED-2: strip non-printable chars from the exc message before
+        # it lands in halt_reason (client-supplied provider/model can embed
+        # control chars). Keep printable ASCII + Thai (L23 parity deferred to
+        # #2155; this filter covers the accepted fix).
+        _raw_exc_msg = re.sub(r"[^\x20-\x7E฀-๿]", "?", str(_last_exc))
+        # Compute prefix + suffix first; cap detail to remaining budget so the
+        # retry suffix is never silently eaten by a second truncation.
+        _class_name = type(_last_exc).__name__
+        if retries_done > 0:
+            _suffix = f" (after {retries_done} retries)"
+        else:
+            _suffix = ""
+        _prefix = f"{kind}:{short_class}: {_class_name}: "
+        _detail_budget = _HALT_REASON_MAX - len(_prefix) - len(_suffix)
+        _detail = _raw_exc_msg[:max(0, _detail_budget)]
+        halt_msg = f"{_prefix}{_detail}{_suffix}"
         await _patch_task(
             client,
             cfg,
@@ -418,7 +557,9 @@ async def _poll_once(
         )
         return
 
-    # 4) Finalize.
+    # 4) Finalize.  `final_state` is guaranteed non-None here: the error path
+    # above returns early, so reaching this line means the invoke loop succeeded.
+    assert final_state is not None
     body = _build_finalize_body(final_state, completed_at=_config.utc_now())
 
     # Kanban #957 Phase 1 — approval-policy hook. Only fires on HITL pause

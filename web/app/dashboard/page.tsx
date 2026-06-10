@@ -38,6 +38,7 @@ const PnlDashboardSection = nextDynamic(
     ),
   { ssr: false },
 );
+import { LlmSpendSection } from "@/components/LlmSpendSection";
 import { ProductTour } from "@/components/ProductTour";
 
 // Cross-project dashboard — aggregate-first layout (Kanban #869, 2026-05-13).
@@ -462,6 +463,10 @@ export default async function DashboardPage() {
             stats={stats}
             ariaLabel="Portfolio-wide token and cost usage"
           />
+
+          {/* Kanban #2135 — LLM API spend summary. Client-side fetch; outside
+              the finance flag so it's always visible to the operator. */}
+          <LlmSpendSection />
 
           {/* Kanban #1329 (M6 FE) — cross-project P&L rollup. Operator-level
               view of revenue / expenses / net per project in the chosen

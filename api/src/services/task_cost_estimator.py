@@ -44,7 +44,7 @@ import os
 from decimal import Decimal
 from typing import Any
 
-from src.services.cost_tracker import PRICING, compute_cost
+from src.services.cost_tracker import PRICING, compute_cost, resolve_pricing_key
 
 # Thai Unicode block: U+0E00-U+0E7F.
 # CJK Unified Ideographs (core): U+4E00-U+9FFF (covers Hangul-free Chinese +
@@ -131,40 +131,13 @@ def resolve_provider_model() -> tuple[str, str]:
 
 
 def _resolve_pricing_key(provider: str, model: str) -> tuple[str, str]:
-    """Map a (provider, model) pair to a key that exists in cost_tracker.PRICING.
+    """Delegate to cost_tracker.resolve_pricing_key (Kanban #2135).
 
-    Exact match → use it. Else fall back to family aliases:
-      - anthropic claude-opus-4-anything   → ("anthropic", "claude-opus-4-x")
-      - anthropic claude-haiku*            → ("anthropic", "claude-haiku")
-      - anthropic claude-sonnet*           → ("anthropic", "claude-sonnet-4-6")
-      - openai gpt-4o-mini*                → ("openai", "gpt-4o-mini")
-      - openai gpt-4o*                     → ("openai", "gpt-4o")
-      - ollama anything                    → ("ollama", "local")
-    No match → raise ValueError; caller logs + leaves cost at $0 (still
-    records tokens — partial signal beats no signal).
+    Kept as a private wrapper here so existing internal callers in this module
+    continue to work unchanged. The canonical implementation now lives in
+    cost_tracker so sessions.py can import it without a cross-dependency.
     """
-    key = (provider, model)
-    if key in PRICING:
-        return key
-
-    if provider == "anthropic":
-        m = model.lower()
-        if "opus" in m:
-            return ("anthropic", "claude-opus-4-x")
-        if "haiku" in m:
-            return ("anthropic", "claude-haiku")
-        if "sonnet" in m:
-            return ("anthropic", "claude-sonnet-4-6")
-    elif provider == "openai":
-        m = model.lower()
-        if "mini" in m:
-            return ("openai", "gpt-4o-mini")
-        if "gpt-4o" in m or "gpt-4" in m:
-            return ("openai", "gpt-4o")
-    elif provider == "ollama":
-        return ("ollama", "local")
-
-    raise ValueError(f"no pricing entry for (provider={provider!r}, model={model!r})")
+    return resolve_pricing_key(provider, model)
 
 
 def _empty_result() -> dict[str, Any]:

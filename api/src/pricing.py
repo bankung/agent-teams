@@ -70,10 +70,6 @@ MODEL_PRICING: dict = {
         "2.5-flash":      {"input_per_M": 0.30, "output_per_M":  2.50},
         "2.5-flash-lite": {"input_per_M": 0.10, "output_per_M":  0.40},
     },
-    "deepseek": {
-        "v3": {"input_per_M": 0.27, "output_per_M": 1.10},
-        "r1": {"input_per_M": 0.55, "output_per_M": 2.19},
-    },
     "local": {
         # electricity + amortized consumer-GPU hardware; operator-tunable per-project
         # via projects.config.local_llm_cost_override JSONB

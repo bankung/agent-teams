@@ -1,8 +1,8 @@
 """Safety-prelude regression tests — Kanban #1116 (L22 prevention).
 
 The prelude prepends CLAUDE.md-style strict-rules text to EVERY system
-message sent to ANY provider (anthropic / openai / ollama / future DeepSeek
-#1086). Phase 9B Ollama injection test (2026-05-17): llama3.2 default-obeyed
+message sent to ANY provider (anthropic / openai / ollama). Phase 9B Ollama
+injection test (2026-05-17): llama3.2 default-obeyed
 a destructive task; with 4-line safety rules in the system prompt, it FLIPPED
 to refuse. Cheap, high-leverage, provider-agnostic.
 

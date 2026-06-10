@@ -53,8 +53,8 @@ from src.routers import tools_email as tools_email_router
 from src.routers import tools_calendar as tools_calendar_router
 from src.routers import tools_directory as tools_directory_router
 from src.routers import transactions as transactions_router
+from src.routers import usage as usage_router
 from src.routers import user_actions as user_actions_router
-from src.routers import webhooks as webhooks_router
 from src.services.row_changed_listener import start_listener, stop_listener
 from src.settings import get_settings
 
@@ -414,8 +414,6 @@ def create_app() -> FastAPI:
     app.include_router(push_ntfy_router.router, prefix="/api")
     # Kanban #1326 (M3) — credentials vault (per-project, Fernet-encrypted).
     app.include_router(credentials_router.router, prefix="/api")
-    # Kanban #1325 (M2) — external payment-webhook ingest (Stripe + PayPal).
-    app.include_router(webhooks_router.router, prefix="/api")
     # Kanban #1327 (M4a) — email-to-task ingest webhook.
     app.include_router(ingest_router.router, prefix="/api")
     # Kanban #1217 — daily-digest fire endpoint (Gmail SMTP).
@@ -434,6 +432,8 @@ def create_app() -> FastAPI:
     # X-Project-Id). Enable toggles persist; configured/present computed live
     # from os.environ. Keys stay in .env — no key entry/storage via this API.
     app.include_router(settings_router.router, prefix="/api")
+    # Kanban #2135 — provider cost rollup (cross-project, no X-Project-Id).
+    app.include_router(usage_router.router, prefix="/api")
 
     return app
 

@@ -27,6 +27,27 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _strip_session_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove LANGGRAPH_SESSION_ID from the environment for every test.
+
+    The langgraph container now runs with LANGGRAPH_SESSION_ID set to a real
+    session id (usage metering, Kanban #2135).  Worker tests use mock httpx
+    transports and their handlers hard-code expected URL paths that do NOT
+    include /api/sessions/<id>/runs — so when the ambient env var leaks in,
+    the worker POSTs to a URL the mock never registered and the test fails with
+    'unexpected request'.  Production behaviour is correct; the tests must not
+    inherit the host env.
+
+    Tests that specifically exercise session-id behaviour (e.g. an integration
+    test for the usage-reporting path) set LANGGRAPH_SESSION_ID themselves via
+    monkeypatch.setenv inside that test.
+    """
+    monkeypatch.delenv("LANGGRAPH_SESSION_ID", raising=False)
+
 _SITE_PKGS = Path(sys.prefix) / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
 
 

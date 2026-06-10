@@ -312,10 +312,10 @@ def make_specialist_node(agent_name: str):
             bound, initial_messages, ctx, tools_config
         )
 
-    # Mirror make_stub_node — set the node's name from the role slug so
-    # LangGraph checkpoints / logs read `<role>_specialist_node`. Keeping the
-    # module-level binding name (below) identical to the pre-factory names
-    # means graph.py imports + supervisor routing are unchanged.
+    # Set the node's name from the role slug so LangGraph checkpoints / logs
+    # read `<role>_specialist_node`. Keeping the module-level binding name
+    # (below) identical to the pre-factory names means graph.py imports +
+    # supervisor routing are unchanged.
     role = _role_from_agent_name(agent_name)
     _specialist_node.__name__ = f"{role}_specialist_node"
     _specialist_node.__qualname__ = f"{role}_specialist_node"
@@ -1213,22 +1213,32 @@ def _build_pass_report(*, llm_skipped: bool, retry_count: int, evidence: list[st
 def _parse_llm_verdict(raw_text: str) -> dict[str, Any] | None:
     """Extract the first valid JSON object from the LLM's raw response.
 
-    Ollama / Anthropic / OpenAI may wrap the JSON in prose. We attempt a strict
-    `json.loads` first; on failure we fall back to a balanced-brace scan that
-    locates the first `{...}` substring and tries again. None on total failure
-    — caller defaults to ESCALATE (fail safe; operator decides).
+    Ollama / Anthropic / OpenAI may wrap the JSON in prose or inside markdown
+    code fences. We:
+      1. Strip markdown fences (```json...``` or bare ```) — #1973.
+      2. Attempt strict json.loads on the stripped text.
+      3. Fall back to a balanced-brace scan on the original stripped text.
+    None on total failure — caller defaults to ESCALATE (fail safe; operator decides).
     """
     text = (raw_text or "").strip()
     if not text:
         return None
+
+    # #1973: strip markdown code fences before parse attempts.
+    # Handles ```json\n...\n``` and bare ```\n...\n```.
+    fence_match = re.match(r"^```(?:json)?\s*\n?(.*?)\n?```$", text, flags=re.DOTALL)
+    defenced = fence_match.group(1).strip() if fence_match else text
+
     try:
-        candidate = json.loads(text)
+        candidate = json.loads(defenced)
         if isinstance(candidate, dict):
             return candidate
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
     # Balanced-brace scan: take the first top-level {...} substring.
-    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    # Run on the de-fenced string so a fenced-but-invalid JSON (e.g. extra
+    # prose inside the fence) still finds the embedded object.
+    match = re.search(r"\{.*\}", defenced, flags=re.DOTALL)
     if match is None:
         return None
     try:
@@ -1354,6 +1364,7 @@ async def auditor_node(state: AgentState) -> dict[str, Any]:
     )
 
     raw_text = ""
+    _llm_invoke_failed = False
     try:
         model = make_chat_model()
         # Kanban #1116 — same safety-prelude wrap as the backend specialist.
@@ -1371,13 +1382,54 @@ async def auditor_node(state: AgentState) -> dict[str, Any]:
             exc,
         )
         raw_text = ""
+        _llm_invoke_failed = True
 
     parsed = _parse_llm_verdict(raw_text)
-    if parsed is None:
-        # Malformed JSON / empty response → fail safe to ESCALATE.
+
+    # #1973: format-reminder retry — at most once per auditor invocation, only
+    # when the first response is malformed AND the LLM call itself succeeded.
+    if parsed is None and not _llm_invoke_failed:
+        # Security LOW-2: strip non-printable chars before logging so control
+        # sequences from a malformed LLM response don't pollute log consumers.
+        _safe_raw = re.sub(r"[^\x20-\x7E฀-๿]", "?", raw_text)
         logger.warning(
-            "auditor: LLM returned malformed response for task=%s; defaulting to escalate",
+            "auditor: LLM returned malformed response for task=%s (attempt 1/2); "
+            "raw (repr, trunc 500): %r",
             task_id,
+            _safe_raw[:500],
+        )
+        try:
+            reminder = HumanMessage(
+                content=(
+                    "Your previous reply was not parseable. "
+                    "Respond with ONLY the JSON object, no prose, no code fences."
+                )
+            )
+            messages_retry: list[Any] = [
+                SystemMessage(content=build_system_message(_AUDITOR_LLM_SYSTEM_PROMPT)),
+                HumanMessage(content=user_prompt),
+                reminder,
+            ]
+            response2 = await _ainvoke_model(model, messages_retry)
+            raw_text = _stringify_content(getattr(response2, "content", ""))
+            parsed = _parse_llm_verdict(raw_text)
+        except Exception as exc2:
+            logger.warning(
+                "auditor: LLM invoke failed on retry for task=%s (%r)",
+                task_id,
+                exc2,
+            )
+            raw_text = ""
+
+    if parsed is None:
+        # Malformed JSON / empty response → fail safe to ESCALATE. #1973: log raw.
+        # Security LOW-2: strip non-printable chars before logging.
+        _safe_raw = re.sub(r"[^\x20-\x7E฀-๿]", "?", raw_text)
+        logger.warning(
+            "auditor: LLM returned malformed response for task=%s; "
+            "defaulting to escalate; raw (repr, trunc 500): %r",
+            task_id,
+            _safe_raw[:500],
         )
         report = {
             "verdict": "escalate",

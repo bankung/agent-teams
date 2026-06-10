@@ -416,3 +416,165 @@ async def test_heuristic_blocks_on_failing_tool_result(
     await auditor_node(state)
     # The LLM was invoked → heuristic correctly blocked the auto-pass path.
     assert len(fake.calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# #1973 — parser robustness tests
+# ---------------------------------------------------------------------------
+
+
+def test_fenced_json_verdict_parses():
+    """#1973: _parse_llm_verdict strips ```json fences before attempting parse.
+
+    POSITIVE: fenced JSON returns the dict.
+    NEGATIVE: the same content without fences also parses (proves non-vacuous).
+    """
+    from nodes import _parse_llm_verdict
+
+    payload = {
+        "verdict": "pass",
+        "severity": "info",
+        "evidence": ["looks clean"],
+        "action_taken": "llm_pass",
+        "escalation_payload": None,
+    }
+    fenced = "```json\n" + json.dumps(payload) + "\n```"
+    assert _parse_llm_verdict(fenced) == payload
+    # Same content bare also parses.
+    assert _parse_llm_verdict(json.dumps(payload)) == payload
+
+
+def test_fenced_invalid_json_brace_scan_finds_embedded_object():
+    """Brace-scan fallback runs on the de-fenced string.
+
+    Input: a code fence whose content is NOT valid JSON at the top level
+    (extra prose before the object), so strict json.loads fails.  The
+    brace-scan must find the embedded {...} inside the de-fenced text.
+
+    POSITIVE: embedded JSON dict returned.
+    NEGATIVE: raw fenced text (with fence markers) would confuse the brace
+    scan; the fix ensures scan runs on defenced text so the result is non-None.
+    """
+    from nodes import _parse_llm_verdict
+
+    inner = json.dumps({
+        "verdict": "pass",
+        "severity": "info",
+        "evidence": [],
+        "action_taken": "llm_pass",
+        "escalation_payload": None,
+    })
+    # Wrap with prose INSIDE the fence so strict json.loads on defenced fails,
+    # but the brace scan should still extract the embedded object.
+    fenced_with_prose = f"```json\nHere is the verdict: {inner}\n```"
+    result = _parse_llm_verdict(fenced_with_prose)
+    assert result is not None, "brace-scan on defenced text failed to find embedded JSON"
+    assert result["verdict"] == "pass"
+
+
+def test_prose_wrapped_json_parses_via_brace_scan():
+    """#1973: prose before/after a JSON object is handled by the brace scan.
+
+    POSITIVE: brace-scan extracts the embedded object.
+    """
+    from nodes import _parse_llm_verdict
+
+    payload = {"verdict": "escalate", "severity": "warn", "evidence": [], "action_taken": "hitl_escalate", "escalation_payload": None}
+    wrapped = "Here is my verdict:\n" + json.dumps(payload) + "\nThat's it."
+    result = _parse_llm_verdict(wrapped)
+    assert result is not None
+    assert result["verdict"] == "escalate"
+
+
+async def test_malformed_then_valid_uses_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1973: first call returns garbage, second returns valid JSON → verdict honored,
+    exactly 2 LLM calls made.
+    """
+    valid_verdict = {
+        "verdict": "pass",
+        "severity": "info",
+        "evidence": ["ok on retry"],
+        "action_taken": "llm_pass",
+        "escalation_payload": None,
+    }
+
+    class _TwoShotFake:
+        def __init__(self) -> None:
+            self.calls: list[list[Any]] = []
+
+        def invoke(self, messages: list[Any]) -> Any:
+            self.calls.append(messages)
+            if len(self.calls) == 1:
+                return SimpleNamespace(content="NOT JSON AT ALL !!!")
+            return SimpleNamespace(content=json.dumps(valid_verdict))
+
+    fake = _TwoShotFake()
+    monkeypatch.setattr(nodes, "make_chat_model", lambda: fake)
+
+    state: AgentState = {
+        "task_id": 20,
+        "brief": "Do a thing",
+        "final_result": "Halted unexpectedly",
+        "halt_reason": "error",
+        "messages": [],
+        "audit_retry_count": 0,
+    }
+    result = await auditor_node(state)
+    assert len(fake.calls) == 2, f"expected 2 LLM calls, got {len(fake.calls)}"
+    assert result["audit_verdict"] == "pass"
+    assert result["audit_report"]["verdict"] == "pass"
+
+
+async def test_malformed_twice_escalates_and_logs_raw(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#1973: both attempts return garbage → default escalate + raw text logged.
+
+    POSITIVE: audit_verdict == 'escalate' (fail-safe default).
+    NEGATIVE: the raw LLM output appears in the WARNING log so incidents are
+    investigable (not a bare 'malformed response' with no detail).
+    """
+    import logging
+
+    class _AlwaysBadFake:
+        def __init__(self) -> None:
+            self.calls: list[list[Any]] = []
+
+        def invoke(self, messages: list[Any]) -> Any:
+            self.calls.append(messages)
+            return SimpleNamespace(content="TOTALLY UNPARSEABLE OUTPUT XYZ")
+
+    fake = _AlwaysBadFake()
+    monkeypatch.setattr(nodes, "make_chat_model", lambda: fake)
+
+    state: AgentState = {
+        "task_id": 21,
+        "brief": "Something",
+        "final_result": "error happened",
+        "halt_reason": "error",
+        "messages": [],
+        "audit_retry_count": 0,
+    }
+
+    builder = StateGraph(AgentState)
+    builder.add_node("only", auditor_node)
+    builder.add_edge(START, "only")
+    builder.add_edge("only", END)
+    graph = builder.compile(checkpointer=InMemorySaver())
+    cfg = {"configurable": {"thread_id": "task-21"}}
+
+    with caplog.at_level(logging.WARNING, logger="langgraph.nodes"):
+        final = await graph.ainvoke(state, config=cfg)
+
+    # Both LLM calls were made.
+    assert len(fake.calls) == 2, f"expected 2 LLM calls, got {len(fake.calls)}"
+    # Escalate path fires (graph pauses via interrupt).
+    assert "__interrupt__" in final
+    # Raw text appears in at least one WARNING log entry.
+    raw_logs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("TOTALLY UNPARSEABLE OUTPUT XYZ" in m for m in raw_logs), (
+        f"raw LLM text not found in warnings: {raw_logs}"
+    )

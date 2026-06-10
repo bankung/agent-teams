@@ -1,7 +1,7 @@
 """Multi-provider chat-model factory.
 
 Reads `LANGGRAPH_LLM_PROVIDER` (`anthropic` | `openai` | `ollama` |
-`deepseek` | `google`, default `anthropic`) plus the matching API key (or
+`google`, default `anthropic`) plus the matching API key (or
 base URL, for ollama) + optional model override, returns a langchain
 `BaseChatModel`. Lifespan in `graph.py` calls `make_chat_model().invoke("ping")`
 during boot so any misconfiguration surfaces BEFORE the container is marked
@@ -11,11 +11,12 @@ Public surface (kept stable so callers — nodes.py, graph.py lifespan — don't
 break across provider swaps):
 
 - `make_chat_model(model: str | None = None) -> BaseChatModel`
-- `resolve_provider() -> Literal["anthropic", "openai", "ollama", "deepseek", "google"]`
+- `resolve_provider() -> Literal["anthropic", "openai", "ollama", "google"]`
 - `resolve_model(provider: str | None = None) -> str`
 - `DEFAULT_ANTHROPIC_MODEL`, `DEFAULT_OPENAI_MODEL`,
-  `DEFAULT_OLLAMA_MODEL`, `DEFAULT_OLLAMA_BASE_URL`,
+  `DEFAULT_OLLAMA_MODEL`, `DEFAULT_OLLAMA_BASE_URL`, `DEFAULT_OLLAMA_NUM_CTX`,
   `DEFAULT_GOOGLE_MODEL` (module constants)
+- `LANGGRAPH_OLLAMA_NUM_CTX` env-var (int, default 32768) — context window passed to ChatOllama; overrides `DEFAULT_OLLAMA_NUM_CTX` (#2120)
 
 Provider SDKs (`langchain_anthropic`, `langchain_openai`, `langchain_ollama`,
 `langchain_google_genai`) are imported INSIDE the matching branch so an
@@ -49,7 +50,7 @@ logger = logging.getLogger("langgraph.llm")
 # ---------------------------------------------------------------------------
 #
 # Every system message the engine sends to ANY provider (anthropic / openai /
-# ollama / future DeepSeek #1086) must be prefixed with the safety prelude.
+# ollama) must be prefixed with the safety prelude.
 # Rationale (Phase 9B Ollama injection test 2026-05-17): provider-side RLHF
 # safety guards are uneven — local LLMs like llama3.2 default-obey destructive
 # task descriptions. With 4-line CLAUDE.md-style rules in the system prompt,
@@ -256,17 +257,17 @@ DEFAULT_OLLAMA_MODEL = "llama3.2"
 # Windows). Linux compose needs `extra_hosts: ["host.docker.internal:host-gateway"]`
 # on the langgraph service to make this name resolvable.
 DEFAULT_OLLAMA_BASE_URL = "http://host.docker.internal:11434"
-# DeepSeek (Kanban #1086) — OpenAI-compatible API; reuses ChatOpenAI.
-# deepseek-chat = V3 (fast, cheap). deepseek-reasoner = R1 (chain-of-thought).
-DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
-DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+# Kanban #2120 — Ollama server default context window (~4 K) silently truncates
+# multi-turn tool-calling conversations. Operator-level Ollama UI settings do
+# NOT reach the raw API that the container calls; must be set per-request.
+DEFAULT_OLLAMA_NUM_CTX = 32768
 # Google / Gemini native (Kanban #1951) — ChatGoogleGenerativeAI via
 # langchain-google-genai. gemini-flash-latest has quota on the operator's key;
 # gemini-2.0-flash has quota=0 — do NOT default to it.
 DEFAULT_GOOGLE_MODEL = "gemini-flash-latest"
 
-_SUPPORTED_PROVIDERS = ("anthropic", "openai", "ollama", "deepseek", "google")
-ProviderName = Literal["anthropic", "openai", "ollama", "deepseek", "google"]
+_SUPPORTED_PROVIDERS = ("anthropic", "openai", "ollama", "google")
+ProviderName = Literal["anthropic", "openai", "ollama", "google"]
 
 # Strict model-name regex for anthropic/openai — lowercase letters, digits,
 # dot, hyphen. Catches obvious typos (`claude_sonnet_4_6` with underscores,
@@ -296,7 +297,7 @@ def resolve_provider() -> ProviderName:
         raise RuntimeError(
             f"Unknown LANGGRAPH_LLM_PROVIDER: {raw!r}; "
             f"expected one of {list(_SUPPORTED_PROVIDERS)}. "
-            "Set LANGGRAPH_LLM_PROVIDER=anthropic, openai, ollama, deepseek, or google in .env "
+            "Set LANGGRAPH_LLM_PROVIDER=anthropic, openai, ollama, or google in .env "
             "and restart the container (docker compose restart langgraph)."
         )
     return raw  # type: ignore[return-value]
@@ -328,9 +329,6 @@ def resolve_model(provider: str | None = None) -> str:
     elif p == "ollama":
         model = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL).strip()
         env_var = "OLLAMA_MODEL"
-    elif p == "deepseek":
-        model = os.getenv("LANGGRAPH_DEEPSEEK_MODEL", DEFAULT_DEEPSEEK_MODEL).strip()
-        env_var = "LANGGRAPH_DEEPSEEK_MODEL"
     elif p == "google":
         model = os.getenv("GOOGLE_MODEL", DEFAULT_GOOGLE_MODEL).strip()
         env_var = "GOOGLE_MODEL"
@@ -363,8 +361,6 @@ def _require_api_key(provider: ProviderName) -> str:
     """
     if provider == "anthropic":
         env_var = "ANTHROPIC_API_KEY"
-    elif provider == "deepseek":
-        env_var = "DEEPSEEK_API_KEY"
     elif provider == "google":
         env_var = "GOOGLE_API_KEY"
     else:
@@ -386,7 +382,7 @@ def make_chat_model(model: str | None = None) -> BaseChatModel:
         model: optional override; if None, resolved via `resolve_model()`.
 
     Returns:
-        A langchain `BaseChatModel` (`ChatAnthropic`, `ChatOpenAI`, `ChatGoogleGenerativeAI`, `ChatOpenAI (DeepSeek-compat)`, or `ChatOllama`).
+        A langchain `BaseChatModel` (`ChatAnthropic`, `ChatOpenAI`, `ChatGoogleGenerativeAI`, or `ChatOllama`).
 
     Raises:
         RuntimeError: provider unknown, API key missing (anthropic/openai
@@ -418,13 +414,6 @@ def make_chat_model(model: str | None = None) -> BaseChatModel:
             return ChatOpenAI(model=chosen_model, api_key=api_key, max_retries=1, base_url=openai_base_url)
         return ChatOpenAI(model=chosen_model, api_key=api_key, max_retries=1)
 
-    if provider == "deepseek":
-        api_key = _require_api_key(provider)
-        from langchain_openai import ChatOpenAI
-
-        base_url = os.getenv("LANGGRAPH_DEEPSEEK_BASE_URL", DEFAULT_DEEPSEEK_BASE_URL).strip() or DEFAULT_DEEPSEEK_BASE_URL
-        return ChatOpenAI(model=chosen_model, api_key=api_key, base_url=base_url, max_retries=1)
-
     if provider == "google":
         # Kanban #1951 — native Gemini path. ChatGoogleGenerativeAI uses the
         # google-generativeai SDK which correctly round-trips thought_signature
@@ -442,4 +431,17 @@ def make_chat_model(model: str | None = None) -> BaseChatModel:
     from langchain_ollama import ChatOllama
 
     base_url = os.getenv("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL).strip() or DEFAULT_OLLAMA_BASE_URL
-    return ChatOllama(model=chosen_model, base_url=base_url)
+    _num_ctx_raw = os.getenv("LANGGRAPH_OLLAMA_NUM_CTX", str(DEFAULT_OLLAMA_NUM_CTX)).strip()
+    try:
+        num_ctx = int(_num_ctx_raw)
+    except ValueError:
+        raise RuntimeError(
+            f"LANGGRAPH_OLLAMA_NUM_CTX={_num_ctx_raw!r} is not a valid integer. "
+            "Set it to a positive integer (e.g. 32768) or unset it to use the default."
+        )
+    if num_ctx <= 0:
+        raise RuntimeError(
+            f"LANGGRAPH_OLLAMA_NUM_CTX={num_ctx!r} must be a positive integer. "
+            "Set it to a positive integer (e.g. 32768) or unset it to use the default."
+        )
+    return ChatOllama(model=chosen_model, base_url=base_url, num_ctx=num_ctx)
