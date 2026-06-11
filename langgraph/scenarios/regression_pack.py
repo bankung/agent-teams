@@ -16,9 +16,10 @@ Scenarios (run sequentially — the worker is serial):
   S4  HITL decision          no role, "HITL demo —" prefix, EXPECT ps=4 pause then
                               operator answers a decision option, EXPECT ps=5 DONE
   S5  write-tier gate        assigned_role=2, file_write tool, EXPECT ps=4 halt with
-                              halt_reason='decision' and question_payload asking for
-                              file_write authorization; pack answers 'reject'; task
-                              then reaches ps=4 halt_reason='operator_rejected' (final).
+                              halt_reason='decision' and question_payload NON-NULL (its
+                              text is LLM-authored — only presence is contractual);
+                              pack answers 'reject'; task then reaches ps=4
+                              halt_reason='operator_rejected' (final).
   S6  missing-role escalation no role, git_status wording, EXPECT ps=4 via
                               general fallback -> auditor escalate path
 
@@ -647,10 +648,11 @@ def run_s5(client: httpx.Client, api: str, project_id: int, run_id: str, timeout
     file_write is tier=write -> check_permission returns HALT.
 
     Real observed flow (task #2143, 2026-06-10):
-      Phase 1: ps=4, halt_reason='decision', question_payload asks human authorization
-               for the file_write operation.  Tool-calls row: success=False,
-               error_code='halt_for_review', permission_decision='halt'.
-               Target file NOT created.
+      Phase 1: ps=4, halt_reason='decision', question_payload NON-NULL (its .question
+               text is LLM/auditor-authored paraphrase — only presence is contractual;
+               specific words like "file_write" or "authorize" may not appear).
+               Tool-calls row: success=False, error_code='halt_for_review',
+               permission_decision='halt'.  Target file NOT created.
       Phase 2: Pack answers 'reject' via PATCH new_answer.
       Post-reject terminal: ps=4, halt_reason='operator_rejected',
                status_change_reason='Halted for review: tool_permission_review:
@@ -685,7 +687,7 @@ def run_s5(client: httpx.Client, api: str, project_id: int, run_id: str, timeout
         checks: list[str] = []
         ok = True
 
-        # a. ps=4 AND halt='decision' AND question mentions file_write authorization.
+        # a. ps=4 AND halt='decision' AND question_payload non-null (word-match is NOTE only).
         if ps != 4:
             ok = False
             checks.append(f"FAIL phase1: expected ps=4 got ps={ps}")
@@ -698,12 +700,19 @@ def run_s5(client: httpx.Client, api: str, project_id: int, run_id: str, timeout
         else:
             checks.append("halt='decision' PASS")
 
-        question_text = qp.get("question") or ""
-        if "file_write" in question_text.lower() or "authorize" in question_text.lower():
-            checks.append(f"question_payload mentions file_write/authorize PASS ({question_text[:80]!r})")
-        else:
+        if not qp:
             ok = False
-            checks.append(f"FAIL: question_payload.question does not mention file_write/authorize: {question_text[:80]!r}")
+            checks.append("FAIL: question_payload is null/empty")
+        else:
+            checks.append("question_payload non-null PASS")
+            question_text = qp.get("question") or ""
+            if "file_write" in question_text.lower() or "authorize" in question_text.lower():
+                checks.append(f"question_payload mentions file_write/authorize PASS ({question_text[:80]!r})")
+            else:
+                checks.append(
+                    f"NOTE: question_payload does not mention file_write/authorize "
+                    f"(LLM-authored wording varies): {question_text[:80]!r}"
+                )
 
         # b. tool-calls has file_write row with success=False, error_code='halt_for_review',
         #    permission_decision='halt'.
