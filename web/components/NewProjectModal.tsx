@@ -31,7 +31,7 @@ function InfoPopover({ children }: { children: React.ReactNode }) {
         type="button"
         aria-label="More info"
         onClick={() => setOpen((v) => !v)}
-        className="ml-1 inline-flex h-4 w-4 items-center justify-center rounded-full border border-zinc-400 bg-zinc-100 text-[10px] font-semibold text-zinc-700 hover:border-zinc-600 hover:bg-zinc-200 hover:text-zinc-900 dark:border-zinc-500 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:border-zinc-300 dark:hover:bg-zinc-600 dark:hover:text-zinc-50"
+        className="ml-1 inline-flex h-4 w-4 items-center justify-center rounded-full border border-blue-400 bg-blue-50 text-[11px] font-semibold text-blue-600 hover:border-blue-500 hover:bg-blue-100 hover:text-blue-700 dark:border-blue-500/70 dark:bg-blue-900/30 dark:text-blue-300 dark:hover:border-blue-400 dark:hover:bg-blue-900/50 dark:hover:text-blue-200"
       >
         ?
       </button>

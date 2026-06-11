@@ -83,18 +83,30 @@ def test_worker_config_full_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.api_base == "http://api:8456"
 
 
-@pytest.mark.parametrize("bad", [None, "", "  ", "abc", "1.5", "-1", "0"])
+@pytest.mark.parametrize("bad", ["abc", "1.5", "-1", "0"])
 def test_worker_config_rejects_bad_project_id(
-    monkeypatch: pytest.MonkeyPatch, bad: str | None
+    monkeypatch: pytest.MonkeyPatch, bad: str
 ) -> None:
-    if bad is None:
-        # Already deleted by _clean_env fixture.
-        pass
-    else:
-        monkeypatch.setenv("LANGGRAPH_PROJECT_ID", bad)
+    # Kanban #2184: unset / empty / whitespace-only -> multi-board (no raise).
+    # Only a SET but malformed value (non-digit, zero, negative) raises.
+    monkeypatch.setenv("LANGGRAPH_PROJECT_ID", bad)
     with pytest.raises(RuntimeError) as excinfo:
         WorkerConfig()
     assert "LANGGRAPH_PROJECT_ID" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("unset_val", [None, "", "  "])
+def test_worker_config_unset_project_id_is_multi_board(
+    monkeypatch: pytest.MonkeyPatch, unset_val: str | None
+) -> None:
+    """Unset or blank LANGGRAPH_PROJECT_ID -> multi-board mode; no RuntimeError."""
+    if unset_val is None:
+        pass  # already deleted by _clean_env
+    else:
+        monkeypatch.setenv("LANGGRAPH_PROJECT_ID", unset_val)
+    cfg = WorkerConfig()
+    assert cfg.multi_board is True
+    assert cfg.project_id is None
 
 
 @pytest.mark.parametrize("bad", ["0", "-1", "abc", "1.5", " "])
@@ -339,7 +351,9 @@ async def test_poll_once_graph_raises_marks_blocked(
     blocked = _body(patches[1])
     assert blocked["process_status"] == STATUS_BLOCKED
     assert "halt_reason" in blocked
-    assert "langgraph error" in blocked["halt_reason"]
+    # Kanban #2136: new format is '<kind>:<short_class>: <detail>'
+    # ValueError with no status_code → permanent:unknown
+    assert blocked["halt_reason"].startswith("permanent:unknown:")
     assert "ValueError" in blocked["halt_reason"]
     assert "kapow" in blocked["halt_reason"]
 

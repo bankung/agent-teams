@@ -93,6 +93,7 @@ async def _compute_rollup(
             Task.milestone_id == milestone_id,
             Task.project_id == project_id,
             Task.status == RecordStatus.ACTIVE,
+            Task.is_active.is_(True),
         )
         .group_by(Task.process_status)
     )

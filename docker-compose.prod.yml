@@ -1,0 +1,36 @@
+# Lightweight / prod override for agent-teams.
+# Replaces `next dev` hot-reload with a baked standalone build (~200-270 MB win),
+# and drops uvicorn --reload to reduce CPU idle overhead.
+#
+# Lightweight mode:  docker compose -p agent-teams -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# Back to dev mode:  docker compose -p agent-teams -f docker-compose.yml -f docker-compose.dev.yml up -d
+
+services:
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile.prod
+      args:
+        # NEXT_PUBLIC_* vars are inlined at next build time. Host-resolvable URL
+        # so the browser can reach the API directly.
+        NEXT_PUBLIC_API_URL: http://localhost:8456
+    # No source bind-mount — standalone bundle is baked into the image.
+    # (Bind-mounts live in docker-compose.dev.yml; the base has none, so no override needed.)
+    healthcheck:
+      test: ["CMD","node","-e","require('http').get('http://localhost:5431/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  api:
+    # Drop --reload; add lightweight tuning env overrides.
+    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8456"]
+    environment:
+      APP_DEBUG: "false"
+      # Recurrence scheduler tick: 300s (5 min) instead of 60s default.
+      APP_SCHEDULER_TICK_SECONDS: "300"
+      # Health monitor sweep: 60 min instead of 15 min default.
+      HEALTH_MONITOR_INTERVAL_MINUTES: "60"
+      # HITL nudge scan: 120 min instead of 30 min default.
+      HITL_NUDGE_INTERVAL_MINUTES: "120"

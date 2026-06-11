@@ -1,0 +1,13 @@
+# Dev overlay for agent-teams — adds hot-reload bind-mounts to the base compose.
+#
+# Dev mode:        docker compose -p agent-teams -f docker-compose.yml -f docker-compose.dev.yml up -d
+# Prod/lightweight: docker compose -p agent-teams -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+
+services:
+  web:
+    volumes:
+      # Bind ./web read-write so source edits hot-reload via `next dev`. Mount node_modules
+      # as an anonymous volume so the host node_modules (if any) doesn't clobber the
+      # container-installed one (Linux/Windows binary mismatch).
+      - ./web:/app
+      - /app/node_modules

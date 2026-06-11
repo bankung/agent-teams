@@ -24,6 +24,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import anyio.to_thread
+
 from fastapi import (
     APIRouter,
     Depends,
@@ -280,11 +282,22 @@ async def _create_file_resource(
     # Read back the stored bytes for verify-and-tag. Files within the cap are
     # safe to read fully for parsing (CSV/JSON). For the degrade formats the
     # parser only sniffs, but we still pass the bytes (small relative to cap).
-    data = stored.path.read_bytes()
-    resolved_ct = guess_content_type(safe_name, upload_content_type)
-    tags = verify_and_tag_file(
-        data, safe_name, upload_content_type, stored.size_bytes
-    )
+    # Offload to a thread so the blocking read doesn't starve the event loop.
+    # B5: wrap read+verify in try/except so an unexpected exception here still
+    # cleans up the on-disk file (DB will roll back the unflushed row; file
+    # would otherwise be orphaned). Mirrors the IntegrityError cleanup below.
+    try:
+        data = await anyio.to_thread.run_sync(stored.path.read_bytes)
+        resolved_ct = guess_content_type(safe_name, upload_content_type)
+        tags = verify_and_tag_file(
+            data, safe_name, upload_content_type, stored.size_bytes
+        )
+    except Exception:
+        try:
+            move_to_trash(storage_base, str(stored.path))
+        except Exception as trash_exc:
+            logger.warning("resources: orphan cleanup failed: %s", trash_exc)
+        raise
     tags["stored_path"] = str(stored.path)
 
     resource.content_type = resolved_ct
@@ -324,20 +337,16 @@ async def _create_link_resource(
         )
 
     kind = body.get("kind")
-    if kind not in (ResourceKind.LINK, ResourceKind.FILE):
-        # Explicit check before the link-only guard so missing/bad kind gives a
-        # clear message instead of the confusing "got kind=None" (#1309 fix #9).
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"JSON body must include kind='link' or kind='file'; "
-                f"got kind={kind!r}. For file uploads use multipart/form-data."
-            ),
-        )
+    # B4: single guard — the first check (not in LINK|FILE) made the second
+    # (kind != LINK) reachable only when kind=='file', producing a confusing
+    # second message. Collapse to one clear 422. (#1309 fix #9 superseded).
     if kind != ResourceKind.LINK:
         raise HTTPException(
             status_code=422,
-            detail=f"JSON body implies kind='link'; got kind={kind!r}. For file uploads use multipart/form-data.",
+            detail=(
+                f"JSON body must include kind='link'; "
+                f"got kind={kind!r}. For file uploads use multipart/form-data."
+            ),
         )
     url = body.get("url")
     if not isinstance(url, str) or not url.strip():
@@ -403,6 +412,10 @@ async def list_resources(
     Optional ?task_id pins to one task; ?kind filters file/link (422 on a bad
     kind). Paginated via ?limit&offset. Ungated (read-only).
     """
+    # B3: validate project existence — return 404 for unknown project_id instead
+    # of silently returning [] + 200 (mirrors tasks/milestones list behaviour).
+    await get_active_project_or_404(session, project_id)
+
     if kind is not None and kind not in ResourceKind.ALL:
         raise HTTPException(
             status_code=422,
@@ -531,7 +544,7 @@ async def delete_resource(
             )
             try:
                 move_to_trash(storage_base, stored_path)
-            except Exception as exc:  # noqa: BLE001 - never block the soft-delete
+            except Exception as exc:  # noqa: BLE001 — intentional soft-delete guard (#1309)
                 logger.warning(
                     "resources: trash move failed for id=%s path=%s: %s",
                     resource_id, stored_path, exc,

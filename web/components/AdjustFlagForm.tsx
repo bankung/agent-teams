@@ -22,12 +22,9 @@ import { extractErrorMessage } from "@/lib/errors";
 //      Known keys mirror project-auditor.md defaults. Each numeric input
 //      pre-fills from project.health_thresholds (or auditor default when
 //      missing). Empty = "leave unchanged".
-//   3. Free-text annotation: optional textarea. NOT in the BE allowlist
-//      today — captured locally + surfaced as an open question to Lead
-//      for a follow-up endpoint extension. (We don't silently drop it;
-//      the form refuses to submit if the annotation is non-empty AND the
-//      allowlist gate fails — surfaces an inline error so the operator
-//      knows what got dropped.)
+//   3. Free-text annotation: optional textarea. Sent as
+//      adjustments.description_annotation (max 1000 chars). Empty = omitted
+//      from the payload (BE no-op).
 //
 // Submit: assembles a ResolveFlagAdjustments object with only the keys the
 // operator touched + calls onSubmit (caller owns the resolveFlag call +
@@ -80,12 +77,12 @@ function parseOptionalNumber(raw: string): number | null {
 }
 
 export function AdjustFlagForm({ project, onSubmit, onCancel }: Props) {
-  // Pre-fill numeric inputs from current project values. Backend stores the
-  // budget triad as JSON strings (Decimal) — render as-is so the operator
-  // sees exactly what's on the wire.
-  const [daily, setDaily] = useState(project.budget_daily_usd ?? "");
-  const [monthly, setMonthly] = useState(project.budget_monthly_usd ?? "");
-  const [total, setTotal] = useState(project.budget_total_usd ?? "");
+  // Budget inputs start EMPTY — "empty = leave unchanged" contract. Existing
+  // values are shown as placeholder text only so the operator can see the
+  // current value without pre-filling a submission.
+  const [daily, setDaily] = useState("");
+  const [monthly, setMonthly] = useState("");
+  const [total, setTotal] = useState("");
 
   // Threshold inputs — pre-fill from project.health_thresholds when present;
   // empty placeholder shows the auditor default.
@@ -182,26 +179,22 @@ export function AdjustFlagForm({ project, onSubmit, onCancel }: Props) {
       touchedAnyThreshold = true;
     }
     if (touchedAnyThreshold) {
-      // Replace-semantics on the BE — merge existing keys we didn't edit so
-      // the operator's adjust doesn't accidentally clear them.
-      const merged: Record<string, number | null> = {};
-      for (const [k, v] of Object.entries(existing)) {
-        if (typeof v === "number" || v === null) merged[k] = v;
-      }
+      // Replace-semantics on the BE — merge ALL existing keys we didn't edit
+      // so the operator's adjust doesn't accidentally clear unrelated keys.
+      // Let the BE validate value types; we must not silently drop non-numeric
+      // values (string / bool) that future BE code might store here.
+      const merged: Record<string, unknown> = { ...existing };
       for (const [k, v] of Object.entries(editedThresholds)) merged[k] = v;
-      adj.health_thresholds = merged;
+      // Cast: merged may contain non-numeric values from existing keys that
+      // the BE added. We preserve them as-is; the BE validates on write.
+      adj.health_thresholds = merged as Record<string, number | null>;
     }
 
-    // Annotation — NOT in ADJUST_CONTINUE_ALLOWED_KEYS today. Surface the
-    // gap explicitly rather than silently drop. See open question in the
-    // session report.
-    if (annotation.trim().length > 0) {
-      return (
-        "Free-text annotation is not yet wired to the backend " +
-        "(description_annotation key is not in the resolve-flag allowlist). " +
-        "Clear this field to submit the other adjustments, or wait for the " +
-        "follow-up endpoint extension."
-      );
+    // Annotation — sent as description_annotation in the adjustments dict.
+    // Max 1000 chars enforced client-side (textarea maxLength) and server-side.
+    const trimmedAnnotation = annotation.trim();
+    if (trimmedAnnotation.length > 0) {
+      adj.description_annotation = trimmedAnnotation;
     }
 
     // Must touch at least ONE allowlisted key — BE 422s on empty filtered
@@ -256,7 +249,11 @@ export function AdjustFlagForm({ project, onSubmit, onCancel }: Props) {
                 setDaily(e.target.value);
                 if (error !== null) setError(null);
               }}
-              placeholder={project.budget_daily_usd ?? "unlimited"}
+              placeholder={
+                project.budget_daily_usd != null
+                  ? `current: $${project.budget_daily_usd}`
+                  : "no limit set"
+              }
               disabled={submitting}
               className="mt-0.5 block w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
               data-adjust-budget-daily
@@ -274,7 +271,11 @@ export function AdjustFlagForm({ project, onSubmit, onCancel }: Props) {
                 setMonthly(e.target.value);
                 if (error !== null) setError(null);
               }}
-              placeholder={project.budget_monthly_usd ?? "unlimited"}
+              placeholder={
+                project.budget_monthly_usd != null
+                  ? `current: $${project.budget_monthly_usd}`
+                  : "no limit set"
+              }
               disabled={submitting}
               className="mt-0.5 block w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
               data-adjust-budget-monthly
@@ -292,7 +293,11 @@ export function AdjustFlagForm({ project, onSubmit, onCancel }: Props) {
                 setTotal(e.target.value);
                 if (error !== null) setError(null);
               }}
-              placeholder={project.budget_total_usd ?? "unlimited"}
+              placeholder={
+                project.budget_total_usd != null
+                  ? `current: $${project.budget_total_usd}`
+                  : "no limit set"
+              }
               disabled={submitting}
               className="mt-0.5 block w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
               data-adjust-budget-total
@@ -351,15 +356,16 @@ export function AdjustFlagForm({ project, onSubmit, onCancel }: Props) {
             if (error !== null) setError(null);
           }}
           rows={2}
-          placeholder="(BE endpoint extension pending — leave blank to submit)"
+          maxLength={1000}
+          placeholder="Optional note appended to the flag resolution record"
           disabled={submitting}
           className="block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
           data-adjust-annotation
         />
         <p className="text-[10px] text-zinc-500 dark:text-zinc-500">
-          Will be appended to project.description with a timestamp marker. Not
-          yet wired to the resolve-flag backend — see open question in GOV4
-          handoff notes.
+          {annotation.length}/1000 chars. Sent as{" "}
+          <span className="font-mono">description_annotation</span> in the
+          adjustments payload. Leave blank to omit.
         </p>
       </fieldset>
 

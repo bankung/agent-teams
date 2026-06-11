@@ -1,6 +1,9 @@
-# Dev compose for agent-teams.
-# Phase 3: db + api + web. Production multi-stage Dockerfile for web is deferred
-# to a later slice (dev image only — `next dev` with hot reload via bind mount).
+# Base compose for agent-teams (db + api + web + langgraph).
+# This file is the common base — apply an overlay for your mode:
+#
+#   Dev mode (hot-reload):   docker compose -p agent-teams -f docker-compose.yml -f docker-compose.dev.yml up -d
+#   Lightweight/prod mode:   docker compose -p agent-teams -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#   Back to dev mode:        docker compose -p agent-teams -f docker-compose.yml -f docker-compose.dev.yml up -d
 #
 # First-time install: use ./bin/install.sh (Linux/Mac) or .\bin\install.ps1 (Windows).
 # Manual flow for developers: see readme_dev.md "Live migration procedure".
@@ -20,6 +23,7 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - agent-teams-pgdata:/var/lib/postgresql/data
+    command: ["postgres", "-c", "max_connections=20", "-c", "shared_buffers=32MB"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d agent_teams"]
       interval: 5s
@@ -104,7 +108,7 @@ services:
       # TELEGRAM_BOT_TOKEN). Subject is `mailto:...` or `https://...` (RFC 8292).
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
-      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:bankung99@gmail.com}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.com}
       # pytest_runner role password (Kanban #1109 — L4 prevention layer for
       # the 2026-05-17 dev-DB-wipe incident). Used by the alembic migration
       # 0034_pytest_runner_role to create the role with the matching password,
@@ -186,12 +190,6 @@ services:
       NEXT_PUBLIC_FINANCE_PANELS_ENABLED: ${NEXT_PUBLIC_FINANCE_PANELS_ENABLED:-false}
     ports:
       - "${WEB_PORT:-5431}:5431"
-    volumes:
-      # Bind ./web read-write so source edits hot-reload via `next dev`. Mount node_modules
-      # as an anonymous volume so the host node_modules (if any) doesn't clobber the
-      # container-installed one (Linux/Windows binary mismatch).
-      - ./web:/app
-      - /app/node_modules
     healthcheck:
       # Next dev mode takes ~5-10s for first-request compile; start_period covers it.
       # wget is in alpine base by default; if not, swap to `node -e "require('http').get('http://localhost:5431', r => process.exit(r.statusCode === 200 ? 0 : 1))"`.
@@ -209,6 +207,7 @@ services:
   # server invocation once the real StateGraph is defined.
   # ---------------------------------------------------------------------------
   langgraph:
+    profiles: ["langgraph"]
     build:
       context: ./langgraph
       dockerfile: Dockerfile
@@ -241,10 +240,23 @@ services:
       # `extra_hosts: ["host.docker.internal:host-gateway"]` to this service.
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      # Kanban #852 — background worker config. The worker polls the api
-      # service (compose-internal hostname `api`, port 8456). LANGGRAPH_PROJECT_ID
-      # is REQUIRED — the lifespan refuses to start without it.
-      LANGGRAPH_PROJECT_ID: ${LANGGRAPH_PROJECT_ID:-1}
+      # Kanban #2120 — explicit context window for ChatOllama; Ollama server
+      # default (~4 K) silently truncates multi-turn tool-calling conversations.
+      LANGGRAPH_OLLAMA_NUM_CTX: ${LANGGRAPH_OLLAMA_NUM_CTX:-32768}
+      # Kanban #1951 — Google / Gemini native provider. Only consulted when
+      # LANGGRAPH_LLM_PROVIDER=google. Uses langchain-google-genai (native SDK)
+      # which handles thought_signature correctly for multi-turn tool-calling.
+      # gemini-flash-latest has quota; gemini-2.0-flash has quota=0.
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GOOGLE_MODEL: ${GOOGLE_MODEL:-gemini-flash-latest}
+      # Kanban #852/#2184 — background worker config. The worker polls the api
+      # service (compose-internal hostname `api`, port 8456).
+      # empty = multi-board (DB-driven discovery of consented+tools-enabled
+      # projects, #2184); set = single-board pin to that project id.
+      LANGGRAPH_PROJECT_ID: ${LANGGRAPH_PROJECT_ID:-}
+      # #2135 — enables #1886 usage metering; empty = reporting disabled;
+      # Lead pins a persistent session id in .env.
+      LANGGRAPH_SESSION_ID: ${LANGGRAPH_SESSION_ID:-}
       LANGGRAPH_POLL_INTERVAL_SEC: ${LANGGRAPH_POLL_INTERVAL_SEC:-30}
       LANGGRAPH_KANBAN_API_BASE: ${LANGGRAPH_KANBAN_API_BASE:-http://api:8456}
       # Kanban #1717 — tool-use loop conversation-history compaction budget

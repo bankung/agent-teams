@@ -151,9 +151,11 @@ class SessionRunUpdate(BaseModel):
     total_context_chars: int | None = Field(default=None, ge=0)
     total_cost_usd: Decimal | None = None
     budget_warning: bool | None = None
-    # CTX-3: cost lookup inputs. Not persisted; consumed by compute_cost only.
-    provider: str | None = Field(default=None, max_length=64)
-    model: str | None = Field(default=None, max_length=64)
+    # CTX-3: cost lookup inputs. Kanban #2135: NOW PERSISTED to session_runs.
+    # provider max=32 (e.g. 'google', 'anthropic'); model max=128 to fit local
+    # model names like 'gemma4:e4b-it-qat'.
+    provider: str | None = Field(default=None, max_length=32)
+    model: str | None = Field(default=None, max_length=128)
     # G2 (#1689): cache token inputs for accurate prompt-cache cost.
     # Names match compute_cost's params exactly. Anthropic API fields:
     # usage.cache_read_input_tokens + usage.cache_creation_input_tokens.
@@ -171,6 +173,9 @@ class SessionRunRead(BaseModel):
     status: SessionRunStatusLiteral
     started_at: datetime
     finished_at: datetime | None
+    # Kanban #2135: provider/model persisted for cost rollup.
+    provider: str | None
+    model: str | None
     total_input_tokens: int
     total_output_tokens: int
     # G2 (#1689): persisted cache token columns (Anthropic prompt-cache fields).

@@ -59,6 +59,10 @@ def test_agent_state_keys_are_stable() -> None:
         "usage_output_tokens",
         "usage_cache_read_tokens",
         "usage_cache_creation_tokens",
+        # Kanban #2185 (2026-06-10) — multi-board tool fix: worker injects
+        # project_id so nodes can fetch tools_config for the correct project
+        # even when LANGGRAPH_PROJECT_ID env is unset.
+        "project_id",
     }
     annotations = set(AgentState.__annotations__.keys())
     assert annotations == expected

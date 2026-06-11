@@ -74,7 +74,7 @@ def _patch_audit_recorder(monkeypatch) -> list[dict[str, Any]]:
     """Capture every record_tool_invocation call. Returns a list filled in-order."""
     captured: list[dict[str, Any]] = []
 
-    async def _fake_audit(task_id, tool, args, result, decision):
+    async def _fake_audit(task_id, tool, args, result, decision, *, project_id=None):
         captured.append(
             {
                 "task_id": task_id,
@@ -83,6 +83,7 @@ def _patch_audit_recorder(monkeypatch) -> list[dict[str, Any]]:
                 "args": args,
                 "result": result,
                 "decision": getattr(decision, "value", str(decision)),
+                "project_id": project_id,
             }
         )
 
@@ -545,3 +546,57 @@ def test_halt_on_LATER_call_keeps_pre_halt_toolmsgs(
         if isinstance(m, ToolMessage) and m.tool_call_id == "tc_write_halt"
     )
     assert "halted_before_execution" not in write_tm.content
+
+
+# ---------------------------------------------------------------------------
+# Kanban #2231 — multi-board audit: X-Project-Id must come from state["project_id"]
+# ---------------------------------------------------------------------------
+
+
+def test_specialist_audit_carries_project_id_from_state(
+    monkeypatch, stub_read_tool
+) -> None:
+    """Regression guard for #2231 multi-board audit header bug.
+
+    In multi-board mode LANGGRAPH_PROJECT_ID env-var is unset, so
+    resolve_project_id() returns None and the audit POST built
+    X-Project-Id from an empty header → 400 from the API.
+
+    The fix: nodes._audit() forwards project_id=ctx.project_id to
+    record_tool_invocation, which prefers the explicit value over the
+    env-var fallback.
+
+    This test verifies that:
+      1. The fake record_tool_invocation receives project_id=691 (the
+         value injected via state["project_id"], not via env-var).
+      2. LANGGRAPH_PROJECT_ID env-var is unset throughout (simulates
+         multi-board mode — the env fallback would return None).
+    """
+    # Multi-board: env-var unset.
+    monkeypatch.delenv("LANGGRAPH_PROJECT_ID", raising=False)
+
+    _patch_tools_config(monkeypatch, _AUTO_ALLOW_ALL_CONFIG)
+    audit = _patch_audit_recorder(monkeypatch)
+
+    responses = [
+        _ai_with_tool_call("stub_read", {"foo": "multiboard"}, call_id="tc_mb"),
+        _ai_final("done"),
+    ]
+    model = _ScriptedModel(responses)
+    monkeypatch.setattr(nodes, "make_chat_model", lambda: model)
+
+    # project_id injected via state (the fix path), NOT via env-var.
+    state = {
+        "task_id": 2231,
+        "brief": "multiboard audit test",
+        "assigned_role": 2,
+        "project_id": 691,
+    }
+    out = asyncio.run(nodes.backend_specialist_node(state))
+
+    assert out["final_result"] == "done"
+    assert len(audit) == 1, f"expected 1 audit row, got {len(audit)}"
+    assert audit[0]["project_id"] == 691, (
+        f"audit POST must carry project_id=691 (from state, not env-var); "
+        f"got project_id={audit[0]['project_id']!r}"
+    )

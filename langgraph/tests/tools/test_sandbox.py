@@ -36,7 +36,14 @@ from tools import (
     check_hard_kill_drift,
     fs_boundary_check,
 )
-from tools.sandbox import _tool_writes_to_path_arg
+from tools.sandbox import (
+    _ALLOWLIST_PATH,
+    _RAW_PATH_CAP,
+    _allowlist_cache_clear,
+    _read_allowlist,
+    _safe_raw_path,
+    _tool_writes_to_path_arg,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -144,12 +151,310 @@ def test_fs_boundary_skipped_for_git_commit_no_path_field() -> None:
     assert _tool_writes_to_path_arg(git_commit) is False
 
 
-def test_fs_boundary_skipped_when_working_path_is_none() -> None:
-    """ctx.working_path=None disables the check (test default)."""
+def test_fs_boundary_none_working_path_elsewhere_asks_where_to_save() -> None:
+    """Kanban #2215 — NULL working_path + path outside _scratch → ask-where-to-save.
+
+    This REPLACES the pre-#2215 behaviour where working_path=None disabled the
+    check entirely (the gap #2215 closes). A write to an arbitrary path on a
+    project with no working_path now returns error_code='working_path_unset'
+    so the specialist node can HALT for the operator.
+    """
     file_edit = GLOBAL_REGISTRY.get("file_edit")
     ctx = InvokeContext(working_path=None)
     args = {"path": "/anywhere.txt", "old_string": "x", "new_string": "y"}
-    assert fs_boundary_check(file_edit, ctx, args) is None
+    result = fs_boundary_check(file_edit, ctx, args)
+    assert result is not None
+    assert result.success is False
+    assert result.error_code == "working_path_unset"
+    assert result.retry_safe is False
+
+
+# ---------------------------------------------------------------------------
+# Kanban #2215 — Mode-B fs-tool guard: destination-legitimacy cases
+# ---------------------------------------------------------------------------
+
+
+def _file_write_args(path: str) -> dict[str, Any]:
+    """file_write input args targeting `path`."""
+    return {"path": path, "content": "x"}
+
+
+def test_2215_unmounted_working_path_hard_fails(monkeypatch) -> None:
+    """working_path SET but NOT an existing dir in the container → unmounted.
+
+    Simulates a Windows host path (or any unmounted bind) configured on the
+    project but never mounted into the worker. The guard must FAIL HARD —
+    never silently fall through to allowing a /repo write.
+    """
+    _allowlist_cache_clear()
+    monkeypatch.setattr("tools.sandbox._read_allowlist", lambda *a, **k: [])
+    file_write = GLOBAL_REGISTRY.get("file_write")
+    # A path that does not exist as a directory in this container.
+    boundary = "/not/mounted/projectX"
+    ctx = InvokeContext(working_path=boundary)
+    # Target "inside" the (unmounted) boundary — still must hard-fail because
+    # the boundary itself isn't a real dir here.
+    result = fs_boundary_check(file_write, ctx, _file_write_args(f"{boundary}/out.txt"))
+    assert result is not None
+    assert result.error_code == "working_path_unmounted"
+    assert result.success is False
+    assert result.retry_safe is False
+    assert boundary in (result.error_msg or "")
+    assert "not mounted" in (result.error_msg or "")
+
+
+def test_2215_unmounted_windows_host_path_hard_fails(monkeypatch) -> None:
+    """A Windows-shaped host path that isn't mounted → working_path_unmounted."""
+    _allowlist_cache_clear()
+    monkeypatch.setattr("tools.sandbox._read_allowlist", lambda *a, **k: [])
+    file_write = GLOBAL_REGISTRY.get("file_write")
+    boundary = r"C:\Users\nobody\WebApp\x"
+    ctx = InvokeContext(working_path=boundary)
+    result = fs_boundary_check(file_write, ctx, _file_write_args(f"{boundary}\\out.txt"))
+    assert result is not None
+    assert result.error_code == "working_path_unmounted"
+
+
+def test_2215_null_working_path_scratch_allowed_through(monkeypatch) -> None:
+    """NULL working_path + target under <repo_root>/_scratch → allowed (None).
+
+    This is the S5 invariant: project 661 has working_path NULL and writes to
+    /repo/_scratch/t5rp-*.txt; the destination guard must let it THROUGH so the
+    tier gate still HALTs. The guard returning None == "destination legit".
+    """
+    _allowlist_cache_clear()
+    monkeypatch.setattr("tools.sandbox._read_allowlist", lambda *a, **k: [])
+    file_write = GLOBAL_REGISTRY.get("file_write")
+    ctx = InvokeContext(working_path=None, repo_root="/repo")
+    assert fs_boundary_check(
+        file_write, ctx, _file_write_args("/repo/_scratch/t5rp-abc.txt")
+    ) is None
+
+
+def test_2215_null_working_path_scratch_sibling_not_allowed(monkeypatch) -> None:
+    """A `/repo/_scratchX` sibling is NOT treated as under `/repo/_scratch`."""
+    _allowlist_cache_clear()
+    monkeypatch.setattr("tools.sandbox._read_allowlist", lambda *a, **k: [])
+    file_write = GLOBAL_REGISTRY.get("file_write")
+    ctx = InvokeContext(working_path=None, repo_root="/repo")
+    result = fs_boundary_check(
+        file_write, ctx, _file_write_args("/repo/_scratchX/sneaky.txt")
+    )
+    assert result is not None
+    assert result.error_code == "working_path_unset"
+
+
+def test_2215_null_working_path_elsewhere_asks_where_to_save(monkeypatch) -> None:
+    """NULL working_path + target outside _scratch + no allowlist → unset HALT."""
+    _allowlist_cache_clear()
+    monkeypatch.setattr("tools.sandbox._read_allowlist", lambda *a, **k: [])
+    file_write = GLOBAL_REGISTRY.get("file_write")
+    ctx = InvokeContext(working_path=None, repo_root="/repo")
+    result = fs_boundary_check(
+        file_write, ctx, _file_write_args("/repo/api/src/models/x.py")
+    )
+    assert result is not None
+    assert result.error_code == "working_path_unset"
+    assert result.retry_safe is False
+    assert "working_path" in (result.error_msg or "")
+
+
+def test_2215_allowlist_allows_set_outside_subtree(monkeypatch, tmp_path) -> None:
+    """working_path SET, target OUTSIDE subtree but allowlisted → allowed (None)."""
+    _allowlist_cache_clear()
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    monkeypatch.setattr(
+        "tools.sandbox._read_allowlist",
+        lambda *a, **k: [os.path.realpath(str(outside))],
+    )
+    file_write = GLOBAL_REGISTRY.get("file_write")
+    ctx = InvokeContext(working_path=str(workdir))
+    target = str(outside / "ok.txt")
+    assert fs_boundary_check(file_write, ctx, _file_write_args(target)) is None
+
+
+def test_2215_allowlist_allows_null_working_path_elsewhere(monkeypatch, tmp_path) -> None:
+    """NULL working_path, target elsewhere but allowlisted → allowed (None)."""
+    _allowlist_cache_clear()
+    allowed_dir = tmp_path / "allowed"
+    allowed_dir.mkdir()
+    monkeypatch.setattr(
+        "tools.sandbox._read_allowlist",
+        lambda *a, **k: [os.path.realpath(str(allowed_dir))],
+    )
+    file_write = GLOBAL_REGISTRY.get("file_write")
+    ctx = InvokeContext(working_path=None, repo_root="/repo")
+    target = str(allowed_dir / "out.txt")
+    assert fs_boundary_check(file_write, ctx, _file_write_args(target)) is None
+
+
+def test_2215_allowlist_file_absent_no_crash(monkeypatch) -> None:
+    """A missing allowlist file → empty list, no crash; NULL-elsewhere still HALTs."""
+    _allowlist_cache_clear()
+    # Point the reader at a path that does not exist.
+    assert _read_allowlist("/repo/_runtime/__definitely_missing__.txt") == []
+    _allowlist_cache_clear()
+    # And the guard still behaves (file absent == no override).
+    file_write = GLOBAL_REGISTRY.get("file_write")
+    ctx = InvokeContext(working_path=None, repo_root="/repo")
+    result = fs_boundary_check(
+        file_write, ctx, _file_write_args("/repo/somewhere/x.txt")
+    )
+    assert result is not None
+    assert result.error_code == "working_path_unset"
+
+
+def test_2215_allowlist_parses_comments_and_blanks(monkeypatch, tmp_path) -> None:
+    """The allowlist reader ignores blank lines and `#` comments."""
+    _allowlist_cache_clear()
+    f = tmp_path / "write-allowlist.txt"
+    real_prefix = tmp_path / "allowed"
+    real_prefix.mkdir()
+    f.write_text(
+        "\n".join(
+            [
+                "# a comment",
+                "",
+                str(real_prefix),
+                "   # indented comment",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    prefixes = _read_allowlist(str(f))
+    assert prefixes == [os.path.realpath(str(real_prefix))]
+
+
+def test_2215_set_working_path_subtree_still_ok_when_mounted(tmp_path, monkeypatch) -> None:
+    """Regression: working_path SET (and mounted) + inside subtree → still None."""
+    _allowlist_cache_clear()
+    monkeypatch.setattr("tools.sandbox._read_allowlist", lambda *a, **k: [])
+    file_write = GLOBAL_REGISTRY.get("file_write")
+    ctx = InvokeContext(working_path=str(tmp_path))
+    assert fs_boundary_check(
+        file_write, ctx, _file_write_args(str(tmp_path / "ok.txt"))
+    ) is None
+
+
+def test_2215_set_working_path_outside_subtree_when_mounted(tmp_path, monkeypatch) -> None:
+    """working_path SET + mounted + target outside (no allowlist) → fs_boundary."""
+    _allowlist_cache_clear()
+    monkeypatch.setattr("tools.sandbox._read_allowlist", lambda *a, **k: [])
+    file_write = GLOBAL_REGISTRY.get("file_write")
+    ctx = InvokeContext(working_path=str(tmp_path))
+    outside = tmp_path.parent / "outside.txt"
+    result = fs_boundary_check(file_write, ctx, _file_write_args(str(outside)))
+    assert result is not None
+    assert result.error_code == "fs_boundary"
+    # Error message suggests the in-subtree _scratch for temp files (rule 8).
+    assert "_scratch" in (result.error_msg or "")
+
+
+# ---------------------------------------------------------------------------
+# Kanban #2215 in-gate hardening (W-1 path-disclosure, N-1 raw_path cap, M1 cache key)
+# ---------------------------------------------------------------------------
+
+
+def test_2215_unset_result_does_not_disclose_allowlist_path(monkeypatch) -> None:
+    """W-1: the LLM-facing unset error must NOT print the exact allowlist file.
+
+    Naming `_ALLOWLIST_PATH` back to the model teaches a drifting agent the
+    self-grant recipe. The message must point at the operator generically.
+    """
+    _allowlist_cache_clear()
+    monkeypatch.setattr("tools.sandbox._read_allowlist", lambda *a, **k: [])
+    file_write = GLOBAL_REGISTRY.get("file_write")
+    ctx = InvokeContext(working_path=None, repo_root="/repo")
+    result = fs_boundary_check(
+        file_write, ctx, _file_write_args("/repo/api/src/models/x.py")
+    )
+    assert result is not None
+    msg = result.error_msg or ""
+    # NEGATIVE: the literal allowlist path is absent from the model-facing text.
+    assert _ALLOWLIST_PATH not in msg
+    assert "write-allowlist.txt" not in msg
+    # POSITIVE: still actionable — names the operator + the two remediations.
+    assert "operator" in msg
+    assert "working_path" in msg
+    assert "write-allowlist" in msg  # generic reference, no path
+
+
+def test_2215_outside_subtree_result_does_not_disclose_allowlist_path(tmp_path, monkeypatch) -> None:
+    """W-1: the SET-but-outside (fs_boundary) message also omits the allowlist path."""
+    _allowlist_cache_clear()
+    monkeypatch.setattr("tools.sandbox._read_allowlist", lambda *a, **k: [])
+    file_write = GLOBAL_REGISTRY.get("file_write")
+    ctx = InvokeContext(working_path=str(tmp_path))
+    outside = tmp_path.parent / "outside.txt"
+    result = fs_boundary_check(file_write, ctx, _file_write_args(str(outside)))
+    assert result is not None
+    assert result.error_code == "fs_boundary"
+    msg = result.error_msg or ""
+    assert _ALLOWLIST_PATH not in msg
+    assert "write-allowlist.txt" not in msg
+
+
+def test_2215_safe_raw_path_caps_long_input() -> None:
+    """N-1: an over-budget raw_path is truncated with an explicit marker."""
+    long_path = "/repo/" + ("a" * (_RAW_PATH_CAP + 200))
+    out = _safe_raw_path(long_path)
+    assert len(out) == _RAW_PATH_CAP + len("...[trunc]")
+    assert out.endswith("...[trunc]")
+
+
+def test_2215_safe_raw_path_strips_non_printable() -> None:
+    """N-1: control / non-printable chars in raw_path are replaced, Thai kept."""
+    dirty = "/repo/x\x00\x07\x1b[2J/แฟ้ม.txt"
+    out = _safe_raw_path(dirty)
+    # Control chars gone (replaced with '?'); the Thai filename survives.
+    assert "\x00" not in out
+    assert "\x1b" not in out
+    assert "\x07" not in out
+    assert "แฟ้ม" in out
+
+
+def test_2215_unset_result_embeds_capped_sanitized_raw_path(monkeypatch) -> None:
+    """N-1: the error message embeds the SANITIZED+CAPPED raw_path, not the raw one."""
+    _allowlist_cache_clear()
+    monkeypatch.setattr("tools.sandbox._read_allowlist", lambda *a, **k: [])
+    file_write = GLOBAL_REGISTRY.get("file_write")
+    ctx = InvokeContext(working_path=None, repo_root="/repo")
+    evil = "/repo/danger/\x1b[2Jboom" + ("z" * (_RAW_PATH_CAP + 100)) + ".py"
+    result = fs_boundary_check(file_write, ctx, _file_write_args(evil))
+    assert result is not None
+    msg = result.error_msg or ""
+    # The raw control sequence never reaches the LLM-facing string.
+    assert "\x1b" not in msg
+    # The full untruncated raw path is NOT present (it was capped).
+    assert evil not in msg
+    assert "...[trunc]" in msg
+
+
+def test_2215_allowlist_cache_keyed_by_path(tmp_path, monkeypatch) -> None:
+    """M1: the allowlist cache is keyed by `path` — distinct paths don't collide.
+
+    Read path A (populated), then path B (empty) within the TTL window; B must
+    NOT serve A's cached prefixes (the old time-only key would have).
+    """
+    _allowlist_cache_clear()
+    a = tmp_path / "allow-a.txt"
+    allowed = tmp_path / "granted"
+    allowed.mkdir()
+    a.write_text(str(allowed) + "\n", encoding="utf-8")
+    b = tmp_path / "allow-b.txt"  # does not exist on disk
+
+    prefixes_a = _read_allowlist(str(a))
+    assert prefixes_a == [os.path.realpath(str(allowed))]
+    # Same TTL window, different path → must re-read (missing file → []),
+    # NOT return A's cached prefixes.
+    prefixes_b = _read_allowlist(str(b))
+    assert prefixes_b == []
+    # And A is still cached under its own key (not clobbered by the B read).
+    assert _read_allowlist(str(a)) == [os.path.realpath(str(allowed))]
 
 
 # ---------------------------------------------------------------------------
@@ -333,8 +638,13 @@ def test_tool_loop_iteration_limit_halts_at_5(monkeypatch) -> None:
             msg.tool_calls = [
                 {
                     "name": "file_edit",
+                    # NULL working_path (no env-override, no API value in this
+                    # test) → the #2215 destination guard allows /repo/_scratch
+                    # writes THROUGH to the tier gate, so the loop can run. A
+                    # path elsewhere would now HALT with working_path_unset on
+                    # the first iteration (covered by its own test).
                     "args": {
-                        "path": "/tmp/sandbox-test/foo.txt",
+                        "path": "/repo/_scratch/sandbox-test/foo.txt",
                         "old_string": "x",
                         "new_string": "y",
                     },

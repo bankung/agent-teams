@@ -68,7 +68,7 @@ from src.services.compact_runner import (
     SessionNotFound as CompactSessionNotFound,
     run_compact,
 )
-from src.services.cost_tracker import compute_cost
+from src.services.cost_tracker import compute_cost, resolve_pricing_key
 from src.services.session_store import (
     SECTION_RECENT_ACTIVITY,
     append_recent_activity,
@@ -389,12 +389,11 @@ async def update_session_run(
     if not updates:
         return run
 
-    # CTX-3 (#718): server-authoritative cost. Capture provider/model + drop
-    # them (not persisted columns), and DROP any client-supplied
-    # total_cost_usd (server overwrites). When all 4 cost-inputs present,
-    # compute via cost_tracker and stamp the column.
-    # G2 (#1689): also pop the cache token fields (not persisted) and forward
-    # them to compute_cost so cached-input cost uses the correct multipliers.
+    # CTX-3 (#718): server-authoritative cost. Capture provider/model; drop
+    # client-supplied total_cost_usd (server overwrites). Kanban #2135: persist
+    # provider/model to the row for rollup queries.
+    # G2 (#1689): also pop the cache token fields and forward to compute_cost
+    # so cached-input cost uses the correct multipliers.
     provider = updates.pop("provider", None)
     model = updates.pop("model", None)
     updates.pop("total_cost_usd", None)  # server-managed; client value ignored.
@@ -409,6 +408,12 @@ async def update_session_run(
     updates["cache_read_input_tokens"] = cache_read_input_tokens
     updates["cache_creation_input_tokens"] = cache_creation_input_tokens
 
+    # Kanban #2135: persist raw provider/model when present.
+    if provider is not None:
+        updates["provider"] = provider
+    if model is not None:
+        updates["model"] = model
+
     input_tokens = updates.get("total_input_tokens")
     output_tokens = updates.get("total_output_tokens")
     if (
@@ -418,9 +423,13 @@ async def update_session_run(
         and output_tokens is not None
     ):
         try:
+            # Kanban #2135: resolve family aliases (e.g. 'gemini-2.5-flash-lite'
+            # → exact key; 'gemma4:e4b-it-qat' → ('ollama','local')) before
+            # calling compute_cost so unknown model names are handled gracefully.
+            resolved_provider, resolved_model = resolve_pricing_key(provider, model)
             updates["total_cost_usd"] = compute_cost(
-                provider,
-                model,
+                resolved_provider,
+                resolved_model,
                 input_tokens,
                 output_tokens,
                 cache_read_input_tokens=cache_read_input_tokens,
@@ -429,7 +438,7 @@ async def update_session_run(
         except ValueError as exc:
             # Unknown (provider, model). Don't fail the PATCH — log + leave column.
             logger.warning(
-                "session_runs cost lookup failed: run_id=%d provider=%r model=%r err=%s",
+                "session_runs cost lookup failed: run_id=%d provider=%r model=%r err=%r",
                 run_id,
                 provider,
                 model,

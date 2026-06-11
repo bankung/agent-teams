@@ -30,6 +30,10 @@ class AuthStatusResponse(BaseModel):
     authenticated: bool
     email: str | None = None
     expires_at: str | None = None
+    # Kanban #1942: True iff the Google token carries calendar.readonly (operator
+    # has re-consented; Calendar tools available). Defaults False — Outlook +
+    # un-re-consented Gmail tokens leave it False without breaking their summary.
+    calendar_readonly: bool = False
 
 
 class UsageResponse(BaseModel):
@@ -65,6 +69,11 @@ class GmailTrashRequest(BaseModel):
 
     Exactly one of (query, message_ids) must be set — enforced by a model
     validator so the wire contract is unambiguous.
+
+    Set `dry_run=True` to preview which messages WOULD be trashed without
+    moving anything. The operator-proof gate is skipped for dry_run (read-only
+    preview); Layer-0 role grant still fires. List-unit cost is still paid in
+    query mode (the upstream list call happens to resolve the id set).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -79,6 +88,14 @@ class GmailTrashRequest(BaseModel):
         default=None,
         description="Explicit Gmail message id list (XOR with `query`).",
     )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "Preview mode: resolve which messages WOULD be trashed and return "
+            "would_affect_count + would_affect_ids without moving anything. "
+            "Skips the operator-proof gate; Layer-0 role grant still fires."
+        ),
+    )
 
     @model_validator(mode="after")
     def _exactly_one(self) -> "GmailTrashRequest":
@@ -89,34 +106,129 @@ class GmailTrashRequest(BaseModel):
                 "Provide exactly one of `query` or `message_ids` (not both, not neither)."
             )
         if has_ids:
-            # Bound message_ids length so a 10k-id payload can't slip past the
-            # bulk-threshold gate via length-game. 1000 is a hard ceiling; the
-            # bulk threshold check (default 100) is the soft refusal.
-            if self.message_ids is None:
-                raise ValueError("message_ids required")
-            if len(self.message_ids) > 1000:
-                raise ValueError("message_ids list cannot exceed 1000 entries per call.")
-            # Each id is a Gmail message id — short ASCII; bound length to
-            # refuse obvious garbage early.
-            for mid in self.message_ids:
-                if not isinstance(mid, str) or not (1 <= len(mid) <= 64):
-                    raise ValueError("each message_id must be a non-empty string <=64 chars.")
-            # FIX-3 (#1609): character allowlist — Gmail ids are hex; disallow
-            # slash and other path-traversal characters.
-            for mid in self.message_ids:
-                if not _MID_ALLOWED.fullmatch(mid):
-                    raise ValueError(
-                        "message_ids contain disallowed characters; allowed: A-Z a-z 0-9 _ - = +"
-                    )
+            _validate_message_ids(self.message_ids)
         return self
 
 
 class GmailTrashResponse(BaseModel):
-    """Result of a trash call. Reports trashed ids + any per-id errors."""
+    """Result of a trash call. Reports trashed ids + any per-id errors.
+
+    On a normal trash: dry_run=False, would_affect_count/ids are None.
+    On a dry_run:      dry_run=True, trashed_count=0, trashed_ids=[],
+                       would_affect_count=N, would_affect_ids=[...].
+    """
 
     trashed_count: int
     trashed_ids: list[str]
     errors: list[dict[str, Any]] = Field(default_factory=list)
+    dry_run: bool = False
+    would_affect_count: int | None = None
+    would_affect_ids: list[str] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Gmail — Tier-1 modify actions (Kanban #1585: mark read/unread, archive, draft)
+# ---------------------------------------------------------------------------
+#
+# These map to the `modify` EmailTier (OPEN — Layer-0 role-gated + audited, no
+# operator-proof). Tier-1 label mutations are recoverable; only `trash`/delete
+# (Tier-2) and the send/reply tiers carry an operator-proof.
+
+
+def _validate_message_ids(message_ids: list[str]) -> list[str]:
+    """Shared bound + allowlist check for an explicit Gmail message-id list.
+
+    Mirrors `GmailTrashRequest._exactly_one`'s id rules (<=1000 entries, each a
+    non-empty ASCII id <=64 chars, character-allowlisted) so every id-bearing
+    Gmail endpoint applies the SAME boundary guard. Raises ValueError on any
+    violation (Pydantic surfaces it as a 422).
+    """
+    if not isinstance(message_ids, list) or len(message_ids) == 0:
+        raise ValueError("message_ids must be a non-empty list.")
+    if len(message_ids) > 1000:
+        raise ValueError("message_ids list cannot exceed 1000 entries per call.")
+    for mid in message_ids:
+        if not isinstance(mid, str) or not (1 <= len(mid) <= 64):
+            raise ValueError("each message_id must be a non-empty string <=64 chars.")
+        if not _MID_ALLOWED.fullmatch(mid):
+            raise ValueError(
+                "message_ids contain disallowed characters; allowed: A-Z a-z 0-9 _ - = +"
+            )
+    return message_ids
+
+
+class GmailMarkRequest(BaseModel):
+    """Mark Gmail messages read/unread (`modify` tier).
+
+    `read=True`  -> remove the UNREAD label (mark read).
+    `read=False` -> add the UNREAD label (mark unread).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_ids: list[str] = Field(
+        ..., description="Explicit Gmail message id list to mark."
+    )
+    read: bool = Field(
+        ..., description="True = mark read (remove UNREAD); False = mark unread (add UNREAD)."
+    )
+
+    @model_validator(mode="after")
+    def _check_ids(self) -> "GmailMarkRequest":
+        _validate_message_ids(self.message_ids)
+        return self
+
+
+class GmailArchiveRequest(BaseModel):
+    """Archive Gmail messages — remove the INBOX label (`modify` tier)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_ids: list[str] = Field(
+        ..., description="Explicit Gmail message id list to archive (remove INBOX)."
+    )
+
+    @model_validator(mode="after")
+    def _check_ids(self) -> "GmailArchiveRequest":
+        _validate_message_ids(self.message_ids)
+        return self
+
+
+class GmailModifyResponse(BaseModel):
+    """Result of a mark/archive (label-modify) call. Reports modified ids + per-id errors."""
+
+    modified_count: int
+    modified_ids: list[str]
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class GmailDraftRequest(BaseModel):
+    """Create a Gmail DRAFT (no send) — `modify` tier.
+
+    A draft is a recoverable Tier-1 mutation: it lives in the Drafts folder
+    until the operator explicitly sends it (a `send_internal`/`external_send`
+    action, which carry operator-proof). Creating the draft itself does NOT.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    to: str = Field(
+        ..., min_length=1, max_length=998,
+        description="Recipient address line (RFC-2822 'To'). Operator-supplied; not validated as a strict addr-spec.",
+    )
+    subject: str = Field(
+        default="", max_length=998, description="Draft subject line."
+    )
+    body: str = Field(
+        default="", max_length=100_000, description="Draft plain-text body."
+    )
+
+
+class GmailDraftResponse(BaseModel):
+    """Result of a save-draft call. Reports the created Gmail draft id + message id."""
+
+    draft_id: str
+    message_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +262,11 @@ class OutlookTrashRequest(BaseModel):
     hits Graph it is KQL-quote-escaped and URL-encoded (#1721). The `$search`
     KQL syntax is NOT identical to Gmail's; the operator supplies the correct
     format (we do not translate between the two).
+
+    Set `dry_run=True` to preview which messages WOULD be trashed without
+    moving anything. The operator-proof gate is skipped for dry_run (read-only
+    preview); Layer-0 role grant still fires. List-unit cost is still paid in
+    query mode (the upstream list call happens to resolve the id set).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -168,6 +285,14 @@ class OutlookTrashRequest(BaseModel):
         default=None,
         description="Explicit Outlook/Graph message id list (XOR with `query`).",
     )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "Preview mode: resolve which messages WOULD be trashed and return "
+            "would_affect_count + would_affect_ids without moving anything. "
+            "Skips the operator-proof gate; Layer-0 role grant still fires."
+        ),
+    )
 
     @model_validator(mode="after")
     def _exactly_one(self) -> "OutlookTrashRequest":
@@ -178,30 +303,653 @@ class OutlookTrashRequest(BaseModel):
                 "Provide exactly one of `query` or `message_ids` (not both, not neither)."
             )
         if has_ids:
-            # Match Gmail's hard ceiling on list length; bulk threshold gate
-            # (default 100) is the soft refusal.
-            if self.message_ids is None:
-                raise ValueError("message_ids required")
-            if len(self.message_ids) > 1000:
-                raise ValueError("message_ids list cannot exceed 1000 entries per call.")
-            # Graph message ids are long base64-ish strings — bound to 512 chars
-            # to refuse obvious garbage early. (Empirical Graph ids are ~150 chars.)
-            for mid in self.message_ids:
-                if not isinstance(mid, str) or not (1 <= len(mid) <= 512):
-                    raise ValueError("each message_id must be a non-empty string <=512 chars.")
-            # FIX-3 (#1609): character allowlist — Graph ids are base64url; disallow
-            # slash and other path-traversal characters (same alphabet as Gmail).
-            for mid in self.message_ids:
-                if not _MID_ALLOWED.fullmatch(mid):
-                    raise ValueError(
-                        "message_ids contain disallowed characters; allowed: A-Z a-z 0-9 _ - = +"
-                    )
+            _validate_outlook_message_ids(self.message_ids)
         return self
 
 
 class OutlookTrashResponse(BaseModel):
-    """Result of a move-to-Deleted-Items call. Reports trashed ids + per-id errors."""
+    """Result of a move-to-Deleted-Items call. Reports trashed ids + per-id errors.
+
+    On a normal trash: dry_run=False, would_affect_count/ids are None.
+    On a dry_run:      dry_run=True, trashed_count=0, trashed_ids=[],
+                       would_affect_count=N, would_affect_ids=[...].
+    """
 
     trashed_count: int
     trashed_ids: list[str]
     errors: list[dict[str, Any]] = Field(default_factory=list)
+    dry_run: bool = False
+    would_affect_count: int | None = None
+    would_affect_ids: list[str] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Outlook — Tier-1 modify actions (Kanban #1917: mark read/unread, archive, draft)
+# ---------------------------------------------------------------------------
+#
+# Mirrors the Gmail Tier-1 schema block above. Gate composition is identical:
+# Layer-0 role grant + modify tier (OPEN) + daily-cap. Provider = "outlook".
+
+
+def _validate_outlook_message_ids(message_ids: list[str]) -> list[str]:
+    """Bound + allowlist check for an explicit Outlook/Graph message-id list.
+
+    Mirrors `_validate_message_ids` for Gmail but uses the Outlook 512-char
+    bound (Graph ids are longer than Gmail hex ids, ~150 chars empirically).
+    Raises ValueError on any violation (Pydantic surfaces it as a 422).
+
+    NOTE: _MID_ALLOWED already excludes / ? # \\ . whitespace AND CRLF — so
+    path-traversal, URL-segment injection, and header injection are blocked
+    here. Do NOT widen the regex without a security review.
+    """
+    if not isinstance(message_ids, list) or len(message_ids) == 0:
+        raise ValueError("message_ids must be a non-empty list.")
+    if len(message_ids) > 1000:
+        raise ValueError("message_ids list cannot exceed 1000 entries per call.")
+    for mid in message_ids:
+        if not isinstance(mid, str) or not (1 <= len(mid) <= 512):
+            raise ValueError("each message_id must be a non-empty string <=512 chars.")
+        if not _MID_ALLOWED.fullmatch(mid):
+            raise ValueError(
+                "message_ids contain disallowed characters; allowed: A-Z a-z 0-9 _ - = +"
+            )
+    return message_ids
+
+
+class OutlookMarkRequest(BaseModel):
+    """Mark Outlook messages read/unread (`modify` tier).
+
+    `read=True`  -> isRead=true  (mark read).
+    `read=False` -> isRead=false (mark unread).
+
+    Graph has no label model; isRead is the boolean property equivalent of
+    Gmail's UNREAD label add/remove.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_ids: list[str] = Field(
+        ..., description="Explicit Outlook/Graph message id list to mark."
+    )
+    read: bool = Field(
+        ..., description="True = mark read (isRead=true); False = mark unread (isRead=false)."
+    )
+
+    @model_validator(mode="after")
+    def _check_ids(self) -> "OutlookMarkRequest":
+        _validate_outlook_message_ids(self.message_ids)
+        return self
+
+
+class OutlookArchiveRequest(BaseModel):
+    """Archive Outlook messages — move to well-known folder 'archive' (`modify` tier)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_ids: list[str] = Field(
+        ..., description="Explicit Outlook/Graph message id list to archive."
+    )
+
+    @model_validator(mode="after")
+    def _check_ids(self) -> "OutlookArchiveRequest":
+        _validate_outlook_message_ids(self.message_ids)
+        return self
+
+
+class OutlookModifyResponse(BaseModel):
+    """Result of a mark/archive (modify) call. Reports modified ids + per-id errors."""
+
+    modified_count: int
+    modified_ids: list[str]
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class OutlookDraftRequest(BaseModel):
+    """Create an Outlook DRAFT (no send) — `modify` tier.
+
+    Mirrors `GmailDraftRequest`. A draft lives in the Drafts folder until the
+    operator explicitly sends it (a higher-tier action carrying operator-proof).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    to: str = Field(
+        ..., min_length=1, max_length=998,
+        description="Recipient address line. Operator-supplied; not validated as a strict addr-spec.",
+    )
+    subject: str = Field(
+        default="", max_length=998, description="Draft subject line."
+    )
+    body: str = Field(
+        default="", max_length=100_000, description="Draft plain-text body."
+    )
+
+
+class OutlookDraftResponse(BaseModel):
+    """Result of a save-draft call. Reports the created Graph message id."""
+
+    draft_id: str
+    message_id: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Kanban #1939 — READ schemas (search + get) — Gmail + Outlook
+# ---------------------------------------------------------------------------
+#
+# READ tier: auto-approve (no operator-proof). Body content is returned in the
+# response but MUST NOT appear in any log, audit trail, or error detail.
+
+
+class GmailSearchRequest(BaseModel):
+    """Search Gmail and return metadata (no body). READ tier — auto-approve."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(
+        ...,
+        min_length=1,
+        max_length=1024,
+        description="Gmail search query — e.g. 'from:foo@bar.com is:unread'.",
+    )
+    max_results: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="Maximum number of messages to return (1–50).",
+    )
+
+
+class GmailSearchItem(BaseModel):
+    """Metadata for a single Gmail message returned by search."""
+
+    id: str
+    thread_id: str | None = None
+    from_: str | None = Field(default=None, alias="from")
+    subject: str | None = None
+    date: str | None = None
+    snippet: str | None = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class GmailSearchResponse(BaseModel):
+    """Result of a Gmail search call — metadata only (no body)."""
+
+    results: list[GmailSearchItem]
+    count: int
+
+
+class GmailGetRequest(BaseModel):
+    """Fetch the full content of a single Gmail message by id. READ tier."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str = Field(
+        ...,
+        description="Gmail message id (hex, e.g. '18b3f1a2c9d4e5f6').",
+    )
+
+    @model_validator(mode="after")
+    def _check_id(self) -> "GmailGetRequest":
+        # FIX-7 (#1939): Pydantic coerces to str before mode="after" validators;
+        # no need for isinstance check.
+        mid = self.message_id
+        if not (1 <= len(mid) <= 64):
+            raise ValueError("message_id must be a non-empty string <=64 chars.")
+        if not _MID_ALLOWED.fullmatch(mid):
+            raise ValueError(
+                "message_id contains disallowed characters; allowed: A-Z a-z 0-9 _ - = +"
+            )
+        return self
+
+
+class GmailGetResponse(BaseModel):
+    """Full content of a single Gmail message. body_text MUST NOT be logged."""
+
+    id: str
+    thread_id: str | None = None
+    from_: str | None = Field(default=None, alias="from")
+    to: str | None = None
+    subject: str | None = None
+    date: str | None = None
+    body_text: str
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class OutlookSearchRequest(BaseModel):
+    """Search Outlook/Graph and return metadata (no body). READ tier — auto-approve."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(
+        ...,
+        min_length=1,
+        max_length=1024,
+        description=(
+            "Microsoft Graph $search KQL query — "
+            "e.g. 'from:foo@bar.com AND subject:invoice'. "
+            "Syntax is NOT identical to Gmail."
+        ),
+    )
+    max_results: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="Maximum number of messages to return (1–50).",
+    )
+
+
+class OutlookSearchItem(BaseModel):
+    """Metadata for a single Outlook message returned by search."""
+
+    id: str
+    thread_id: str | None = None
+    from_: str | None = Field(default=None, alias="from")
+    subject: str | None = None
+    date: str | None = None
+    snippet: str | None = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class OutlookSearchResponse(BaseModel):
+    """Result of an Outlook search call — metadata only (no body)."""
+
+    results: list[OutlookSearchItem]
+    count: int
+
+
+class OutlookGetRequest(BaseModel):
+    """Fetch the full content of a single Outlook message by id. READ tier."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str = Field(
+        ...,
+        description="Outlook/Graph message id (base64url, typically ~150 chars).",
+    )
+
+    @model_validator(mode="after")
+    def _check_id(self) -> "OutlookGetRequest":
+        # FIX-7 (#1939): Pydantic coerces to str before mode="after" validators;
+        # no need for isinstance check.
+        mid = self.message_id
+        if not (1 <= len(mid) <= 512):
+            raise ValueError("message_id must be a non-empty string <=512 chars.")
+        if not _MID_ALLOWED.fullmatch(mid):
+            raise ValueError(
+                "message_id contains disallowed characters; allowed: A-Z a-z 0-9 _ - = +"
+            )
+        return self
+
+
+class OutlookGetResponse(BaseModel):
+    """Full content of a single Outlook message. body_text MUST NOT be logged."""
+
+    id: str
+    thread_id: str | None = None
+    from_: str | None = Field(default=None, alias="from")
+    to: str | None = None
+    subject: str | None = None
+    date: str | None = None
+    body_text: str
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+# ---------------------------------------------------------------------------
+# Kanban #1940 — READ extras schemas (thread + labels + attachment) — Gmail
+# ---------------------------------------------------------------------------
+#
+# READ tier: auto-approve (no operator-proof). Body content, filenames, and
+# attachment data MUST NOT appear in any log, audit trail, or error detail.
+
+
+class GmailThreadRequest(BaseModel):
+    """Fetch all messages in a Gmail thread by thread id. READ tier."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    thread_id: str = Field(
+        ...,
+        description="Gmail thread id (hex, same character class as message id).",
+    )
+
+    @model_validator(mode="after")
+    def _check_id(self) -> "GmailThreadRequest":
+        tid = self.thread_id
+        if not (1 <= len(tid) <= 64):
+            raise ValueError("thread_id must be a non-empty string <=64 chars.")
+        if not _MID_ALLOWED.fullmatch(tid):
+            raise ValueError(
+                "thread_id contains disallowed characters; allowed: A-Z a-z 0-9 _ - = +"
+            )
+        return self
+
+
+class GmailThreadMessage(BaseModel):
+    """A single message within a Gmail thread. body_text MUST NOT be logged."""
+
+    id: str
+    from_: str | None = Field(default=None, alias="from")
+    to: str | None = None
+    subject: str | None = None
+    date: str | None = None
+    body_text: str
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class GmailThreadResponse(BaseModel):
+    """All messages in a Gmail thread."""
+
+    thread_id: str
+    messages: list[GmailThreadMessage]
+    count: int
+
+
+class GmailLabelsRequest(BaseModel):
+    """List all Gmail labels for the authenticated account. READ tier (empty body ok)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class GmailLabel(BaseModel):
+    """A single Gmail label."""
+
+    id: str
+    name: str
+    type: str | None = None
+
+
+class GmailLabelsResponse(BaseModel):
+    """All Gmail labels for the account."""
+
+    labels: list[GmailLabel]
+    count: int
+
+
+class GmailAttachmentRequest(BaseModel):
+    """Fetch a Gmail message attachment by message id + attachment id. READ tier."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str = Field(
+        ...,
+        description="Gmail message id (hex, e.g. '18b3f1a2c9d4e5f6').",
+    )
+    attachment_id: str = Field(
+        ...,
+        description="Gmail attachment id (from payload.parts[].body.attachmentId).",
+    )
+
+    @model_validator(mode="after")
+    def _check_ids(self) -> "GmailAttachmentRequest":
+        mid = self.message_id
+        if not (1 <= len(mid) <= 512):
+            raise ValueError("message_id must be a non-empty string <=512 chars.")
+        if not _MID_ALLOWED.fullmatch(mid):
+            raise ValueError(
+                "message_id contains disallowed characters; allowed: A-Z a-z 0-9 _ - = +"
+            )
+        att = self.attachment_id
+        if not (1 <= len(att) <= 512):
+            raise ValueError("attachment_id must be a non-empty string <=512 chars.")
+        if not _MID_ALLOWED.fullmatch(att):
+            raise ValueError(
+                "attachment_id contains disallowed characters; allowed: A-Z a-z 0-9 _ - = +"
+            )
+        return self
+
+
+class GmailAttachmentResponse(BaseModel):
+    """Content of a Gmail attachment. filename + data_base64 MUST NOT be logged."""
+
+    filename: str | None = None
+    mime_type: str | None = None
+    size: int
+    data_base64: str
+
+
+# ---------------------------------------------------------------------------
+# Kanban #2100 — Tier-3 SEND schemas (reply / forward / send-internal / external-send)
+# ---------------------------------------------------------------------------
+#
+# These map to the REPLY / SEND_INTERNAL / EXTERNAL_SEND EmailTiers — all PROOF
+# tiers (operator-proof required; external-send additionally escalates). The
+# router applies the gate; these models only validate the wire shape.
+#
+# RECIPIENT VALIDATION (intentionally minimal, per #2100 §3): we validate
+# non-empty + a cheap `@`-shape guard only. We do NOT enforce a strict
+# RFC-5322 addr-spec — the `to` line is operator-supplied (mirrors the draft
+# schemas' `not validated as a strict addr-spec` stance). The internal-vs-
+# external distinction is the CALLER's tier declaration (which route they hit),
+# NOT a domain check here. Bound caps mirror the draft schemas (998 addr line,
+# 998 subject, 100_000 body) so a send and its draft predecessor agree.
+
+_ADDR_MAX = 998
+_SUBJECT_MAX = 998
+_BODY_MAX = 100_000
+
+
+def _validate_recipient_line(value: str, field: str) -> str:
+    """Cheap recipient guard: non-empty + at least one '@'. Raises ValueError.
+
+    NOT an RFC validator. Comma-separated multi-recipient lines pass as long as
+    the whole line is non-empty and contains an '@'. CRLF is rejected so a
+    recipient line can never inject extra SMTP/MIME headers (header-injection
+    rail — mirrors the message-id CRLF exclusion in _MID_ALLOWED).
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be a non-empty recipient line.")
+    if "@" not in value:
+        raise ValueError(f"{field} must contain at least one '@' (recipient address).")
+    if "\r" in value or "\n" in value:
+        raise ValueError(f"{field} must not contain CR/LF (header-injection guard).")
+    return value
+
+
+class GmailReplyRequest(BaseModel):
+    """Reply to a Gmail message in-thread (`reply` tier — PROOF).
+
+    Reply uses the original message's thread so the response threads correctly.
+    `message_id` identifies the message being replied to; `thread_id` (optional)
+    pins the thread explicitly (Gmail derives it from the message otherwise).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str = Field(
+        ..., description="Gmail message id being replied to (hex)."
+    )
+    thread_id: str | None = Field(
+        default=None, description="Optional Gmail thread id to thread the reply into."
+    )
+    body: str = Field(
+        ..., min_length=1, max_length=_BODY_MAX, description="Reply plain-text body."
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> "GmailReplyRequest":
+        mid = self.message_id
+        if not (1 <= len(mid) <= 64) or not _MID_ALLOWED.fullmatch(mid):
+            raise ValueError(
+                "message_id must be a non-empty id <=64 chars; allowed: A-Z a-z 0-9 _ - = +"
+            )
+        if self.thread_id is not None:
+            tid = self.thread_id
+            if not (1 <= len(tid) <= 64) or not _MID_ALLOWED.fullmatch(tid):
+                raise ValueError(
+                    "thread_id must be a non-empty id <=64 chars; allowed: A-Z a-z 0-9 _ - = +"
+                )
+        return self
+
+
+class GmailForwardRequest(BaseModel):
+    """Forward a Gmail message to a new recipient (`reply` tier — PROOF).
+
+    Forward carries the original message id + a NEW `to` line (the forward
+    target) and an optional prefatory body.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str = Field(
+        ..., description="Gmail message id being forwarded (hex)."
+    )
+    to: str = Field(
+        ..., min_length=1, max_length=_ADDR_MAX,
+        description="Forward recipient line (RFC-2822 'To'). Operator-supplied.",
+    )
+    body: str = Field(
+        default="", max_length=_BODY_MAX, description="Optional prefatory body.",
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> "GmailForwardRequest":
+        mid = self.message_id
+        if not (1 <= len(mid) <= 64) or not _MID_ALLOWED.fullmatch(mid):
+            raise ValueError(
+                "message_id must be a non-empty id <=64 chars; allowed: A-Z a-z 0-9 _ - = +"
+            )
+        _validate_recipient_line(self.to, "to")
+        return self
+
+
+class GmailSendRequest(BaseModel):
+    """Compose + send a NEW Gmail message (`send_internal`/`external_send` tier).
+
+    Shared by both /gmail/send-internal and /gmail/external-send — the tier (and
+    therefore the gate behavior) is decided by which ROUTE the caller hits, not
+    by this schema. cc/bcc are optional address lines.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    to: str = Field(
+        ..., min_length=1, max_length=_ADDR_MAX,
+        description="Recipient line (RFC-2822 'To'). Operator-supplied.",
+    )
+    subject: str = Field(default="", max_length=_SUBJECT_MAX, description="Subject line.")
+    body: str = Field(
+        ..., min_length=1, max_length=_BODY_MAX, description="Plain-text body.",
+    )
+    cc: str | None = Field(default=None, max_length=_ADDR_MAX, description="Optional Cc line.")
+    bcc: str | None = Field(default=None, max_length=_ADDR_MAX, description="Optional Bcc line.")
+
+    @model_validator(mode="after")
+    def _check(self) -> "GmailSendRequest":
+        _validate_recipient_line(self.to, "to")
+        if self.cc is not None and self.cc.strip():
+            _validate_recipient_line(self.cc, "cc")
+        if self.bcc is not None and self.bcc.strip():
+            _validate_recipient_line(self.bcc, "bcc")
+        return self
+
+
+class GmailSendResponse(BaseModel):
+    """Result of a Gmail reply/forward/send — the sent message id + thread id."""
+
+    message_id: str
+    thread_id: str | None = None
+
+
+class OutlookReplyRequest(BaseModel):
+    """Reply to an Outlook message in-conversation (`reply` tier — PROOF).
+
+    Graph's `/reply` action keeps the conversation; only the message id + a
+    comment body are needed (Graph derives the conversation).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str = Field(
+        ..., description="Outlook/Graph message id being replied to."
+    )
+    body: str = Field(
+        ..., min_length=1, max_length=_BODY_MAX, description="Reply plain-text body.",
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> "OutlookReplyRequest":
+        mid = self.message_id
+        if not (1 <= len(mid) <= 512) or not _MID_ALLOWED.fullmatch(mid):
+            raise ValueError(
+                "message_id must be a non-empty id <=512 chars; allowed: A-Z a-z 0-9 _ - = +"
+            )
+        return self
+
+
+class OutlookForwardRequest(BaseModel):
+    """Forward an Outlook message to a new recipient (`reply` tier — PROOF).
+
+    Graph's `/forward` action takes the source message id + a toRecipients list
+    + an optional comment.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str = Field(
+        ..., description="Outlook/Graph message id being forwarded."
+    )
+    to: str = Field(
+        ..., min_length=1, max_length=_ADDR_MAX,
+        description="Forward recipient line. Operator-supplied.",
+    )
+    body: str = Field(
+        default="", max_length=_BODY_MAX, description="Optional prefatory comment.",
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> "OutlookForwardRequest":
+        mid = self.message_id
+        if not (1 <= len(mid) <= 512) or not _MID_ALLOWED.fullmatch(mid):
+            raise ValueError(
+                "message_id must be a non-empty id <=512 chars; allowed: A-Z a-z 0-9 _ - = +"
+            )
+        _validate_recipient_line(self.to, "to")
+        return self
+
+
+class OutlookSendRequest(BaseModel):
+    """Compose + send a NEW Outlook message (`send_internal`/`external_send` tier).
+
+    Shared by both /outlook/send-internal and /outlook/external-send. Mirrors
+    GmailSendRequest; the tier is route-determined.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    to: str = Field(
+        ..., min_length=1, max_length=_ADDR_MAX,
+        description="Recipient line. Operator-supplied.",
+    )
+    subject: str = Field(default="", max_length=_SUBJECT_MAX, description="Subject line.")
+    body: str = Field(
+        ..., min_length=1, max_length=_BODY_MAX, description="Plain-text body.",
+    )
+    cc: str | None = Field(default=None, max_length=_ADDR_MAX, description="Optional Cc line.")
+    bcc: str | None = Field(default=None, max_length=_ADDR_MAX, description="Optional Bcc line.")
+
+    @model_validator(mode="after")
+    def _check(self) -> "OutlookSendRequest":
+        _validate_recipient_line(self.to, "to")
+        if self.cc is not None and self.cc.strip():
+            _validate_recipient_line(self.cc, "cc")
+        if self.bcc is not None and self.bcc.strip():
+            _validate_recipient_line(self.bcc, "bcc")
+        return self
+
+
+class OutlookSendResponse(BaseModel):
+    """Result of an Outlook reply/forward/send.
+
+    Graph's `/reply`, `/forward`, and `/sendMail` actions return 202 with NO
+    body (the message is queued), so message_id/thread_id are typically None.
+    The field is kept for shape-parity with Gmail and forward-compat.
+    """
+
+    message_id: str | None = None
+    thread_id: str | None = None
+

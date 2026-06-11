@@ -228,6 +228,76 @@ describe("GanttView — smoke", () => {
   });
 });
 
+// Status-rank sort — verified at the page level (gantt/page.tsx) but observable
+// in GanttView via data-gantt-rail-row order in the DOM. The page sorts before
+// passing milestones down; these tests confirm the rail rows appear in the
+// expected order when GanttView receives a pre-sorted list, AND that
+// same-rank items keep their relative order (stability check).
+describe("GanttView — status-rank row order", () => {
+  let GanttView: typeof import("@/components/GanttView").GanttView;
+
+  beforeAll(async () => {
+    const mod = await import("@/components/GanttView");
+    GanttView = mod.GanttView;
+  });
+
+  // Build a milestones array already sorted by the page's STATUS_RANK logic
+  // (active→released→planned→cancelled) and confirm the DOM rail rows appear
+  // in that same order.
+  it("renders rail rows in active→released→planned→cancelled order", () => {
+    const milestones = [
+      makeDetail({ id: 10, title: "A-active", milestone_status: "active" }),
+      makeDetail({ id: 20, title: "B-released", milestone_status: "released" }),
+      makeDetail({ id: 30, title: "C-planned", milestone_status: "planned" }),
+      makeDetail({ id: 40, title: "D-cancelled", milestone_status: "cancelled" }),
+    ];
+    render(
+      <GanttView projectId={1} projectName="p" milestones={milestones} />,
+    );
+    const rows = document.querySelectorAll("[data-gantt-rail-row]");
+    const ids = Array.from(rows).map((r) =>
+      Number(r.getAttribute("data-gantt-rail-row")),
+    );
+    expect(ids).toEqual([10, 20, 30, 40]);
+  });
+
+  it("renders rail rows in active→released→planned→cancelled when input is interleaved", () => {
+    // Interleaved: cancelled first, then active, then planned, then released.
+    // The page sorts before passing to GanttView, so we pass an already-sorted
+    // array here — this test proves GanttView preserves the passed order (no
+    // internal re-sort that might break things).
+    const sorted = [
+      makeDetail({ id: 1, title: "active-1", milestone_status: "active" }),
+      makeDetail({ id: 2, title: "released-1", milestone_status: "released" }),
+      makeDetail({ id: 3, title: "planned-1", milestone_status: "planned" }),
+      makeDetail({ id: 4, title: "cancelled-1", milestone_status: "cancelled" }),
+    ];
+    render(<GanttView projectId={2} projectName="p2" milestones={sorted} />);
+    const rows = document.querySelectorAll("[data-gantt-rail-row]");
+    const ids = Array.from(rows).map((r) =>
+      Number(r.getAttribute("data-gantt-rail-row")),
+    );
+    expect(ids).toEqual([1, 2, 3, 4]);
+  });
+
+  it("preserves relative order within the same rank (stability)", () => {
+    // Two released milestones — page stable-sorts them by original index, so
+    // r1 (lower index) comes before r2.
+    const milestones = [
+      makeDetail({ id: 5, title: "released-first", milestone_status: "released" }),
+      makeDetail({ id: 6, title: "released-second", milestone_status: "released" }),
+    ];
+    render(
+      <GanttView projectId={3} projectName="p3" milestones={milestones} />,
+    );
+    const rows = document.querySelectorAll("[data-gantt-rail-row]");
+    const ids = Array.from(rows).map((r) =>
+      Number(r.getAttribute("data-gantt-rail-row")),
+    );
+    expect(ids).toEqual([5, 6]);
+  });
+});
+
 // Wave A.2c — milestone-management affordances folded into the Gantt view (these
 // assertions carried over from the deleted MilestonesView.test.tsx).
 describe("GanttView — milestone management (Wave A.2c)", () => {

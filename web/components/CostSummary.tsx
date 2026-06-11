@@ -15,6 +15,7 @@
 import { useEffect, useState } from "react";
 
 import type { ProjectStatsEntry } from "@/lib/api";
+import { readExpanded, writeExpanded } from "@/lib/collapseState";
 
 // Token / cost formatters — duplicates kept intentional: this file is the
 // canonical render home; dashboard/page.tsx private helpers remain for
@@ -87,32 +88,6 @@ type Props = {
   // height inside the grid row (gap handled by the band's `gap-3`).
   className?: string;
 };
-
-function readExpanded(key: string, defaultCollapsed: boolean): boolean {
-  // expanded = !defaultCollapsed when no stored pref exists.
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw === null) return !defaultCollapsed;
-    return JSON.parse(raw) !== false;
-  } catch {
-    return !defaultCollapsed;
-  }
-}
-
-function writeExpanded(key: string, next: boolean): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(next));
-    window.dispatchEvent(
-      new StorageEvent("storage", {
-        key,
-        newValue: JSON.stringify(next),
-        storageArea: localStorage,
-      }),
-    );
-  } catch {
-    // localStorage blocked — silently ignore.
-  }
-}
 
 export function CostSummary({
   stats,

@@ -32,6 +32,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator
 
+import anyio.to_thread
+
 logger = logging.getLogger(__name__)
 
 # Hard upload cap (#1309): 520 MB. Enforced DURING streaming via a running byte
@@ -173,6 +175,10 @@ async def stream_to_disk(
     target = build_target_path(storage_base, resource_id, sanitized_filename)
     target.parent.mkdir(parents=True, exist_ok=True)
 
+    def _write_chunk(fh, chunk: bytes) -> None:
+        """Sync helper — runs in a thread pool via anyio to avoid blocking the event loop."""
+        fh.write(chunk)
+
     total = 0
     try:
         with target.open("wb") as fh:
@@ -183,7 +189,7 @@ async def stream_to_disk(
                 if total > MAX_UPLOAD_BYTES:
                     # Stop immediately; clean up the partial file below.
                     raise UploadTooLargeError(MAX_UPLOAD_BYTES)
-                fh.write(chunk)
+                await anyio.to_thread.run_sync(lambda c=chunk: _write_chunk(fh, c))
     except UploadTooLargeError:
         _safe_unlink(target)
         raise

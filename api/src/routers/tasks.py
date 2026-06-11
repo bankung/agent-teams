@@ -13,10 +13,12 @@ from __future__ import annotations
 import logging
 import types as _types
 from datetime import date, datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi import status as http_status
-from sqlalchemy import or_, select
+from sqlalchemy import cast, or_, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -30,9 +32,11 @@ from src.models.milestone import Milestone
 from src.models.project import Project
 from src.models.session import SessionRun
 from src.models.task import Task
+from src.models.task_comment import TaskComment
 from src.models.transaction import Transaction
 from src.schemas.ai_task import ParseRequest, ParseResponse
 from src.schemas.project import ResolveFlagRequest, ResolveFlagResponse
+from src.schemas.task_comment import TaskCommentCreate, TaskCommentRead
 from src.schemas.task import (
     AcceptanceCriterion,
     DecisionRequest,
@@ -82,6 +86,7 @@ from src.services.operator_auth import (
 )
 from src.services.action_templates import get_template
 from src.services.handoff_spawn import spawn_child_from_handoff
+from src.services.task_comment import post_task_comment
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -395,9 +400,61 @@ async def list_tasks(
     ),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    order: Literal["done_lane"] | None = Query(
+        default=None,
+        description=(
+            "Kanban #2112: opt-in ordering mode. Omit (default) → id ASC "
+            "(backward-compatible). 'done_lane' → ORDER BY updated_at DESC, "
+            "id DESC, enabling keyset pagination for the Done column. "
+            "Use with process_status=5 + before_updated_at/before_id."
+        ),
+    ),
+    before_updated_at: datetime | None = Query(
+        default=None,
+        description=(
+            "Kanban #2112: keyset cursor — upper-exclusive bound on updated_at. "
+            "Honored ONLY when order=done_lane. Composite with before_id: returns "
+            "rows where updated_at < before_updated_at OR "
+            "(updated_at = before_updated_at AND id < before_id)."
+        ),
+    ),
+    before_id: int | None = Query(
+        default=None,
+        ge=1,
+        description=(
+            "Kanban #2112: keyset cursor — tiebreaker id component. "
+            "Honored ONLY when order=done_lane AND before_updated_at is set."
+        ),
+    ),
     include_deleted: bool = Query(
         default=False,
         description="If true, include soft-deleted (status=0) rows. Debug-only.",
+    ),
+    include_archived: bool = Query(
+        default=False,
+        description=(
+            "Kanban #1240: if true, include auto-archived (is_active=false) "
+            "rows. By default archived rows are excluded — the daily "
+            "audit-archive sweep flips is_active=false on completed audit "
+            "tasks older than AUDIT_ARCHIVE_DAYS so they drop off the board. "
+            "Set true to fetch them (e.g. an archive view / audit history). "
+            "Independent of include_deleted (soft-delete) — the two filters "
+            "compose."
+        ),
+    ),
+    operator_gate: Literal["any", "key", "commit", "decision", "hitl", "external"]
+    | None = Query(
+        default=None,
+        description=(
+            "Kanban #2127: filter to operator-gated ('blocked-on-operator') "
+            "tasks — answers 'what's on me?' in one query. 'any' = any gate "
+            "kind; a specific 5-enum value narrows to that kind. A task MATCHES "
+            "iff its task-level operator_gate IS NOT NULL [and equals the value "
+            "when not 'any'] OR it has >=1 acceptance_criteria item with "
+            "gate='operator' AND status='pending' [and gate_kind=<value> when "
+            "not 'any']. AC items that are passed/na no longer gate (cleared "
+            "automatically). Omit = no operator-gate filtering."
+        ),
     ),
     session: AsyncSession = Depends(get_session),
 ) -> list[Task]:
@@ -407,6 +464,14 @@ async def list_tasks(
     stmt = select(Task).where(Task.project_id == session_project_id)
     if not include_deleted:
         stmt = stmt.where(Task.status == RecordStatus.ACTIVE)
+    # Kanban #1240: default-exclude auto-archived rows (is_active=false).
+    # Opt-in via ?include_archived=true (blast-radius guard — existing explicit
+    # callers can still fetch archived rows). Independent of the soft-delete
+    # filter above; the two compose. No interaction with the process_status /
+    # pending / cancelled gates — an archived row is hidden regardless of its
+    # lifecycle code.
+    if not include_archived:
+        stmt = stmt.where(Task.is_active.is_(True))
     if process_status is not None:
         stmt = stmt.where(Task.process_status == process_status)
     elif pending:
@@ -428,6 +493,30 @@ async def list_tasks(
     # Kanban #1868: filter to a single milestone's tasks.
     if milestone_id is not None:
         stmt = stmt.where(Task.milestone_id == milestone_id)
+    # Kanban #2127: operator-gate ("blocked-on-operator") filter. OR-rule
+    # (locked): task matches iff the task-level rollup column is set [and equals
+    # the specific value] OR >=1 acceptance_criteria item has gate='operator'
+    # AND status='pending' [and gate_kind=<value>]. The AC predicate uses the @>
+    # containment operator so it can use the ix_tasks_ac_gin GIN index
+    # (jsonb_path_ops opclass — indexes @> only, NOT jsonb_path_exists). On a
+    # JSONB array, `arr @> '[{...}]'` is true iff at least one element contains
+    # the right-hand object — exactly the "any pending operator-gated AC" test.
+    # A task whose gate ACs are all passed/na AND task-level NULL is NOT matched.
+    if operator_gate is not None:
+        # Build the @> right-hand containment object. 'any' omits gate_kind so it
+        # matches any pending operator-gated AC regardless of kind; a specific
+        # value adds gate_kind so only that kind's pending ACs match.
+        _ac_match: dict[str, str] = {"gate": "operator", "status": "pending"}
+        if operator_gate != "any":
+            _ac_match["gate_kind"] = operator_gate
+        _ac_contains = Task.acceptance_criteria.op("@>")(
+            cast([_ac_match], JSONB)
+        )
+        if operator_gate == "any":
+            _task_level = Task.operator_gate.is_not(None)
+        else:
+            _task_level = Task.operator_gate == operator_gate
+        stmt = stmt.where(or_(_task_level, _ac_contains))
     # Calendar M2: due_date range filter. NULL due_date rows are excluded when
     # any bound is provided (open-ended range is fine; either bound alone works).
     if due_from is not None:
@@ -438,7 +527,24 @@ async def list_tasks(
         stmt = stmt.where(Task.parent_task_id.is_(None))
     elif parent_task_id is not None:
         stmt = stmt.where(Task.parent_task_id == parent_task_id)
-    stmt = stmt.order_by(Task.id.asc()).limit(limit).offset(offset)
+    # Kanban #2112: opt-in done-lane ordering with keyset pagination.
+    # Default (order != 'done_lane') keeps the existing id ASC + offset pattern
+    # so all existing callers are unaffected.
+    # Caveat: a DONE task whose updated_at mutates between page loads may shift
+    # pages — same reshuffle the client sortDoneLane already exhibits; acceptable.
+    if order == "done_lane":
+        if before_updated_at is not None and before_id is not None:
+            # Composite keyset: strictly after the cursor in DESC order.
+            # (updated_at < cursor_ts) OR (updated_at = cursor_ts AND id < cursor_id)
+            stmt = stmt.where(
+                or_(
+                    Task.updated_at < before_updated_at,
+                    (Task.updated_at == before_updated_at) & (Task.id < before_id),
+                )
+            )
+        stmt = stmt.order_by(Task.updated_at.desc(), Task.id.desc()).limit(limit)
+    else:
+        stmt = stmt.order_by(Task.id.asc()).limit(limit).offset(offset)
     result = await session.execute(stmt)
     return list(result.scalars().all())
 
@@ -458,6 +564,7 @@ async def get_next_autorun(
     No side effects; purely SELECT.
     """
     project_id = session_project_id
+    now = datetime.now(timezone.utc)  # shared by HITL gate + scheduled_at filter (#1972)
 
     # --- HITL timeout gate (Kanban #989) -------------------------------------
     # On-demand enforcement (Q2 → A, design lock #950 — mirrors the #951
@@ -473,7 +580,6 @@ async def get_next_autorun(
     session_project = await session.get(Project, project_id)
     if session_project is not None and session_project.hitl_timeout_hours is not None:
         timeout_hours = session_project.hitl_timeout_hours
-        now = datetime.now(timezone.utc)
         threshold = timedelta(hours=timeout_hours)
         paused_q = select(Task).where(
             Task.project_id == project_id,
@@ -503,7 +609,8 @@ async def get_next_autorun(
 
     # --- next_task -----------------------------------------------------------
     # Highest-priority runnable TODO task: auto_pickup or auto_headless,
-    # not halted, not blocked by an in-progress/todo blocker.
+    # not halted, not blocked by an in-progress/todo blocker,
+    # and scheduled_at is either unset or already reached (Kanban #1972).
     next_task_stmt = (
         select(Task)
         .outerjoin(blocker, Task.blocked_by == blocker.id)
@@ -514,6 +621,7 @@ async def get_next_autorun(
             Task.run_mode.in_([TaskRunMode.AUTO_PICKUP, TaskRunMode.AUTO_HEADLESS]),
             Task.halt_reason.is_(None),
             or_(Task.blocked_by.is_(None), blocker.process_status == TaskStatus.DONE),
+            or_(Task.scheduled_at.is_(None), Task.scheduled_at <= now),
         )
         .order_by(
             Task.priority.desc(),
@@ -706,6 +814,94 @@ async def list_tasks_blocked_by(
         .where(Task.blocked_by == task_id, Task.status == RecordStatus.ACTIVE)
         .order_by(Task.id.asc())
     )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# Kanban #1005 — append-only comment thread per task.
+# Sub-resource of a task (parity with /{task_id}/blocks): every route resolves
+# the task via get_or_404 + asserts it belongs to the session-bound project
+# before touching the thread. APPEND-ONLY (AC#7): POST appends + GET lists; there
+# is intentionally NO PATCH and NO DELETE on comments (deleting the TASK cascades
+# the thread away via the FK ON DELETE CASCADE — that's the only removal path).
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{task_id}/comments",
+    response_model=TaskCommentRead,
+    status_code=http_status.HTTP_201_CREATED,
+)
+@limiter.limit("30/minute")
+async def create_task_comment(
+    request: Request,  # required by slowapi key_func
+    task_id: int,
+    payload: TaskCommentCreate,
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+) -> TaskComment:
+    """Append a comment to a task's thread (Kanban #1005). 201 + the created row.
+
+    404 if `task_id` does not exist; 400 if it belongs to a different project
+    than the session header (mirror of the detail endpoint's sub-resource
+    convention). The append itself goes through services.task_comment.
+    post_task_comment so in-process callers and this endpoint share one path.
+    Soft-deleted tasks (status=0) still accept comments — the thread outlives a
+    soft-delete; only a hard-delete (CASCADE) removes it.
+    """
+    task = await get_or_404(
+        session, Task, detail=f"Task id={task_id} not found", id=task_id
+    )
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+
+    comment = await post_task_comment(
+        session,
+        task_id=task_id,
+        author_kind=payload.author_kind,
+        body=payload.body,
+        author_label=payload.author_label,
+        body_markdown=payload.body_markdown,
+    )
+    await session.commit()
+    await session.refresh(comment)
+    return comment
+
+
+@router.get("/{task_id}/comments", response_model=list[TaskCommentRead])
+async def list_task_comments(
+    task_id: int,
+    session_project_id: int = Depends(require_project_id_header),
+    before: int | None = Query(
+        default=None,
+        ge=1,
+        description=(
+            "Pagination cursor (Kanban #1005): return only comments with "
+            "id < `before`. Because task_comments.id is BIGSERIAL (monotonic "
+            "with insertion order), id-ordering IS chronological — the cursor "
+            "needs no created_at tiebreaker. Omit for the first (oldest) page."
+        ),
+    ),
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+) -> list[TaskComment]:
+    """List a task's comments chronologically (oldest-first), paginated.
+
+    404 if `task_id` does not exist; 400 on a project mismatch (parity with the
+    POST + the /{task_id}/blocks sub-resource convention). `?before=<id>` is the
+    cursor (return rows with id < before); `?limit` bounds the page (default 50,
+    max 200). Ordered by id ASC — chronological, since id is monotonic with
+    insertion. Returns `[]` when the task has no comments.
+    """
+    task = await get_or_404(
+        session, Task, detail=f"Task id={task_id} not found", id=task_id
+    )
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+
+    stmt = select(TaskComment).where(TaskComment.task_id == task_id)
+    if before is not None:
+        stmt = stmt.where(TaskComment.id < before)
+    stmt = stmt.order_by(TaskComment.id.asc()).limit(limit)
     result = await session.execute(stmt)
     return list(result.scalars().all())
 
@@ -1967,14 +2163,8 @@ async def update_task(
     # Kanban #832: capture resolved interaction_kind before the setattr loop
     # so the auto-unblock check after commit can read it without touching an
     # expired ORM attribute.
-    _resolved_interaction_kind_for_done = (
-        updates.get("interaction_kind") if "interaction_kind" in updates
-        else task.interaction_kind
-    )
-    _resolved_ps_for_done = (
-        updates.get("process_status") if "process_status" in updates
-        else task.process_status
-    )
+    _resolved_interaction_kind_for_done = resolved_interaction_kind
+    _resolved_ps_for_done = resolved_process_status
 
     # Kanban #955.B: capture notification payload values before the setattr
     # loop. After session.commit() the ORM object is expired (async sessions
@@ -2036,19 +2226,10 @@ async def update_task(
                 select(SessionRun).where(SessionRun.task_id == task_id)
             )
             runs = list(runs_result.scalars())
-            # Build a snapshot object that reflects the resolved-final values
-            # for the heuristic — the PATCH may set status_change_reason in
-            # the SAME body that closes the task (the typical use-case).
-            resolved_reason = (
-                updates.get("status_change_reason")
-                if "status_change_reason" in updates
-                else task.status_change_reason
-            )
-
             _snap = _types.SimpleNamespace(
                 title=task.title,
                 description=task.description,
-                status_change_reason=resolved_reason,
+                status_change_reason=_notify_status_change_reason,
             )
             est = estimate_task_cost(_snap, runs)
             updates.setdefault("estimated_input_tokens", est["tokens_in"])
@@ -2877,7 +3058,7 @@ async def delete_task(
         .select_from(Task)
         .where(Task.parent_task_id == task_id, Task.status == RecordStatus.ACTIVE)
     )
-    if active_children_count and active_children_count > 0:
+    if active_children_count > 0:
         raise HTTPException(
             status_code=409,
             detail=f"Cannot delete task — {active_children_count} active subtask(s) reference this task",

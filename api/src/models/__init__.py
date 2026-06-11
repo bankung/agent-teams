@@ -11,6 +11,7 @@ from src.models.projects_audit import ProjectsAudit
 from src.models.push_subscription import PushSubscription
 from src.models.session import Session, SessionCompact, SessionRun
 from src.models.task import Task, TaskHistory
+from src.models.task_comment import TaskComment
 from src.models.task_template import TaskTemplate
 from src.models.tool_call import ToolCall
 from src.models.transaction import Transaction
@@ -30,6 +31,7 @@ __all__ = [
     "SessionCompact",
     "SessionRun",
     "Task",
+    "TaskComment",
     "TaskHistory",
     "TaskTemplate",
     "ToolCall",

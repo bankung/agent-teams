@@ -27,3 +27,119 @@
     animation: deep-link-pulse 2s ease-out 1;
   }
 }
+
+/* Kanban #1582 — product-tour (driver.js) theming.
+   driver.css ships hardcoded light colors (#fff bg, #2d2d2d text, #ccc
+   borders). We scope every override under `.at-tour-popover` (the popoverClass
+   passed from lib/tour.ts) so it never leaks to other UI, and mirror the app's
+   zinc/emerald palette. The `.dark` html class (set by ThemeProvider) drives
+   the dark variant. The overlay scrim color itself is passed inline per-theme
+   from overlayColorForTheme() — CSS can't reach driver's SVG fill.
+   Specificity note: driver's own rules are single-class (.driver-popover…);
+   our `.at-tour-popover.driver-popover` / descendant selectors win on
+   specificity without !important except where driver uses `all:unset` on
+   buttons (we restate the full button look there). */
+
+/* ── Light (default) — zinc surface, emerald primary ──────────────────────── */
+.at-tour-popover.driver-popover {
+  background-color: #ffffff;
+  color: #18181b; /* zinc-900 */
+  border: 1px solid #e4e4e7; /* zinc-200 */
+  border-radius: 8px;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.18);
+}
+.at-tour-popover .driver-popover-title {
+  color: #18181b; /* zinc-900 */
+  font-size: 15px;
+}
+.at-tour-popover .driver-popover-description {
+  color: #52525b; /* zinc-600 */
+  font-size: 13.5px;
+}
+.at-tour-popover .driver-popover-progress-text {
+  color: #71717a; /* zinc-500 */
+}
+.at-tour-popover .driver-popover-close-btn {
+  color: #a1a1aa; /* zinc-400 */
+}
+.at-tour-popover .driver-popover-close-btn:hover,
+.at-tour-popover .driver-popover-close-btn:focus {
+  color: #18181b; /* zinc-900 */
+}
+.at-tour-popover .driver-popover-arrow {
+  border-color: #ffffff;
+}
+/* Buttons (driver uses all:unset → restate the full look). Next/Done = emerald
+   primary; Back = neutral zinc outline. The footer holds both: target the LAST
+   button as the primary action. */
+.at-tour-popover .driver-popover-footer button {
+  background-color: #ffffff;
+  color: #3f3f46; /* zinc-700 */
+  border: 1px solid #d4d4d8; /* zinc-300 */
+  border-radius: 6px;
+  text-shadow: none;
+  font-size: 12px;
+  padding: 5px 10px;
+}
+.at-tour-popover .driver-popover-footer button:hover,
+.at-tour-popover .driver-popover-footer button:focus {
+  background-color: #f4f4f5; /* zinc-100 */
+  border-color: #a1a1aa; /* zinc-400 */
+}
+.at-tour-popover .driver-popover-navigation-btns button:last-child {
+  background-color: #059669; /* emerald-600 */
+  color: #ffffff;
+  border-color: #059669;
+}
+.at-tour-popover .driver-popover-navigation-btns button:last-child:hover,
+.at-tour-popover .driver-popover-navigation-btns button:last-child:focus {
+  background-color: #047857; /* emerald-700 */
+  border-color: #047857;
+}
+
+/* ── Dark — zinc-900 surface, lighter ink, emerald-500 primary ────────────── */
+.dark .at-tour-popover.driver-popover {
+  background-color: #18181b; /* zinc-900 */
+  color: #f4f4f5; /* zinc-100 */
+  border: 1px solid #3f3f46; /* zinc-700 */
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6);
+}
+.dark .at-tour-popover .driver-popover-title {
+  color: #fafafa; /* zinc-50 */
+}
+.dark .at-tour-popover .driver-popover-description {
+  color: #a1a1aa; /* zinc-400 */
+}
+.dark .at-tour-popover .driver-popover-progress-text {
+  color: #71717a; /* zinc-500 */
+}
+.dark .at-tour-popover .driver-popover-close-btn {
+  color: #71717a; /* zinc-500 */
+}
+.dark .at-tour-popover .driver-popover-close-btn:hover,
+.dark .at-tour-popover .driver-popover-close-btn:focus {
+  color: #f4f4f5; /* zinc-100 */
+}
+.dark .at-tour-popover .driver-popover-arrow {
+  border-color: #18181b; /* zinc-900 — match popover bg so the arrow blends */
+}
+.dark .at-tour-popover .driver-popover-footer button {
+  background-color: #27272a; /* zinc-800 */
+  color: #e4e4e7; /* zinc-200 */
+  border: 1px solid #52525b; /* zinc-600 */
+}
+.dark .at-tour-popover .driver-popover-footer button:hover,
+.dark .at-tour-popover .driver-popover-footer button:focus {
+  background-color: #3f3f46; /* zinc-700 */
+  border-color: #71717a; /* zinc-500 */
+}
+.dark .at-tour-popover .driver-popover-navigation-btns button:last-child {
+  background-color: #10b981; /* emerald-500 */
+  color: #ffffff;
+  border-color: #10b981;
+}
+.dark .at-tour-popover .driver-popover-navigation-btns button:last-child:hover,
+.dark .at-tour-popover .driver-popover-navigation-btns button:last-child:focus {
+  background-color: #059669; /* emerald-600 */
+  border-color: #059669;
+}

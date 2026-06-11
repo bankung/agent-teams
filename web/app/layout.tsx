@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
+import { ClientProviders } from "@/components/ClientProviders";
 import { ServiceWorkerRegister } from "@/components/ServiceWorkerRegister";
 import { ThemeProvider } from "@/components/ThemeProvider";
 
@@ -49,7 +50,9 @@ export default function RootLayout({
           so no document scroll is needed; dashboard typically fits one viewport. */}
       <body className="antialiased h-full">
         <ThemeProvider>
-          {children}
+          <ClientProviders>
+            {children}
+          </ClientProviders>
         </ThemeProvider>
         {/* #955.C — registers /sw.js on first hydration. No-op when the
             browser lacks serviceWorker; never opens a notification prompt

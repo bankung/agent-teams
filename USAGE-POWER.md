@@ -118,6 +118,129 @@ Lead: (spawns agents from another-project's team, uses another-project's standar
 
 ---
 
+## 6. Secretary email actions
+
+**Status: Tier-1 + 2 shipped (Kanban #1585).** Tier-3 (reply/forward/send) is a future follow-up (needs Gmail OAuth go-live).
+
+**What it is:** Only `secretary*` agents can perform mailbox actions (Gmail + Outlook) — mark read/unread, archive, trash, draft — via the gated `/api/tools/email/*` path. No other agent (dev-*, novel-*, content-*, sem-*) has email-write capability. The access pattern combines three enforcement layers:
+
+1. **Layer-0 role grant** — the agent's role must be listed in the project's `config.tool_grants` to access a given email tool (e.g., `gmail.trash`).
+2. **Tier gate** — different actions have different approval modes (see "Tier model" below).
+3. **Chrome-MCP hook** — a `PreToolUse` backstop (`secretary-email-action-gate.ps1`) prevents non-secretary agents from using Chrome-MCP mailbox actions.
+
+**Tier model:** Actions fall into three approval modes:
+
+| Tier | Actions | Approval mode | Status |
+|---|---|---|---|
+| **READ (open)** | `search`, `get` | Auto-approve | Shipped |
+| **Tier-1 (open)** | `mark_read`, `mark_unread`, `archive`, `draft` | Auto-approve | Shipped |
+| **Tier-2 (operator-proof)** | `trash` (move to Trash / Deleted Items) | Operator-proof required | Shipped |
+| **Tier-3 (future)** | `reply`, `send_internal`, `external_send` | Operator-proof + out-of-band confirm | In dev (Gmail OAuth pending) |
+
+READ tier fires with no prompt and succeeds immediately — only a units-trail row (no email content) is recorded; see the Privacy note below. Tier-1 fires with no prompt; the agent calls the endpoint and succeeds immediately. Tier-2 requires operator-proof: the agent must present the `X-Operator-Token` header matching the server's `OPERATOR_ACTION_KEY` (set in the api `.env`). If the key is unset, the gate is dormant (fail-open) — existing workflows are unaffected until you activate enforcement by setting the key.
+
+**Dry-run preview for trash:** Both Gmail and Outlook `trash` endpoints accept `dry_run: true` in the request body, which returns `{would_affect_count, would_affect_ids, dry_run: true}` without deleting anything. The preview does NOT require operator-proof (it is read-only); use it to confirm blast radius before the actual deletion.
+
+**Permanent delete is ALWAYS denied** (neither auto nor operator-proof unlocks it).
+
+**READ tier actions — search and get:**
+
+- **search** — `POST /api/tools/email/{gmail,outlook}/search`. Body: `{query, max_results}` (max_results capped ≤50 per request). Returns message **metadata only**: `[{id, thread_id, from, subject, date, snippet}]`. No email body or attachment content. Use case: preview messages before a bulk action (trash, archive), or find specific threads without reading the full content.
+
+- **get** — `POST /api/tools/email/{gmail,outlook}/get`. Body: `{message_id}`. Returns headers + full plain-text **body_text** of a single message. Use case: read the full content of a specific message to make decisions (e.g., extract a code, check approval status, verify sender details).
+
+- **get-thread** (Gmail only) — `POST /api/tools/email/gmail/thread`. Body: `{thread_id}`. Returns the entire conversation: `{thread_id, messages: [{id, from, to, subject, date, body_text}]}`. Use case: read a full email thread for context, follow a discussion chain, verify approvals across messages.
+
+- **list-labels** (Gmail only) — `POST /api/tools/email/gmail/labels`. Body: `{}`. Returns `[{id, name, type}]`. Use case: discover label IDs before marking or archiving (e.g., find the "invoices" label to organize by category).
+
+- **get-attachment** (Gmail only) — `POST /api/tools/email/gmail/attachment`. Body: `{message_id, attachment_id}`. Returns `{filename, mime_type, size, data_base64}`. **Size cap: attachments over 10 MB are refused with HTTP 413** (no data returned). Use case: retrieve a file from an email for processing or storage.
+
+**Privacy note:** All READ endpoints return email content (headers, subject, sender, body, attachment metadata) to the caller, but these fields are **never written to the audit log or echoed in error responses**. Only the units trail `{provider, action, units, success}` (no content) is recorded by `gate.log_audit` (in `_scratch/email-tools-audit.jsonl`); READ operations do NOT write the action trail (`_runtime/email-actions.jsonl`, which is for mutations only). This lets the secretary read email content without exposing PII to the audit trail.
+
+**Authorization status check:** Query `GET /api/tools/email/auth/<provider>/status` (where `<provider>` is `gmail` or `outlook`) to see if the OAuth credentials are live for the current project.
+
+**Audit log (AC8):** Every Tier-1/2 action appends one JSONL row to `_runtime/email-actions.jsonl`:
+```
+{ts, agent_role, action, tier, message_ids, approval_mode, result}
+```
+
+Rotation (weekly → archive → gzip after 90 days, prune after 1 year) is dogfooded as a `bin/email-audit-rotate.ps1` script, typically triggered by a weekly Kanban recurring task.
+
+**Current quota:** All email tools are scoped per project and consume daily Gmail API units. See `GET /api/tools/email/gmail/usage` for the current snapshot (trash = 20 units per message, mark/archive = 5 per message, draft = 10 per call; list = 5 per call).
+
+**Example (secretary marks <your-account> messages as read):**
+```
+agent_role: secretary-mail-analyst
+X-Project-Id: 1
+POST /api/tools/email/gmail/mark
+{
+  "message_ids": ["msg-id-1", "msg-id-2"],
+  "read": true
+}
+→ 200 OK, 2 marked
+→ audit row written (approval_mode="auto")
+```
+
+**Example (secretary trashes with Tier-2 operator-proof):**
+```
+agent_role: secretary-mail-analyst
+X-Project-Id: 1
+X-Operator-Token: <key from OPERATOR_ACTION_KEY>
+POST /api/tools/email/gmail/trash
+{
+  "message_ids": ["msg-id-3"]
+}
+→ 200 OK, 1 trashed
+→ audit row written (approval_mode="operator_proof")
+```
+
+See `_runtime/secretary-email-policy.json` for the complete tier → action mapping.
+
+### Calendar (read-only)
+
+**Status: Tier-0 shipped.** Two read-only calendar tools (`list-events` and `freebusy`) are auto-approved and share the same Google OAuth principal as Gmail (secretary email tools).
+
+**What it is:** Secretary agents can query Google Calendar — list upcoming events, check attendees, locations, or busy intervals — for scheduling decisions. No write capability (create/modify/delete are not exposed). Both tools are READ tier (auto-approve, privacy-safe).
+
+**Prerequisites — OAuth scope update:** The existing Gmail OAuth token does NOT include calendar access. To enable calendar tools, **re-run the Gmail OAuth consent** via `POST /api/tools/email/auth/gmail/start` and complete the consent flow. The new consent will request `calendar.readonly` in addition to existing mail scopes; set `include_granted_scopes=true` to keep both. Until re-consent, calendar calls return **HTTP 412** with error `calendar_scope_not_granted`. Check status anytime via `GET /api/tools/email/auth/gmail/status` — it will report `calendar_readonly: true/false`.
+
+**The two tools:**
+
+- **list-events** — `POST /api/tools/email/calendar/events`. Body: `{time_min, time_max, calendar_id?="primary", max_results?=50}`. Times are RFC3339 strings (e.g., `2026-06-06T09:00:00Z`); `time_min` must be before `time_max`. Returns `{events: [{id, summary, start, end, attendees:[{email, display_name}], location, all_day}], count}`. Use case: list meetings in a date range, check who is invited, find a time slot for a new meeting.
+
+- **freebusy** — `POST /api/tools/email/calendar/freebusy`. Body: `{time_min, time_max, calendars?=["primary"]}`. Returns `{busy: {calendar_id: [{start, end}]}, errors?: {calendar_id: [reason]}}`. The `errors` field surfaces any calendar that couldn't be read (so a failed calendar is not mistaken for "free time"). Use case: check team availability across multiple calendars, find gaps in your schedule, block time before scheduling meetings.
+
+**Example (list upcoming events):**
+```
+X-Project-Id: 1
+POST /api/tools/email/calendar/events
+{
+  "time_min": "2026-06-06T09:00:00Z",
+  "time_max": "2026-06-06T17:00:00Z",
+  "calendar_id": "primary",
+  "max_results": 10
+}
+→ 200 OK
+{
+  "events": [
+    {
+      "id": "event-123",
+      "summary": "Team standup",
+      "start": "2026-06-06T10:00:00Z",
+      "end": "2026-06-06T10:30:00Z",
+      "attendees": [{"email": "<your-account>", "display_name": "You"}],
+      "location": "Zoom",
+      "all_day": false
+    }
+  ],
+  "count": 1
+}
+```
+
+**Privacy note:** Calendar event content (summaries, attendees, locations, busy times) is returned to the caller but **never written to the audit log or echoed in errors**. Only a units-trail row (no content) is recorded.
+
+---
+
 ## Reading more
 
 - **Kanban task structure:** see [README.md](README.md#what-happens-next) — tasks are the unit of work; acceptance criteria unlock structured handoff

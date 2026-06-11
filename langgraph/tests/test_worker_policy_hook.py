@@ -64,11 +64,24 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _clear_policy_cache() -> None:
-    """Reset the in-process policy cache before each test so prior fetches
-    don't leak. Public test hook to keep the cache module-private."""
+    """Reset both in-process caches before each test so prior fetches
+    don't leak.
+
+    Pre-warms the required_binaries cache for project 1 with None so the
+    required_binaries GET (which fires before IN_PROGRESS) is skipped in all
+    policy-hook tests — these tests focus on the approval-policy path and
+    the required_binaries check is already covered in test_worker_prereq_gate.py.
+    Without this warm-up, run-order artefacts would cause an extra GET to appear
+    whenever the cache is cold (e.g. the first test in an isolated run).
+    """
+    import time
     worker._policy_cache_clear()
+    worker._required_binaries_cache_clear()
+    # Seed required_binaries cache: project 1 has no requirements (None).
+    worker._required_binaries_cache[1] = (time.monotonic(), None)
     yield
     worker._policy_cache_clear()
+    worker._required_binaries_cache_clear()
 
 
 def _valid_env(monkeypatch: pytest.MonkeyPatch, project_id: str = "1") -> None:
@@ -183,6 +196,7 @@ async def test_hitl_pause_no_policies_normal_pause(
         await _poll_once(client, _make_graph_module(pause), cfg, _headers(cfg))
 
     # Sequence: GET next-autorun, PATCH IN_PROGRESS, GET projects/{id}, PATCH BLOCKED.
+    # (required_binaries cache pre-warmed by fixture — no extra GET before IN_PROGRESS)
     methods = [r.method for r in log.requests]
     paths = [r.url.path for r in log.requests]
     assert methods == ["GET", "PATCH", "GET", "PATCH"], (methods, paths)

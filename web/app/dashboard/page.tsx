@@ -22,10 +22,24 @@ import { EditProjectModal } from "@/components/EditProjectModal";
 import { FlagBellBadge } from "@/components/FlagBellBadge";
 import { InboxBadge } from "@/components/InboxBadge";
 import { NewProjectModal } from "@/components/NewProjectModal";
-import { PnlDashboardSection } from "@/components/PnlDashboardSection";
+import nextDynamic from "next/dynamic";
 import { ReviewSummaryWidget } from "@/components/ReviewSummaryWidget";
 import { FINANCE_PANELS_ENABLED } from "@/lib/featureFlags";
 import { ThemePicker } from "@/components/ThemePicker";
+
+// Kanban #2111 Part 3b — code-split PnlDashboardSection behind finance flag.
+// next/dynamic ensures the component (and its dependencies) are only loaded
+// when FINANCE_PANELS_ENABLED is true; the chunk is absent from the bundle
+// when the flag is off (default).
+const PnlDashboardSection = nextDynamic(
+  () =>
+    import("@/components/PnlDashboardSection").then(
+      (m) => m.PnlDashboardSection,
+    ),
+  { ssr: false },
+);
+import { LlmSpendSection } from "@/components/LlmSpendSection";
+import { ProductTour } from "@/components/ProductTour";
 
 // Cross-project dashboard — aggregate-first layout (Kanban #869, 2026-05-13).
 // Server Component; fetches batched stats at request time via getProjectsStats.
@@ -423,6 +437,9 @@ export default async function DashboardPage() {
           <NewProjectModal />
           <InboxBadge />
           <FlagBellBadge />
+          {/* #1582 — first-visit product tour: auto-fires once for new users;
+              this button is the always-available "Take the tour" replay. */}
+          <ProductTour />
           <ThemePicker />
         </span>
       </header>
@@ -446,6 +463,10 @@ export default async function DashboardPage() {
             stats={stats}
             ariaLabel="Portfolio-wide token and cost usage"
           />
+
+          {/* Kanban #2135 — LLM API spend summary. Client-side fetch; outside
+              the finance flag so it's always visible to the operator. */}
+          <LlmSpendSection />
 
           {/* Kanban #1329 (M6 FE) — cross-project P&L rollup. Operator-level
               view of revenue / expenses / net per project in the chosen

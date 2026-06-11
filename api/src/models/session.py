@@ -196,6 +196,11 @@ class SessionRun(Base):
         nullable=True,
     )
 
+    # Kanban #2135: provider/model stored for cost rollup. Nullable — legacy
+    # runs (pre-migration) have NULL; router stamps them when present in PATCH.
+    provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
     total_input_tokens: Mapped[int] = mapped_column(
         BigInteger,
         nullable=False,

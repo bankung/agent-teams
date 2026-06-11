@@ -442,6 +442,25 @@ class Task(Base):
     # Migration 0057_milestones adds the column; PG 16 metadata-only ADD COLUMN.
     due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
+    # Kanban #2127 (2026-06-11): queryable "blocked-on-operator" marker —
+    # task-level rollup. `operator_gate` is one of the 5-enum
+    # (key/commit/decision/hitl/external) or NULL (=not gated at the task level).
+    # `operator_gate_note` is free-form advisory text for the specific ask.
+    # Both set DIRECTLY by the Lead — NO auto-derivation, NO trigger, NO sweep
+    # (explicit prohibition; the AC-level gate is the source of truth for "still
+    # waiting on operator", the task-level column is a convenience rollup for
+    # tasks without ACs / a direct flag). No DB CHECK on operator_gate — the
+    # Pydantic OperatorGateLiteral at the API boundary gates the value set (422),
+    # mirroring the #1677 model_override posture (nullable TEXT, no DB DEFAULT).
+    # operator_gate_note has no length cap (advisory) and is settable
+    # independently of operator_gate. Migration 0064's nullable=true backfills
+    # existing rows to NULL. The "what's on me" filter
+    # (GET /api/tasks?operator_gate=...) matches a task iff this column IS NOT
+    # NULL [and equals the specific value] OR ≥1 AC item has gate='operator' AND
+    # status='pending' [and gate_kind=<value>] — see routers/tasks.py list_tasks.
+    operator_gate: Mapped[str | None] = mapped_column(Text, nullable=True)
+    operator_gate_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -481,6 +500,23 @@ class Task(Base):
         nullable=False,
         server_default=text("false"),
         default=False,
+    )
+
+    # Kanban #1240 (2026-06-07): auto-archive flag. The daily audit-archive
+    # sweep (services/audit_archive.py) flips this to FALSE on COMPLETED audit
+    # tasks older than AUDIT_ARCHIVE_DAYS (default 30). Orthogonal to `status`
+    # (soft-delete 0/1) and `process_status` (lifecycle 1..6): an archived row
+    # stays status=1 + process_status=5; is_active=false just hides it from the
+    # default board/list view. GET /api/tasks default-excludes is_active=false;
+    # opt-in ?include_archived=true fetches them. NOT NULL DEFAULT true backfills
+    # existing rows to "visible" via migration 0061 (PG 16 metadata-only ADD
+    # COLUMN — no heap rewrite). No DB CHECK (plain boolean — parity with
+    # is_pending / requires_human_review / nudge_disabled).
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+        default=True,
     )
 
     project: Mapped["Project"] = relationship("Project", back_populates="tasks")
@@ -634,6 +670,33 @@ class Task(Base):
             postgresql_where=text(
                 "scheduled_at IS NOT NULL AND process_status = 1 AND status = 1"
             ),
+        ),
+        # Kanban #1240: audit-archive sweep hot path — WHERE
+        # task_type='audit' AND completed_at < <cutoff>. Mirror of migration
+        # 0061's composite index (keeps ORM autogenerate in lockstep).
+        Index(
+            "ix_tasks_archive_sweep",
+            "task_type",
+            "completed_at",
+        ),
+        # Kanban #1240: tiny partial index for the rare "fetch archived rows"
+        # path (?include_archived=true / archive audit). Mirror of migration
+        # 0061's postgresql_where predicate so the index stays sparse.
+        Index(
+            "ix_tasks_active_archived",
+            "is_active",
+            postgresql_where=text("is_active = false"),
+        ),
+        # Kanban #2127: GIN index for the operator-gate AC-level filter
+        # predicate. jsonb_path_ops opclass indexes the @> containment operator
+        # ONLY (NOT jsonb_path_exists / @?) — the list_tasks filter uses @>
+        # against the acceptance_criteria JSONB array. Mirror of migration
+        # 0064's index (keeps ORM autogenerate in lockstep with the live DDL).
+        Index(
+            "ix_tasks_ac_gin",
+            "acceptance_criteria",
+            postgresql_using="gin",
+            postgresql_ops={"acceptance_criteria": "jsonb_path_ops"},
         ),
     )
 

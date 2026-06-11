@@ -45,6 +45,7 @@ Raw SQL DML is human-only per _dev-shared.md.
 ## Workflow
 
 ### 1. Bootstrap
+- Before authoring tests, read `context/projects/agent-teams/dev-tester/patterns.md` (fixtures index + seed patterns + regression test index).
 - Read `context/projects/<active>/dev-tester/current-state.md` if present (flaky tests, coverage gaps)
 - Read shared files Lead injects (`api-contracts.md` useful for contract tests)
 - Read standards Lead injects (every lane)

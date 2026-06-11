@@ -18,6 +18,12 @@ dependencies = [
     # LLM provider adapters (multi-provider via LANGGRAPH_LLM_PROVIDER).
     "langchain-anthropic==1.4.3",
     "langchain-openai==1.2.1",
+    # Google / Gemini native adapter (Kanban #1951). Uses the official
+    # google-generativeai SDK path — handles thought_signature round-trips
+    # correctly on multi-turn tool-calling (the OpenAI-compat endpoint drops
+    # thought_signature on turn 2, causing 400s). Pinned to a version
+    # compatible with langchain-core==1.4.0.
+    "langchain-google-genai==4.2.4",
     # Ollama adapter (Kanban #891) — free local LLM via the host's Ollama
     # process (http://host.docker.internal:11434). 1.1.0 is the latest stable
     # on PyPI 2026-05-14; requires langchain-core>=1.2.21,<2 (compatible).
@@ -55,7 +61,7 @@ test = [
 # Flat-layout: each .py at the langgraph/ root is a top-level module inside
 # the container (WORKDIR /app; sources copied to /app/*.py). #850 added
 # state, nodes, llm alongside the existing graph module; #852 adds worker.
-py-modules = ["graph", "state", "nodes", "llm", "worker", "hitl", "content_safety"]
+py-modules = ["graph", "state", "nodes", "llm", "worker", "hitl", "content_safety", "gemini_schema"]
 
 [tool.pytest.ini_options]
 # Run with `pytest tests/` from /app inside the container, or

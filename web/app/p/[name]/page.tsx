@@ -5,6 +5,7 @@ import {
   getProjectsStats,
   getProjectProgressStats,
   listAllTasks,
+  listDoneLanePage,
   HttpError,
 } from "@/lib/api";
 import { TaskRunMode } from "@/lib/constants";
@@ -29,21 +30,29 @@ export default async function ProjectBoardPage({ params }: Props) {
   // Kanban #1292 — burndown + velocity series SSR-fetched in the same
   // Promise.all (established pattern; avoids the client-fetch origin class
   // that bit #1673). Defaults: bucket=week, days=90 (the BE defaults).
-  // #2033 — use listAllTasks (paginated, no limit cap) so projects with >500
-  // active tasks (agent-teams itself has ~600) get a complete set. The Board's
-  // milestone filter client-predicate then operates on the full snapshot.
-  const [tasks, projectStats, progressStats] = await Promise.all([
-    listAllTasks(project.id),
+  // Kanban #2112 — heap-win: split active vs DONE into two fetches.
+  // active: listAllTasks(pending=true) — excludes DONE + CANCELLED, paginates
+  //   fully (projects with >500 active tasks get the complete set).
+  // doneFirstPage: listDoneLanePage(limit=50) — first 50 DONE tasks only;
+  //   remaining pages fetched client-side on "Load more".
+  // Previously: listAllTasks(project.id) fetched ALL tasks incl. every DONE.
+  const [active, doneFirstPage, projectStats, progressStats] = await Promise.all([
+    listAllTasks(project.id, { pending: true }),
+    listDoneLanePage(project.id, { limit: 50 }),
     getProjectsStats({ projectId: project.id }),
     getProjectProgressStats(project.id),
   ]);
-  const hasHeadlessTask = tasks.some(
+  const initialTasks = [...active, ...doneFirstPage];
+  // has-more: if the first page is exactly the limit, the server likely has more.
+  const initialDoneHasMore = doneFirstPage.length === 50;
+  const hasHeadlessTask = initialTasks.some(
     (t) => t.run_mode === TaskRunMode.AUTO_HEADLESS,
   );
 
   return (
     <Board
-      initialTasks={tasks}
+      initialTasks={initialTasks}
+      initialDoneHasMore={initialDoneHasMore}
       hasHeadlessTask={hasHeadlessTask}
       project={project}
       projectStats={projectStats}

@@ -2,3 +2,7 @@ node_modules
 .next
 .git
 *.md
+# Exclude .env files so stray secrets are never baked into the prod image.
+.env
+.env.*
+!.env.example

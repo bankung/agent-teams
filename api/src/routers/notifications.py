@@ -49,6 +49,13 @@ class DeliveryRequest(BaseModel):
     land. `payload` is a free-form dict the adapter serializes to text
     (Telegram: `<key>: <value>` lines).
 
+    `event_kind` (Kanban #1937) is the push-subscription filter key — when set,
+    the router additionally queries `push_subscriptions` for active rows with
+    kinds_enabled[event_kind]=true and appends them as web_push targets.
+    Callers that pre-date #1937 omit this field; the router skips push-
+    subscription resolution (backwards-compatible, same as event_kind=None
+    in the service layer).  Only meaningful when `kind="web_push"`.
+
     `extra='forbid'` mirrors the kill/grant-consent deliberate-action posture
     — typo'd keys fail 422 instead of silently dropping.
     """
@@ -58,6 +65,16 @@ class DeliveryRequest(BaseModel):
     task_id: int = Field(ge=1)
     payload: dict = Field(default_factory=dict)
     kind: NotificationKind
+    event_kind: str | None = Field(
+        default=None,
+        description=(
+            "Optional push-subscription filter key (Kanban #1937). "
+            "When set and kind='web_push', the router queries push_subscriptions "
+            "for rows with kinds_enabled[event_kind]=true and appends them as targets. "
+            "Valid values mirror EventKind in notification_router.py: "
+            "hitl_needed, task_done, task_failed, budget_warn, session_waiting."
+        ),
+    )
 
 
 class DeliveryAttempt(BaseModel):
@@ -179,5 +196,6 @@ async def deliver_notification(
         payload=body.payload,
         kind=body.kind,
         session=session,
+        event_kind=body.event_kind,
     )
     return DeliveryResponse(**result)

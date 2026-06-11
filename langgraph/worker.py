@@ -41,7 +41,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
+import random
+import re
 import shutil
 import time
 from types import ModuleType
@@ -54,6 +57,7 @@ from approval_evaluator import evaluate_policy
 import config as _config
 from config import resolve_session_id
 from content_safety import sanitize_agent_action, scan_task_content
+import multiboard as _multiboard
 from hitl import (
     CheckpointMissingError,
     EngineCrashError,
@@ -84,22 +88,136 @@ STATUS_DONE = 5
 _REASON_MAX = 400
 _HALT_REASON_MAX = 500
 
+# Kanban #2136 — transient-retry config (resolved at call time from env, not
+# at startup, so tests can monkeypatch without a WorkerConfig roundtrip).
+_DEFAULT_TRANSIENT_RETRIES = 2
+_DEFAULT_RETRY_BACKOFF_SEC = 5.0
+
+
+def classify_exception(exc: BaseException) -> tuple[str, str]:
+    """Map an exception to (kind, short_class) for structured halt taxonomy.
+
+    Kanban #2136.  Classification priority (first match wins):
+      (a) httpx transport errors → transient
+      (b) duck-typed status_code attribute: 429 / 5xx → transient;
+          4xx (400 → bad_request, 401/403 → auth) → permanent;
+          also walks exc.__cause__ / exc.__context__ (depth ≤ 5) when the top
+          exception carries no usable status — langchain wrappers raise from
+          an inner google/httpx exception that DOES carry the code (Kanban #2274)
+      (c) class-name heuristics for common SDK rate-limit wrappers;
+          then conservative message heuristic: RESOURCE_EXHAUSTED (exact) or
+          (regex \b429\b AND a quota/rate context word) → transient:rate_limit
+      (d) default → ('permanent', 'unknown') — fail-safe halts, never retry-loops
+
+    asyncio.CancelledError is NOT passed here (it's re-raised before this point).
+    """
+    # (a) httpx transport exceptions — network-level, always transient
+    if isinstance(exc, httpx.TimeoutException):
+        return ("transient", "timeout")
+    if isinstance(exc, (httpx.ConnectError, httpx.TransportError)):
+        return ("transient", "connection")
+
+    # (b) duck-type status_code — provider SDKs expose it under different attrs.
+    # First try the exception itself; if no usable status found, walk the cause
+    # chain (depth ≤ 5) for langchain/google wrappers that raise from an inner
+    # exception that carries the real HTTP code (Kanban #2274).
+    def _extract_status(e: BaseException) -> int | None:
+        for attr in ("status_code", "code"):
+            val = getattr(e, attr, None)
+            if isinstance(val, int):
+                return val
+        resp = getattr(e, "response", None)
+        if resp is not None:
+            val = getattr(resp, "status_code", None)
+            if isinstance(val, int):
+                return val
+        return None
+
+    status: int | None = _extract_status(exc)
+    if status is None:
+        # Walk cause chain (bounded, cycle-safe via seen set).
+        seen: set[int] = {id(exc)}
+        cursor: BaseException | None = exc.__cause__ or exc.__context__
+        depth = 0
+        while cursor is not None and depth < 5:
+            if id(cursor) in seen:
+                break
+            seen.add(id(cursor))
+            status = _extract_status(cursor)
+            if status is not None:
+                break
+            cursor = cursor.__cause__ or cursor.__context__
+            depth += 1
+
+    if status is not None:
+        if status == 429:
+            return ("transient", "rate_limit")
+        if 500 <= status <= 599:
+            return ("transient", "server_error")
+        if status in (401, 403):
+            return ("permanent", "auth")
+        if 400 <= status <= 499:
+            return ("permanent", "bad_request")
+
+    # (c) class-name heuristics for common SDK wrappers that don't expose
+    #     status_code reliably (e.g. anthropic.RateLimitError before httpx wraps)
+    type_name = type(exc).__name__.lower()
+    if "ratelimit" in type_name or "rate_limit" in type_name:
+        return ("transient", "rate_limit")
+    if "timeout" in type_name:
+        return ("transient", "timeout")
+    if "connection" in type_name or "transport" in type_name:
+        return ("transient", "connection")
+
+    # Conservative message heuristic (Kanban #2274): catches Google
+    # RESOURCE_EXHAUSTED / 429 signals from SDK wrappers (e.g.
+    # ChatGoogleGenerativeAIError) that expose neither status_code nor a
+    # recognisable class name.  Two independent signals accepted:
+    #   1. "RESOURCE_EXHAUSTED" present (exact, case-sensitive) — strong Google signal.
+    #   2. bare \b429\b AND a quota/rate context word (required pairing so a
+    #      message like "error at line 429" never misclassifies).
+    exc_msg = str(exc)
+    if "RESOURCE_EXHAUSTED" in exc_msg:
+        return ("transient", "rate_limit")
+    if re.search(r"\b429\b", exc_msg) and re.search(
+        r"quota|rate limit|rate-limit|Too Many Requests", exc_msg, re.IGNORECASE
+    ):
+        return ("transient", "rate_limit")
+
+    # (d) default — fail-safe permanent halt; never retry-loops on unknowns
+    return ("permanent", "unknown")
+
 
 class WorkerConfig:
     """Resolved at lifespan startup.  Raises RuntimeError on any missing /
     malformed required env-var so the container fails fast instead of starting
-    a worker that immediately crashes on the first poll."""
+    a worker that immediately crashes on the first poll.
+
+    Kanban #2184 — multi-board mode:
+      LANGGRAPH_PROJECT_ID SET   -> single-board mode (byte-identical to pre-#2184).
+      LANGGRAPH_PROJECT_ID UNSET -> multi-board mode: discover eligible projects
+                                    via GET /api/projects on each refresh cycle.
+      In multi-board mode project_id is None and multi_board=True.
+    """
 
     def __init__(self) -> None:
         proj = os.getenv("LANGGRAPH_PROJECT_ID", "").strip()
-        if not proj or not proj.isdigit() or int(proj) < 1:
-            raise RuntimeError(
-                "LANGGRAPH_PROJECT_ID env-var is required (positive integer). "
-                "Set LANGGRAPH_PROJECT_ID=<id> in .env — use the project the "
-                "Kanban session is bound to (dogfood default: 1). "
-                "Without it the worker doesn't know which project's task board to poll."
-            )
-        self.project_id: int = int(proj)
+        if proj:
+            # Single-board mode: env set — validate same rules as before.
+            if not proj.isdigit() or int(proj) < 1:
+                raise RuntimeError(
+                    "LANGGRAPH_PROJECT_ID env-var must be a positive integer. "
+                    "Set LANGGRAPH_PROJECT_ID=<id> in .env — use the project the "
+                    "Kanban session is bound to (dogfood default: 1). "
+                    "Without it the worker doesn't know which project's task board to poll."
+                )
+            self.project_id: int | None = int(proj)
+            self.multi_board: bool = False
+        else:
+            # Multi-board mode: no project pinned — worker discovers eligible
+            # projects at runtime via GET /api/projects. #2184
+            self.project_id = None
+            self.multi_board = True
 
         self.api_base: str = _config.resolve_api_base()
         if not self.api_base:
@@ -132,8 +250,23 @@ async def run_worker_loop(graph_module: ModuleType) -> None:
     each iteration.  This avoids a circular import (worker imports graph
     statically -> graph imports worker statically) and lets a future hot
     reload swap the compiled graph in-place.
+
+    Kanban #2184: when LANGGRAPH_PROJECT_ID is unset, delegates to
+    `_run_multi_board_loop` instead of the single-board path below.
     """
     cfg = WorkerConfig()
+    if cfg.multi_board:
+        # Warn if LANGGRAPH_SESSION_ID is set — it's single-board-only. #2184
+        if os.getenv("LANGGRAPH_SESSION_ID", "").strip():
+            logger.warning(
+                "LANGGRAPH_SESSION_ID is set but multi-board mode is active "
+                "(LANGGRAPH_PROJECT_ID unset) — session env override ignored; "
+                "per-project sessions are managed in-process. #2184"
+            )
+        await _run_multi_board_loop(cfg, graph_module)
+        return
+
+    # Single-board mode — byte-identical to pre-#2184.
     logger.info(
         "worker starting: project_id=%d api_base=%s poll_interval=%ds provider=%s model=%s",
         cfg.project_id,
@@ -171,6 +304,237 @@ async def run_worker_loop(graph_module: ModuleType) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Multi-board loop (Kanban #2184)
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_all_projects(
+    client: httpx.AsyncClient,
+    api_base: str,
+) -> list[dict] | None:
+    """GET /api/projects and return the list.  Returns None on any failure.
+
+    No X-Project-Id header needed — list endpoint is not project-scoped.
+    """
+    try:
+        resp = await client.get(f"{api_base}/api/projects")
+    except httpx.HTTPError as exc:
+        logger.warning("multi-board: GET /api/projects HTTP error: %r", exc)
+        return None
+    if resp.status_code != 200:
+        logger.warning(
+            "multi-board: GET /api/projects returned %d: %s",
+            resp.status_code,
+            resp.text[:200],
+        )
+        return None
+    try:
+        return resp.json()
+    except Exception:
+        logger.warning("multi-board: GET /api/projects returned non-JSON body")
+        return None
+
+
+async def _ensure_project_session(
+    client: httpx.AsyncClient,
+    cfg: WorkerConfig,
+    project_id: int,
+    project_name: str | None,
+) -> int | None:
+    """Return (or create) a session_id for `project_id` in the process cache.
+
+    Creates via POST /api/sessions with process_label 'harness-worker (<name>)'.
+    On creation failure: logs warning + returns None (usage reporting skipped,
+    worker does NOT crash). #2184
+    """
+    cached = _multiboard.get_cached_session(project_id)
+    if cached is not None:
+        return cached
+
+    label = f"harness-worker ({project_name or project_id})"
+    url = f"{cfg.api_base}/api/sessions"
+    try:
+        resp = await client.post(
+            url,
+            json={"project_id": project_id, "process_label": label},
+        )
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "multi-board: session create HTTP error for project %d: %r",
+            project_id,
+            exc,
+        )
+        return None
+    if resp.status_code != 201:
+        logger.warning(
+            "multi-board: session create returned %d for project %d: %s",
+            resp.status_code,
+            project_id,
+            resp.text[:200],
+        )
+        return None
+    try:
+        session_id = resp.json().get("id")
+    except Exception:
+        logger.warning(
+            "multi-board: session create non-JSON for project %d", project_id
+        )
+        return None
+    if not isinstance(session_id, int):
+        logger.warning(
+            "multi-board: session create missing int id for project %d", project_id
+        )
+        return None
+    _multiboard.put_cached_session(project_id, session_id)
+    logger.info(
+        "multi-board: session created: project_id=%d session_id=%d label=%r",
+        project_id,
+        session_id,
+        label,
+    )
+    return session_id
+
+
+async def _multiboard_has_work(
+    client: httpx.AsyncClient,
+    api_base: str,
+    headers: dict[str, str],
+) -> bool:
+    """Peek at next-autorun for one project; return True if ACTIONABLE work exists.
+
+    Actionable work = next_task is not None OR at least one pending_questions
+    entry passes _needs_resume (i.e. it has an unconsumed operator answer).
+
+    Critically, a pending question that is still AWAITING input (no answer yet,
+    or cursor already advanced past the latest answer) is NOT actionable — the
+    worker cannot do anything until the operator answers. Counting unanswered
+    questions as work caused board-starvation: a permanently-parked question on
+    board A (e.g. ps=4 debris, task 2283 on board 661) made has_work(A) = True
+    every tick, preventing board B from ever being polled. Kanban #2298.
+
+    The consumable-question predicate is _needs_resume — the SAME function that
+    _poll_once step (a) uses when it decides whether to resume a HITL task. Reuse
+    ensures the two callsites stay in sync with zero drift risk. #2298
+    """
+    try:
+        resp = await client.get(f"{api_base}/api/tasks/next-autorun", headers=headers)
+    except httpx.HTTPError:
+        return False
+    if resp.status_code != 200:
+        return False
+    try:
+        payload = resp.json()
+    except Exception:
+        return False
+    pending_questions = payload.get("pending_questions") or []
+    return bool(
+        payload.get("next_task") is not None
+        or any(_needs_resume(q)[0] for q in pending_questions)
+    )
+
+
+async def _run_multi_board_loop(
+    cfg: WorkerConfig,
+    graph_module: ModuleType,
+) -> None:
+    """Multi-board poll loop — LANGGRAPH_PROJECT_ID unset path. Kanban #2184.
+
+    Per-tick semantics (serial):
+      1. Every `multiboard_refresh_ticks()` ticks refresh the eligible project
+         list from GET /api/projects. Log the set whenever it changes.
+      2. Iterate eligible projects in id-ascending order; peek next-autorun per
+         project via _multiboard_has_work. "Has work" means ACTIONABLE work:
+         next_task non-null OR at least one pending_questions entry has an
+         unconsumed operator answer (_needs_resume). An unanswered parked question
+         is NOT actionable and must not starve later boards. Kanban #2298.
+      3. At the FIRST project with actionable work, call _poll_once and end the
+         tick (serial — no other project processes that tick).
+      4. If no project has work, the tick ends idle.
+    """
+    logger.info(
+        "worker starting (multi-board): api_base=%s poll_interval=%ds provider=%s model=%s",
+        cfg.api_base,
+        cfg.poll_interval_sec,
+        resolve_provider(),
+        resolve_model(),
+    )
+    eligible: list[dict] = []
+    last_eligible_ids: set[int] = set()
+    tick = 0
+    refresh_ticks = _multiboard.multiboard_refresh_ticks()
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        while True:
+            # Refresh eligible list every N ticks. #2184
+            if tick % refresh_ticks == 0:
+                raw = await _fetch_all_projects(client, cfg.api_base)
+                if raw is not None:
+                    eligible = _multiboard.filter_eligible(raw)
+                    new_ids = {p["id"] for p in eligible}
+                    if new_ids != last_eligible_ids:
+                        logger.info(
+                            "multi-board eligible projects: %s",
+                            [(p["id"], p.get("name")) for p in eligible],
+                        )
+                        last_eligible_ids = new_ids
+                if not eligible:
+                    logger.info(
+                        "multi-board: no eligible projects; sleeping (tick=%d)", tick
+                    )
+
+            tick += 1
+
+            # Find first project with work; process it; end tick. #2184
+            for project in eligible:
+                project_id: int = project["id"]
+                project_name: str | None = project.get("name")
+                headers = {
+                    "X-Project-Id": str(project_id),
+                    "Content-Type": "application/json",
+                }
+                has_work = await _multiboard_has_work(client, cfg.api_base, headers)
+                if not has_work:
+                    continue
+
+                # Ensure per-project session for usage metering. #2184
+                session_id = await _ensure_project_session(
+                    client, cfg, project_id, project_name
+                )
+                # Inject session_id into env so resolve_session_id() inside
+                # _poll_once picks it up — restored immediately after. Safe
+                # because this coroutine is serial (no concurrent _poll_once).
+                _prev_session_env = os.environ.get("LANGGRAPH_SESSION_ID")
+                if session_id is not None:
+                    os.environ["LANGGRAPH_SESSION_ID"] = str(session_id)
+                elif "LANGGRAPH_SESSION_ID" in os.environ:
+                    del os.environ["LANGGRAPH_SESSION_ID"]
+                try:
+                    try:
+                        await _poll_once(client, graph_module, cfg, headers)
+                    except asyncio.CancelledError:
+                        logger.info("multi-board: worker shutdown — exiting loop")
+                        raise
+                    except Exception:
+                        logger.exception(
+                            "multi-board: iteration crashed for project %d; continuing",
+                            project_id,
+                        )
+                finally:
+                    # Restore previous session env exactly. #2184
+                    if _prev_session_env is not None:
+                        os.environ["LANGGRAPH_SESSION_ID"] = _prev_session_env
+                    elif "LANGGRAPH_SESSION_ID" in os.environ:
+                        del os.environ["LANGGRAPH_SESSION_ID"]
+                break  # first actionable project processed; end tick. #2184
+
+            try:
+                await asyncio.sleep(cfg.poll_interval_sec)
+            except asyncio.CancelledError:
+                logger.info("multi-board: worker shutdown during sleep — exiting loop")
+                raise
+
+
+# ---------------------------------------------------------------------------
 # One poll tick
 # ---------------------------------------------------------------------------
 
@@ -194,6 +558,11 @@ async def _poll_once(
       c. Pick `next_task` and run it through the normal IN_PROGRESS → DONE /
          BLOCKED path.
     """
+    # Resolve effective project_id from headers (supports multi-board where
+    # cfg.project_id may be None — the per-project headers carry the right id).
+    # #2184
+    _effective_project_id: int = cfg.project_id or int(headers.get("X-Project-Id", 0))
+
     # 1) Poll the Kanban for the next eligible task.
     resp = await client.get(f"{cfg.api_base}/api/tasks/next-autorun", headers=headers)
     if resp.status_code != 200:
@@ -284,7 +653,7 @@ async def _poll_once(
     # PATCH BLOCKED with halt_reason='runtime_prereq_missing' naming the missing
     # binary. None / empty → skip entirely (project byte-for-byte unaffected).
     required_binaries = await _fetch_project_required_binaries(
-        client, cfg, headers, cfg.project_id
+        client, cfg, headers, _effective_project_id
     )
     missing = [
         b for b in (required_binaries or []) if shutil.which(b) is None
@@ -295,7 +664,7 @@ async def _poll_once(
             "missing host binaries %s (project %d declares required_binaries=%s)",
             task_id,
             missing,
-            cfg.project_id,
+            _effective_project_id,
             required_binaries,
         )
         await _patch_task(
@@ -389,23 +758,102 @@ async def _poll_once(
         # know which run row to PATCH with token usage. None when
         # LANGGRAPH_SESSION_ID is unset (usage reporting disabled).
         "session_run_id": session_run_id,
+        # Kanban #2185 — multi-board tool fix: pass the per-task project_id so
+        # nodes can fetch tools_config for the correct project even when
+        # LANGGRAPH_PROJECT_ID env is unset (multi-board mode). In single-board
+        # mode _effective_project_id == cfg.project_id, so behavior is identical.
+        "project_id": _effective_project_id,
     }
     config = {"configurable": {"thread_id": f"task-{task_id}"}}
 
+    # Kanban #2136 — structured halt taxonomy + bounded transient retry.
+    # LangGraph checkpoints make re-invocation safe (idempotent per thread_id).
+    # Retry count / backoff come from env-vars resolved here so tests can
+    # monkeypatch without a WorkerConfig roundtrip.
+    _retries_raw = os.getenv("LANGGRAPH_TRANSIENT_RETRIES", str(_DEFAULT_TRANSIENT_RETRIES))
     try:
-        final_state = await compiled.ainvoke(initial_state, config=config)
-    except asyncio.CancelledError:
-        # Shutdown mid-invoke. The task stays in IN_PROGRESS; the operator can
-        # restart the worker and `next-autorun`'s queue logic / resume_tasks
-        # path (deferred #852b) will recover it.
-        logger.info(
-            "task %d interrupted by worker shutdown; leaving in IN_PROGRESS", task_id
+        _max_retries = max(0, int(_retries_raw))
+    except ValueError:
+        raise RuntimeError(
+            f"LANGGRAPH_TRANSIENT_RETRIES must be a non-negative integer; "
+            f"got {_retries_raw!r}. Unset to use the default ({_DEFAULT_TRANSIENT_RETRIES})."
         )
-        raise
-    except Exception as exc:
-        logger.exception("graph crashed on task %d", task_id)
-        # Truncate but include type + message so the audit trail is useful.
-        halt_msg = f"langgraph error: {type(exc).__name__}: {str(exc)[:_HALT_REASON_MAX]}"
+    _backoff_raw = os.getenv("LANGGRAPH_RETRY_BACKOFF_SEC", str(_DEFAULT_RETRY_BACKOFF_SEC))
+    try:
+        _backoff_base = max(0.0, float(_backoff_raw))
+    except ValueError:
+        raise RuntimeError(
+            f"LANGGRAPH_RETRY_BACKOFF_SEC must be a non-negative number (seconds); "
+            f"got {_backoff_raw!r}. Unset to use the default ({_DEFAULT_RETRY_BACKOFF_SEC})."
+        )
+    final_state: dict[str, Any] | None = None
+    _last_exc: BaseException | None = None
+    _attempts_made = 0
+    for _attempt in range(_max_retries + 1):
+        _attempts_made = _attempt + 1
+        try:
+            final_state = await compiled.ainvoke(initial_state, config=config)
+            _last_exc = None
+            break  # success — exit retry loop
+        except asyncio.CancelledError:
+            # Shutdown mid-invoke. The task stays in IN_PROGRESS; the operator
+            # can restart the worker and `next-autorun`'s queue logic /
+            # resume_tasks path (deferred #852b) will recover it.
+            logger.info(
+                "task %d interrupted by worker shutdown; leaving in IN_PROGRESS",
+                task_id,
+            )
+            raise
+        except Exception as exc:
+            _last_exc = exc
+            kind, short_class = classify_exception(exc)
+            if kind == "transient" and _attempt < _max_retries:
+                # Exponential backoff + small jitter so concurrent workers
+                # don't pile up on the same provider endpoint.
+                delay = _backoff_base * math.pow(2, _attempt) + random.uniform(0, 0.5)
+                logger.warning(
+                    "task %d graph transient error (class=%s attempt=%d/%d); "
+                    "retrying in %.1fs: %s: %s",
+                    task_id,
+                    short_class,
+                    _attempt + 1,
+                    _max_retries + 1,
+                    delay,
+                    type(exc).__name__,
+                    str(exc)[:200],
+                )
+                try:
+                    await asyncio.sleep(delay)
+                except asyncio.CancelledError:
+                    logger.info(
+                        "task %d interrupted during retry sleep; leaving in IN_PROGRESS",
+                        task_id,
+                    )
+                    raise
+            else:
+                # Permanent error or transient retries exhausted.
+                logger.exception("graph crashed on task %d (class=%s)", task_id, short_class)
+                break
+
+    if _last_exc is not None:
+        kind, short_class = classify_exception(_last_exc)
+        retries_done = _attempts_made - 1
+        # Security MED-2: strip non-printable chars from the exc message before
+        # it lands in halt_reason (client-supplied provider/model can embed
+        # control chars). Keep printable ASCII + Thai (L23 parity deferred to
+        # #2155; this filter covers the accepted fix).
+        _raw_exc_msg = re.sub(r"[^\x20-\x7E฀-๿]", "?", str(_last_exc))
+        # Compute prefix + suffix first; cap detail to remaining budget so the
+        # retry suffix is never silently eaten by a second truncation.
+        _class_name = type(_last_exc).__name__
+        if retries_done > 0:
+            _suffix = f" (after {retries_done} retries)"
+        else:
+            _suffix = ""
+        _prefix = f"{kind}:{short_class}: {_class_name}: "
+        _detail_budget = _HALT_REASON_MAX - len(_prefix) - len(_suffix)
+        _detail = _raw_exc_msg[:max(0, _detail_budget)]
+        halt_msg = f"{_prefix}{_detail}{_suffix}"
         await _patch_task(
             client,
             cfg,
@@ -418,7 +866,9 @@ async def _poll_once(
         )
         return
 
-    # 4) Finalize.
+    # 4) Finalize.  `final_state` is guaranteed non-None here: the error path
+    # above returns early, so reaching this line means the invoke loop succeeded.
+    assert final_state is not None
     body = _build_finalize_body(final_state, completed_at=_config.utc_now())
 
     # Kanban #957 Phase 1 — approval-policy hook. Only fires on HITL pause
@@ -430,7 +880,7 @@ async def _poll_once(
         "question_payload"
     ):
         policies = await _fetch_project_policies(
-            client, cfg, headers, cfg.project_id
+            client, cfg, headers, _effective_project_id
         )
         action, default_answer, rule_name = evaluate_policy(
             body["question_payload"], policies

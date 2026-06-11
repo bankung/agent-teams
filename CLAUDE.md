@@ -24,6 +24,7 @@ Drift catalog + 4 modes + incident history: see [.claude/docs/lessons.md](.claud
 - **Every user assignment opens a Kanban task BEFORE work starts** (exception: explicit "no task needed", pure conversation, or trivial follow-up). Include `acceptance_criteria` in the same POST call.
 - **Cross-project edits to agent-teams platform files require a Kanban task on agent-teams.** File task with title prefix indicating purpose: `[platform-rule]`, `[content-team]`, `[methodology]`, etc. Do NOT stage / commit / push from the non-agent-teams session. See [.claude/docs/lessons.md](.claude/docs/lessons.md) "Cross-project platform edits."
 - **Verify, don't trust.** Open modified files before reporting completion to user.
+- **Email actions are SECRETARY-ROLE ONLY.** Mailbox actions (mark / archive / draft / delete / reply / forward / send, Gmail + Outlook) run only via the `secretary*` agents through the gated `/api/tools/email/*` path (Layer-0 role grant #1799 → operator-proof tier #1859). No other agent (dev-*, novel-*, content-*, sem-*, …) has email-write capability; the `secretary-email-action-gate.ps1` PreToolUse hook backstops the Chrome-MCP browser path. (Kanban #1585)
 
 ## Acceptance criteria discipline (universal)
 

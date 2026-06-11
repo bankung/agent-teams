@@ -36,8 +36,10 @@ Karpathy cuts (matches Gmail):
 from __future__ import annotations
 
 import datetime
+import html
 import logging
 import os
+import re
 import secrets
 import time
 from typing import Any
@@ -47,10 +49,25 @@ import msal
 
 logger = logging.getLogger(__name__)
 
+# FIX-2 (#1939): defense-in-depth id validation inside the client.
+# Same charset as Gmail _ID_RE plus the 512-char Outlook length bound.
+# Defined independently here to avoid a router/schema import cycle.
+_ID_RE = re.compile(r"^[A-Za-z0-9_\-=+]+$")
+
 # Mail.ReadWrite — the minimal Graph scope that covers reading folders and
 # moving messages to Deleted Items. Form expected by msal: bare permission
 # name; the library prefixes the resource URL automatically for Graph.
-SCOPES = ["Mail.ReadWrite"]
+#
+# Kanban #1963: Calendars.ReadWrite ADDED for the Calendar tools on the PROPER
+# `/api/tools/calendar` base — covers list (calendarView), getSchedule (freebusy),
+# POST /me/events (create), and the accept/decline/tentativelyAccept RSVP verbs.
+# RE-CONSENT PREREQUISITE: a token granted under the old Mail.ReadWrite-only list
+# does NOT carry Calendars.ReadWrite — the operator must re-run the OAuth dance
+# (POST /api/tools/email/auth/outlook/start, which uses prompt=consent) to grant
+# it. Until re-consent, a Graph calendar call returns an insufficient-scope error
+# which outlook_calendar_client maps to CalendarScopeError → HTTP 412. LIVE
+# create/respond verification is OUT OF SCOPE for #1963 (build + mocked tests).
+SCOPES = ["Mail.ReadWrite", "Calendars.ReadWrite"]
 
 # Microsoft Graph base URL for the v1.0 REST surface.
 _GRAPH_BASE = "https://graph.microsoft.com/v1.0"
@@ -386,6 +403,8 @@ def trash_messages(creds: dict[str, Any], message_ids: list[str]) -> tuple[list[
     trashed: list[str] = []
     errors: list[dict] = []
     for mid in message_ids:
+        if not _ID_RE.fullmatch(mid) or len(mid) > 512:
+            raise ValueError("invalid message_id")
         url = f"{_GRAPH_BASE}/me/messages/{mid}/move"
         # destinationId="deletedItems" is the well-known folder id Graph
         # recognises for the Deleted Items folder.
@@ -411,3 +430,364 @@ def trash_messages(creds: dict[str, Any], message_ids: list[str]) -> tuple[list[
                 }
             )
     return trashed, errors
+
+
+def mark_read(creds: dict[str, Any], message_ids: list[str], read: bool) -> tuple[list[str], list[dict]]:
+    """Set isRead on each message. Returns (modified_ids, errors).
+
+    read=True  -> isRead=true  (mark read).
+    read=False -> isRead=false (mark unread).
+
+    Graph has no label model; read/unread is the `isRead` boolean property —
+    equivalent of Gmail's UNREAD label add/remove via modify_labels.
+
+    Per-message failures do NOT abort the loop (mirrors `trash_messages`).
+    Errors entry shape: {message_id, error_class, status}.
+    """
+    access_token = _acquire_silent(creds)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    modified: list[str] = []
+    errors: list[dict] = []
+    for mid in message_ids:
+        if not _ID_RE.fullmatch(mid) or len(mid) > 512:
+            raise ValueError("invalid message_id")
+        url = f"{_GRAPH_BASE}/me/messages/{mid}"
+        body = {"isRead": read}
+        try:
+            resp = _graph_request_with_retry("PATCH", url, headers=headers, json_body=body)
+            if 200 <= resp.status_code < 300:
+                modified.append(mid)
+            else:
+                errors.append(
+                    {
+                        "message_id": mid,
+                        "error_class": "HTTPError",
+                        "status": resp.status_code,
+                    }
+                )
+        except Exception as exc:
+            errors.append(
+                {
+                    "message_id": mid,
+                    "error_class": type(exc).__name__,
+                    "status": None,
+                }
+            )
+    return modified, errors
+
+
+def archive(creds: dict[str, Any], message_ids: list[str]) -> tuple[list[str], list[dict]]:
+    """Move each message to the Archive folder. Returns (modified_ids, errors).
+
+    Uses the Graph well-known folder name "archive" as the destinationId.
+    Equivalent of Gmail removing the INBOX label (archiving without deleting).
+
+    Per-message failures do NOT abort the loop (mirrors `trash_messages`).
+    Errors entry shape: {message_id, error_class, status}.
+    """
+    access_token = _acquire_silent(creds)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    modified: list[str] = []
+    errors: list[dict] = []
+    for mid in message_ids:
+        if not _ID_RE.fullmatch(mid) or len(mid) > 512:
+            raise ValueError("invalid message_id")
+        url = f"{_GRAPH_BASE}/me/messages/{mid}/move"
+        body = {"destinationId": "archive"}
+        try:
+            resp = _graph_request_with_retry("POST", url, headers=headers, json_body=body)
+            if 200 <= resp.status_code < 300:
+                modified.append(mid)
+            else:
+                errors.append(
+                    {
+                        "message_id": mid,
+                        "error_class": "HTTPError",
+                        "status": resp.status_code,
+                    }
+                )
+        except Exception as exc:
+            errors.append(
+                {
+                    "message_id": mid,
+                    "error_class": type(exc).__name__,
+                    "status": None,
+                }
+            )
+    return modified, errors
+
+
+# ---------------------------------------------------------------------------
+# Kanban #1939 — READ endpoints (search + get)
+# ---------------------------------------------------------------------------
+
+
+def search_messages(
+    creds: dict[str, Any], query: str, max_results: int = 10
+) -> list[dict]:
+    """Search the mailbox using Graph $search and return metadata for up to max_results messages.
+
+    Extends the `list_message_ids` pattern: requests $select=id,conversationId,
+    from,subject,receivedDateTime,bodyPreview so the FIRST call already carries
+    all metadata (no second per-message round-trip unlike Gmail's metadata mode).
+
+    Returns a list of:
+      {id, thread_id, from, subject, date, snippet}
+
+    ConsistencyLevel: eventual is REQUIRED by Graph for $search — omitting it
+    yields 400. The nextLink SSRF guard from list_message_ids is applied here too.
+
+    PRIVACY: bodyPreview is a short system-generated preview (not the full body).
+    It is surfaced in the response only, never written to any log or audit trail.
+
+    Caller is responsible for cap enforcement BEFORE invoking.
+    """
+    # FIX-6 (#1939): schema caps max_results at 50; $top already covers it.
+    # The while/nextLink pagination loop never iterated a second time (50 < 1000).
+    # Replace with a single Graph request — simpler, no nextLink SSRF surface here.
+    access_token = _acquire_silent(creds)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "ConsistencyLevel": "eventual",
+    }
+    # KQL phrase-escape: internal double-quotes doubled per KQL spec.
+    escaped_query = query.replace('"', '""')
+    params: dict[str, Any] = {
+        "$search": f'"{escaped_query}"',
+        "$select": "id,conversationId,from,subject,receivedDateTime,bodyPreview",
+        "$top": max_results,
+    }
+    url = f"{_GRAPH_BASE}/me/messages"
+    resp = _graph_request_with_retry("GET", url, headers=headers, params=params)
+    resp.raise_for_status()
+    data = resp.json()
+
+    results: list[dict] = []
+    for msg in (data.get("value", []) or [])[:max_results]:
+        # Graph `from` field shape: {"emailAddress": {"name": ..., "address": ...}}
+        from_obj = msg.get("from") or {}
+        from_addr = (from_obj.get("emailAddress") or {})
+        from_str = from_addr.get("address") or from_addr.get("name")
+        results.append(
+            {
+                "id": msg.get("id"),
+                "thread_id": msg.get("conversationId"),
+                "from": from_str,
+                "subject": msg.get("subject"),
+                "date": msg.get("receivedDateTime"),
+                "snippet": msg.get("bodyPreview"),
+            }
+        )
+    return results
+
+
+def get_message(creds: dict[str, Any], message_id: str) -> dict:
+    """Fetch a single Outlook message and return its content.
+
+    Uses Graph GET /me/messages/{id} with $select for relevant fields plus the
+    `Prefer: outlook.body-content-type="text"` header so Graph returns the body
+    as plain text (not HTML). Falls back to stripping HTML tags if the response
+    comes back as HTML despite the Prefer header.
+
+    Returns:
+      {id, thread_id, from, to, subject, date, body_text}
+
+    PRIVACY: body_text MUST NOT be logged, written to any audit trail, or echoed
+    in error responses. Error paths use only type(exc).__name__.
+
+    Caller is responsible for cap enforcement BEFORE invoking.
+    """
+    # FIX-2 (#1939): defense-in-depth — validate id before interpolating into URL.
+    # Outlook ids are up to 512 chars; same charset as Gmail.
+    if not (1 <= len(message_id) <= 512) or not _ID_RE.fullmatch(message_id):
+        raise ValueError("invalid message_id")
+
+    access_token = _acquire_silent(creds)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        # Ask Graph to return the body as plain text; some accounts still return
+        # HTML depending on the message — the caller gets whatever is available.
+        "Prefer": 'outlook.body-content-type="text"',
+    }
+    params: dict[str, Any] = {
+        "$select": "id,conversationId,from,toRecipients,subject,receivedDateTime,body",
+    }
+    url = f"{_GRAPH_BASE}/me/messages/{message_id}"
+    resp = _graph_request_with_retry("GET", url, headers=headers, params=params)
+    resp.raise_for_status()
+    data = resp.json()
+
+    # from field: {"emailAddress": {"address": ..., "name": ...}}
+    from_obj = data.get("from") or {}
+    from_addr_obj = from_obj.get("emailAddress") or {}
+    from_str = from_addr_obj.get("address") or from_addr_obj.get("name")
+
+    # toRecipients: list of {"emailAddress": {"address": ..., "name": ...}}
+    to_parts = []
+    for rec in data.get("toRecipients", []) or []:
+        addr_obj = (rec.get("emailAddress") or {})
+        addr = addr_obj.get("address") or addr_obj.get("name")
+        if addr:
+            to_parts.append(addr)
+    to_str = ", ".join(to_parts) if to_parts else None
+
+    body_obj = data.get("body") or {}
+    body_text = body_obj.get("content", "") or ""
+    # If Graph returned HTML despite the Prefer header, strip tags minimally.
+    if body_obj.get("contentType", "").lower() == "html" and "<" in body_text:
+        body_text = _strip_html(body_text)
+
+    return {
+        "id": data.get("id"),
+        "thread_id": data.get("conversationId"),
+        "from": from_str,
+        "to": to_str,
+        "subject": data.get("subject"),
+        "date": data.get("receivedDateTime"),
+        "body_text": body_text,
+    }
+
+
+def _strip_html(raw_html: str) -> str:
+    """Minimal HTML tag stripper for fallback body-content-type conversion.
+
+    Removes <...> tags then decodes HTML entities with stdlib html.unescape
+    (covers &quot;, &apos;, numeric entities, etc.). Not a full sanitiser —
+    just enough to present readable text when Graph ignores the Prefer header.
+
+    FIX-3 (#1939): cap input to 500_000 chars to guard against pathologically
+    large bodies; use html.unescape instead of manual entity replacement.
+    PRIVACY: return value must never be logged.
+    """
+    # FIX-3 (#1939): cap input size before processing.
+    if len(raw_html) > 500_000:
+        raw_html = raw_html[:500_000]
+    text = re.sub(r"<[^>]+>", "", raw_html)
+    text = html.unescape(text)
+    return text
+
+
+def save_draft(creds: dict[str, Any], *, to: str, subject: str, body: str) -> dict:
+    """Create a draft message (no send) via Graph POST /me/messages.
+
+    Returns {"draft_id": <id>, "message_id": <id>}. The Graph message id
+    serves as both draft_id and message_id (unlike Gmail which has a separate
+    Draft envelope id). Equivalent of Gmail's save_draft.
+
+    The created message is in the Drafts folder and will NOT be sent until
+    the operator explicitly moves it through the send flow (a higher-tier action).
+    """
+    access_token = _acquire_silent(creds)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    payload = {
+        "subject": subject,
+        "body": {"contentType": "Text", "content": body},
+        "toRecipients": [{"emailAddress": {"address": to}}],
+    }
+    url = f"{_GRAPH_BASE}/me/messages"
+    resp = _graph_request_with_retry("POST", url, headers=headers, json_body=payload)
+    resp.raise_for_status()
+    data = resp.json()
+    msg_id = data.get("id")
+    return {"draft_id": msg_id, "message_id": msg_id}
+
+
+# ---------------------------------------------------------------------------
+# Kanban #2100 — Tier-3 SEND functions (reply / forward / send)
+# ---------------------------------------------------------------------------
+#
+# Graph actions:
+#   reply   -> POST /me/messages/{id}/reply    {comment}            -> 202 (no body)
+#   forward -> POST /me/messages/{id}/forward  {comment, toRecipients} -> 202
+#   send    -> POST /me/sendMail               {message, saveToSentItems} -> 202
+# All three return 202 Accepted with an EMPTY body (the message is queued, no id
+# returned), so these functions return {message_id: None, thread_id: None}. The
+# router gates them behind the operator-proof tier gate; caller pays cap first.
+
+
+def _to_recipients(line: str) -> list[dict]:
+    """Split a comma-separated recipient line into Graph toRecipients objects."""
+    return [
+        {"emailAddress": {"address": addr.strip()}}
+        for addr in line.split(",")
+        if addr.strip()
+    ]
+
+
+def _post_send_action(creds: dict[str, Any], path: str, payload: dict) -> dict:
+    """POST a Graph send-class action (reply/forward/sendMail) and assert 202.
+
+    Returns {message_id: None, thread_id: None} — Graph's send actions return
+    202 with no body. raise_for_status surfaces non-2xx to the router (502).
+    """
+    access_token = _acquire_silent(creds)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    url = f"{_GRAPH_BASE}{path}"
+    resp = _graph_request_with_retry("POST", url, headers=headers, json_body=payload)
+    resp.raise_for_status()
+    return {"message_id": None, "thread_id": None}
+
+
+def send_reply(creds: dict[str, Any], *, message_id: str, body: str) -> dict:
+    """Reply to `message_id` in-conversation via Graph /reply. Returns {message_id, thread_id}.
+
+    Graph keeps the conversation and adds our `comment` as the reply body.
+    """
+    return _post_send_action(
+        creds, f"/me/messages/{message_id}/reply", {"comment": body}
+    )
+
+
+def send_forward(creds: dict[str, Any], *, message_id: str, to: str, body: str = "") -> dict:
+    """Forward `message_id` to `to` via Graph /forward. Returns {message_id, thread_id}."""
+    return _post_send_action(
+        creds,
+        f"/me/messages/{message_id}/forward",
+        {"comment": body, "toRecipients": _to_recipients(to)},
+    )
+
+
+def send_message(
+    creds: dict[str, Any],
+    *,
+    to: str,
+    subject: str,
+    body: str,
+    cc: str | None = None,
+    bcc: str | None = None,
+) -> dict:
+    """Compose + send a NEW message via Graph /sendMail. Returns {message_id, thread_id}.
+
+    Used by both send-internal and external-send (the router decides the tier).
+    `saveToSentItems` defaults true so the operator sees the sent copy.
+    """
+    message: dict[str, Any] = {
+        "subject": subject,
+        "body": {"contentType": "Text", "content": body},
+        "toRecipients": _to_recipients(to),
+    }
+    if cc and cc.strip():
+        message["ccRecipients"] = _to_recipients(cc)
+    if bcc and bcc.strip():
+        message["bccRecipients"] = _to_recipients(bcc)
+    return _post_send_action(
+        creds, "/me/sendMail", {"message": message, "saveToSentItems": True}
+    )

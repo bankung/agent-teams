@@ -18,16 +18,21 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Daily cap counter — module-level dict keyed by (project_id, date_str).
 # Persists for the lifetime of the api container process only.
 _DAILY_UNITS: dict[tuple[int, str], int] = {}
 
 # Audit log path. Configurable via EMAIL_TOOLS_AUDIT_PATH env var; defaults to
-# /repo/_scratch/email-tools-audit.jsonl (the _scratch bind-mount in the container).
-_AUDIT_PATH = Path(os.environ.get("EMAIL_TOOLS_AUDIT_PATH", "/repo/_scratch/email-tools-audit.jsonl"))
+# /repo/_runtime/email-tools-audit.jsonl (durable bind-mount, same dir as the
+# action-audit _runtime/email-actions.jsonl). _scratch is gitignored/excluded
+# from backup — _runtime is the durable path (Kanban #2045, FIX-A3).
+_AUDIT_PATH = Path(os.environ.get("EMAIL_TOOLS_AUDIT_PATH", "/repo/_runtime/email-tools-audit.jsonl"))
 
 
 def _today() -> str:
@@ -79,7 +84,6 @@ def log_audit(
 
     Schema: {ts, project_id, provider, action, units, success, error_code?}
     """
-    _AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
     row = {
         "ts": datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat() + "Z",
         "project_id": project_id,
@@ -90,8 +94,14 @@ def log_audit(
     }
     if error_code:
         row["error_code"] = error_code
-    with _AUDIT_PATH.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(row, separators=(",", ":")) + "\n")
+    try:
+        _AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _AUDIT_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, separators=(",", ":")) + "\n")
+    except OSError as exc:
+        # Audit is observability, not correctness — a disk hiccup must never
+        # raise out of log_audit and turn a successful email action into a 500.
+        logger.warning("gate.log_audit: write failed (best-effort guard): %s", exc)
 
 
 def check_bulk_threshold(count: int, force: bool = False) -> tuple[bool, dict]:

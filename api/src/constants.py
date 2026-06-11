@@ -327,6 +327,25 @@ class TaskInteractionKind:
     ALL: tuple[str, ...] = (WORK, QUESTION, DECISION)
 
 
+class CommentAuthorKind:
+    """task_comments.author_kind — 'user'/'agent'/'system' (#1005).
+
+    The discriminator for WHO appended a comment to a task's thread:
+      - 'user'   — a human operator (UI / API).
+      - 'agent'  — a specialist subagent / Lead recording a progress note.
+      - 'system' — an automated event (status flip, audit, scheduler note).
+
+    Stored as TEXT NOT NULL + a CHECK; mirror of migration 0062
+    (intentionally duplicated — see standards/sqlalchemy/migrations.md).
+    """
+
+    USER = "user"
+    AGENT = "agent"
+    SYSTEM = "system"
+
+    ALL: tuple[str, ...] = (USER, AGENT, SYSTEM)
+
+
 class MilestoneStatus:
     """milestones.milestone_status — 'planned'/'active'/'released'/'cancelled' (#1868).
 

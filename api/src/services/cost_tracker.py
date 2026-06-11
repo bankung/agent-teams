@@ -38,10 +38,70 @@ PRICING: dict[tuple[str, str], dict[str, float]] = {
     # collapse to ("ollama", "local") via the estimator's resolver. The
     # compute_cost call returns Decimal('0.0000') exact via the zero-rate.
     ("ollama", "local"): {"input": 0.0, "output": 0.0},
+    # Google Gemini (Kanban #2135) — rates locked from Google's public price card
+    # 2026-06. Worker sends provider='google', model='gemini-2.5-flash-lite'.
+    # Rates in USD per 1M tokens.
+    ("google", "gemini-2.5-flash-lite"): {"input": 0.10, "output": 0.40},
+    ("google", "gemini-2.5-flash"): {"input": 0.30, "output": 2.50},
+    # gemini-flash-latest is an alias for gemini-2.5-flash pricing.
+    ("google", "gemini-flash-latest"): {"input": 0.30, "output": 2.50},
+    ("google", "gemini-2.5-pro"): {"input": 1.25, "output": 10.00},
 }
 
 _PER_MILLION = Decimal("1000000")
 _QUANT = Decimal("0.0001")
+
+
+def resolve_pricing_key(provider: str, model: str) -> tuple[str, str]:
+    """Map a (provider, model) pair to a key that exists in PRICING.
+
+    Exact match → use it. Else fall back to family aliases:
+      - anthropic claude-opus-4-anything   → ("anthropic", "claude-opus-4-x")
+      - anthropic claude-haiku*            → ("anthropic", "claude-haiku")
+      - anthropic claude-sonnet*           → ("anthropic", "claude-sonnet-4-6")
+      - openai gpt-4o-mini*                → ("openai", "gpt-4o-mini")
+      - openai gpt-4o*                     → ("openai", "gpt-4o")
+      - google *flash-lite*                → ("google", "gemini-2.5-flash-lite")
+      - google *flash*                     → ("google", "gemini-2.5-flash")
+      - google *pro*                       → ("google", "gemini-2.5-pro")
+      - ollama anything                    → ("ollama", "local")
+
+    No match → raise ValueError; caller logs + leaves cost at $0 (still
+    records tokens — partial signal beats no signal).
+
+    Moved here from task_cost_estimator (Kanban #2135) so sessions.py can
+    use the same resolver without a cross-import dependency.
+    """
+    key = (provider, model)
+    if key in PRICING:
+        return key
+
+    if provider == "anthropic":
+        m = model.lower()
+        if "opus" in m:
+            return ("anthropic", "claude-opus-4-x")
+        if "haiku" in m:
+            return ("anthropic", "claude-haiku")
+        if "sonnet" in m:
+            return ("anthropic", "claude-sonnet-4-6")
+    elif provider == "openai":
+        m = model.lower()
+        if "mini" in m:
+            return ("openai", "gpt-4o-mini")
+        if "gpt-4o" in m or "gpt-4" in m:
+            return ("openai", "gpt-4o")
+    elif provider == "google":
+        m = model.lower()
+        if "flash-lite" in m:
+            return ("google", "gemini-2.5-flash-lite")
+        if "flash" in m:
+            return ("google", "gemini-2.5-flash")
+        if "pro" in m:
+            return ("google", "gemini-2.5-pro")
+    elif provider == "ollama":
+        return ("ollama", "local")
+
+    raise ValueError(f"no pricing entry for (provider={provider!r}, model={model!r})")
 
 # Anthropic prompt-caching multipliers (Kanban #1186).
 # Cache writes cost 1.25x the base input rate; cache reads cost 0.10x. Locked

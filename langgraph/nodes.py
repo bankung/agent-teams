@@ -7,13 +7,16 @@ is intentionally dumb here because Kanban #852 (Kanban integration) will move
 real routing logic into the API poll loop; this node is a placeholder that
 keeps the graph topology honest.
 
-`backend_specialist_node` is the production specialist (#977/#979/#980/#981):
-it constructs the LLM via `make_chat_model()`, binds the global tool registry
-via `model.bind_tools(...)`, then runs a multi-turn tool-use loop with the
-permission gate + sandbox guards + audit-trail wiring layered around every
-tool invocation. See `_run_tool_use_loop` for the full sequence + safety
-primitives. Other specialist stubs return a canned "not implemented" message
-so the graph can be exercised end-to-end for any role without crashing.
+All five specialist nodes (#977/#979/#980/#981 backend; #1944 promotes the
+other four) are produced by `make_specialist_node(agent_name)` — a single
+factory so there is no copy-paste. Each node constructs the LLM via
+`make_chat_model()`, binds the global tool registry via `model.bind_tools(...)`,
+then runs a multi-turn tool-use loop with the permission gate + sandbox guards
++ audit-trail wiring layered around every tool invocation. See
+`_run_tool_use_loop` for the full sequence + safety primitives. The ONLY
+per-role difference is the `agent_name` threaded into
+`build_cached_system_content(...)`, which bundles that role's `.claude/agents/
+dev-<role>.md` definition into the cached system prefix.
 
 All nodes return PARTIAL state dicts. LangGraph merges them via the reducer
 declared on each TypedDict field (messages → add_messages; everything else →
@@ -38,6 +41,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any
 
 import httpx
@@ -45,6 +49,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 
 from audit import record_tool_invocation
 from config import resolve_api_base, resolve_project_id, utc_now
+from gemini_schema import sanitize_tools_for_gemini
 from hitl import request_user_input  # noqa: F401 — re-exported for specialist authors
 from llm import (
     build_cached_system_content,
@@ -57,6 +62,7 @@ from tools import (
     GLOBAL_REGISTRY,
     MAX_TOOL_LOOP_ITERATIONS,
     TOOL_LOOP_HALT_REASON,
+    WORKING_PATH_UNSET_CODE,
     InvokeContext,
     PermissionDecision,
     ToolNotFoundError,
@@ -183,10 +189,40 @@ _SYSTEM_PROMPT = (
 )
 
 
-async def backend_specialist_node(state: AgentState) -> dict:
-    """Production specialist with tool-use loop (Kanban #977/#979/#980/#981).
+def _role_from_agent_name(agent_name: str) -> str:
+    """Derive the supervisor's node-name slug from an agent definition name.
 
-    Sequence:
+    The graph registers nodes under bare role slugs (`frontend`, `backend`,
+    `devops`, `tester`, `reviewer`) while the agent definitions live under
+    `dev-<role>.md`. Strip the leading `dev-` so the factory-built node's
+    `__name__`/`__qualname__` reads `<role>_specialist_node` — matching the
+    pre-factory module-level names (graph wiring + checkpoints unchanged).
+
+    The QA role's agent file is `dev-tester` but the supervisor node is
+    `tester`; the `dev-` strip handles that mapping uniformly. Unknown shapes
+    fall back to the agent_name itself so the node is still named, never blank.
+    """
+    role = agent_name[len("dev-"):] if agent_name.startswith("dev-") else agent_name
+    return role or agent_name
+
+
+def make_specialist_node(agent_name: str):
+    """Factory — return a production specialist node bound to `agent_name`.
+
+    Single source of truth for ALL five specialists (Kanban #1944). The
+    returned async node is byte-for-byte the pre-factory `backend_specialist_node`
+    logic; the ONLY parameterized value is `agent_name`, threaded into
+    `build_cached_system_content(...)` so each role gets its own agent
+    definition bundled into the cached system prefix. Everything else —
+    `_SYSTEM_PROMPT`, `team="dev"`, tool-loop, permission gate, sandbox,
+    audit, usage accounting — is identical across roles.
+
+    Backend parity (Kanban #1944 AC4): `make_specialist_node("dev-backend")`
+    reproduces the exact SystemMessage + HumanMessage shape the #907
+    prompt-shape tests pin, because the prompt constant + team + agent_name
+    are unchanged from the inlined version.
+
+    Per-node sequence (unchanged from the original backend node):
       1. Resolve the per-project `tools_config` from the Kanban API
          (sourced from `projects.tools_config`). On fetch failure we fall
          back to None — the permission gate then rejects every tool call,
@@ -199,8 +235,11 @@ async def backend_specialist_node(state: AgentState) -> dict:
          - call `model.invoke(messages)`.
          - if the response has no `tool_calls` → final answer, exit loop.
          - else for each tool call:
-            a. `check_permission(tools_config, tool)` → auto_allow / halt / reject.
-            b. `fs_boundary_check(tool, ctx, args)` (pre-flight; write tools).
+            a. `fs_boundary_check(tool, ctx, args)` — destination-legitimacy
+               guard, pre-flight, BEFORE the tier gate (#2215 rule 6). A
+               `working_path_unset` violation HALTs (ask-where-to-save);
+               `fs_boundary` / `working_path_unmounted` feed back to the LLM.
+            b. `check_permission(tools_config, tool)` → auto_allow / halt / reject.
             c. on auto_allow: invoke the tool, then `apply_sandbox(...)`.
             d. on halt: emit halt_reason + return early.
             e. on reject: synthesise a `ToolResult(success=False, error_code='tier_not_allowed')`
@@ -210,66 +249,83 @@ async def backend_specialist_node(state: AgentState) -> dict:
            sees the result.
       4. After MAX iterations exhausted → halt with `TOOL_LOOP_HALT_REASON`.
 
-    The prompt-shape regression tests (#907) pin the SystemMessage +
-    HumanMessage content; those assertions still hold because the prompt
-    constant lives at module scope and the initial messages are the same.
+    The agent definition is loaded via `build_cached_system_content`, which
+    DEGRADES GRACEFULLY (WARN log, empty section) on a missing playbook — a
+    role with no `dev-<role>.md` still runs, it just omits that bundle slice.
     """
-    brief = state.get("brief", "")
-    task_id = state.get("task_id")
-    # Project id sourced from LANGGRAPH_PROJECT_ID — the engine container is
-    # bound to a single project. A future multi-project engine would fetch
-    # task → project_id via the api.
-    project_id = resolve_project_id()
-    tools_config = await _fetch_tools_config(project_id)
-    working_path, repo_root = _resolve_paths(project_id)
 
-    ctx = InvokeContext(
-        task_id=task_id,
-        project_id=project_id,
-        repo_root=repo_root or "/repo",
-        working_path=working_path,
-        host_allowlist=list((tools_config or {}).get("http_hosts") or []),
-    )
+    async def _specialist_node(state: AgentState) -> dict:
+        brief = state.get("brief", "")
+        task_id = state.get("task_id")
+        # Kanban #2185 — multi-board tool fix: prefer the project_id injected
+        # by the worker into state (set for every task in both single- and
+        # multi-board mode). Fall back to resolve_project_id() (env-var) for
+        # backwards compatibility with any caller that doesn't set state["project_id"].
+        project_id = state.get("project_id") or resolve_project_id()
+        tools_config = await _fetch_tools_config(project_id)
+        working_path, repo_root = await _resolve_paths(project_id)
 
-    model = make_chat_model()
-    # Feature-flag tool binding by provider. Ollama returns a model that
-    # doesn't support tool-use; bind_tools may raise or silently drop the
-    # tools. We try, and on failure log + fall back to the no-tools path.
-    bound = _bind_tools_safely(model, project_id, tools_config)
+        ctx = InvokeContext(
+            task_id=task_id,
+            project_id=project_id,
+            repo_root=repo_root or "/repo",
+            working_path=working_path,
+            host_allowlist=list((tools_config or {}).get("http_hosts") or []),
+        )
 
-    # Kanban #1116 — wrap role brief with safety prelude (L22 prevention).
-    # Kanban #1186 — inflate stable context (safety prelude + CLAUDE.md + team
-    # playbook + agent definition) and attach `cache_control: ephemeral` on
-    # the stable bundle block. Stable prefix lands ~10K tokens (above the 1024
-    # minimum); role_brief remains a separate non-cached block per-call. On
-    # non-anthropic providers (openai/ollama) the helper returns a flat string
-    # so the message shape stays compatible with those providers' formatters.
-    initial_messages: list[Any] = [
-        SystemMessage(
-            content=build_cached_system_content(
-                _SYSTEM_PROMPT, team="dev", agent_name="dev-backend"
-            )
-        ),
-        HumanMessage(content=brief),
-    ]
+        model = make_chat_model()
+        # Feature-flag tool binding by provider. Ollama returns a model that
+        # doesn't support tool-use; bind_tools may raise or silently drop the
+        # tools. We try, and on failure log + fall back to the no-tools path.
+        bound = _bind_tools_safely(model, project_id, tools_config)
 
-    if bound is None:
-        # No tools available (ollama, or registry empty, or bind_tools raised).
-        # Preserve the pre-#981 single-shot path so the worker still completes
-        # task that don't need tools.
-        response = await _ainvoke_model(model, initial_messages)
-        content = _stringify_content(response.content)
-        inp, out, cr, cc = _extract_usage(response)
-        return {
-            "messages": [response],
-            "final_result": content,
-            "usage_input_tokens": inp,
-            "usage_output_tokens": out,
-            "usage_cache_read_tokens": cr,
-            "usage_cache_creation_tokens": cc,
-        }
+        # Kanban #1116 — wrap role brief with safety prelude (L22 prevention).
+        # Kanban #1186 — inflate stable context (safety prelude + CLAUDE.md +
+        # team playbook + agent definition) and attach `cache_control:
+        # ephemeral` on the stable bundle block. Stable prefix lands ~10K
+        # tokens (above the 1024 minimum); role_brief remains a separate
+        # non-cached block per-call. On non-anthropic providers (openai/ollama)
+        # the helper returns a flat string so the message shape stays
+        # compatible with those providers' formatters.
+        # Kanban #1944 — `agent_name` is the ONLY per-role parameter; the
+        # rest of this node is identical across all five specialists.
+        initial_messages: list[Any] = [
+            SystemMessage(
+                content=build_cached_system_content(
+                    _SYSTEM_PROMPT, team="dev", agent_name=agent_name
+                )
+            ),
+            HumanMessage(content=brief),
+        ]
 
-    return await _run_tool_use_loop(bound, initial_messages, ctx, tools_config)
+        if bound is None:
+            # No tools available (ollama, or registry empty, or bind_tools
+            # raised). Preserve the pre-#981 single-shot path so the worker
+            # still completes tasks that don't need tools.
+            response = await _ainvoke_model(model, initial_messages)
+            content = _stringify_content(response.content)
+            inp, out, cr, cc = _extract_usage(response)
+            return {
+                "messages": [response],
+                "final_result": content,
+                "usage_input_tokens": inp,
+                "usage_output_tokens": out,
+                "usage_cache_read_tokens": cr,
+                "usage_cache_creation_tokens": cc,
+            }
+
+        return await _run_tool_use_loop(
+            bound, initial_messages, ctx, tools_config
+        )
+
+    # Set the node's name from the role slug so LangGraph checkpoints / logs
+    # read `<role>_specialist_node`. Keeping the module-level binding name
+    # (below) identical to the pre-factory names means graph.py imports +
+    # supervisor routing are unchanged.
+    role = _role_from_agent_name(agent_name)
+    _specialist_node.__name__ = f"{role}_specialist_node"
+    _specialist_node.__qualname__ = f"{role}_specialist_node"
+    return _specialist_node
 
 
 # ---------------------------------------------------------------------------
@@ -632,7 +688,29 @@ async def _handle_one_tool_call(
         )
         return _ToolCallOutcome(result)
 
-    # 2. Permission gate.
+    # 2. Pre-flight: fs destination-legitimacy guard (Kanban #2215).
+    #    Runs BEFORE the tier gate (locked rule 6): no point asking the
+    #    operator to authorize a write to an illegitimate destination. Only
+    #    fires for write/destructive tools with a `path` arg; everything else
+    #    returns None and falls through to the tier gate unchanged.
+    violation = fs_boundary_check(tool, ctx, args)
+    if violation is not None:
+        # `decision="pre_gate"` — the destination guard fires BEFORE the tier
+        # gate, so no PermissionDecision exists yet for the audit row.
+        await _audit(task_id, tool, args, violation, "pre_gate", project_id=ctx.project_id)
+        if violation.error_code == WORKING_PATH_UNSET_CODE:
+            # NULL working_path + illegitimate destination → HALT (HITL
+            # ask-where-to-save), mirroring the write-tier gate's halt shape.
+            halt_reason = (
+                f"working_path_unset: {tool.name} target not under _scratch and "
+                "not allowlisted (project has no working_path)"
+            )
+            return _ToolCallOutcome(violation, halt_reason=halt_reason)
+        # fs_boundary / working_path_unmounted → actionable error fed back to
+        # the LLM (it can pick a legal path or surface the unmounted config).
+        return _ToolCallOutcome(violation)
+
+    # 3. Permission gate.
     decision = check_permission(tools_config, tool)
 
     if decision is PermissionDecision.REJECT:
@@ -647,7 +725,7 @@ async def _handle_one_tool_call(
             ),
             retry_safe=False,
         )
-        await _audit(task_id, tool, args, result, decision)
+        await _audit(task_id, tool, args, result, decision, project_id=ctx.project_id)
         return _ToolCallOutcome(result)
 
     if decision is PermissionDecision.HALT:
@@ -661,19 +739,15 @@ async def _handle_one_tool_call(
             ),
             retry_safe=False,
         )
-        await _audit(task_id, tool, args, result, decision)
+        await _audit(task_id, tool, args, result, decision, project_id=ctx.project_id)
         halt_reason = (
             f"tool_permission_review: {tool.name} tier={tool.tier.value}"
         )
         return _ToolCallOutcome(result, halt_reason=halt_reason)
 
     # decision == AUTO_ALLOW
-    # 3. Pre-flight: fs-boundary check (only writes/destructive with path).
-    violation = fs_boundary_check(tool, ctx, args)
-    if violation is not None:
-        await _audit(task_id, tool, args, violation, decision)
-        return _ToolCallOutcome(violation)
-
+    # (The fs destination-legitimacy guard already ran in step 2, BEFORE the
+    #  tier gate — Kanban #2215 rule 6.)
     # 4. Invoke + post-flight sandbox guards.
     requested_timeout = args.get("timeout_s") if isinstance(args, dict) else None
     try:
@@ -698,7 +772,7 @@ async def _handle_one_tool_call(
     )
 
     # 5. Audit. Always.
-    await _audit(task_id, tool, args, result, decision)
+    await _audit(task_id, tool, args, result, decision, project_id=ctx.project_id)
     return _ToolCallOutcome(result)
 
 
@@ -708,12 +782,18 @@ async def _audit(
     args: dict[str, Any],
     result: ToolResult,
     decision: Any,
+    *,
+    project_id: int | None = None,
 ) -> None:
     """Audit-write with defensive task_id check + failure isolation.
 
     Calls `record_tool_invocation` (which is best-effort over httpx).
     A missing task_id (state didn't carry one — only happens in unit
     tests) skips the audit gracefully.
+
+    `project_id` is forwarded to `record_tool_invocation` so the audit
+    POST sends X-Project-Id from the task's actual project rather than
+    the (possibly unset) LANGGRAPH_PROJECT_ID env-var. Kanban #2231.
     """
     if task_id is None:
         logger.debug(
@@ -722,7 +802,7 @@ async def _audit(
         )
         return
     try:
-        await record_tool_invocation(task_id, tool, args, result, decision)
+        await record_tool_invocation(task_id, tool, args, result, decision, project_id=project_id)
     except Exception:
         # record_tool_invocation already swallows httpx errors; this catch
         # is only for truly unexpected failures. Never let audit break the loop.
@@ -768,6 +848,24 @@ def _bind_tools_safely(
         provider = resolve_provider()
     except Exception:
         provider = "?"
+
+    # Kanban #1951 — Gemini native function-calling is stricter than the
+    # OpenAI-compat shim: every `array` schema (top-level, nested, or inside
+    # anyOf/any_of) must carry an `items` with a concrete type, else the FIRST
+    # tool-bound model call 400s (`...any_of[1].items: missing field`). Sanitize
+    # the tool schemas ONLY on the google bind path so other providers'
+    # bind surface stays byte-identical. The sanitizer touches the DECLARED
+    # schema only — tool runtime contracts are unchanged (execution goes
+    # through GLOBAL_REGISTRY, not the bound langchain tool).
+    if provider == "google":
+        tools, fixed = sanitize_tools_for_gemini(tools)
+        if fixed:
+            logger.info(
+                "specialist_node: gemini schema sanitizer fixed array-without-items "
+                "in tools=%s (project=%s)",
+                ", ".join(sorted(fixed)),
+                project_id,
+            )
 
     try:
         return model.bind_tools(tools)
@@ -885,52 +983,107 @@ async def _fetch_tools_config(project_id: int | None) -> dict[str, Any] | None:
     return cfg
 
 
-def _resolve_paths(project_id: int | None) -> tuple[str | None, str | None]:
+# Kanban #2215 — per-project working_path cache (resettable across tests, per
+# the #2187 cache-isolation lesson — mirrors worker._required_binaries_cache).
+# Maps project_id -> (monotonic_ts, working_path|None). Reset via
+# `_working_path_cache_clear()`.
+_WORKING_PATH_CACHE_TTL_SEC: float = 10.0
+_working_path_cache: dict[int, tuple[float, str | None]] = {}
+
+
+def _working_path_cache_clear() -> None:
+    """Test hook — clear the in-process working_path cache."""
+    _working_path_cache.clear()
+
+
+async def _fetch_project_working_path(project_id: int | None) -> str | None:
+    """GET /api/projects/{id}.working_path; None on any failure / null value.
+
+    Cached ~10s per project_id (mirrors _fetch_tools_config + the worker's
+    _fetch_project_field). FAIL-SOFT: a transient API error returns None
+    (treated upstream as "no working_path" → the NULL-working_path rules in
+    fs_boundary_check apply, which still keep /repo writes off the table unless
+    they are /repo/_scratch or allowlisted). Failures are NOT cached so the
+    next call retries.
+    """
+    if project_id is None:
+        return None
+    now = time.monotonic()
+    cached = _working_path_cache.get(project_id)
+    if cached is not None and (now - cached[0]) < _WORKING_PATH_CACHE_TTL_SEC:
+        return cached[1]
+
+    url = f"{resolve_api_base()}/api/projects/{project_id}"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url)
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "specialist_node: fetch working_path failed (project=%s): %r",
+            project_id,
+            exc,
+        )
+        return None  # do NOT cache the failure
+    if resp.status_code != 200:
+        logger.warning(
+            "specialist_node: GET /api/projects/%s for working_path returned %d",
+            project_id,
+            resp.status_code,
+        )
+        return None
+    try:
+        body = resp.json()
+    except Exception:
+        return None
+    value = body.get("working_path") if isinstance(body, dict) else None
+    if value is not None and not isinstance(value, str):
+        # Value-tolerant: a hand-edited non-string row is treated as unset.
+        logger.warning(
+            "specialist_node: project %s working_path non-string %r; treating as null",
+            project_id,
+            value,
+        )
+        value = None
+    working_path = value.strip() or None if isinstance(value, str) else None
+    _working_path_cache[project_id] = (now, working_path)
+    return working_path
+
+
+async def _resolve_paths(project_id: int | None) -> tuple[str | None, str | None]:
     """Return (working_path, repo_root) for the InvokeContext.
 
-    `working_path` is the per-project sandbox root (drives fs-boundary).
-    `repo_root` is the langgraph-container path the host worktree is
+    `working_path` is the per-project sandbox root (drives the fs destination
+    guard). `repo_root` is the langgraph-container path the host worktree is
     bind-mounted to — defaults to `/repo` (the live compose default).
 
-    For V1 the working_path is sourced from the env-var
-    `LANGGRAPH_WORKING_PATH`. A future iteration could fetch it from
-    `projects.working_path` via the api (similar to `_fetch_tools_config`).
+    Precedence for working_path (Kanban #2215):
+      1. env `LANGGRAPH_WORKING_PATH` (non-empty) — explicit override for the
+         rig / tests; keeps the pre-#2215 behaviour intact.
+      2. `projects.working_path` fetched from the API for this task's project.
+      3. None — no working_path (the NULL-working_path rules in
+         fs_boundary_check then apply: /repo/_scratch + allowlist allowed,
+         everything else → ask-where-to-save HALT).
     """
-    working_path = os.getenv("LANGGRAPH_WORKING_PATH", "").strip() or None
+    env_override = os.getenv("LANGGRAPH_WORKING_PATH", "").strip() or None
+    if env_override is not None:
+        working_path = env_override
+    else:
+        working_path = await _fetch_project_working_path(project_id)
     repo_root = os.getenv("LANGGRAPH_REPO_ROOT", "").strip() or "/repo"
     return working_path, repo_root
 
 
-def make_stub_node(role_name: str):
-    """Factory — returns a LangGraph node function for a not-yet-implemented
-    specialist.  Keeps the graph well-formed (every conditional-edge target
-    exists and returns) so #852 can smoke-test routing for every role code
-    before #853 fills these in.
-
-    The returned function is identical in behavior to the four individual
-    wrapper functions that previously existed; the response text is
-    byte-identical.
-    """
-    msg = (
-        f"{role_name} specialist not implemented yet "
-        "(Kanban #850 ships backend only; full multi-provider rollout in #853)"
-    )
-
-    def _stub_node(state: AgentState) -> dict:  # noqa: ARG001
-        return {
-            "messages": [AIMessage(content=msg)],
-            "final_result": msg,
-        }
-
-    _stub_node.__name__ = f"{role_name}_specialist_node"
-    _stub_node.__qualname__ = f"{role_name}_specialist_node"
-    return _stub_node
-
-
-frontend_specialist_node = make_stub_node("frontend")
-devops_specialist_node = make_stub_node("devops")
-tester_specialist_node = make_stub_node("tester")
-reviewer_specialist_node = make_stub_node("reviewer")
+# Kanban #1944 — ALL FIVE specialists come from the single factory above.
+# Each is byte-for-byte identical except its bundled agent definition
+# (`agent_name`). The module-level names match the pre-factory bindings so
+# graph.py imports + supervisor routing (`route_from_supervisor`) are
+# unchanged. The QA role's node is `tester` but its agent file is `dev-tester`
+# (handled by `_role_from_agent_name`).
+backend_specialist_node = make_specialist_node("dev-backend")
+frontend_specialist_node = make_specialist_node("dev-frontend")
+devops_specialist_node = make_specialist_node("dev-devops")
+tester_specialist_node = make_specialist_node("dev-tester")
+reviewer_specialist_node = make_specialist_node("dev-reviewer")
 
 
 def general_node(state: AgentState) -> dict:
@@ -1118,6 +1271,11 @@ def _heuristic_clean(state: AgentState) -> bool:
       1. halt_reason is None / absent.
       2. final_result is a string >20 chars.
       3. No ToolMessage in messages has a payload with success=False / error.
+
+    NOTE: prior-audit-history suppression is handled in auditor_node (step 1)
+    before this function is called — if audit_retry_count > 0 or audit_report
+    is non-None, auditor_node skips _heuristic_clean entirely and forces the
+    LLM path. (#2194)
     """
     if state.get("halt_reason") is not None:
         return False
@@ -1164,22 +1322,32 @@ def _build_pass_report(*, llm_skipped: bool, retry_count: int, evidence: list[st
 def _parse_llm_verdict(raw_text: str) -> dict[str, Any] | None:
     """Extract the first valid JSON object from the LLM's raw response.
 
-    Ollama / Anthropic / OpenAI may wrap the JSON in prose. We attempt a strict
-    `json.loads` first; on failure we fall back to a balanced-brace scan that
-    locates the first `{...}` substring and tries again. None on total failure
-    — caller defaults to ESCALATE (fail safe; operator decides).
+    Ollama / Anthropic / OpenAI may wrap the JSON in prose or inside markdown
+    code fences. We:
+      1. Strip markdown fences (```json...``` or bare ```) — #1973.
+      2. Attempt strict json.loads on the stripped text.
+      3. Fall back to a balanced-brace scan on the original stripped text.
+    None on total failure — caller defaults to ESCALATE (fail safe; operator decides).
     """
     text = (raw_text or "").strip()
     if not text:
         return None
+
+    # #1973: strip markdown code fences before parse attempts.
+    # Handles ```json\n...\n``` and bare ```\n...\n```.
+    fence_match = re.match(r"^```(?:json)?\s*\n?(.*?)\n?```$", text, flags=re.DOTALL)
+    defenced = fence_match.group(1).strip() if fence_match else text
+
     try:
-        candidate = json.loads(text)
+        candidate = json.loads(defenced)
         if isinstance(candidate, dict):
             return candidate
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
     # Balanced-brace scan: take the first top-level {...} substring.
-    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    # Run on the de-fenced string so a fenced-but-invalid JSON (e.g. extra
+    # prose inside the fence) still finds the embedded object.
+    match = re.search(r"\{.*\}", defenced, flags=re.DOTALL)
     if match is None:
         return None
     try:
@@ -1277,7 +1445,21 @@ async def auditor_node(state: AgentState) -> dict[str, Any]:
     task_id = state.get("task_id")
 
     # 1) Heuristic pre-filter (Q4=A).
-    if _heuristic_clean(state):
+    # Guard: suppress the skip if this run already has audit history — either
+    # audit_retry_count > 0 (set by auto_resolve loop or escalate→retry_with_X
+    # resume path) or audit_report is non-None (a prior audit pass already
+    # ran in this run). Either signal means the structural check alone cannot
+    # be trusted to bless the answer. (#2194)
+    prior_audit_report = state.get("audit_report")
+    heuristic_skip_suppressed = retry_count > 0 or prior_audit_report is not None
+    if heuristic_skip_suppressed:
+        logger.info(
+            "auditor: task=%s heuristic skip suppressed (retry_count=%d, prior_audit=%s); forcing LLM audit",
+            task_id,
+            retry_count,
+            prior_audit_report is not None,
+        )
+    elif _heuristic_clean(state):
         final_result = state.get("final_result") or ""
         excerpt = final_result.strip()[:200]
         report = _build_pass_report(
@@ -1305,6 +1487,7 @@ async def auditor_node(state: AgentState) -> dict[str, Any]:
     )
 
     raw_text = ""
+    _llm_invoke_failed = False
     try:
         model = make_chat_model()
         # Kanban #1116 — same safety-prelude wrap as the backend specialist.
@@ -1322,13 +1505,54 @@ async def auditor_node(state: AgentState) -> dict[str, Any]:
             exc,
         )
         raw_text = ""
+        _llm_invoke_failed = True
 
     parsed = _parse_llm_verdict(raw_text)
-    if parsed is None:
-        # Malformed JSON / empty response → fail safe to ESCALATE.
+
+    # #1973: format-reminder retry — at most once per auditor invocation, only
+    # when the first response is malformed AND the LLM call itself succeeded.
+    if parsed is None and not _llm_invoke_failed:
+        # Security LOW-2: strip non-printable chars before logging so control
+        # sequences from a malformed LLM response don't pollute log consumers.
+        _safe_raw = re.sub(r"[^\x20-\x7E฀-๿]", "?", raw_text)
         logger.warning(
-            "auditor: LLM returned malformed response for task=%s; defaulting to escalate",
+            "auditor: LLM returned malformed response for task=%s (attempt 1/2); "
+            "raw (repr, trunc 500): %r",
             task_id,
+            _safe_raw[:500],
+        )
+        try:
+            reminder = HumanMessage(
+                content=(
+                    "Your previous reply was not parseable. "
+                    "Respond with ONLY the JSON object, no prose, no code fences."
+                )
+            )
+            messages_retry: list[Any] = [
+                SystemMessage(content=build_system_message(_AUDITOR_LLM_SYSTEM_PROMPT)),
+                HumanMessage(content=user_prompt),
+                reminder,
+            ]
+            response2 = await _ainvoke_model(model, messages_retry)
+            raw_text = _stringify_content(getattr(response2, "content", ""))
+            parsed = _parse_llm_verdict(raw_text)
+        except Exception as exc2:
+            logger.warning(
+                "auditor: LLM invoke failed on retry for task=%s (%r)",
+                task_id,
+                exc2,
+            )
+            raw_text = ""
+
+    if parsed is None:
+        # Malformed JSON / empty response → fail safe to ESCALATE. #1973: log raw.
+        # Security LOW-2: strip non-printable chars before logging.
+        _safe_raw = re.sub(r"[^\x20-\x7E฀-๿]", "?", raw_text)
+        logger.warning(
+            "auditor: LLM returned malformed response for task=%s; "
+            "defaulting to escalate; raw (repr, trunc 500): %r",
+            task_id,
+            _safe_raw[:500],
         )
         report = {
             "verdict": "escalate",

@@ -29,9 +29,12 @@ type Props = {
   // and the footer "Load more" button is rendered while onLoadMore is defined.
   totalCount?: number;
   onLoadMore?: () => void;
+  // Kanban #2112 — disables the button and shows "Loading…" while a server
+  // fetch is in-flight.
+  loadMoreLoading?: boolean;
 };
 
-export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, sortable = false, highlightedTaskId = null, totalCount, onLoadMore }: Props) {
+export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, sortable = false, highlightedTaskId = null, totalCount, onLoadMore, loadMoreLoading = false }: Props) {
   const { isOver, setNodeRef } = useDroppable({ id: columnId });
   const taskIds = tasks.map((t) => t.id);
   const dropHighlight = isOver ? " ring-2 ring-blue-400/50" : "";
@@ -78,9 +81,14 @@ export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, so
             <button
               type="button"
               onClick={onLoadMore}
-              className="mt-1 w-full rounded py-1.5 text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 transition-colors"
+              disabled={loadMoreLoading}
+              className="mt-1 w-full rounded py-1.5 text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 transition-colors disabled:opacity-50 disabled:cursor-wait"
             >
-              Load more ({remaining} more)
+              {loadMoreLoading
+                ? "Loading…"
+                : remaining > 0
+                  ? `Load more (${remaining} more)`
+                  : "Load more"}
             </button>
           )}
         </div>

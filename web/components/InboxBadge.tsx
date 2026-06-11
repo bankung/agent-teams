@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getUserPending, type UserPendingByProject } from "@/lib/api";
-import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
+import { useWildcardRowChanged } from "@/lib/WildcardSSEContext";
 
 // Kanban #1457 phase 2 — replace N+1 fan-out with single /api/user/pending call.
 // Color thresholds:
@@ -71,19 +71,32 @@ export function InboxBadge() {
     debounceRef.current = setTimeout(() => void refresh(), SSE_DEBOUNCE_MS);
   }, [refresh]);
 
-  useEffect(() => {
-    void refresh();
-    const t = setInterval(() => void refresh(), POLL_MS);
-    return () => {
-      clearInterval(t);
-      if (debounceRef.current !== null) clearTimeout(debounceRef.current);
-    };
-  }, [refresh]);
-
-  useRowChangedEvents({
+  const { connectionState } = useWildcardRowChanged({
     onTaskChange: debouncedRefresh,
     onProjectChange: debouncedRefresh,
   });
+
+  // Initial fetch on mount.
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  // Kanban #2111 Part 2 — fallback-only polling: fire only when SSE is not
+  // open (connection lost / reconnecting). SSE already invalidates on events;
+  // polling when SSE is healthy just double-fires. connectionState from the
+  // shared WildcardSSEProvider (Part 1).
+  useEffect(() => {
+    if (connectionState === "open") return;
+    const t = setInterval(() => void refresh(), POLL_MS);
+    return () => clearInterval(t);
+  }, [refresh, connectionState]);
+
+  // Cleanup debounce timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current !== null) clearTimeout(debounceRef.current);
+    };
+  }, []);
 
   const count = data?.count ?? 0;
   const hasItems = data !== null && count > 0;

@@ -3,19 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import dynamic from "next/dynamic";
 
 import { ListView } from "@/components/ListView";
-import {
-  DndContext,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from "@dnd-kit/core";
-import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 
 import {
+  listDoneLanePage,
   listMilestones,
   patchTask,
   reorderTask,
@@ -25,11 +18,18 @@ import {
   type ProjectStatsEntry,
   type TaskRead,
 } from "@/lib/api";
+
+// Kanban #2111 Part 3c — @dnd-kit loads only for the board view.
+// BoardDndCanvas owns all dnd-kit imports; this dynamic() call ensures the
+// chunk is excluded from the list-view (and SSR) bundle.
+const BoardDndCanvas = dynamic(
+  () => import("@/components/BoardDndCanvas").then((m) => m.BoardDndCanvas),
+  { ssr: false },
+);
 import { TaskStatus, type TaskStatusValue } from "@/lib/constants";
 import { extractErrorMessage } from "@/lib/errors";
 import { sortDoneLane, sortLaneTasks } from "@/lib/sortLaneTasks";
 import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
-import { BoardColumn } from "@/components/BoardColumn";
 import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
 import { Icon } from "@/components/Icon";
 import { AuditHistorySection } from "@/components/AuditHistorySection";
@@ -44,6 +44,8 @@ import { PausedBanner } from "@/components/PausedBanner";
 import { PauseProjectModal } from "@/components/PauseProjectModal";
 import { ProjectConsentGrantModal } from "@/components/ProjectConsentGrantModal";
 import { PlatformSettingsModal } from "@/components/PlatformSettingsModal";
+import { ResourcesPanel } from "@/components/ResourcesPanel";
+import { ProductTourBoardResume } from "@/components/ProductTourBoardResume";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { SourcesBadge } from "@/components/SourcesBadge";
 import { TaskDetail } from "@/components/TaskDetail";
@@ -53,6 +55,10 @@ import { ViewSwitcher } from "@/components/ViewSwitcher";
 
 type Props = {
   initialTasks: TaskRead[];
+  // Kanban #2112 — whether the server has more DONE rows beyond the first 50.
+  // Drives server-side keyset pagination on "Load more" instead of slicing
+  // a client-side array.
+  initialDoneHasMore: boolean;
   hasHeadlessTask: boolean;
   project: ProjectRead;
   // Kanban #1289 — per-project usage panel. 0 entries = project has no stats
@@ -88,14 +94,22 @@ const Sep = () => (
   </span>
 );
 
-const COLUMN_PS: Record<string, TaskStatusValue> = Object.fromEntries(
-  COLUMNS.flatMap((col) => col.statuses.map((s) => [col.key, s] as const)),
-);
-
 // #1726 — recurrence noise: templates (is_template=true) and scheduled-fire
 // instances (title prefix "[schedule:") are excluded from the visible board.
 const isScheduledNoise = (t: TaskRead) =>
   t.is_template || t.title.startsWith("[schedule:");
+
+// Kanban #2127 — operator-gate predicate. Mirrors the BE ?operator_gate=any
+// filter: task-level `operator_gate` non-null, OR ≥1 AC item with
+// gate==='operator' AND status==='pending'. Defined at module scope so it is
+// stable across renders (safe for useMemo deps).
+const isOperatorGated = (t: TaskRead): boolean => {
+  if (t.operator_gate != null) return true;
+  if (!t.acceptance_criteria) return false;
+  return t.acceptance_criteria.some(
+    (ac) => ac.gate === "operator" && ac.status === "pending",
+  );
+};
 
 function groupByStatus(tasks: TaskRead[]) {
   const groups = new Map<TaskStatusValue, TaskRead[]>();
@@ -217,7 +231,7 @@ function HeaderIconLink({
   );
 }
 
-export function Board({ initialTasks, hasHeadlessTask, project, projectStats, progressStats }: Props) {
+export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, project, projectStats, progressStats }: Props) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -245,6 +259,11 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
   // as a discoverable affordance every session).
   const [showAudit, setShowAudit] = useState(false);
 
+  // Kanban #2127 — operator-gate filter. "On you (N)" badge shows tasks that
+  // require operator action. Default OFF (show all tasks); operator toggles ON
+  // to see ONLY gated tasks. Session-scoped; no localStorage persistence.
+  const [showOperatorGateOnly, setShowOperatorGateOnly] = useState(false);
+
   // #1868 v1.1 — milestone filter. "all" = no filter (default); "none" = only
   // tasks with milestone_id == null; number = only tasks pointing at that
   // milestone. Client-side filter on the in-memory `tasks` snapshot — the
@@ -255,10 +274,15 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
   const [milestoneFilter, setMilestoneFilter] = useState<"all" | "none" | number>("all");
   const [milestones, setMilestones] = useState<MilestoneRead[]>([]);
 
-  // #pagination — DONE column: render only the first N tasks; "Load more" adds 50.
-  // Resets when the underlying DONE set changes materially (filter change, SSE update).
+  // Kanban #2112 — DONE-lane server pagination state.
+  // doneHasMore: server has more DONE rows beyond what's loaded (init from SSR prop).
+  // doneLoadingMore: a fetch is in-flight (prevents double-fetch on rapid clicks).
+  // visibleDoneCount: how many of the in-memory DONE tasks to render. Grows as
+  //   pages are appended; resets to DONE_PAGE on SSE refresh (accepted behavior).
   const DONE_PAGE = 50;
   const [visibleDoneCount, setVisibleDoneCount] = useState(DONE_PAGE);
+  const [doneHasMore, setDoneHasMore] = useState(initialDoneHasMore);
+  const [doneLoadingMore, setDoneLoadingMore] = useState(false);
 
   // #1288 — Switch-driven modal open state for project controls group.
   const [terminateModalOpen, setTerminateModalOpen] = useState(false);
@@ -361,9 +385,16 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
     localStorage.setItem(`kanban-view-${project.name}`, v);
   }
 
-  // Sync local tasks state to server snapshot on each RSC refresh
+  // Sync local tasks state to server snapshot on each RSC refresh (SSE router.refresh).
+  // Also resets DONE pagination so the next Load-more starts from the fresh SSR cursor.
   useEffect(() => {
     setTasks(initialTasks);
+    setDoneHasMore(initialDoneHasMore);
+    setVisibleDoneCount(DONE_PAGE);
+    // initialDoneHasMore and DONE_PAGE are intentionally omitted: they always
+    // update together with initialTasks on the same SSR render, so re-running
+    // on them independently would produce spurious resets mid-session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialTasks]);
 
   // #783 — SSE-driven router.refresh(); 100ms debounce + 5-event hard cap in hook
@@ -385,9 +416,92 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  // Kanban #2111 Part 3c — callbacks passed to BoardDndCanvas (owns dnd-kit).
+  // Cross-lane: optimistic setTasks + PATCH; revert on error (mirrors original onDragEnd).
+  const onCrossLaneDrop = useCallback(
+    (taskId: number, newPs: TaskStatusValue, original: TaskRead) => {
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === taskId ? { ...t, process_status: newPs } : t,
+        ),
+      );
+      patchTask(project.id, taskId, { process_status: newPs })
+        .then((server) => {
+          setTasks((prev) =>
+            prev.map((t) => (t.id === taskId ? server : t)),
+          );
+        })
+        .catch((err: unknown) => {
+          setTasks((prev) =>
+            prev.map((t) => (t.id === taskId ? original : t)),
+          );
+          const msg = extractErrorMessage(err, "Update failed");
+          pushToast(`Task #${taskId}: ${msg}`);
+        });
+    },
+    [project.id, pushToast],
+  );
+
+  // Kanban #2112 — server-side DONE Load-more handler.
+  // Cursor = last task in the DONE bucket sorted by sortDoneLane (updated_at DESC,
+  // id DESC). We re-derive it from the current `tasks` snapshot rather than
+  // relying on the `grouped` memo (which is declared below) to avoid a
+  // "used before declaration" error — the result is identical since
+  // sortDoneLane is a pure function.
+  const handleLoadMoreDone = useCallback(async () => {
+    if (!doneHasMore || doneLoadingMore) return;
+    const sortedDone = sortDoneLane(
+      tasks.filter((t) => t.process_status === TaskStatus.DONE),
+    );
+    const lastDone = sortedDone[sortedDone.length - 1];
+    if (!lastDone) return;
+    setDoneLoadingMore(true);
+    try {
+      const page = await listDoneLanePage(project.id, {
+        limit: DONE_PAGE,
+        before_updated_at: lastDone.updated_at,
+        before_id: lastDone.id,
+      });
+      if (page.length > 0) {
+        setTasks((prev) => {
+          const existingIds = new Set(prev.map((t) => t.id));
+          const novel = page.filter((t) => !existingIds.has(t.id));
+          return [...prev, ...novel];
+        });
+        setVisibleDoneCount((n) => n + page.length);
+      }
+      setDoneHasMore(page.length === DONE_PAGE);
+    } catch (_) {
+      pushToast("Failed to load more done tasks. Try again.");
+    } finally {
+      setDoneLoadingMore(false);
+    }
+  }, [doneHasMore, doneLoadingMore, tasks, project.id, pushToast]);
+
+  // Same-lane: no optimistic mutation (dnd-kit transform handles visual; snap-back on 422). Details: shared/decisions.md 2026-05-14
+  const onSameLaneReorder = useCallback(
+    (taskId: number, overTaskId: number, laneIds: number[]) => {
+      const original = tasks.find((t) => t.id === taskId);
+      if (!original) return;
+      const overTask = tasks.find((t) => t.id === overTaskId);
+      if (!overTask) return;
+      const oldIndex = laneIds.indexOf(original.id);
+      const newIndex = laneIds.indexOf(overTask.id);
+      if (oldIndex === -1 || newIndex === -1) return;
+      const body =
+        oldIndex < newIndex
+          ? { after_id: overTask.id }
+          : { before_id: overTask.id };
+      reorderTask(project.id, taskId, body)
+        .then((server) => {
+          setTasks((prev) => prev.map((t) => (t.id === taskId ? server : t)));
+        })
+        .catch((err: unknown) => {
+          const msg = extractErrorMessage(err, "Reorder failed");
+          pushToast(`Task #${taskId}: ${msg}`);
+        });
+    },
+    [tasks, project.id, pushToast],
   );
 
   // #1238 GOV3 — audit-task tally is computed against the unfiltered list so
@@ -399,6 +513,17 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
     () => tasks.filter((t) => t.task_type === "audit").length,
     [tasks],
   );
+
+  // Kanban #2127 — operator-gate count. Mirrors the BE predicate for
+  // ?operator_gate=any: task-level operator_gate non-null OR ≥1 AC item with
+  // gate==='operator' AND status==='pending'. Computed against the unfiltered
+  // list so the badge shows the real count even when a milestone filter is on.
+  // Deduplication is implicit: each task contributes at most 1 to the count.
+  const operatorGateCount = useMemo(
+    () => tasks.filter(isOperatorGated).length,
+    [tasks],
+  );
+
   const auditTasks = useMemo(
     () =>
       [...tasks.filter((t) => t.task_type === "audit")].sort((a, b) => {
@@ -418,25 +543,31 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
   const visibleTasks = useMemo(() => {
     const base = showAudit ? tasks : tasks.filter((t) => t.task_type !== "audit");
     const noNoise = base.filter((t) => !isScheduledNoise(t));
+    // Kanban #2127 — operator-gate filter. When active, show ONLY gated tasks.
+    const gateFiltered = showOperatorGateOnly
+      ? noNoise.filter(isOperatorGated)
+      : noNoise;
     // #1868 v1.1 — milestone filter. "all" → no-op; "none" → milestone_id null
     // (treats undefined the same as null for legacy/pre-migration rows); number
     // → exact match.
-    if (milestoneFilter === "all") return noNoise;
+    if (milestoneFilter === "all") return gateFiltered;
     if (milestoneFilter === "none")
-      return noNoise.filter((t) => t.milestone_id == null);
-    return noNoise.filter((t) => t.milestone_id === milestoneFilter);
-  }, [tasks, showAudit, milestoneFilter]);
+      return gateFiltered.filter((t) => t.milestone_id == null);
+    return gateFiltered.filter((t) => t.milestone_id === milestoneFilter);
+  }, [tasks, showAudit, showOperatorGateOnly, milestoneFilter]);
 
   const grouped = useMemo(() => groupByStatus(visibleTasks), [visibleTasks]);
 
-  // Reset DONE pagination whenever the DONE set changes materially (milestone/audit
-  // filter toggle or SSE refresh that changes the set size or leading task).
-  const doneTasks = grouped.get(TaskStatus.DONE) ?? [];
-  const _doneResetKey = `${doneTasks.length}:${doneTasks[0]?.id ?? ""}`;
+  // Reset the client-side DONE display window (visibleDoneCount) ONLY when the
+  // filter inputs change. Keyed on the filter state directly — NOT on the DONE
+  // bucket contents — so appending a server page (which grows doneTasks) does
+  // NOT reset, and Load-more terminates correctly. doneHasMore is NOT reset here;
+  // it reflects the server's has-more for the lane and is owned by the
+  // initialTasks-sync effect (SSE refresh) + handleLoadMoreDone. (#2112 regression
+  // fix: the prior content-keyed effect reverted both on every append.)
   useEffect(() => {
     setVisibleDoneCount(DONE_PAGE);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [_doneResetKey]);
+  }, [milestoneFilter, showAudit, showOperatorGateOnly]);
 
   const selectedTask = useMemo(
     () =>
@@ -453,78 +584,6 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
   const onPatchedTask = useCallback((updated: TaskRead) => {
     setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
   }, []);
-
-  const onDragEnd = useCallback(
-    (event: DragEndEvent) => {
-      const { active, over } = event;
-      if (!over) return;
-      const taskId = Number(active.id);
-      const original = tasks.find((t) => t.id === taskId);
-      if (!original) return;
-      if (original.task_kind === "ai") return;
-
-      // Drop target: column key string = cross-lane, number = same/cross-lane task
-      let newPs: TaskStatusValue | undefined;
-      let overTask: TaskRead | undefined;
-      if (typeof over.id === "string") {
-        newPs = COLUMN_PS[over.id];
-      } else {
-        overTask = tasks.find((t) => t.id === over.id);
-        if (overTask === undefined) return;
-        newPs = overTask.process_status;
-      }
-      if (newPs === undefined) return;
-
-      // Cross-lane: PATCH process_status; same-lane: reorderTask via sort_order
-      if (original.process_status !== newPs) {
-        setTasks((prev) =>
-          prev.map((t) =>
-            t.id === taskId ? { ...t, process_status: newPs } : t,
-          ),
-        );
-        patchTask(project.id, taskId, { process_status: newPs })
-          .then((server) => {
-            setTasks((prev) =>
-              prev.map((t) => (t.id === taskId ? server : t)),
-            );
-          })
-          .catch((err: unknown) => {
-            setTasks((prev) =>
-              prev.map((t) => (t.id === taskId ? original : t)),
-            );
-            const msg = extractErrorMessage(err, "Update failed");
-            pushToast(`Task #${taskId}: ${msg}`);
-          });
-        return;
-      }
-
-      // Same-lane reorder only in TODO lane (#772); other lanes: silent no-op
-      if (newPs !== TaskStatus.TODO) return;
-      if (!overTask) return;
-      if (overTask.id === original.id) return;
-
-      // after_id: active moved down (anchor below); before_id: moved up (#772)
-      const laneIds = (grouped.get(TaskStatus.TODO) ?? []).map((t) => t.id);
-      const oldIndex = laneIds.indexOf(original.id);
-      const newIndex = laneIds.indexOf(overTask.id);
-      if (oldIndex === -1 || newIndex === -1) return;
-      const body =
-        oldIndex < newIndex
-          ? { after_id: overTask.id }
-          : { before_id: overTask.id };
-
-      // #772 — within-lane: no optimistic mutation (dnd-kit transform handles visual; snap-back on 422). Details: shared/decisions.md 2026-05-14
-      reorderTask(project.id, taskId, body)
-        .then((server) => {
-          setTasks((prev) => prev.map((t) => (t.id === taskId ? server : t)));
-        })
-        .catch((err: unknown) => {
-          const msg = extractErrorMessage(err, "Reorder failed");
-          pushToast(`Task #${taskId}: ${msg}`);
-        });
-    },
-    [tasks, grouped, project.id, pushToast],
-  );
 
   return (
     // #954 — mobile: page scrolls (h-auto, overflow-y-auto); desktop preserves the fixed-viewport board (h-screen, overflow-hidden)
@@ -767,6 +826,23 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
             dataAttr="data-audit-task-toggle"
           />
         )}
+        {/* Kanban #2127 — operator-gate toggle chip; hidden when count=0. */}
+        {operatorGateCount > 0 && (
+          <HeaderIconBtn
+            icon="alert"
+            label={
+              showOperatorGateOnly
+                ? `Show all tasks (${operatorGateCount} on you)`
+                : `On you (${operatorGateCount})`
+            }
+            onClick={() => setShowOperatorGateOnly((v) => !v)}
+            active={showOperatorGateOnly}
+            ariaPressed={showOperatorGateOnly}
+            count={operatorGateCount}
+            tone="amber"
+            dataAttr="data-operator-gate-toggle"
+          />
+        )}
         {/* Scheduled/template chip — display-only; hidden when count=0. */}
         {scheduledTaskCount > 0 && (
           <HeaderIconBtn
@@ -817,33 +893,19 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
           highlightedTaskId={highlightedTaskId}
         />
       ) : (
-        <DndContext sensors={sensors} onDragEnd={onDragEnd}>
-          {/* #954 — mobile: page scrolls (no overflow-hidden, no min-h-0); desktop restores the fixed-height bounded lanes at lg */}
-          <div
-            data-board="dnd"
-            className="grid flex-1 grid-cols-1 gap-3 md:grid-cols-3 lg:min-h-0 lg:grid-cols-5 lg:overflow-hidden"
-          >
-            {COLUMNS.map((col) => {
-              const colTasks = col.statuses.flatMap((s) => grouped.get(s) ?? []);
-              const isDone = col.statuses.includes(TaskStatus.DONE);
-              const renderedTasks = isDone ? colTasks.slice(0, visibleDoneCount) : colTasks;
-              return (
-                <BoardColumn
-                  key={col.key}
-                  columnId={col.key}
-                  statuses={col.statuses}
-                  label={col.label}
-                  tasks={renderedTasks}
-                  totalCount={isDone ? colTasks.length : undefined}
-                  onLoadMore={isDone && colTasks.length > visibleDoneCount ? () => setVisibleDoneCount((n) => n + DONE_PAGE) : undefined}
-                  onOpenDetail={onOpenDetail}
-                  sortable={col.statuses.includes(TaskStatus.TODO)}
-                  highlightedTaskId={highlightedTaskId}
-                />
-              );
-            })}
-          </div>
-        </DndContext>
+        <BoardDndCanvas
+          columns={COLUMNS}
+          tasks={tasks}
+          grouped={grouped}
+          visibleDoneCount={visibleDoneCount}
+          doneHasMore={doneHasMore}
+          doneLoadingMore={doneLoadingMore}
+          onOpenDetail={onOpenDetail}
+          highlightedTaskId={highlightedTaskId}
+          onLoadMoreDone={handleLoadMoreDone}
+          onCrossLaneDrop={onCrossLaneDrop}
+          onSameLaneReorder={onSameLaneReorder}
+        />
       )}
       {/* #1238 GOV3 — Audit History archive below the lanes. Self-collapses;
           shows "No audit history yet." when the project has no audit_task rows.
@@ -851,6 +913,13 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
           audit task is already in `tasks` via the initial /api/tasks limit=500
           fetch + SSE refresh). */}
       <AuditHistorySection auditTasks={auditTasks} />
+      {/* #1315 — collapsible Resources footer (files + links). Below the lanes
+          + Audit History so it never competes with the kanban for vertical
+          space; default collapsed, persisted per-user per-project. */}
+      {/* #1315 — collapsible Resources footer (files + links). Below the lanes
+          + Audit History so it never competes with the kanban for vertical
+          space; default collapsed, persisted per-user per-project. */}
+      <ResourcesPanel projectId={project.id} />
       {selectedTask && (
         <TaskDetail
           task={selectedTask}
@@ -862,6 +931,12 @@ export function Board({ initialTasks, hasHeadlessTask, project, projectStats, pr
         />
       )}
       <ToastStack messages={toasts} onDismiss={dismissToast} />
+      {/* #1582 — board phase of the first-visit product tour. Renders null
+          unless the dashboard phase handed off (localStorage baton); then runs
+          the board + task-drawer steps and finalizes the tour. projectName gates
+          the phase to the demo-tour sample project (#1582 H-1/M-1): a stale
+          baton landing on a real board clears itself instead of firing. */}
+      <ProductTourBoardResume projectName={project.name} />
     </main>
   );
 }

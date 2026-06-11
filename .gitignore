@@ -28,6 +28,11 @@ node_modules/
 dist/
 build/
 
+# Playwright E2E run artifacts (Kanban #1243) — never committed (config + e2e/ specs ARE committed)
+web/playwright-report/
+web/test-results/
+web/playwright/.cache/
+
 # DB
 *.db
 *.db-journal
@@ -93,6 +98,7 @@ _private/
 # tracked via .gitkeep but ignore its contents (project_id is per-terminal).
 _runtime/*
 !_runtime/.gitkeep
+!_runtime/secretary-email-policy.json
 
 # --- Non-agent-teams project working dirs must NOT live in this PUBLIC repo (Kanban #1725, 2026-05-31) ---
 # Projects with a working_path keep shared/ + role-state OUTSIDE this repo.

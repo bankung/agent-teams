@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import { listAuditFlags } from "@/lib/api";
-import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
+import { useWildcardRowChanged } from "@/lib/WildcardSSEContext";
 
 // Kanban #1212 (D5) / #1330 — header notification surface. Small bell icon
 // with a red-dot + count badge when #1211 audit flags are open across any project.
@@ -31,18 +31,26 @@ export function FlagBellBadge() {
     }
   }, []);
 
-  useEffect(() => {
-    void refresh();
-    const t = setInterval(() => void refresh(), POLL_MS);
-    return () => clearInterval(t);
-  }, [refresh]);
-
   // Also revalidate on row_changed events so resolve actions in other tabs
-  // update this badge immediately. Wildcard subscription (no projectId).
-  useRowChangedEvents({
+  // update this badge immediately. Shared wildcard connection (Part 1 #2111).
+  const { connectionState } = useWildcardRowChanged({
     onTaskChange: refresh,
     onProjectChange: refresh,
   });
+
+  // Initial fetch on mount.
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  // Kanban #2111 Part 2 — fallback-only polling: fire only when SSE is not
+  // open. SSE already invalidates on events; polling when SSE is healthy
+  // double-fires. connectionState from the shared WildcardSSEProvider.
+  useEffect(() => {
+    if (connectionState === "open") return;
+    const t = setInterval(() => void refresh(), POLL_MS);
+    return () => clearInterval(t);
+  }, [refresh, connectionState]);
 
   const hasFlags = count !== null && count > 0;
   const label = hasFlags

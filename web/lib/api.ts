@@ -94,12 +94,17 @@ export type ProjectRead = {
 // AcceptanceCriterion — one entry in TaskRead.acceptance_criteria (#797).
 // JSONB shape; verified_at is ISO 8601 string (serialized via mode='json' on
 // the backend per shared/decisions.md 2026-05-12 fix to #801).
+// Kanban #2127 — optional operator-gate fields on AC items. `gate='operator'`
+// marks the item as requiring operator action; `gate_kind` narrows the kind
+// (matches BE GateKind enum: key|commit|decision|hitl|external).
 export type AcceptanceCriterion = {
   text: string;
   status: "pending" | "passed" | "failed" | "na";
   verified_by: string | null;
   verified_at: string | null;
   notes: string | null;
+  gate?: "operator" | null;
+  gate_kind?: "key" | "commit" | "decision" | "hitl" | "external" | null;
 };
 
 // AnswerHistoryEntry — one entry in QuestionPayload.answer_history (#834).
@@ -241,6 +246,13 @@ export type TaskRead = {
   // decision matrix. NULL = task runs normally; non-null = halted with reason.
   // Present on every TaskRead response; FE mirrors the BE nullable TEXT column.
   halt_reason: string | null;
+  // Kanban #2127 — operator-gate fields. `operator_gate` is non-null when the
+  // task has a task-level gate (value = gate_kind string). `operator_gate_note`
+  // is the optional free-text note the Lead attached. Both are nullable TEXT
+  // columns on the BE; optional here for defensive resilience against pre-#2127
+  // serialized payloads that omit the fields.
+  operator_gate?: string | null;
+  operator_gate_note?: string | null;
   created_at: string;
   updated_at: string;
   started_at: string | null;
@@ -738,6 +750,32 @@ export async function getTask(
   });
 }
 
+// Kanban #2112 — DONE-lane keyset pagination.
+// Fetches one page of DONE tasks ordered by (updated_at DESC, id DESC)
+// matching the sortDoneLane client sort. Cursor = last row of prior page.
+// has-more: returned.length === limit.
+export type DoneLanePageOpts = {
+  limit: number;
+  before_updated_at?: string;
+  before_id?: number;
+};
+export async function listDoneLanePage(
+  projectId: number,
+  opts: DoneLanePageOpts,
+): Promise<TaskRead[]> {
+  const qs = new URLSearchParams();
+  qs.set("process_status", "5");
+  qs.set("order", "done_lane");
+  qs.set("limit", String(opts.limit));
+  if (opts.before_updated_at !== undefined)
+    qs.set("before_updated_at", opts.before_updated_at);
+  if (opts.before_id !== undefined)
+    qs.set("before_id", String(opts.before_id));
+  return jsonFetch<TaskRead[]>(buildPath("/api/tasks", qs), {
+    headers: { "X-Project-Id": String(projectId) },
+  });
+}
+
 // createTask — POST /api/tasks body (Kanban #855 FE). Mirrors
 // api/src/schemas/task.py:TaskCreate. Only the fields the manual-create modal
 // exposes are typed here; backend defaults (task_type='feature', task_kind='ai',
@@ -846,8 +884,9 @@ export async function parseTaskText(
 // PATCH /api/tasks/{id} — partial update; blocked_by explicit null clears (#771); run_mode #860; status_change_reason #854
 // halt_reason added 2026-05-20 by Kanban #1001 — Halt quick-action sets ps=4 + halt_reason in one PATCH.
 //   PATCH semantics (per #785): key-absent = unchanged; explicit `null` = clear/unhalt; non-empty string = halt.
+// Kanban #2181 — description + acceptance_criteria inline editing from task drawer.
 export type TaskPatch = Partial<
-  Pick<TaskRead, "process_status" | "priority" | "title" | "blocked_by" | "sort_order" | "run_mode">
+  Pick<TaskRead, "process_status" | "priority" | "title" | "blocked_by" | "sort_order" | "run_mode" | "description" | "acceptance_criteria">
 > & {
   new_answer?: string | null;
   new_answer_by?: string | null;
@@ -1114,6 +1153,7 @@ export type ResolveFlagAdjustments = {
   approval_policies?: Record<string, unknown> | null;
   hitl_timeout_hours?: number | null;
   audit_enabled?: boolean;
+  description_annotation?: string;
 };
 
 // ResolveFlagBody — POST body for /api/tasks/{flag_id}/resolve-flag.
@@ -1960,6 +2000,333 @@ export async function deleteMilestone(
     const body = (await response.json().catch(() => ({}))) as {
       detail?: unknown;
     };
+    const message =
+      formatDetail(body.detail) ?? `${response.status} ${response.statusText}`;
+    throw new HttpError(response.status, body.detail, message);
+  }
+}
+
+// ============================================================================
+// Kanban #1005 (2026-06-08) — append-only task comment thread.
+//
+// Sub-resource of a task (parity with /{task_id}/blocks + /{task_id}/tool-calls):
+// every route is X-Project-Id scoped (the session-bound header is the auth gate;
+// the BE 400s on a task that belongs to a different project). APPEND-ONLY — there
+// is NO PATCH and NO DELETE on comments (AC#7); the only removal path is a task
+// hard-delete CASCADE. Mirror of api/src/schemas/task_comment.py.
+// ============================================================================
+
+// CommentAuthorKind — wire enum mirror of constants.CommentAuthorKind.ALL.
+//   'user'   — a human operator (this UI posts with this kind).
+//   'agent'  — a specialist subagent / Lead progress note.
+//   'system' — an automated event (status flip, audit, scheduler note).
+export type CommentAuthorKindValue = "user" | "agent" | "system";
+
+// TaskCommentRead — one comment row. `body_markdown` flags whether `body`
+// should be rendered as (sanitized) markdown vs plain escaped text. `created_at`
+// is ISO 8601 with timezone. id is BIGSERIAL — monotonic with insertion, so
+// id-ordering IS chronological (the `before` cursor needs no created_at tiebreak).
+export type TaskCommentRead = {
+  id: number;
+  task_id: number;
+  author_kind: CommentAuthorKindValue;
+  author_label: string | null;
+  body: string;
+  body_markdown: boolean;
+  created_at: string;
+};
+
+// TaskCommentCreate — POST body. `author_kind` required (the discriminator);
+// `author_label` optional attribution (max 200 chars BE-side); `body` required
+// (min 1, max 20000 BE-side); `body_markdown` defaults true (matches DB DEFAULT).
+// extra='forbid' on the BE schema — don't send unknown keys.
+export type TaskCommentCreate = {
+  author_kind: CommentAuthorKindValue;
+  author_label?: string;
+  body: string;
+  body_markdown?: boolean;
+};
+
+// BE payload caps (kept in lockstep with schemas/task_comment.py so the FE can
+// gate before submit rather than round-tripping a 422). Exported for the
+// compose box's maxLength / disabled-on-overflow guard.
+export const COMMENT_BODY_MAX = 20_000;
+export const COMMENT_AUTHOR_LABEL_MAX = 200;
+
+// getTaskComments — GET /api/tasks/{id}/comments. Oldest-first (id ASC),
+// chronological. `before` = id cursor (returns rows with id < before) for the
+// "load older" page; omit for the first page. `limit` default 50, max 200.
+// Returns [] for a task with no comments. X-Project-Id scoped.
+export async function getTaskComments(
+  projectId: number,
+  taskId: number,
+  opts: { before?: number; limit?: number } = {},
+): Promise<TaskCommentRead[]> {
+  const qs = new URLSearchParams();
+  if (opts.before !== undefined) qs.set("before", String(opts.before));
+  if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
+  const path = buildPath(`/api/tasks/${taskId}/comments`, qs);
+  return jsonFetch<TaskCommentRead[]>(path, {
+    headers: { "X-Project-Id": String(projectId) },
+  });
+}
+
+// postTaskComment — POST /api/tasks/{id}/comments. 201 + the created row.
+// Rate-limited 30/minute BE-side; the FE serializes posts behind a `posting`
+// flag so a single operator never trips it. X-Project-Id scoped.
+export async function postTaskComment(
+  projectId: number,
+  taskId: number,
+  body: TaskCommentCreate,
+): Promise<TaskCommentRead> {
+  return jsonFetch<TaskCommentRead>(`/api/tasks/${taskId}/comments`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Project-Id": String(projectId),
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+// ============================================================================
+// Kanban #1309 / #1315 — project Resources (files + links).
+//
+// Two mount shapes on the BE (api/src/routers/resources.py):
+//   * project-scoped (/api/projects/{id}/resources): POST create, GET list.
+//   * resource-scoped (/api/resources/{id}): GET detail, GET preview, DELETE.
+//
+// `kind` is 'file' | 'link' (mirror of constants.ResourceKind.ALL). File rows
+// carry `filename` + `content_type` + `size_bytes`; link rows carry `url`. The
+// open `tags` object holds the verify-and-tag metadata (#1309): files →
+// row_count / col_count / format_detected / schema_detected / preview /
+// est_cost_if_full / hash; links → url_scheme / url_host / head_status / title.
+// The server-internal `stored_path` is stripped before serialization (BE
+// _strip_internal_tags) so it never appears on the wire.
+//
+// CREATE is dual-contract by request content-type (same handler):
+//   * multipart/form-data → FILE upload (file part + kind='file' + task_id? +
+//     label?). DO NOT set Content-Type manually — the browser sets the
+//     multipart boundary. Verify-and-tag runs SYNCHRONOUSLY inside the POST
+//     (store → tag → INSERT → 201 with tags). There is NO server progress
+//     stream; the panel shows an optimistic staged indicator while in-flight.
+//   * application/json → LINK attach ({kind:'link', url, task_id?, label?}).
+//
+// CREATE + DELETE are operator-gated on the BE (fail-OPEN/dormant until
+// OPERATOR_ACTION_KEY is set, mirroring the task_templates gate). 413 when a
+// file exceeds the upload cap.
+// ============================================================================
+
+export const RESOURCE_KINDS = ["file", "link"] as const;
+export type ResourceKindValue = (typeof RESOURCE_KINDS)[number];
+
+// EstCostIfFull — the planning-only LLM cost estimate stashed in a file row's
+// tags (services/resource_verify.estimate_cost_if_full). `usd` is null when the
+// model price is unknown. NEVER a billing figure — `basis` documents the math.
+export type EstCostIfFull = {
+  usd: number | null;
+  approx_tokens: number;
+  model: string;
+  basis: string;
+};
+
+// ResourceTags — the open verify-and-tag metadata object. Every key is optional
+// (the shape differs file vs link, and a parser may be unavailable). Typed as a
+// loose record at the wire boundary; the known keys below are surfaced as chips.
+export type ResourceTags = {
+  // FILE keys (services/resource_verify.verify_and_tag_file)
+  format_detected?: string | null;
+  row_count?: number | null;
+  col_count?: number | null;
+  schema_detected?: string[] | null;
+  preview?: unknown;
+  preview_rows?: number;
+  hash?: string;
+  est_cost_if_full?: EstCostIfFull;
+  parser_unavailable?: boolean;
+  content_type_resolved?: string | null;
+  parse_error?: string;
+  notes?: string;
+  // LINK keys (services/resource_verify.verify_and_tag_link)
+  url_scheme?: string;
+  url_host?: string;
+  head_status?: number | null;
+  title?: string | null;
+  // Open for forward-compat — pipeline may add keys without a schema bump.
+  [k: string]: unknown;
+};
+
+// Resource — mirror of api/src/schemas/project_resource.py:ResourceRead.
+// `filename` / `content_type` / `size_bytes` are file-only (null on links);
+// `url` is link-only (null on files). `tags` is the metadata object above.
+export type Resource = {
+  id: number;
+  project_id: number;
+  task_id: number | null;
+  kind: ResourceKindValue;
+  filename: string | null;
+  url: string | null;
+  content_type: string | null;
+  size_bytes: number | null;
+  label: string | null;
+  tags: ResourceTags;
+  created_at: string; // ISO 8601 with timezone
+  updated_at: string;
+};
+
+// ResourcePreview — mirror of ResourcePreview schema. Read straight off the
+// stored tags (the endpoint NEVER re-reads the file). `preview` is the
+// first-N-rows sample (list of row-objects for CSV/TSV, parsed value for JSON,
+// null when no parser ran). For links the file-stat fields are null.
+export type ResourcePreview = {
+  id: number;
+  kind: ResourceKindValue;
+  filename: string | null;
+  content_type: string | null;
+  format_detected: string | null;
+  row_count: number | null;
+  col_count: number | null;
+  schema_detected: string[] | null;
+  preview: unknown;
+  parser_unavailable: boolean;
+};
+
+type ListResourcesOpts = {
+  task_id?: number;
+  kind?: ResourceKindValue;
+  limit?: number;
+  offset?: number;
+};
+
+// listResources — GET /api/projects/{id}/resources. Newest-first
+// (created_at DESC). Ungated (read-only). Optional task_id pins to one task;
+// kind filters file/link. X-Project-Id scoped (mirrors the tasks router).
+export async function listResources(
+  projectId: number,
+  opts: ListResourcesOpts = {},
+): Promise<Resource[]> {
+  const qs = new URLSearchParams();
+  if (opts.task_id !== undefined) qs.set("task_id", String(opts.task_id));
+  if (opts.kind !== undefined) qs.set("kind", opts.kind);
+  if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
+  if (opts.offset !== undefined) qs.set("offset", String(opts.offset));
+  const path = buildPath(`/api/projects/${projectId}/resources`, qs);
+  return jsonFetch<Resource[]>(path, {
+    headers: { "X-Project-Id": String(projectId) },
+  });
+}
+
+// createResourceFile — POST /api/projects/{id}/resources (multipart/form-data).
+// The browser sets the multipart Content-Type + boundary automatically; we MUST
+// NOT set it manually (a manual header omits the boundary → 422). jsonFetch
+// always forces JSON, so this path uses fetch() directly to send FormData.
+//
+// 201 → the tagged Resource (verify-and-tag is synchronous inside the POST).
+// 413 → file over the upload cap (nothing saved). 403 → operator gate active.
+export async function createResourceFile(
+  projectId: number,
+  file: File,
+  opts: { task_id?: number; label?: string } = {},
+): Promise<Resource> {
+  const form = new FormData();
+  form.set("file", file);
+  form.set("kind", "file");
+  if (opts.task_id !== undefined) form.set("task_id", String(opts.task_id));
+  if (opts.label !== undefined && opts.label !== "") form.set("label", opts.label);
+
+  const url = `${apiBaseUrl()}/api/projects/${projectId}/resources`;
+  const response = await fetch(url, {
+    method: "POST",
+    cache: "no-store",
+    // NOTE: no Content-Type — the browser sets multipart/form-data + boundary.
+    headers: { Accept: "application/json", "X-Project-Id": String(projectId) },
+    body: form,
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { detail?: unknown };
+    const message =
+      formatDetail(body.detail) ?? `${response.status} ${response.statusText}`;
+    throw new HttpError(response.status, body.detail, message);
+  }
+  return (await response.json()) as Resource;
+}
+
+// createResourceLink — POST /api/projects/{id}/resources (application/json).
+// Body {kind:'link', url, task_id?, label?}. 201 → the tagged Resource.
+export async function createResourceLink(
+  projectId: number,
+  body: { url: string; task_id?: number; label?: string },
+): Promise<Resource> {
+  return jsonFetch<Resource>(`/api/projects/${projectId}/resources`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Project-Id": String(projectId),
+    },
+    body: JSON.stringify({ kind: "link", ...body }),
+  });
+}
+
+// getResourcePreview — GET /api/resources/{id}/preview. Ungated. 404 if missing
+// or soft-deleted. No X-Project-Id (resource-scoped, mirrors the BE router).
+export async function getResourcePreview(
+  resourceId: number,
+): Promise<ResourcePreview> {
+  return jsonFetch<ResourcePreview>(`/api/resources/${resourceId}/preview`);
+}
+
+// ============================================================================
+// Kanban #2135 — GET /api/usage/daily  (LLM spend surface)
+// ============================================================================
+
+// UsageDailyRow — one row in the DailyUsageResponse.rows array.
+// cost_usd is a 4-dp decimal string (same Decimal-as-string convention used
+// elsewhere in this file).
+export type UsageDailyRow = {
+  date: string;       // "YYYY-MM-DD"
+  provider: string;   // "anthropic" | "google" | "unknown" | …
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: string;   // e.g. "0.1234"
+};
+
+export type DailyUsageResponse = {
+  days: number;
+  rows: UsageDailyRow[];
+  total_today_usd: string;   // 4-dp decimal string
+  total_month_usd: string;   // 4-dp decimal string
+  // Kanban #2137 — server UTC date used to bucket total_today_usd.
+  // Optional: absent on API versions that predate this field; component
+  // falls back to client UTC date when missing.
+  today?: string;            // "YYYY-MM-DD" (server UTC)
+};
+
+// getDailyUsage — GET /api/usage/daily?days=N[&project_id=P].
+// No X-Project-Id header — operator-level endpoint (same as /api/pnl).
+export async function getDailyUsage(opts?: {
+  days?: number;
+  project_id?: number;
+}): Promise<DailyUsageResponse> {
+  const qs = new URLSearchParams();
+  if (opts?.days != null) qs.set("days", String(opts.days));
+  if (opts?.project_id != null) qs.set("project_id", String(opts.project_id));
+  return jsonFetch<DailyUsageResponse>(buildPath("/api/usage/daily", qs));
+}
+
+// deleteResource — DELETE /api/resources/{id}. Operator-gated; soft-delete +
+// move file to trash. 204 (no body) on success; idempotent. Returns void.
+export async function deleteResource(resourceId: number): Promise<void> {
+  // DELETE returns 204 (no body) — jsonFetch would explode parsing JSON on an
+  // empty body; call fetch directly (mirrors push.unsubscribe / deleteMilestone).
+  const url = `${apiBaseUrl()}/api/resources/${resourceId}`;
+  const response = await fetch(url, {
+    method: "DELETE",
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { detail?: unknown };
     const message =
       formatDetail(body.detail) ?? `${response.status} ${response.statusText}`;
     throw new HttpError(response.status, body.detail, message);

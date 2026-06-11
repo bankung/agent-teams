@@ -29,4 +29,6 @@ EXPOSE 8000
 
 # uvicorn --reload watches /repo/langgraph (the WORKDIR, overlaid by the compose
 # bind-mount) and restarts on source edits. Mirrors the api service.
-CMD ["uvicorn", "graph:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Kanban #2136: exclude scenarios/ from reload-watch — editing regression_pack.py
+# mid-run would otherwise restart the server and kill the in-flight worker task.
+CMD ["uvicorn", "graph:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-exclude", "scenarios/*"]

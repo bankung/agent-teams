@@ -50,10 +50,11 @@ from src.routers import tasks as tasks_router
 from src.routers import teams as teams_router
 from src.routers import tool_calls as tool_calls_router
 from src.routers import tools_email as tools_email_router
+from src.routers import tools_calendar as tools_calendar_router
 from src.routers import tools_directory as tools_directory_router
 from src.routers import transactions as transactions_router
+from src.routers import usage as usage_router
 from src.routers import user_actions as user_actions_router
-from src.routers import webhooks as webhooks_router
 from src.services.row_changed_listener import start_listener, stop_listener
 from src.settings import get_settings
 
@@ -157,6 +158,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from src.services.credentials_crypto import get_fernet
     get_fernet()
 
+    # Kanban #2045 (FIX-A4) — warn when the operator-proof gate is DORMANT.
+    # OPERATOR_ACTION_KEY absent = fail-open (every email/calendar mutation runs
+    # unprotected). This is the intended design; do NOT raise. Log so the dormant
+    # state is visible in container logs. Set the key to activate the gate.
+    if not os.environ.get("OPERATOR_ACTION_KEY"):
+        logger.warning(
+            "operator-proof gate DORMANT: OPERATOR_ACTION_KEY unset"
+            " — email/calendar mutations are NOT operator-gated"
+            " (fail-open by design; set the key to activate)"
+        )
+
     # #782 — boot SSE broker before scheduler
     await start_listener()
 
@@ -184,42 +196,63 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Kanban #959 — off-site encrypted backup nightly job. Refuses to schedule
     # when BACKUP_* env vars are unset (default state). Cron in BACKUP_TIMEZONE
     # (defaults to UTC). One job, one run_once() call per fire.
-    from src.services.backup import BackupConfig, BackupRunner
+    #
+    # Deferred import: check the cheap env path first so the backup module
+    # (and transitively boto3 ~15-20MB) is only imported when backup is
+    # actually enabled. If the bucket var is set but the import/config fails,
+    # log + raise to fail-fast at lifespan (don't silently skip).
+    if os.environ.get("BACKUP_S3_BUCKET", ""):
+        try:
+            from src.services.backup import BackupConfig, BackupRunner  # noqa: PLC0415
+            backup_cfg = BackupConfig.from_env()
+        except Exception as exc:
+            logger.error(
+                "backup: BACKUP_S3_BUCKET is set but failed to load backup "
+                "module or config — refusing to start with a broken backup "
+                "configuration. Error: %s",
+                exc,
+            )
+            raise
 
-    backup_cfg = BackupConfig.from_env()
-    if backup_cfg.is_enabled:
-        runner = BackupRunner(backup_cfg)
-        scheduler.add_job(
-            runner.run_once,
-            trigger=CronTrigger.from_crontab(
-                backup_cfg.cron_rule, timezone=backup_cfg.timezone,
-            ),
-            id="backup_nightly",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-        )
-        logger.info(
-            "backup scheduled: cron=%s tz=%s bucket=%s prefix=%s dry_run=%s",
-            backup_cfg.cron_rule, backup_cfg.timezone, backup_cfg.s3_bucket,
-            backup_cfg.s3_prefix, backup_cfg.dry_run,
-        )
+        if backup_cfg.is_enabled:
+            runner = BackupRunner(backup_cfg)
+            scheduler.add_job(
+                runner.run_once,
+                trigger=CronTrigger.from_crontab(
+                    backup_cfg.cron_rule, timezone=backup_cfg.timezone,
+                ),
+                id="backup_nightly",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
+            logger.info(
+                "backup scheduled: cron=%s tz=%s bucket=%s prefix=%s dry_run=%s",
+                backup_cfg.cron_rule, backup_cfg.timezone, backup_cfg.s3_bucket,
+                backup_cfg.s3_prefix, backup_cfg.dry_run,
+            )
 
-        # Kanban #1474 — startup catchup: if the desktop was OFF during the
-        # scheduled window (APScheduler silently skips missed fires by default),
-        # kick off one immediate run if the latest backup is older than the
-        # threshold. Fire-and-forget on the loop so startup is non-blocking.
-        _catchup_max_age_hours = float(
-            os.environ.get("BACKUP_CATCHUP_MAX_AGE_HOURS", "24")
-        )
-        asyncio.create_task(
-            runner.catchup_if_stale(_catchup_max_age_hours),
-            name="backup_catchup",
-        )
-        logger.info(
-            "backup catchup task scheduled: max_age_hours=%.1f",
-            _catchup_max_age_hours,
-        )
+            # Kanban #1474 — startup catchup: if the desktop was OFF during the
+            # scheduled window (APScheduler silently skips missed fires by default),
+            # kick off one immediate run if the latest backup is older than the
+            # threshold. Fire-and-forget on the loop so startup is non-blocking.
+            _catchup_max_age_hours = float(
+                os.environ.get("BACKUP_CATCHUP_MAX_AGE_HOURS", "24")
+            )
+            asyncio.create_task(
+                runner.catchup_if_stale(_catchup_max_age_hours),
+                name="backup_catchup",
+            )
+            logger.info(
+                "backup catchup task scheduled: max_age_hours=%.1f",
+                _catchup_max_age_hours,
+            )
+        else:
+            logger.warning(
+                "Backup disabled — BACKUP_S3_BUCKET is set but one or more of "
+                "BACKUP_S3_ACCESS_KEY_ID, BACKUP_S3_SECRET_ACCESS_KEY, "
+                "BACKUP_AGE_PUBKEY is missing"
+            )
     else:
         logger.warning(
             "Backup disabled — set BACKUP_S3_BUCKET, BACKUP_S3_ACCESS_KEY_ID, "
@@ -254,6 +287,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Interval defaults to 30 min; override via HITL_NUDGE_INTERVAL_MINUTES env.
     from src.services.hitl_nudge import schedule_nudge_job
     schedule_nudge_job(scheduler)
+
+    # Kanban #1240 (2026-06-07) — daily audit-archive sweep. Registered into
+    # the SAME scheduler instance (no parallel scheduler). Cron defaults to
+    # 03:30 UTC; TTL via AUDIT_ARCHIVE_DAYS (default 30). Flips
+    # tasks.is_active=false on completed audit tasks older than the TTL,
+    # skipping projects with audit_enabled=false.
+    from src.services.audit_archive import schedule_audit_archive_job
+    schedule_audit_archive_job(scheduler)
 
     scheduler.start()
     _scheduler = scheduler
@@ -373,8 +414,6 @@ def create_app() -> FastAPI:
     app.include_router(push_ntfy_router.router, prefix="/api")
     # Kanban #1326 (M3) — credentials vault (per-project, Fernet-encrypted).
     app.include_router(credentials_router.router, prefix="/api")
-    # Kanban #1325 (M2) — external payment-webhook ingest (Stripe + PayPal).
-    app.include_router(webhooks_router.router, prefix="/api")
     # Kanban #1327 (M4a) — email-to-task ingest webhook.
     app.include_router(ingest_router.router, prefix="/api")
     # Kanban #1217 — daily-digest fire endpoint (Gmail SMTP).
@@ -382,12 +421,19 @@ def create_app() -> FastAPI:
     # Kanban #1604 — email tools (Gmail trash + OAuth + 3-layer safety gate).
     # #1608 will append Outlook routes to the same router file.
     app.include_router(tools_email_router.router, prefix="/api")
+    # Kanban #1963 — calendar tools (Google + Outlook) at the proper
+    # /api/tools/calendar base: list-events/freebusy (READ) + create-event/respond
+    # (WRITE, operator-proof). Relocates the #1942 Google READ routes off the
+    # email router. Reuses the email gate machinery (Layer-0 + operator-proof).
+    app.include_router(tools_calendar_router.router, prefix="/api")
     # Kanban #1854 — agent-runtime tool directory + missing-tool suggestion.
     app.include_router(tools_directory_router.router, prefix="/api")
     # Kanban #1655 — platform Integrations settings popup (global, no
     # X-Project-Id). Enable toggles persist; configured/present computed live
     # from os.environ. Keys stay in .env — no key entry/storage via this API.
     app.include_router(settings_router.router, prefix="/api")
+    # Kanban #2135 — provider cost rollup (cross-project, no X-Project-Id).
+    app.include_router(usage_router.router, prefix="/api")
 
     return app
 

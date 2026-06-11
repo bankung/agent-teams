@@ -63,10 +63,6 @@ def test_lookup_prefixed_gemini_flash_output() -> None:
     assert lookup_price("gemini:2.5-flash", "output") == 2.50
 
 
-def test_lookup_prefixed_deepseek_v3_input() -> None:
-    assert lookup_price("deepseek:v3", "input") == 0.27
-
-
 def test_lookup_prefixed_local_7b_input() -> None:
     assert lookup_price("local:7b", "input") == 0.0002
 
@@ -169,20 +165,20 @@ def test_pricing_table_last_updated_is_iso_date() -> None:
     assert len(val) == 10 and val[4] == "-" and val[7] == "-"
 
 
-def test_pricing_table_has_all_5_vendors() -> None:
-    """D3 locked set: anthropic, openai, gemini, deepseek, local."""
-    for vendor in ("anthropic", "openai", "gemini", "deepseek", "local"):
+def test_pricing_table_has_all_vendors() -> None:
+    """Canonical set: anthropic, openai, gemini, local. deepseek removed #1838."""
+    for vendor in ("anthropic", "openai", "gemini", "local"):
         assert vendor in MODEL_PRICING
         assert isinstance(MODEL_PRICING[vendor], dict)
         assert len(MODEL_PRICING[vendor]) > 0
+    assert "deepseek" not in MODEL_PRICING
 
 
 def test_pricing_table_per_vendor_counts_match_spec() -> None:
-    """D3 locked counts: anthropic=3, openai=5, gemini=3, deepseek=2, local=6."""
+    """Locked counts: anthropic=3, openai=5, gemini=3, local=6."""
     assert len(MODEL_PRICING["anthropic"]) == 3
     assert len(MODEL_PRICING["openai"]) == 5
     assert len(MODEL_PRICING["gemini"]) == 3
-    assert len(MODEL_PRICING["deepseek"]) == 2
     assert len(MODEL_PRICING["local"]) == 6
 
 

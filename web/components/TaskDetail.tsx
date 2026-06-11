@@ -14,6 +14,7 @@ import {
   type MilestoneRead,
   type TaskRead,
 } from "@/lib/api";
+import { AcEditor } from "./AcEditor";
 import { TaskKind, TaskRunMode, TaskStatus } from "@/lib/constants";
 import { computeBlockedByExclusionSet } from "@/lib/cycleExclusion";
 import { extractErrorMessage } from "@/lib/errors";
@@ -23,6 +24,7 @@ import { MilestoneCombobox } from "./MilestoneCombobox";
 import { PendingBadge } from "./PendingBadge";
 import { RunModeBadge } from "./RunModeBadge";
 import { TaskKindBadge } from "./TaskKindBadge";
+import { TaskComments } from "./TaskComments";
 import { TaskMuteToggle } from "./TaskMuteToggle";
 import { TaskToolCalls } from "./TaskToolCalls";
 import { ModelTierSelect } from "./ModelTierSelect";
@@ -156,6 +158,42 @@ export function TaskDetail({
     setMilestoneId(task.milestone_id ?? null);
     setDueDate(task.due_date ?? "");
   }, [task.id, task.milestone_id, task.due_date]);
+
+  // #2181 — inline description editing state
+  const [descEditing, setDescEditing] = useState(false);
+  const [descDraft, setDescDraft] = useState(task.description ?? "");
+
+  // SSE-refresh guard: only sync description from server when NOT editing
+  useEffect(() => {
+    if (!descEditing) {
+      setDescDraft(task.description ?? "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [task.id, task.description, descEditing]);
+
+  const handleDescSave = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      const updated = await patchTask(projectId, task.id, {
+        description: descDraft.trim() === "" ? null : descDraft,
+      });
+      onPatch(updated);
+      setDescEditing(false);
+    } catch (err: unknown) {
+      const msg = extractErrorMessage(err, "Update failed");
+      onError(`Task #${task.id}: ${msg}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleAcSave = async (updated: AcceptanceCriterion[]) => {
+    const patched = await patchTask(projectId, task.id, {
+      acceptance_criteria: updated,
+    });
+    onPatch(patched);
+  };
 
   // Fetch the project's active milestones once for the picker. Failure degrades
   // to an empty list (picker still shows "None" + the current assignment).
@@ -564,13 +602,75 @@ export function TaskDetail({
             )}
           </Section>
 
-          {task.description && (
-            <Section label="Description">
-              <p id="taskdetail-desc" className="whitespace-pre-wrap text-zinc-800 dark:text-zinc-200">
-                {task.description}
-              </p>
-            </Section>
-          )}
+          {/* #2181 — editable description; gated off for terminal tasks */}
+          <section className="flex flex-col gap-2" data-description-section>
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                Description
+              </h3>
+              {!isTerminal && !descEditing && (
+                <button
+                  type="button"
+                  onClick={() => { setDescDraft(task.description ?? ""); setDescEditing(true); }}
+                  disabled={submitting}
+                  aria-label="Edit description"
+                  data-description-edit-trigger
+                  className="rounded border border-zinc-200 bg-white px-2 py-0.5 text-xs font-medium text-zinc-600 hover:border-zinc-300 hover:text-zinc-800 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:border-zinc-600 dark:hover:text-zinc-200"
+                >
+                  Edit
+                </button>
+              )}
+            </div>
+            {descEditing ? (
+              <div className="flex flex-col gap-2 rounded border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-950/40">
+                <label htmlFor="task-description-textarea" className="sr-only">
+                  Task description
+                </label>
+                <textarea
+                  id="task-description-textarea"
+                  rows={8}
+                  value={descDraft}
+                  onChange={(e) => setDescDraft(e.target.value)}
+                  disabled={submitting}
+                  placeholder="Enter a description…"
+                  data-description-textarea
+                  className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleDescSave}
+                    disabled={submitting}
+                    data-description-save
+                    className="rounded border border-violet-300 bg-violet-600 px-3 py-1 text-xs font-semibold text-white hover:bg-violet-700 disabled:opacity-50 dark:border-violet-700 dark:bg-violet-700 dark:hover:bg-violet-600"
+                  >
+                    {submitting ? "Saving…" : "Save"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setDescDraft(task.description ?? ""); setDescEditing(false); }}
+                    disabled={submitting}
+                    data-description-cancel
+                    className="rounded border border-zinc-200 bg-white px-3 py-1 text-xs font-medium text-zinc-700 hover:border-zinc-300 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div>
+                {task.description ? (
+                  <p id="taskdetail-desc" className="whitespace-pre-wrap text-zinc-800 dark:text-zinc-200">
+                    {task.description}
+                  </p>
+                ) : (
+                  <p className="text-sm italic text-zinc-500 dark:text-zinc-400">
+                    (none)
+                  </p>
+                )}
+              </div>
+            )}
+          </section>
 
           {/* #834 / #1335 — question/decision section; hidden for work tasks.
               Decision tasks (interaction_kind='decision') render the
@@ -599,7 +699,13 @@ export function TaskDetail({
           {/* #827 — AC section always rendered (discipline gate) */}
           {/* #1581 — first-time tip banner; dismisses to localStorage */}
           <AcTipBanner />
-          <AcceptanceCriteriaSection criteria={task.acceptance_criteria} />
+          {/* #2181 — AcEditor replaces read-only AcceptanceCriteriaSection */}
+          <AcEditor
+            criteria={task.acceptance_criteria}
+            isTerminal={isTerminal}
+            onSave={handleAcSave}
+            disabled={submitting}
+          />
 
           {task.parent_task_id !== null && (
             <Section label="Parent">
@@ -717,6 +823,11 @@ export function TaskDetail({
 
           {/* #980 — per-task tool-call audit; self-hides when 0 rows */}
           <TaskToolCalls projectId={projectId} taskId={task.id} />
+
+          {/* #1005 — append-only comment thread at the bottom of task detail.
+              Collapsible (default-expanded when >0 comments); compose box posts
+              author_kind="user"; bodies render via the XSS-safe markdown path. */}
+          <TaskComments projectId={projectId} taskId={task.id} />
         </div>
       </aside>
     </div>
@@ -1031,103 +1142,6 @@ function QuestionInteractionSection({
               ))}
             </ol>
           </div>
-        )}
-      </div>
-    </section>
-  );
-}
-
-// #827 — read-only AC display; always rendered (shows "(none defined)" cue when empty)
-const AC_STATUS_BADGE: Record<AcceptanceCriterion["status"], {
-  glyph: string;
-  className: string;
-  label: string;
-}> = {
-  passed: {
-    glyph: "✓",
-    className:
-      "bg-green-50 text-green-700 dark:bg-green-900/30 dark:text-green-300",
-    label: "passed",
-  },
-  failed: {
-    glyph: "✗",
-    className: "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300",
-    label: "failed",
-  },
-  pending: {
-    glyph: "·",
-    className:
-      "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300",
-    label: "pending",
-  },
-  na: {
-    glyph: "—",
-    className:
-      "bg-zinc-50 text-zinc-400 dark:bg-zinc-900 dark:text-zinc-500",
-    label: "n/a",
-  },
-};
-
-function AcceptanceCriteriaSection({
-  criteria,
-}: {
-  criteria: AcceptanceCriterion[] | null;
-}) {
-  const list = criteria ?? [];
-  const total = list.length;
-  const passed = list.filter((c) => c.status === "passed").length;
-  const headerLabel =
-    total > 0
-      ? `Acceptance criteria (${passed}/${total})`
-      : "Acceptance criteria";
-
-  return (
-    <section className="flex flex-col gap-2" data-acceptance-criteria>
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-        {headerLabel}
-      </h3>
-      <div>
-        {total === 0 ? (
-          <p className="text-sm italic text-zinc-500 dark:text-zinc-400">
-            (none defined)
-          </p>
-        ) : (
-          <ol className="flex flex-col gap-1">
-            {list.map((c, idx) => {
-              const badge = AC_STATUS_BADGE[c.status];
-              return (
-                <li
-                  key={idx}
-                  className="flex gap-2 py-1.5"
-                  data-ac-item
-                  data-ac-status={c.status}
-                >
-                  <span
-                    aria-label={badge.label}
-                    className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-xs font-semibold ${badge.className}`}
-                  >
-                    {badge.glyph}
-                  </span>
-                  <div className="flex-1">
-                    <p className="whitespace-pre-wrap text-sm text-zinc-900 dark:text-zinc-100">
-                      {c.text}
-                    </p>
-                    {c.verified_by && (
-                      <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                        by {c.verified_by}
-                        {c.verified_at && ` · ${c.verified_at}`}
-                      </p>
-                    )}
-                    {c.notes && (
-                      <p className="mt-1 whitespace-pre-wrap text-xs text-zinc-600 dark:text-zinc-400">
-                        {c.notes}
-                      </p>
-                    )}
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
         )}
       </div>
     </section>
