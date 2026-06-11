@@ -18,6 +18,18 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-06-11 — #2274 classify_exception: Google 429/RESOURCE_EXHAUSTED → transient:rate_limit
+**Scope:** langgraph
+**Decision:** two extensions to `classify_exception` (`langgraph/worker.py`): (1) tier (b) now walks `exc.__cause__`/`__context__` (depth ≤ 5, cycle-safe) with the same status extraction when the top exception carries no usable code — langchain wrappers `raise ... from` an inner google/httpx exception that DOES carry it; (2) tier (c) gains a conservative message heuristic AFTER the class-name checks: `RESOURCE_EXHAUSTED` (exact, case-sensitive) OR `\b429\b` paired with a quota/rate context word → `transient:rate_limit`; bare "429" without context never matches (negative-guard tested).
+**Reasoning:** live incident 2026-06-10 (#2185 probe, task 691/2261): flash-lite daily quota exhausted → `ChatGoogleGenerativeAIError` exposes no int status attr and its class name matches no heuristic → halted `permanent:unknown`. Retrying a daily-quota 429 stays futile (halt-after-retries unchanged) — the class matters so the operator reads quota-at-a-glance from halt_reason.
+**Evidence:** 4 new matrix tests (real 2261 exception string as fixture; cause-chain 429 + 5xx; negative guard); suite 527 passed/1 skipped (Lead first-hand). Closes #2274.
+
+## 2026-06-11 — #2194 auditor heuristic-skip guard: prior audit history forces LLM audit
+**Scope:** langgraph + qa
+**Decision:** `auditor_node` now suppresses the heuristic pre-filter skip when the run has ANY prior audit history — `audit_retry_count > 0` (set by both the auto_resolve loop and the escalate→retry_with_X resume path) OR `audit_report` non-None (belt-and-braces; only auditor_node ever writes that field). Suppressed → one INFO log line + forced LLM audit. `_heuristic_clean` itself unchanged; genuine first-pass clean runs still skip (auto_pass). ~14 LOC.
+**Reasoning:** incident 2026-06-10 (task 691/2193, fired 8× in one contaminated probe run): specialist emitted 0 tool_calls on a mandatory-tool brief → escalate → operator retry → 0 tool_calls again → auto_resolve spins → heuristic skip blessed the model's planning narration (truncated mid-word) as ps=5. The structural filter judges halt-state cleanliness, not "did the work" — after any non-clean verdict in the run, only the LLM audit may bless. Prereq for unattended worker operation.
+**Evidence:** 3 new tests in test_auditor.py (suppress-on-retry / suppress-on-prior-report-only / clean-first-pass-still-skips; a+b fail on old code — reviewer-confirmed); langgraph suite 523 passed/1 skipped (Lead first-hand); pack S6 PASS run 0611T0327 (84.1s, = baseline) post-fix; dev-reviewer SHIP-WITH-NITS 0 blockers. Reviewer flagged inconclusive: completed-thread checkpoint reuse could carry a stale audit_report into a re-queued same-task run — fails CONSERVATIVE (extra LLM audit, never false-skip). Side note: first S6 attempt timed out 900s — host Ollama was down (worker boot probe ConnectError), unrelated to the fix. Closes #2194.
+
 ## 2026-06-10 — #2185 Local-LLM capability verdict (gemma4) + the multi-board tool regression it exposed
 **Scope:** langgraph + qa + ops
 **Verdict — gemma4:e4b-it-qat on the harness (clean numbers, capability_probe runs 0610T1032 no-tool classes + 0610T1241 tool classes):**

@@ -463,3 +463,60 @@ async def test_junk_retry_backoff_raises_runtime_error(
     async with _make_client(handler) as client:
         with pytest.raises(RuntimeError, match="LANGGRAPH_RETRY_BACKOFF_SEC"):
             await _poll_once(client, _make_graph_module(ainvoke), cfg, _headers(cfg))
+
+
+# ---------------------------------------------------------------------------
+# 6. classify_exception — Google 429 / RESOURCE_EXHAUSTED (Kanban #2274)
+# ---------------------------------------------------------------------------
+
+
+class ChatGoogleGenerativeAIError(Exception):
+    """Local stub — mirrors the real class name without importing langchain_google_genai."""
+
+
+_GOOGLE_429_MSG = (
+    "ChatGoogleGenerativeAIError: Error calling model 'gemini-2.5-flash-lite'"
+    " (RESOURCE_EXHAUSTED): 429 RESOURCE_EXHAUSTED. {'error': {'code': 429,"
+    " 'message': 'You exceeded your current quota, please check your plan and"
+    " billing details. For more information on this error, head to:"
+    " https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your"
+    " current usage, head to: https://ai.dev/rate-limit. \\n* Quota exceeded"
+    " for metric: generativelanguage.googleapis.com/generate_content_free"
+)
+
+
+def test_classify_google_resource_exhausted_message_heuristic():
+    """Real-shape repro: ChatGoogleGenerativeAIError with RESOURCE_EXHAUSTED message,
+    no status attrs, no cause → (transient, rate_limit) via message heuristic."""
+    exc = ChatGoogleGenerativeAIError(_GOOGLE_429_MSG)
+    assert classify_exception(exc) == ("transient", "rate_limit")
+
+
+def test_classify_cause_chain_429():
+    """Cause-chain unwrap: outer wrapper with no status, inner exc with status_code=429
+    → (transient, rate_limit)."""
+    class _InnerRateLimited(Exception):
+        status_code = 429
+
+    inner = _InnerRateLimited("quota hit")
+    outer = Exception("wrapper")
+    outer.__cause__ = inner
+    assert classify_exception(outer) == ("transient", "rate_limit")
+
+
+def test_classify_cause_chain_5xx():
+    """Cause-chain unwrap: inner exc with status_code=503 → (transient, server_error)."""
+    class _InnerServerError(Exception):
+        status_code = 503
+
+    inner = _InnerServerError("backend down")
+    outer = Exception("wrapper")
+    outer.__cause__ = inner
+    assert classify_exception(outer) == ("transient", "server_error")
+
+
+def test_classify_bare_429_without_quota_context_stays_unknown():
+    """Negative guard: '429' in message without quota/rate context word
+    → (permanent, unknown) — no misclassification of e.g. 'error at line 429'."""
+    exc = ValueError("parse failed at line 429 of config")
+    assert classify_exception(exc) == ("permanent", "unknown")

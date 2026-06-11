@@ -100,8 +100,13 @@ def classify_exception(exc: BaseException) -> tuple[str, str]:
     Kanban #2136.  Classification priority (first match wins):
       (a) httpx transport errors → transient
       (b) duck-typed status_code attribute: 429 / 5xx → transient;
-          4xx (400 → bad_request, 401/403 → auth) → permanent
-      (c) class-name heuristics for common SDK rate-limit wrappers
+          4xx (400 → bad_request, 401/403 → auth) → permanent;
+          also walks exc.__cause__ / exc.__context__ (depth ≤ 5) when the top
+          exception carries no usable status — langchain wrappers raise from
+          an inner google/httpx exception that DOES carry the code (Kanban #2274)
+      (c) class-name heuristics for common SDK rate-limit wrappers;
+          then conservative message heuristic: RESOURCE_EXHAUSTED (exact) or
+          (regex \b429\b AND a quota/rate context word) → transient:rate_limit
       (d) default → ('permanent', 'unknown') — fail-safe halts, never retry-loops
 
     asyncio.CancelledError is NOT passed here (it's re-raised before this point).
@@ -112,20 +117,37 @@ def classify_exception(exc: BaseException) -> tuple[str, str]:
     if isinstance(exc, (httpx.ConnectError, httpx.TransportError)):
         return ("transient", "connection")
 
-    # (b) duck-type status_code — provider SDKs expose it under different attrs
-    status: int | None = None
-    for attr in ("status_code", "code"):
-        val = getattr(exc, attr, None)
-        if isinstance(val, int):
-            status = val
-            break
-    # also check exc.response.status_code (httpx-style wrapped errors)
-    if status is None:
-        resp = getattr(exc, "response", None)
+    # (b) duck-type status_code — provider SDKs expose it under different attrs.
+    # First try the exception itself; if no usable status found, walk the cause
+    # chain (depth ≤ 5) for langchain/google wrappers that raise from an inner
+    # exception that carries the real HTTP code (Kanban #2274).
+    def _extract_status(e: BaseException) -> int | None:
+        for attr in ("status_code", "code"):
+            val = getattr(e, attr, None)
+            if isinstance(val, int):
+                return val
+        resp = getattr(e, "response", None)
         if resp is not None:
             val = getattr(resp, "status_code", None)
             if isinstance(val, int):
-                status = val
+                return val
+        return None
+
+    status: int | None = _extract_status(exc)
+    if status is None:
+        # Walk cause chain (bounded, cycle-safe via seen set).
+        seen: set[int] = {id(exc)}
+        cursor: BaseException | None = exc.__cause__ or exc.__context__
+        depth = 0
+        while cursor is not None and depth < 5:
+            if id(cursor) in seen:
+                break
+            seen.add(id(cursor))
+            status = _extract_status(cursor)
+            if status is not None:
+                break
+            cursor = cursor.__cause__ or cursor.__context__
+            depth += 1
 
     if status is not None:
         if status == 429:
@@ -146,6 +168,21 @@ def classify_exception(exc: BaseException) -> tuple[str, str]:
         return ("transient", "timeout")
     if "connection" in type_name or "transport" in type_name:
         return ("transient", "connection")
+
+    # Conservative message heuristic (Kanban #2274): catches Google
+    # RESOURCE_EXHAUSTED / 429 signals from SDK wrappers (e.g.
+    # ChatGoogleGenerativeAIError) that expose neither status_code nor a
+    # recognisable class name.  Two independent signals accepted:
+    #   1. "RESOURCE_EXHAUSTED" present (exact, case-sensitive) — strong Google signal.
+    #   2. bare \b429\b AND a quota/rate context word (required pairing so a
+    #      message like "error at line 429" never misclassifies).
+    exc_msg = str(exc)
+    if "RESOURCE_EXHAUSTED" in exc_msg:
+        return ("transient", "rate_limit")
+    if re.search(r"\b429\b", exc_msg) and re.search(
+        r"quota|rate limit|rate-limit|Too Many Requests", exc_msg, re.IGNORECASE
+    ):
+        return ("transient", "rate_limit")
 
     # (d) default — fail-safe permanent halt; never retry-loops on unknowns
     return ("permanent", "unknown")
