@@ -704,3 +704,90 @@ def save_draft(creds: dict[str, Any], *, to: str, subject: str, body: str) -> di
     data = resp.json()
     msg_id = data.get("id")
     return {"draft_id": msg_id, "message_id": msg_id}
+
+
+# ---------------------------------------------------------------------------
+# Kanban #2100 — Tier-3 SEND functions (reply / forward / send)
+# ---------------------------------------------------------------------------
+#
+# Graph actions:
+#   reply   -> POST /me/messages/{id}/reply    {comment}            -> 202 (no body)
+#   forward -> POST /me/messages/{id}/forward  {comment, toRecipients} -> 202
+#   send    -> POST /me/sendMail               {message, saveToSentItems} -> 202
+# All three return 202 Accepted with an EMPTY body (the message is queued, no id
+# returned), so these functions return {message_id: None, thread_id: None}. The
+# router gates them behind the operator-proof tier gate; caller pays cap first.
+
+
+def _to_recipients(line: str) -> list[dict]:
+    """Split a comma-separated recipient line into Graph toRecipients objects."""
+    return [
+        {"emailAddress": {"address": addr.strip()}}
+        for addr in line.split(",")
+        if addr.strip()
+    ]
+
+
+def _post_send_action(creds: dict[str, Any], path: str, payload: dict) -> dict:
+    """POST a Graph send-class action (reply/forward/sendMail) and assert 202.
+
+    Returns {message_id: None, thread_id: None} — Graph's send actions return
+    202 with no body. raise_for_status surfaces non-2xx to the router (502).
+    """
+    access_token = _acquire_silent(creds)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    url = f"{_GRAPH_BASE}{path}"
+    resp = _graph_request_with_retry("POST", url, headers=headers, json_body=payload)
+    resp.raise_for_status()
+    return {"message_id": None, "thread_id": None}
+
+
+def send_reply(creds: dict[str, Any], *, message_id: str, body: str) -> dict:
+    """Reply to `message_id` in-conversation via Graph /reply. Returns {message_id, thread_id}.
+
+    Graph keeps the conversation and adds our `comment` as the reply body.
+    """
+    return _post_send_action(
+        creds, f"/me/messages/{message_id}/reply", {"comment": body}
+    )
+
+
+def send_forward(creds: dict[str, Any], *, message_id: str, to: str, body: str = "") -> dict:
+    """Forward `message_id` to `to` via Graph /forward. Returns {message_id, thread_id}."""
+    return _post_send_action(
+        creds,
+        f"/me/messages/{message_id}/forward",
+        {"comment": body, "toRecipients": _to_recipients(to)},
+    )
+
+
+def send_message(
+    creds: dict[str, Any],
+    *,
+    to: str,
+    subject: str,
+    body: str,
+    cc: str | None = None,
+    bcc: str | None = None,
+) -> dict:
+    """Compose + send a NEW message via Graph /sendMail. Returns {message_id, thread_id}.
+
+    Used by both send-internal and external-send (the router decides the tier).
+    `saveToSentItems` defaults true so the operator sees the sent copy.
+    """
+    message: dict[str, Any] = {
+        "subject": subject,
+        "body": {"contentType": "Text", "content": body},
+        "toRecipients": _to_recipients(to),
+    }
+    if cc and cc.strip():
+        message["ccRecipients"] = _to_recipients(cc)
+    if bcc and bcc.strip():
+        message["bccRecipients"] = _to_recipients(bcc)
+    return _post_send_action(
+        creds, "/me/sendMail", {"message": message, "saveToSentItems": True}
+    )

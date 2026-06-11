@@ -28,6 +28,7 @@ import datetime
 import json
 import logging
 import os
+import re
 from enum import Enum
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -35,9 +36,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
-from src.constants import RecordStatus
+from src.constants import RecordStatus, TaskStatus, TaskType
 from src.db import get_session
 from src.models.project import Project
+from src.models.task import Task
 from src.schemas.tools_email import (
     AuthStatusResponse,
     GmailArchiveRequest,
@@ -47,6 +49,10 @@ from src.schemas.tools_email import (
     GmailCallbackResponse,
     GmailDraftRequest,
     GmailDraftResponse,
+    GmailForwardRequest,
+    GmailReplyRequest,
+    GmailSendRequest,
+    GmailSendResponse,
     GmailGetRequest,
     GmailGetResponse,
     GmailLabel,
@@ -67,6 +73,10 @@ from src.schemas.tools_email import (
     OutlookCallbackResponse,
     OutlookDraftRequest,
     OutlookDraftResponse,
+    OutlookForwardRequest,
+    OutlookReplyRequest,
+    OutlookSendRequest,
+    OutlookSendResponse,
     OutlookGetRequest,
     OutlookGetResponse,
     OutlookMarkRequest,
@@ -269,6 +279,184 @@ def _write_action_audit(
         # Audit is observability, not correctness — never let a disk hiccup
         # turn a successful action into a 500.
         logger.warning("_write_action_audit: write failed (best-effort): %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# D5 Tier-3 audit — Kanban action-log task per EXECUTED send (Kanban #2100 AC[2])
+# ---------------------------------------------------------------------------
+#
+# Every EXECUTED Tier-3 send (reply/forward/send-internal/external-send that
+# actually fires) creates a Kanban action-log task IN-PROCESS via the ORM (NOT
+# an HTTP curl) — mirrors the in-process child INSERT in services/handoff_spawn.py
+# (Task(...) + session.add). project = the request's session-bound project. This
+# is ADDITIVE to the _write_action_audit JSONL row (D5 leaves both trails).
+
+# Cap how much of the body is embedded in the audit task description — the full
+# body may be large + private-ish; an excerpt is enough for an operator trail.
+_AUDIT_BODY_EXCERPT_CHARS = 500
+
+# #2100 WARN-3 — non-printable strip for the D5 audit excerpt. The body is
+# operator/agent-supplied and lands in a Kanban task description (an LLM-facing
+# surface). Mirrors the #2136 convention (nodes.py:1517 / sandbox.py:90): keep
+# ASCII-printable (\x20-\x7E) + the Thai block (U+0E00-U+0E7F = ฀-๿), replace
+# everything else (control chars, injected ANSI/CR/LF) with '?'. Applied BEFORE
+# the 500-char cap so the cap counts post-sanitize chars.
+_NON_PRINTABLE_RE = re.compile(r"[^\x20-\x7E฀-๿]")
+
+
+async def _write_send_audit_task(
+    session: AsyncSession,
+    *,
+    session_project_id: int,
+    provider: str,
+    action: str,
+    recipient: str,
+    subject: str,
+    body: str,
+) -> None:
+    """Create a Kanban [email-audit] chore task for one EXECUTED Tier-3 send (D5).
+
+    The Task is added to the request session and COMMITTED — the send already
+    fired (mail is out), so the audit row must be durable, not roll back when the
+    request-scoped session closes (get_session does NOT auto-commit). A commit
+    failure is caught + logged: an audit-row failure must NEVER turn a successful
+    send into a 500 (a missing audit is strictly better than a 500 after the mail
+    already went out). We roll back on failure so the session is left clean.
+
+    Description carries recipient + subject + body-excerpt + timestamp so the
+    operator can review what was sent without leaving Kanban.
+    """
+    ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    # #2100 WARN-3 — strip non-printable/control chars (keep ASCII-printable +
+    # Thai, per #2136) BEFORE the cap so an injected control sequence can't
+    # pollute the Kanban task description (an LLM-facing surface).
+    safe_body = _NON_PRINTABLE_RE.sub("?", body)
+    excerpt = safe_body[:_AUDIT_BODY_EXCERPT_CHARS]
+    if len(safe_body) > _AUDIT_BODY_EXCERPT_CHARS:
+        excerpt += "…"
+    description = (
+        f"Tier-3 {provider} {action} executed at {ts}.\n\n"
+        f"Recipient: {recipient}\n"
+        f"Subject: {subject}\n"
+        f"Body excerpt:\n{excerpt}\n"
+    )
+    audit_task = Task(
+        project_id=session_project_id,
+        title=f"[email-audit] {provider} {action} → {recipient[:120]}",
+        description=description,
+        process_status=TaskStatus.DONE,  # an action-LOG row, already-happened.
+        task_type=TaskType.CHORE,
+        task_kind="ai",
+    )
+    session.add(audit_task)
+    try:
+        await session.commit()
+    except Exception as exc:  # noqa: BLE001 — audit is observability, not correctness.
+        logger.warning(
+            "_write_send_audit_task: commit failed (best-effort) for project=%d %s.%s: %s",
+            session_project_id, provider, action, type(exc).__name__,
+        )
+        try:
+            await session.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Internal-recipient enforcement for send-internal (Kanban #2100 WARN-1)
+# ---------------------------------------------------------------------------
+#
+# send-internal is the LOWER-blast send tier: it requires an operator-proof but
+# does NOT escalate via the out-of-band ntfy confirm that external-send does. But
+# the route enforced NOTHING about the recipient being internal — an agent with a
+# SEND_INTERNAL proof could mail ANY external address through it, bypassing the
+# external-send confirm. This gate closes that downgrade.
+#
+# ACTIVATION (mirrors the OPERATOR_ACTION_KEY dormant-warning posture, #2045):
+#   INTERNAL_EMAIL_DOMAIN SET   -> ACTIVE. Every address in to/cc/bcc on a
+#     send-internal call MUST end with '@<domain>' (case-insensitive). Any
+#     mismatch -> 403 {"error":"recipient_not_internal", ...} BEFORE any provider
+#     call or audit write. (Route an external recipient through /external-send.)
+#   INTERNAL_EMAIL_DOMAIN UNSET -> DORMANT. One-time startup-style WARNING is
+#     logged (module-level guard, like operator_auth._inactive_warned) and the
+#     call falls through (single-operator back-compat — the live .env has no
+#     domain yet, so existing send-internal flows are unaffected).
+#
+# Read at call time (not import time) so pytest monkeypatch.setenv toggles it.
+_INTERNAL_DOMAIN_ENV = "INTERNAL_EMAIL_DOMAIN"
+
+# One-time DORMANT warning guard — emit the WARN once per process, not per call
+# (mirrors operator_auth._inactive_warned).
+_internal_domain_dormant_warned = False
+
+# Source-text-locked: scannable stable error key for the recipient downgrade 403.
+_DETAIL_RECIPIENT_NOT_INTERNAL = (
+    "recipient_not_internal: send-internal requires every recipient (to/cc/bcc) "
+    "to be under INTERNAL_EMAIL_DOMAIN; one or more addresses are external. Route "
+    "external recipients through /external-send (which adds the out-of-band confirm)."
+)
+
+
+def _extract_addresses(line: str | None) -> list[str]:
+    """Parse a recipient line into bare email addresses.
+
+    Uses stdlib `email.utils.getaddresses` so comma-separated and display-name
+    forms (`Name <a@b.com>, c@d.com`) both resolve to their addr-specs. Empty /
+    None -> []. The returned addresses are lowercased for case-insensitive
+    domain comparison.
+    """
+    from email.utils import getaddresses
+
+    if not line or not line.strip():
+        return []
+    return [addr.lower() for _name, addr in getaddresses([line]) if addr]
+
+
+def _enforce_internal_recipients_or_403(
+    *, to: str, cc: str | None, bcc: str | None
+) -> None:
+    """#2100 WARN-1 — refuse a send-internal whose recipients aren't all internal.
+
+    When INTERNAL_EMAIL_DOMAIN is SET, every address in to/cc/bcc must end with
+    '@<domain>' (case-insensitive). Any mismatch (or any unparseable address that
+    lacks the suffix) raises HTTP 403 with the stable `recipient_not_internal`
+    detail. When UNSET, logs a one-time dormant WARNING and returns (fall-through).
+
+    Provider-agnostic (both Gmail + Outlook send-internal call this). MUST be
+    invoked BEFORE any provider call or audit write so a downgrade attempt leaves
+    no mail sent and no audit trail (the 403 is the only side effect besides the
+    one-time dormant warning).
+    """
+    global _internal_domain_dormant_warned
+
+    domain = os.environ.get(_INTERNAL_DOMAIN_ENV, "").strip().lower()
+    if not domain:
+        if not _internal_domain_dormant_warned:
+            logger.warning(
+                "internal-recipient gate dormant: %s unset — send-internal does "
+                "NOT enforce recipient domain (single-operator back-compat)",
+                _INTERNAL_DOMAIN_ENV,
+            )
+            _internal_domain_dormant_warned = True
+        return
+
+    suffix = f"@{domain}"
+    addresses = (
+        _extract_addresses(to)
+        + _extract_addresses(cc)
+        + _extract_addresses(bcc)
+    )
+    # An empty parse (no resolvable address) is itself a mismatch — fail closed
+    # rather than letting an unparseable line slip through the internal gate.
+    if not addresses or any(not addr.endswith(suffix) for addr in addresses):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "recipient_not_internal",
+                "message": _DETAIL_RECIPIENT_NOT_INTERNAL,
+            },
+        )
+
 
 # Source-text-locked: pinned by the #1859 smoke tests (verbatim detail assert).
 # The `tier` is interpolated so the agent's log shows exactly which tier was
@@ -900,6 +1088,249 @@ async def gmail_draft(
     return GmailDraftResponse(
         draft_id=draft_id, message_id=created.get("message_id")
     )
+
+
+# ---------------------------------------------------------------------------
+# Gmail — Tier-3 SEND actions (Kanban #2100: reply / forward / send-internal / external-send)
+# ---------------------------------------------------------------------------
+#
+# These are the ACTUAL fire (users.messages.send) — distinct from draft. Tier map:
+#   reply, forward   -> EmailTier.REPLY          (PROOF)
+#   send-internal    -> EmailTier.SEND_INTERNAL  (PROOF)
+#   external-send    -> EmailTier.EXTERNAL_SEND  (PROOF + out-of-band confirm/202 HALT)
+#
+# Gate chain mirrors the mutation routes byte-for-byte in ORDER:
+#   1. Layer-0 (#1799)  _enforce_tool_grant_or_403(role, "<provider>.<action>")
+#   2. Tier gate (#1859) — reply/forward/send-internal: _enforce_operator_tier_or_403;
+#      external-send:     _escalate_external_send_or_202 (push + 202 HALT unless proven)
+#   then auth -> daily-cap -> upstream send -> gate.log_audit + _write_action_audit
+#   + D5 _write_send_audit_task (Kanban action-log row).
+#
+# users.messages.send is 100 units in Gmail's quota model — the heaviest action;
+# we charge it as such so the daily-cap accounting reflects send weight.
+_SEND_UNITS_PER_CALL = 100
+
+
+@router.post("/gmail/reply", response_model=GmailSendResponse)
+async def gmail_reply(
+    body: GmailReplyRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> GmailSendResponse:
+    """Reply to a Gmail message in-thread (`reply` tier — PROOF).
+
+    Layer 0 (#1799): `gmail.reply` must be granted to the X-Agent-Role.
+    Tier gate (#1859): REPLY is above read — operator-proof required (403 if
+    absent + gate ACTIVE; dormant/fail-open until OPERATOR_ACTION_KEY is set).
+    """
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "gmail.reply"
+    )
+    _enforce_operator_tier_or_403(EmailTier.REPLY, operator_proof)
+
+    creds = await _require_creds(session_project_id, session)
+    _cap_check_or_429(session_project_id, _SEND_UNITS_PER_CALL, "reply")
+
+    try:
+        sent = await run_in_threadpool(
+            gmail_client.send_reply,
+            creds,
+            message_id=body.message_id,
+            body=body.body,
+            thread_id=body.thread_id,
+        )
+    except Exception as exc:
+        gate.log_audit(
+            "gmail", session_project_id, "reply", _SEND_UNITS_PER_CALL,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("gmail reply failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "gmail_reply_failed", "class": type(exc).__name__},
+        ) from exc
+
+    msg_id = sent.get("message_id")
+    gate.log_audit("gmail", session_project_id, "reply", _SEND_UNITS_PER_CALL, success=True)
+    _write_action_audit(
+        agent_role=agent_role, action="reply", tier=EmailTier.REPLY,
+        message_ids=[msg_id] if msg_id else [], approval_mode="operator_proof",
+        result="success",
+    )
+    await _write_send_audit_task(
+        session, session_project_id=session_project_id, provider="gmail",
+        action="reply", recipient=f"(re: {body.message_id})", subject="(reply)", body=body.body,
+    )
+    return GmailSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
+
+
+@router.post("/gmail/forward", response_model=GmailSendResponse)
+async def gmail_forward(
+    body: GmailForwardRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> GmailSendResponse:
+    """Forward a Gmail message to a new recipient (`reply` tier — PROOF).
+
+    Layer 0 (#1799): `gmail.forward` must be granted to the X-Agent-Role.
+    Tier gate (#1859): REPLY tier — operator-proof required.
+    """
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "gmail.forward"
+    )
+    _enforce_operator_tier_or_403(EmailTier.REPLY, operator_proof)
+
+    creds = await _require_creds(session_project_id, session)
+    _cap_check_or_429(session_project_id, _SEND_UNITS_PER_CALL, "forward")
+
+    try:
+        sent = await run_in_threadpool(
+            gmail_client.send_forward,
+            creds, message_id=body.message_id, to=body.to, body=body.body,
+        )
+    except Exception as exc:
+        gate.log_audit(
+            "gmail", session_project_id, "forward", _SEND_UNITS_PER_CALL,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("gmail forward failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "gmail_forward_failed", "class": type(exc).__name__},
+        ) from exc
+
+    msg_id = sent.get("message_id")
+    gate.log_audit("gmail", session_project_id, "forward", _SEND_UNITS_PER_CALL, success=True)
+    _write_action_audit(
+        agent_role=agent_role, action="forward", tier=EmailTier.REPLY,
+        message_ids=[msg_id] if msg_id else [], approval_mode="operator_proof",
+        result="success",
+    )
+    await _write_send_audit_task(
+        session, session_project_id=session_project_id, provider="gmail",
+        action="forward", recipient=body.to, subject="(forward)", body=body.body,
+    )
+    return GmailSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
+
+
+@router.post("/gmail/send-internal", response_model=GmailSendResponse)
+async def gmail_send_internal(
+    body: GmailSendRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> GmailSendResponse:
+    """Compose + send a NEW Gmail message, internal recipient (`send_internal` tier — PROOF).
+
+    Layer 0 (#1799): `gmail.send_internal` must be granted to the X-Agent-Role.
+    Tier gate (#1859): SEND_INTERNAL — operator-proof required (NO out-of-band
+    escalation; that is reserved for external-send).
+    """
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "gmail.send_internal"
+    )
+    _enforce_operator_tier_or_403(EmailTier.SEND_INTERNAL, operator_proof)
+    # #2100 WARN-1 — internal/external downgrade rail. Fires AFTER the tier gate
+    # and BEFORE any provider call/auth/cap/audit: a send-internal whose
+    # recipients aren't all under INTERNAL_EMAIL_DOMAIN is refused here (403)
+    # rather than slipping past the external-send confirm. Dormant when unset.
+    _enforce_internal_recipients_or_403(to=body.to, cc=body.cc, bcc=body.bcc)
+
+    creds = await _require_creds(session_project_id, session)
+    _cap_check_or_429(session_project_id, _SEND_UNITS_PER_CALL, "send_internal")
+
+    try:
+        sent = await run_in_threadpool(
+            gmail_client.send_message,
+            creds, to=body.to, subject=body.subject, body=body.body,
+            cc=body.cc, bcc=body.bcc,
+        )
+    except Exception as exc:
+        gate.log_audit(
+            "gmail", session_project_id, "send_internal", _SEND_UNITS_PER_CALL,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("gmail send_internal failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "gmail_send_internal_failed", "class": type(exc).__name__},
+        ) from exc
+
+    msg_id = sent.get("message_id")
+    gate.log_audit("gmail", session_project_id, "send_internal", _SEND_UNITS_PER_CALL, success=True)
+    _write_action_audit(
+        agent_role=agent_role, action="send_internal", tier=EmailTier.SEND_INTERNAL,
+        message_ids=[msg_id] if msg_id else [], approval_mode="operator_proof",
+        result="success",
+    )
+    await _write_send_audit_task(
+        session, session_project_id=session_project_id, provider="gmail",
+        action="send_internal", recipient=body.to, subject=body.subject, body=body.body,
+    )
+    return GmailSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
+
+
+@router.post("/gmail/external-send", response_model=GmailSendResponse)
+async def gmail_external_send(
+    body: GmailSendRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> GmailSendResponse:
+    """Compose + send a NEW Gmail message, EXTERNAL recipient (`external_send` tier).
+
+    Highest-blast tier: instead of a bare 403, an absent operator-proof triggers
+    `_escalate_external_send_or_202` — an out-of-band ntfy push + a 202 HALT. The
+    operator resumes by re-issuing the call carrying a valid X-Operator-Token,
+    which passes the helper through and lets the send fire. NO mail is sent on the
+    HALT path (the 202 is raised BEFORE any upstream send).
+    """
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "gmail.external_send"
+    )
+    # EXTERNAL_SEND escalation — fires ntfy + raises 202 HALT unless proven.
+    _escalate_external_send_or_202(
+        operator_proof, project_id=session_project_id, summary=f"to {body.to}",
+    )
+
+    creds = await _require_creds(session_project_id, session)
+    _cap_check_or_429(session_project_id, _SEND_UNITS_PER_CALL, "external_send")
+
+    try:
+        sent = await run_in_threadpool(
+            gmail_client.send_message,
+            creds, to=body.to, subject=body.subject, body=body.body,
+            cc=body.cc, bcc=body.bcc,
+        )
+    except Exception as exc:
+        gate.log_audit(
+            "gmail", session_project_id, "external_send", _SEND_UNITS_PER_CALL,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("gmail external_send failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "gmail_external_send_failed", "class": type(exc).__name__},
+        ) from exc
+
+    msg_id = sent.get("message_id")
+    gate.log_audit("gmail", session_project_id, "external_send", _SEND_UNITS_PER_CALL, success=True)
+    _write_action_audit(
+        agent_role=agent_role, action="external_send", tier=EmailTier.EXTERNAL_SEND,
+        message_ids=[msg_id] if msg_id else [], approval_mode="operator_confirm",
+        result="success",
+    )
+    await _write_send_audit_task(
+        session, session_project_id=session_project_id, provider="gmail",
+        action="external_send", recipient=body.to, subject=body.subject, body=body.body,
+    )
+    return GmailSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
 
 
 # ---------------------------------------------------------------------------
@@ -1815,3 +2246,225 @@ async def outlook_get(
         "outlook", session_project_id, "get", _OUTLOOK_GET_UNITS_PER_MESSAGE, success=True,
     )
     return OutlookGetResponse.model_validate(data)
+
+
+# ---------------------------------------------------------------------------
+# Outlook — Tier-3 SEND actions (Kanban #2100: reply / forward / send-internal / external-send)
+# ---------------------------------------------------------------------------
+#
+# Mirrors the Gmail Tier-3 send block byte-for-byte in gate ORDER + audit shape;
+# uses the outlook provider + _outlook_cap_check_or_429 + _require_outlook_creds.
+# Graph send actions (reply/forward/sendMail) return 202 with no body, so
+# message_id is typically None in the response (see OutlookSendResponse).
+#
+# Send cost mirrors Gmail's _SEND_UNITS_PER_CALL (provider-agnostic send weight).
+_OUTLOOK_SEND_UNITS_PER_CALL = 100
+
+
+@router.post("/outlook/reply", response_model=OutlookSendResponse)
+async def outlook_reply(
+    body: OutlookReplyRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> OutlookSendResponse:
+    """Reply to an Outlook message in-conversation (`reply` tier — PROOF).
+
+    Layer 0 (#1799): `outlook.reply` must be granted to the X-Agent-Role.
+    Tier gate (#1859): REPLY — operator-proof required (dormant/fail-open until
+    OPERATOR_ACTION_KEY is set).
+    """
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "outlook.reply"
+    )
+    _enforce_operator_tier_or_403(EmailTier.REPLY, operator_proof)
+
+    creds = await _require_outlook_creds(session_project_id, session)
+    _outlook_cap_check_or_429(session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "reply")
+
+    try:
+        sent = await run_in_threadpool(
+            outlook_client.send_reply, creds, message_id=body.message_id, body=body.body,
+        )
+    except Exception as exc:
+        gate.log_audit(
+            "outlook", session_project_id, "reply", _OUTLOOK_SEND_UNITS_PER_CALL,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("outlook reply failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "outlook_reply_failed", "class": type(exc).__name__},
+        ) from exc
+
+    msg_id = sent.get("message_id")
+    gate.log_audit("outlook", session_project_id, "reply", _OUTLOOK_SEND_UNITS_PER_CALL, success=True)
+    _write_action_audit(
+        agent_role=agent_role, action="reply", tier=EmailTier.REPLY,
+        message_ids=[msg_id] if msg_id else [], approval_mode="operator_proof",
+        result="success",
+    )
+    await _write_send_audit_task(
+        session, session_project_id=session_project_id, provider="outlook",
+        action="reply", recipient=f"(re: {body.message_id})", subject="(reply)", body=body.body,
+    )
+    return OutlookSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
+
+
+@router.post("/outlook/forward", response_model=OutlookSendResponse)
+async def outlook_forward(
+    body: OutlookForwardRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> OutlookSendResponse:
+    """Forward an Outlook message to a new recipient (`reply` tier — PROOF).
+
+    Layer 0 (#1799): `outlook.forward` must be granted to the X-Agent-Role.
+    Tier gate (#1859): REPLY tier — operator-proof required.
+    """
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "outlook.forward"
+    )
+    _enforce_operator_tier_or_403(EmailTier.REPLY, operator_proof)
+
+    creds = await _require_outlook_creds(session_project_id, session)
+    _outlook_cap_check_or_429(session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "forward")
+
+    try:
+        sent = await run_in_threadpool(
+            outlook_client.send_forward, creds, message_id=body.message_id, to=body.to, body=body.body,
+        )
+    except Exception as exc:
+        gate.log_audit(
+            "outlook", session_project_id, "forward", _OUTLOOK_SEND_UNITS_PER_CALL,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("outlook forward failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "outlook_forward_failed", "class": type(exc).__name__},
+        ) from exc
+
+    msg_id = sent.get("message_id")
+    gate.log_audit("outlook", session_project_id, "forward", _OUTLOOK_SEND_UNITS_PER_CALL, success=True)
+    _write_action_audit(
+        agent_role=agent_role, action="forward", tier=EmailTier.REPLY,
+        message_ids=[msg_id] if msg_id else [], approval_mode="operator_proof",
+        result="success",
+    )
+    await _write_send_audit_task(
+        session, session_project_id=session_project_id, provider="outlook",
+        action="forward", recipient=body.to, subject="(forward)", body=body.body,
+    )
+    return OutlookSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
+
+
+@router.post("/outlook/send-internal", response_model=OutlookSendResponse)
+async def outlook_send_internal(
+    body: OutlookSendRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> OutlookSendResponse:
+    """Compose + send a NEW Outlook message, internal recipient (`send_internal` tier — PROOF).
+
+    Layer 0 (#1799): `outlook.send_internal` must be granted to the X-Agent-Role.
+    Tier gate (#1859): SEND_INTERNAL — operator-proof required (no escalation).
+    """
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "outlook.send_internal"
+    )
+    _enforce_operator_tier_or_403(EmailTier.SEND_INTERNAL, operator_proof)
+    # #2100 WARN-1 — internal/external downgrade rail (mirrors Gmail send-internal).
+    _enforce_internal_recipients_or_403(to=body.to, cc=body.cc, bcc=body.bcc)
+
+    creds = await _require_outlook_creds(session_project_id, session)
+    _outlook_cap_check_or_429(session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "send_internal")
+
+    try:
+        sent = await run_in_threadpool(
+            outlook_client.send_message,
+            creds, to=body.to, subject=body.subject, body=body.body, cc=body.cc, bcc=body.bcc,
+        )
+    except Exception as exc:
+        gate.log_audit(
+            "outlook", session_project_id, "send_internal", _OUTLOOK_SEND_UNITS_PER_CALL,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("outlook send_internal failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "outlook_send_internal_failed", "class": type(exc).__name__},
+        ) from exc
+
+    msg_id = sent.get("message_id")
+    gate.log_audit("outlook", session_project_id, "send_internal", _OUTLOOK_SEND_UNITS_PER_CALL, success=True)
+    _write_action_audit(
+        agent_role=agent_role, action="send_internal", tier=EmailTier.SEND_INTERNAL,
+        message_ids=[msg_id] if msg_id else [], approval_mode="operator_proof",
+        result="success",
+    )
+    await _write_send_audit_task(
+        session, session_project_id=session_project_id, provider="outlook",
+        action="send_internal", recipient=body.to, subject=body.subject, body=body.body,
+    )
+    return OutlookSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
+
+
+@router.post("/outlook/external-send", response_model=OutlookSendResponse)
+async def outlook_external_send(
+    body: OutlookSendRequest,
+    session_project_id: int = Depends(require_project_id_header),
+    agent_role: str | None = Depends(optional_agent_role_header),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    session: AsyncSession = Depends(get_session),
+) -> OutlookSendResponse:
+    """Compose + send a NEW Outlook message, EXTERNAL recipient (`external_send` tier).
+
+    Highest-blast tier: an absent operator-proof triggers
+    `_escalate_external_send_or_202` (out-of-band ntfy push + 202 HALT). The
+    operator resumes by re-issuing with a valid X-Operator-Token. NO mail is sent
+    on the HALT path (the 202 fires BEFORE any upstream send).
+    """
+    await _enforce_tool_grant_or_403(
+        session, session_project_id, agent_role, "outlook.external_send"
+    )
+    _escalate_external_send_or_202(
+        operator_proof, project_id=session_project_id, summary=f"to {body.to}",
+    )
+
+    creds = await _require_outlook_creds(session_project_id, session)
+    _outlook_cap_check_or_429(session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "external_send")
+
+    try:
+        sent = await run_in_threadpool(
+            outlook_client.send_message,
+            creds, to=body.to, subject=body.subject, body=body.body, cc=body.cc, bcc=body.bcc,
+        )
+    except Exception as exc:
+        gate.log_audit(
+            "outlook", session_project_id, "external_send", _OUTLOOK_SEND_UNITS_PER_CALL,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("outlook external_send failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "outlook_external_send_failed", "class": type(exc).__name__},
+        ) from exc
+
+    msg_id = sent.get("message_id")
+    gate.log_audit("outlook", session_project_id, "external_send", _OUTLOOK_SEND_UNITS_PER_CALL, success=True)
+    _write_action_audit(
+        agent_role=agent_role, action="external_send", tier=EmailTier.EXTERNAL_SEND,
+        message_ids=[msg_id] if msg_id else [], approval_mode="operator_confirm",
+        result="success",
+    )
+    await _write_send_audit_task(
+        session, session_project_id=session_project_id, provider="outlook",
+        action="external_send", recipient=body.to, subject=body.subject, body=body.body,
+    )
+    return OutlookSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))

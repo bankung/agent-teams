@@ -49,6 +49,57 @@ logger = logging.getLogger(__name__)
 # to avoid a router/schema import cycle.
 _ID_RE = re.compile(r"^[A-Za-z0-9_\-=+]+$")
 
+# Header-injection rail (#2100 WARN-2 / NIT-1 / NIT-2). Values we re-inject into
+# outbound MIME headers (In-Reply-To, References, the Re:/Fwd: Subject) are
+# derived from the FETCHED inbound message — i.e. attacker-influenced (a crafted
+# inbound email controls them). A bare CR/LF in EmailMessage.__setitem__ raises,
+# which surfaces to the router as a 502 on the crafted-inbound path. Strip CR/LF
+# (header-folding chars) and length-cap BEFORE assignment so the path is normal
+# operation rather than a crash. Caps mirror the schema bounds: 998 for a single
+# header field (_HEADER_MAX, RFC-5322 line limit), 4096 for the accumulating
+# References chain (_REFS_MAX — many message-ids over a long thread).
+_HEADER_MAX = 998
+_REFS_MAX = 4096
+
+
+def _strip_header_value(value: str, *, cap: int = _HEADER_MAX) -> str:
+    """Strip CR/LF from a fetched header value + length-cap it before re-injection.
+
+    Low-level primitive: removes every '\\r' and '\\n' (the chars EmailMessage
+    rejects / that could fold or inject a new header) and truncates to `cap`
+    chars. Pure + deterministic; safe on '' (returns ''). NOTE: this CONCATENATES
+    the text on either side of a CR/LF ("a\\r\\nb" -> "ab"). That is enough to stop
+    EmailMessage raising and to stop a *new header line* folding in, but it leaves
+    the post-CRLF text glued onto the legitimate value (e.g. an inbound
+    "<id>\\r\\nX-Injected: y" becomes "<id>X-Injected: y" — the smuggled token
+    survives as a substring of the header VALUE). For re-injecting
+    attacker-influenced inbound header values, prefer `_safe_header_value`, which
+    DROPS everything after the first CR/LF entirely.
+    """
+    cleaned = value.replace("\r", "").replace("\n", "")
+    return cleaned[:cap]
+
+
+def _safe_header_value(value: str, *, cap: int = _HEADER_MAX) -> str:
+    """Sanitize an attacker-influenced inbound header value before re-injection.
+
+    Stronger than `_strip_header_value`: TRUNCATES at the first CR or LF (the
+    smuggled continuation after a header-folding CRLF is an injection attempt — it
+    is DROPPED, not concatenated onto the legitimate value), then length-caps to
+    `cap`. So an inbound "<orig@corp.com>\\r\\nX-Injected: yes" yields
+    "<orig@corp.com>" — the smuggled "X-Injected:" token does not survive anywhere
+    in the outbound MIME. Pure + deterministic; safe on '' (returns '').
+
+    Used on every inbound-derived header value re-injected by send_reply /
+    send_forward (Subject, In-Reply-To, References) so a crafted inbound email can
+    neither crash the send (502) nor smuggle a header through value-concatenation.
+    """
+    cr = value.find("\r")
+    lf = value.find("\n")
+    cut = min([i for i in (cr, lf) if i != -1], default=-1)
+    truncated = value if cut == -1 else value[:cut]
+    return truncated[:cap]
+
 # Full mail scope — covers read, modify, trash, send, labels, drafts. One
 # consent prompt covers every future endpoint we'd add for the operator.
 #
@@ -398,6 +449,167 @@ def save_draft(creds: Credentials, *, to: str, subject: str, body: str) -> dict:
         "draft_id": created.get("id"),
         "message_id": (created.get("message") or {}).get("id"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Kanban #2100 — Tier-3 SEND functions (reply / forward / send)
+# ---------------------------------------------------------------------------
+#
+# All three call `users.messages.send` (the actual fire) — distinct from
+# save_draft's `drafts.create`. The router gates these behind the operator-proof
+# tier gate (reply/forward = REPLY; send = SEND_INTERNAL/EXTERNAL_SEND). Caller
+# is responsible for the gate + cap BEFORE invoking. Each returns
+# {message_id, thread_id} (thread_id present so the response can thread).
+#
+# MIME built with stdlib `email.message.EmailMessage` (UTF-8, base64url) —
+# identical construction to save_draft, no extra dependency.
+
+
+def _send_raw(service, raw: str, *, thread_id: str | None = None) -> dict:
+    """POST a base64url-encoded MIME message via users.messages.send.
+
+    `thread_id` (when set) threads the sent message into an existing thread —
+    used by reply. Returns {message_id, thread_id}.
+    """
+    msg_body: dict = {"raw": raw}
+    if thread_id:
+        msg_body["threadId"] = thread_id
+    sent = service.users().messages().send(userId="me", body=msg_body).execute()
+    return {
+        "message_id": sent.get("id"),
+        "thread_id": sent.get("threadId"),
+    }
+
+
+def _fetch_headers(service, message_id: str) -> dict[str, str]:
+    """Fetch From/Subject/Message-Id/References headers for reply threading.
+
+    Returns a lowercased-key header dict. Best-effort — missing headers simply
+    aren't present in the result.
+    """
+    msg = (
+        service.users()
+        .messages()
+        .get(
+            userId="me",
+            id=message_id,
+            format="metadata",
+            metadataHeaders=["From", "Subject", "Message-Id", "References", "To"],
+        )
+        .execute()
+    )
+    headers = {
+        h["name"].lower(): h["value"]
+        for h in (msg.get("payload", {}).get("headers", []) or [])
+    }
+    headers["_thread_id"] = msg.get("threadId", "")
+    return headers
+
+
+def send_reply(
+    creds: Credentials, *, message_id: str, body: str, thread_id: str | None = None
+) -> dict:
+    """Reply to `message_id` in-thread via users.messages.send. Returns {message_id, thread_id}.
+
+    Fetches the original's From/Subject/Message-Id to set To, a `Re:` subject,
+    and In-Reply-To/References so the reply threads correctly in mail clients.
+    """
+    from email.message import EmailMessage
+
+    service = _build_service(creds)
+    orig = _fetch_headers(service, message_id)
+    resolved_thread = thread_id or orig.get("_thread_id") or None
+
+    msg = EmailMessage()
+    reply_to = orig.get("from")
+    if reply_to:
+        msg["To"] = reply_to
+    # #2100 WARN-2: subject is inbound-derived — truncate at first CR/LF (drop the
+    # injected tail, not concatenate it) + cap (998) before building the Re: header
+    # so a crafted inbound subject can neither fold nor smuggle a token.
+    subject = _safe_header_value(orig.get("subject", ""))
+    msg["Subject"] = subject if subject.lower().startswith("re:") else f"Re: {subject}"
+    # #2100 WARN-2 / NIT-1: In-Reply-To + References are inbound-derived. Truncate
+    # at first CR/LF + cap (msg-id 998, the accumulating refs chain 4096) BEFORE
+    # header assignment — converts the crafted-inbound 502 into normal operation and
+    # drops any smuggled continuation entirely.
+    orig_msg_id = _safe_header_value(orig.get("message-id", ""))
+    if orig_msg_id:
+        msg["In-Reply-To"] = orig_msg_id
+        refs = _safe_header_value(orig.get("references", ""), cap=_REFS_MAX)
+        msg["References"] = _safe_header_value(
+            f"{refs} {orig_msg_id}".strip(), cap=_REFS_MAX
+        )
+    msg.set_content(body)
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+    return _send_raw(service, raw, thread_id=resolved_thread)
+
+
+def send_forward(creds: Credentials, *, message_id: str, to: str, body: str = "") -> dict:
+    """Forward `message_id` to `to` via users.messages.send. Returns {message_id, thread_id}.
+
+    Builds a new message with a `Fwd:` subject and the operator's prefatory body
+    plus a quoted copy of the original body text. The forward is NOT threaded
+    (a forward starts a new conversation for the new recipient).
+    """
+    from email.message import EmailMessage
+
+    service = _build_service(creds)
+    # Pull the original body + subject to quote into the forward.
+    orig = get_message(creds, message_id)
+    raw_subject = orig.get("subject") or ""
+    # #2100 NIT-2: the fetched subject is inbound-derived; truncate at first CR/LF
+    # (drop the smuggled tail) + cap (998) for the Subject HEADER assignment. We
+    # also quote the SANITIZED subject into the body below — quoting the raw inbound
+    # subject verbatim would echo the attacker's CRLF-smuggled "Bcc:/X-..." text
+    # into the outbound body (harmless as a header, but still attacker-controlled
+    # content we needn't propagate), so the quote uses the cleaned value too.
+    fwd_subject = _safe_header_value(raw_subject)
+    fwd_subject = fwd_subject if fwd_subject.lower().startswith("fwd:") else f"Fwd: {fwd_subject}"
+    subject = _safe_header_value(raw_subject)
+
+    quoted = (
+        f"\n\n---------- Forwarded message ----------\n"
+        f"From: {orig.get('from') or ''}\n"
+        f"Subject: {subject}\n"
+        f"Date: {orig.get('date') or ''}\n\n"
+        f"{orig.get('body_text') or ''}"
+    )
+
+    msg = EmailMessage()
+    msg["To"] = to
+    msg["Subject"] = fwd_subject
+    msg.set_content(f"{body}{quoted}")
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+    return _send_raw(service, raw)
+
+
+def send_message(
+    creds: Credentials,
+    *,
+    to: str,
+    subject: str,
+    body: str,
+    cc: str | None = None,
+    bcc: str | None = None,
+) -> dict:
+    """Compose + send a NEW message via users.messages.send. Returns {message_id, thread_id}.
+
+    Used by both send-internal and external-send (the router decides the tier).
+    """
+    from email.message import EmailMessage
+
+    service = _build_service(creds)
+    msg = EmailMessage()
+    msg["To"] = to
+    if cc:
+        msg["Cc"] = cc
+    if bcc:
+        msg["Bcc"] = bcc
+    msg["Subject"] = subject
+    msg.set_content(body)
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+    return _send_raw(service, raw)
 
 
 # TODO(#1585 follow-up): Outlook parity for modify_labels/save_draft (mark/archive/draft).

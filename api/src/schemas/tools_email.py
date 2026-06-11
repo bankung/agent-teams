@@ -711,3 +711,245 @@ class GmailAttachmentResponse(BaseModel):
     size: int
     data_base64: str
 
+
+# ---------------------------------------------------------------------------
+# Kanban #2100 — Tier-3 SEND schemas (reply / forward / send-internal / external-send)
+# ---------------------------------------------------------------------------
+#
+# These map to the REPLY / SEND_INTERNAL / EXTERNAL_SEND EmailTiers — all PROOF
+# tiers (operator-proof required; external-send additionally escalates). The
+# router applies the gate; these models only validate the wire shape.
+#
+# RECIPIENT VALIDATION (intentionally minimal, per #2100 §3): we validate
+# non-empty + a cheap `@`-shape guard only. We do NOT enforce a strict
+# RFC-5322 addr-spec — the `to` line is operator-supplied (mirrors the draft
+# schemas' `not validated as a strict addr-spec` stance). The internal-vs-
+# external distinction is the CALLER's tier declaration (which route they hit),
+# NOT a domain check here. Bound caps mirror the draft schemas (998 addr line,
+# 998 subject, 100_000 body) so a send and its draft predecessor agree.
+
+_ADDR_MAX = 998
+_SUBJECT_MAX = 998
+_BODY_MAX = 100_000
+
+
+def _validate_recipient_line(value: str, field: str) -> str:
+    """Cheap recipient guard: non-empty + at least one '@'. Raises ValueError.
+
+    NOT an RFC validator. Comma-separated multi-recipient lines pass as long as
+    the whole line is non-empty and contains an '@'. CRLF is rejected so a
+    recipient line can never inject extra SMTP/MIME headers (header-injection
+    rail — mirrors the message-id CRLF exclusion in _MID_ALLOWED).
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be a non-empty recipient line.")
+    if "@" not in value:
+        raise ValueError(f"{field} must contain at least one '@' (recipient address).")
+    if "\r" in value or "\n" in value:
+        raise ValueError(f"{field} must not contain CR/LF (header-injection guard).")
+    return value
+
+
+class GmailReplyRequest(BaseModel):
+    """Reply to a Gmail message in-thread (`reply` tier — PROOF).
+
+    Reply uses the original message's thread so the response threads correctly.
+    `message_id` identifies the message being replied to; `thread_id` (optional)
+    pins the thread explicitly (Gmail derives it from the message otherwise).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str = Field(
+        ..., description="Gmail message id being replied to (hex)."
+    )
+    thread_id: str | None = Field(
+        default=None, description="Optional Gmail thread id to thread the reply into."
+    )
+    body: str = Field(
+        ..., min_length=1, max_length=_BODY_MAX, description="Reply plain-text body."
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> "GmailReplyRequest":
+        mid = self.message_id
+        if not (1 <= len(mid) <= 64) or not _MID_ALLOWED.fullmatch(mid):
+            raise ValueError(
+                "message_id must be a non-empty id <=64 chars; allowed: A-Z a-z 0-9 _ - = +"
+            )
+        if self.thread_id is not None:
+            tid = self.thread_id
+            if not (1 <= len(tid) <= 64) or not _MID_ALLOWED.fullmatch(tid):
+                raise ValueError(
+                    "thread_id must be a non-empty id <=64 chars; allowed: A-Z a-z 0-9 _ - = +"
+                )
+        return self
+
+
+class GmailForwardRequest(BaseModel):
+    """Forward a Gmail message to a new recipient (`reply` tier — PROOF).
+
+    Forward carries the original message id + a NEW `to` line (the forward
+    target) and an optional prefatory body.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str = Field(
+        ..., description="Gmail message id being forwarded (hex)."
+    )
+    to: str = Field(
+        ..., min_length=1, max_length=_ADDR_MAX,
+        description="Forward recipient line (RFC-2822 'To'). Operator-supplied.",
+    )
+    body: str = Field(
+        default="", max_length=_BODY_MAX, description="Optional prefatory body.",
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> "GmailForwardRequest":
+        mid = self.message_id
+        if not (1 <= len(mid) <= 64) or not _MID_ALLOWED.fullmatch(mid):
+            raise ValueError(
+                "message_id must be a non-empty id <=64 chars; allowed: A-Z a-z 0-9 _ - = +"
+            )
+        _validate_recipient_line(self.to, "to")
+        return self
+
+
+class GmailSendRequest(BaseModel):
+    """Compose + send a NEW Gmail message (`send_internal`/`external_send` tier).
+
+    Shared by both /gmail/send-internal and /gmail/external-send — the tier (and
+    therefore the gate behavior) is decided by which ROUTE the caller hits, not
+    by this schema. cc/bcc are optional address lines.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    to: str = Field(
+        ..., min_length=1, max_length=_ADDR_MAX,
+        description="Recipient line (RFC-2822 'To'). Operator-supplied.",
+    )
+    subject: str = Field(default="", max_length=_SUBJECT_MAX, description="Subject line.")
+    body: str = Field(
+        ..., min_length=1, max_length=_BODY_MAX, description="Plain-text body.",
+    )
+    cc: str | None = Field(default=None, max_length=_ADDR_MAX, description="Optional Cc line.")
+    bcc: str | None = Field(default=None, max_length=_ADDR_MAX, description="Optional Bcc line.")
+
+    @model_validator(mode="after")
+    def _check(self) -> "GmailSendRequest":
+        _validate_recipient_line(self.to, "to")
+        if self.cc is not None and self.cc.strip():
+            _validate_recipient_line(self.cc, "cc")
+        if self.bcc is not None and self.bcc.strip():
+            _validate_recipient_line(self.bcc, "bcc")
+        return self
+
+
+class GmailSendResponse(BaseModel):
+    """Result of a Gmail reply/forward/send — the sent message id + thread id."""
+
+    message_id: str
+    thread_id: str | None = None
+
+
+class OutlookReplyRequest(BaseModel):
+    """Reply to an Outlook message in-conversation (`reply` tier — PROOF).
+
+    Graph's `/reply` action keeps the conversation; only the message id + a
+    comment body are needed (Graph derives the conversation).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str = Field(
+        ..., description="Outlook/Graph message id being replied to."
+    )
+    body: str = Field(
+        ..., min_length=1, max_length=_BODY_MAX, description="Reply plain-text body.",
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> "OutlookReplyRequest":
+        mid = self.message_id
+        if not (1 <= len(mid) <= 512) or not _MID_ALLOWED.fullmatch(mid):
+            raise ValueError(
+                "message_id must be a non-empty id <=512 chars; allowed: A-Z a-z 0-9 _ - = +"
+            )
+        return self
+
+
+class OutlookForwardRequest(BaseModel):
+    """Forward an Outlook message to a new recipient (`reply` tier — PROOF).
+
+    Graph's `/forward` action takes the source message id + a toRecipients list
+    + an optional comment.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str = Field(
+        ..., description="Outlook/Graph message id being forwarded."
+    )
+    to: str = Field(
+        ..., min_length=1, max_length=_ADDR_MAX,
+        description="Forward recipient line. Operator-supplied.",
+    )
+    body: str = Field(
+        default="", max_length=_BODY_MAX, description="Optional prefatory comment.",
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> "OutlookForwardRequest":
+        mid = self.message_id
+        if not (1 <= len(mid) <= 512) or not _MID_ALLOWED.fullmatch(mid):
+            raise ValueError(
+                "message_id must be a non-empty id <=512 chars; allowed: A-Z a-z 0-9 _ - = +"
+            )
+        _validate_recipient_line(self.to, "to")
+        return self
+
+
+class OutlookSendRequest(BaseModel):
+    """Compose + send a NEW Outlook message (`send_internal`/`external_send` tier).
+
+    Shared by both /outlook/send-internal and /outlook/external-send. Mirrors
+    GmailSendRequest; the tier is route-determined.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    to: str = Field(
+        ..., min_length=1, max_length=_ADDR_MAX,
+        description="Recipient line. Operator-supplied.",
+    )
+    subject: str = Field(default="", max_length=_SUBJECT_MAX, description="Subject line.")
+    body: str = Field(
+        ..., min_length=1, max_length=_BODY_MAX, description="Plain-text body.",
+    )
+    cc: str | None = Field(default=None, max_length=_ADDR_MAX, description="Optional Cc line.")
+    bcc: str | None = Field(default=None, max_length=_ADDR_MAX, description="Optional Bcc line.")
+
+    @model_validator(mode="after")
+    def _check(self) -> "OutlookSendRequest":
+        _validate_recipient_line(self.to, "to")
+        if self.cc is not None and self.cc.strip():
+            _validate_recipient_line(self.cc, "cc")
+        if self.bcc is not None and self.bcc.strip():
+            _validate_recipient_line(self.bcc, "bcc")
+        return self
+
+
+class OutlookSendResponse(BaseModel):
+    """Result of an Outlook reply/forward/send.
+
+    Graph's `/reply`, `/forward`, and `/sendMail` actions return 202 with NO
+    body (the message is queued), so message_id/thread_id are typically None.
+    The field is kept for shape-parity with Gmail and forward-compat.
+    """
+
+    message_id: str | None = None
+    thread_id: str | None = None
+
