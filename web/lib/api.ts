@@ -89,6 +89,9 @@ export type ProjectRead = {
   // Backfilled to 24 by migration 0047. Optional on the FE type for
   // defensive resilience against pre-migration serialized payloads.
   hitl_nudge_threshold_hours?: number | null;
+  // Kanban #2300 (2026-06-11) — per-project thinking effort for headless engine.
+  // NULL = use global default (= off). Values: off|low|medium|high|extra|auto.
+  effort_mode?: string | null;
 };
 
 // AcceptanceCriterion — one entry in TaskRead.acceptance_criteria (#797).
@@ -501,6 +504,9 @@ export type ProjectUpdateBody = {
   // (= nudges disabled); explicit int → set threshold (0 is accepted but
   // app-layer treats it identical to NULL = disabled).
   hitl_nudge_threshold_hours?: number | null;
+  // Kanban #2300 (2026-06-11) — per-project thinking effort for headless engine.
+  // NULL = global default (= off). Values: off|low|medium|high|extra|auto.
+  effort_mode?: "off" | "low" | "medium" | "high" | "extra" | "auto" | null;
 };
 
 export async function updateProject(

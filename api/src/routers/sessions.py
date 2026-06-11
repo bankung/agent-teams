@@ -414,6 +414,11 @@ async def update_session_run(
     if model is not None:
         updates["model"] = model
 
+    # Kanban #2300: `effort` (resolved level) needs NO special branch — it is a
+    # plain nullable TEXT column that flows through the generic setattr loop
+    # below. The EffortSessionLiteral on SessionRunUpdate already 422'd any
+    # out-of-set value at the boundary.
+
     input_tokens = updates.get("total_input_tokens")
     output_tokens = updates.get("total_output_tokens")
     if (

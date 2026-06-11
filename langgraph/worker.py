@@ -709,6 +709,15 @@ async def _poll_once(
             client, cfg, headers, session_id, task_id
         )
 
+    # 2c) Kanban #2300 — resolve the Anthropic effort lever for this spawn
+    # (carrier > project effort_mode > off). In 'auto' project mode this also
+    # PATCHes the resolved level back to tasks.effort_override (best-effort).
+    # Cost: one cached project-field GET per spawn; None on the live default
+    # path (provider=ollama / all projects NULL) — behavior byte-identical.
+    resolved_effort = await _resolve_effort_for_spawn(
+        client, cfg, headers, task, _effective_project_id
+    )
+
     # 3) Invoke the compiled graph.
     compiled = getattr(graph_module, "graph", None)
     if compiled is None:
@@ -763,6 +772,10 @@ async def _poll_once(
         # LANGGRAPH_PROJECT_ID env is unset (multi-board mode). In single-board
         # mode _effective_project_id == cfg.project_id, so behavior is identical.
         "project_id": _effective_project_id,
+        # Kanban #2300 — resolved Anthropic effort lever for this run. None = off
+        # (no thinking; the specialist node's default cache entry = today's
+        # behavior). Anthropic-only; other providers ignore it in make_chat_model.
+        "effort": resolved_effort,
     }
     config = {"configurable": {"thread_id": f"task-{task_id}"}}
 
@@ -1203,6 +1216,12 @@ async def _patch_session_run_usage(
         "cache_read_input_tokens": int(final_state.get("usage_cache_read_tokens") or 0),
         "cache_creation_input_tokens": int(final_state.get("usage_cache_creation_tokens") or 0),
     }
+    # Kanban #2300 — persist the resolved effort for this run so per-effort spend
+    # is comparable in usage reporting. Omit when off/None (endpoint leaves the
+    # column unchanged → NULL) so legacy / no-thinking runs stay clean.
+    _effort = final_state.get("effort")
+    if _effort and _effort != "off":
+        body["effort"] = _effort
     # Forward provider + model so the API can compute total_cost_usd.
     from llm import resolve_model, resolve_provider  # local import avoids circular at module level
     try:
@@ -1287,6 +1306,8 @@ _POLICY_CACHE_TTL_SEC = 10.0
 # test_worker_prereq_gate.py imports `_required_binaries_cache_clear` by name).
 _policy_cache: dict[int, tuple[float, dict[str, Any] | None]] = {}
 _required_binaries_cache: dict[int, tuple[float, list[str] | None]] = {}
+# Kanban #2300 — per-project effort_mode cache (own dict, same TTL as above).
+_effort_mode_cache: dict[int, tuple[float, str | None]] = {}
 
 
 def _policy_cache_clear() -> None:
@@ -1297,6 +1318,11 @@ def _policy_cache_clear() -> None:
 def _required_binaries_cache_clear() -> None:
     """Test hook — clear the in-process required_binaries cache."""
     _required_binaries_cache.clear()
+
+
+def _effort_mode_cache_clear() -> None:
+    """Test hook — clear the in-process effort_mode cache."""
+    _effort_mode_cache.clear()
 
 
 async def _fetch_project_field(
@@ -1422,6 +1448,164 @@ async def _fetch_project_required_binaries(
         )
         value = None
     return value
+
+
+# ---------------------------------------------------------------------------
+# Effort lever resolution (Kanban #2300)
+# ---------------------------------------------------------------------------
+
+# Ladder order for the auto-path server-side clamp. 'off' is the floor; 'extra'
+# is the hard cap auto may reach (design lock D4 — 'max' is manual-only via the
+# per-task carrier and is NEVER selected by auto). Index = rank.
+_EFFORT_LADDER: tuple[str, ...] = ("off", "low", "medium", "high", "extra")
+# Values legal as a per-task CARRIER (tasks.effort_override). Superset of the
+# ladder: 'max' is reachable here (manual-only). A carrier outside this set is
+# treated as absent (fall through to project mode).
+_EFFORT_CARRIER_VALUES: frozenset[str] = frozenset(
+    {"off", "low", "medium", "high", "extra", "max"}
+)
+# Values legal as a project MODE (projects.effort_mode). Presets + 'auto'.
+_EFFORT_PROJECT_PRESETS: frozenset[str] = frozenset(
+    {"off", "low", "medium", "high", "extra"}
+)
+
+
+async def _fetch_project_effort_mode(
+    client: httpx.AsyncClient,
+    cfg: WorkerConfig,
+    headers: dict[str, str],
+    project_id: int,
+) -> str | None:
+    """Return `effort_mode` from GET /api/projects/{project_id} (Kanban #2300).
+
+    Cached ~10s per project_id (same TTL as policies / required_binaries).
+    Returns None (= global default off) on any read failure or missing/null
+    field — fail-CLOSED to off so a transient API hiccup never silently turns
+    thinking ON for a project that didn't ask for it.
+    """
+    value = await _fetch_project_field(
+        client, cfg, headers, project_id,
+        field="effort_mode",
+        log_prefix="effort_mode",
+        on_error_suffix="defaulting to off (no thinking)",
+        cache=_effort_mode_cache,
+    )
+    if value is not None and not isinstance(value, str):
+        # Value-tolerant: a hand-edited non-string row is treated as "off".
+        logger.warning(
+            "effort_mode fetch: project %d has non-str value %r; treating as off",
+            project_id,
+            value,
+        )
+        return None
+    return value
+
+
+def _clamp_effort(value: str | None) -> str:
+    """Clamp an effort value to the auto-path ceiling 'extra' (design lock D4).
+
+    UNCONDITIONAL server-side cap (AC7): 'max' and any unknown/out-of-ladder
+    value collapse to 'extra'; a legal ladder value passes through. None → 'off'.
+    This is the only thing standing between a hacked heuristic output and an
+    unbounded spend, so it never trusts its input.
+    """
+    if value is None:
+        return "off"
+    if value in _EFFORT_LADDER:
+        return value
+    # 'max' or anything unrecognized — cap at the top of the auto ladder.
+    return "extra"
+
+
+def _resolve_auto_effort(task: dict[str, Any]) -> str:
+    """Heuristic effort level for project mode 'auto' (Kanban #2300).
+
+    Rules (in order; first match wins for the low tier, then the high tier):
+      - default                                  → 'medium'
+      - task_type in {docs, chore}               → 'low'
+      - model_override == 'opus'                 → 'high'
+      - len(description) > 4000                  → 'high'
+      - assigned_role (string) contains 'sr-'    → 'high'   (see NOTE)
+
+    NOTE on the 'sr-' clause: `tasks.assigned_role` is an INTEGER role code
+    (1..5) at every layer — the senior/`sr-` tier is a spawn-time subagent
+    choice the Lead makes, never recorded on the task row. The check is kept
+    string-tolerant so it fires IF a future payload ever carries a role SLUG,
+    but in practice the load-bearing high signals are opus + large-spec.
+
+    The result is ALWAYS passed through `_clamp_effort` by the caller (the cap
+    is unconditional on the auto path) — this function never returns 'max', but
+    even if a future edit did, the clamp would catch it.
+    """
+    task_type = (task.get("task_type") or "").strip().lower()
+    if task_type in ("docs", "chore"):
+        return "low"
+
+    if (task.get("model_override") or "").strip().lower() == "opus":
+        return "high"
+
+    description = task.get("description") or ""
+    if len(description) > 4000:
+        return "high"
+
+    # String-tolerant 'sr-' check (defensive — see docstring NOTE).
+    role = task.get("assigned_role")
+    if isinstance(role, str) and "sr-" in role.lower():
+        return "high"
+
+    return "medium"
+
+
+async def _resolve_effort_for_spawn(
+    client: httpx.AsyncClient,
+    cfg: WorkerConfig,
+    headers: dict[str, str],
+    task: dict[str, Any],
+    project_id: int,
+) -> str | None:
+    """Resolve the effort level for a task spawn (Kanban #2300).
+
+    Precedence (design lock D3): task carrier > project effort_mode > off.
+      1. A valid `tasks.effort_override` carrier wins outright (incl. manual 'max').
+      2. Else fetch the project's `effort_mode`:
+         - a preset (off/low/medium/high/extra) → use it directly;
+         - 'auto' → `_resolve_auto_effort(task)`, then UNCONDITIONALLY clamped
+           through `_clamp_effort` (server-side cap at 'extra', AC7) AND written
+           back to the carrier (best-effort PATCH) so the resolution is visible.
+         - NULL / absent / invalid → None (= off).
+
+    Returns the resolved effort string, or None for off (None and 'off' are
+    equivalent downstream — make_chat_model treats both as the no-thinking path).
+    """
+    carrier = task.get("effort_override")
+    if isinstance(carrier, str) and carrier in _EFFORT_CARRIER_VALUES:
+        return carrier
+
+    mode = await _fetch_project_effort_mode(client, cfg, headers, project_id)
+    if mode in _EFFORT_PROJECT_PRESETS:
+        return mode
+    if mode != "auto":
+        # NULL / absent / unknown project mode → off.
+        return None
+
+    # 'auto' — heuristic + UNCONDITIONAL clamp (the cap never trusts the
+    # heuristic; a hacked 'max' output collapses to 'extra').
+    resolved = _clamp_effort(_resolve_auto_effort(task))
+    # Best-effort: write the resolved level to the carrier so it's visible on the
+    # task. Never block the run on a PATCH failure (log-warn only).
+    task_id = task.get("id")
+    if task_id is not None:
+        try:
+            await _patch_task(
+                client, cfg, headers, task_id, {"effort_override": resolved}
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "effort auto-resolution: carrier PATCH failed for task %s: %r",
+                task_id,
+                exc,
+            )
+    return resolved
 
 
 # ---------------------------------------------------------------------------

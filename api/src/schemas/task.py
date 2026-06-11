@@ -66,6 +66,14 @@ InteractionKindLiteral = Literal["work", "question", "decision"]
 # its recorded spawn-log entry speak the same vocabulary.
 ModelTierLiteral = Literal["haiku", "sonnet", "opus"]
 
+# Kanban #2300 (2026-06-11): wire enum for tasks.effort_override — the per-task
+# Anthropic effort carrier. Ladder off<low<medium<high<extra plus 'max' (= the
+# library's top tier, MANUAL-only — auto never selects it; the worker clamp caps
+# at 'extra'). NULL = inherit (precedence falls through to project.effort_mode,
+# then off). Gated solely by this Literal at the API boundary (422 on any other
+# value); NO DB CHECK on the column (#1677 / model_override posture).
+EffortOverrideLiteral = Literal["off", "low", "medium", "high", "extra", "max"]
+
 # Kanban #2127 (2026-06-11): wire enum for the operator-gate marker — the
 # "blocked-on-operator" kind. Five values; NULL = not gated. Used at BOTH the
 # task level (tasks.operator_gate, OperatorGateLiteral | None) AND the AC level
@@ -578,6 +586,13 @@ class TaskCreate(BaseModel):
     # 'opus' (ModelTierLiteral) — any other string is rejected 422 by Pydantic.
     # Plain scalar field: flows into Task(**payload_dict) with no router edit.
     model_override: ModelTierLiteral | None = None
+    # Kanban #2300 (2026-06-11): per-task effort carrier. None / absent on POST →
+    # NULL in DB (= inherit; precedence falls through to project.effort_mode then
+    # off). A value MUST be one of EffortOverrideLiteral — any other string is
+    # rejected 422. 'max' is reachable ONLY here (manual carrier), never via the
+    # project 'auto' path. Plain scalar: flows into Task(**payload_dict) with no
+    # router edit (mirror of model_override).
+    effort_override: EffortOverrideLiteral | None = None
     # Kanban #2127 (2026-06-11): task-level operator-gate rollup. None / absent
     # on POST -> NULL in DB (= not gated). A value MUST be one of the 5-enum
     # (OperatorGateLiteral) — any other string is rejected 422. `operator_gate_note`
@@ -987,6 +1002,16 @@ class TaskUpdate(BaseModel):
     # generic setattr loop in routers/tasks.py writes SQL NULL on explicit-null
     # for this nullable scalar — no special router branch needed.
     model_override: ModelTierLiteral | None = None
+    # Kanban #2300 (2026-06-11): PATCH-able per-task effort carrier. Semantics
+    # mirror model_override exactly:
+    #   - key absent      → leave unchanged (exclude_unset=True in router)
+    #   - explicit null   → CLEAR (NULL — back to inherit)
+    #   - one of EffortOverrideLiteral → set / change the level
+    #   - any other string → 422
+    # The generic setattr loop in routers/tasks.py writes SQL NULL on
+    # explicit-null for this nullable scalar — no special router branch. The
+    # worker also PATCHes this field with the auto-resolved level in 'auto' mode.
+    effort_override: EffortOverrideLiteral | None = None
     # Kanban #2127 (2026-06-11): PATCH-able task-level operator-gate. Semantics
     # mirror model_override / halt_reason exactly (locked, halt_reason posture):
     #   - key absent      → leave unchanged (exclude_unset=True in router)
@@ -1335,6 +1360,13 @@ class TaskRead(BaseModel):
     # RESOLVED tier in subagent_models. Value-strict on read (ModelTierLiteral)
     # — a hand-edited/corrupt out-of-set value would 500 here rather than leak.
     model_override: ModelTierLiteral | None = None
+    # Kanban #2300 (2026-06-11) — per-task effort carrier. Backfilled to NULL on
+    # existing rows by migration 0065's nullable=true ADD COLUMN. NULL = inherit.
+    # Surfaced so the Lead/orchestrator + UI can read the resolved level (the
+    # worker writes the auto-resolved level here in 'auto' mode). Value-strict on
+    # read (EffortOverrideLiteral) — a corrupt out-of-set value 500s here rather
+    # than leak (parity with model_override).
+    effort_override: EffortOverrideLiteral | None = None
     # Kanban #2127 (2026-06-11) — task-level operator-gate rollup. Backfilled to
     # NULL on existing rows by migration 0064's nullable=true ADD COLUMN. NULL =
     # not gated at the task level. operator_gate is value-strict on read

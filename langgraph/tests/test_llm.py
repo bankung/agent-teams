@@ -494,3 +494,87 @@ def test_make_chat_model_google_model_override(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("GOOGLE_MODEL", "gemini-2.5-flash")
     model = make_chat_model(model="gemini-flash-latest")
     assert getattr(model, "model", None) == "gemini-flash-latest"
+
+
+# ---------------------------------------------------------------------------
+# make_chat_model(effort=...) — Anthropic effort lever (Kanban #2300)
+#
+# Asserts on the ACTUAL kwarg path wired in llm.py: the top-level `effort`
+# ctor param (langchain_anthropic's convenience shorthand → output_config.effort)
+# + native `thinking={"type":"adaptive"}`. Verified vs langchain_anthropic==1.4.3.
+# ---------------------------------------------------------------------------
+
+
+def _anthropic_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-not-real")
+
+
+@pytest.mark.parametrize(
+    "effort,expected_effort",
+    [("low", "low"), ("medium", "medium"), ("high", "high"), ("extra", "xhigh"),
+     ("max", "max")],
+)
+def test_anthropic_effort_enables_adaptive_thinking(
+    monkeypatch: pytest.MonkeyPatch, effort, expected_effort
+) -> None:
+    """effort low/medium/high/extra/max → adaptive thinking + mapped effort.
+
+    'extra' maps to the API's 'xhigh' tier; the rest pass through. (max is a
+    legal carrier value reachable only manually — make_chat_model still honors it.)
+    """
+    _anthropic_env(monkeypatch)
+    model = make_chat_model(effort=effort)
+    assert model.thinking == {"type": "adaptive"}, model.thinking
+    assert model.effort == expected_effort, model.effort
+
+
+def test_anthropic_extra_maps_to_xhigh_in_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The native `effort` shorthand lands as output_config.effort='xhigh' AND
+    thinking={type:adaptive} in the Messages-API payload (design lock D1)."""
+    _anthropic_env(monkeypatch)
+    model = make_chat_model(effort="extra")
+    payload = model._get_request_payload([], stop=None)
+    assert payload.get("output_config") == {"effort": "xhigh"}, payload.get("output_config")
+    assert payload.get("thinking") == {"type": "adaptive"}, payload.get("thinking")
+
+
+@pytest.mark.parametrize("effort", [None, "off"])
+def test_anthropic_effort_none_or_off_is_noop(
+    monkeypatch: pytest.MonkeyPatch, effort
+) -> None:
+    """effort None / 'off' → EXACTLY today's construction (no thinking, no effort).
+
+    Bit-identical no-op: the kwargs MUST match the zero-arg construction so the
+    live default path is unchanged.
+    """
+    _anthropic_env(monkeypatch)
+    baseline = make_chat_model()
+    model = make_chat_model(effort=effort)
+    # POSITIVE: an effort run DOES set these (proven in the test above).
+    # NEGATIVE/lock: None/off leaves thinking + effort unset, same as baseline.
+    assert model.thinking is None, model.thinking
+    assert model.effort is None, model.effort
+    assert model.thinking == baseline.thinking
+    assert model.effort == baseline.effort
+
+
+@pytest.mark.parametrize("provider", ["ollama", "openai", "google"])
+def test_effort_ignored_on_non_anthropic(
+    monkeypatch: pytest.MonkeyPatch, provider
+) -> None:
+    """openai/google/ollama ignore `effort` — same construction with/without it
+    (the lever is Anthropic-only, design lock D7)."""
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", provider)
+    if provider == "openai":
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+    elif provider == "google":
+        monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSy-fake")
+    a = make_chat_model()
+    b = make_chat_model(effort="high")
+    assert type(a).__name__ == type(b).__name__
+    assert getattr(a, "model", None) == getattr(b, "model", None)
+    # No anthropic-only thinking/effort attrs leak onto these clients.
+    assert getattr(a, "thinking", None) == getattr(b, "thinking", None)

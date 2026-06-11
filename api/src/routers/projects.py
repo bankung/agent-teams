@@ -649,6 +649,9 @@ async def create_project(
         # INSERT NULL, bypassing both defaults.
         "working_path": payload.working_path,
         "working_repo": payload.working_repo,
+        # Kanban #2300 — per-project effort lever. Plain nullable TEXT, no DB
+        # server_default, so passing None lands SQL NULL (= global default off).
+        "effort_mode": payload.effort_mode,
     }
     if payload.agent_overrides is not None:
         data["agent_overrides"] = payload.agent_overrides

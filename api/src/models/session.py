@@ -201,6 +201,12 @@ class SessionRun(Base):
     provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    # Kanban #2300 (2026-06-11): resolved Anthropic effort for this run, so
+    # per-effort spend is comparable in usage reporting. Thinking bills as
+    # OUTPUT tokens — no pricing rate change. Nullable; worker stamps it from
+    # the resolved effort in PATCH /api/session_runs/{id}. NULL = off / legacy.
+    effort: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     total_input_tokens: Mapped[int] = mapped_column(
         BigInteger,
         nullable=False,

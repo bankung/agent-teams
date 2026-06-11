@@ -45,6 +45,14 @@ TeamCode = Literal[*ProjectTeam.ALL]  # type: ignore[valid-type]  # mypy doesn't
 # role names which all fit.
 AgentModelLiteral = Literal["haiku", "sonnet", "opus"]
 
+# Kanban #2300 (2026-06-11): wire enum for projects.effort_mode — the per-project
+# Anthropic effort/thinking cost lever. Ladder off<low<medium<high<extra plus
+# 'auto' (orchestrator picks a level per task, hard-capped at extra server-side).
+# NOTE: 'max' is NOT in the project ladder — it's manual-only via the per-task
+# carrier (tasks.effort_override). Gated solely by this Literal at the API
+# boundary (422); NO DB CHECK on the column (#1677 / model_override posture).
+EffortModeLiteral = Literal["off", "low", "medium", "high", "extra", "auto"]
+
 # Kanban #777 WARN-4: agent_overrides keys are role names — restrict to the
 # same shape as project.name (alphanumeric + underscore + hyphen, 1-64 chars).
 # Prevents row bloat / audit-log noise / hypothetical FE prototype-pollution
@@ -387,6 +395,13 @@ class ProjectCreate(BaseModel):
     # array size at the boundary (operator-configured, low cardinality expected).
     required_binaries: list[str] | None = Field(default=None, max_length=50)
 
+    # Kanban #2300 (2026-06-11): per-project Anthropic effort/thinking lever.
+    # None / absent → DB column lands NULL (= global default off; no project
+    # silently pays). A value MUST be one of EffortModeLiteral — any other
+    # string is rejected 422. Plain nullable scalar; the router writes it
+    # directly (NULL when None).
+    effort_mode: EffortModeLiteral | None = None
+
     @field_validator("agent_overrides")
     @classmethod
     def _validate_agent_override_keys(cls, v):
@@ -455,6 +470,13 @@ class ProjectUpdate(BaseModel):
     working_path: str | None = Field(default=None, min_length=1)
     working_repo: str | None = Field(default=None, min_length=1)
     agent_overrides: dict[str, AgentModelLiteral] | None = Field(default=None)
+
+    # Kanban #2300 (2026-06-11): per-project effort lever. PATCH semantics mirror
+    # required_binaries (null-stays-null — NO special router branch): key-absent →
+    # leave unchanged (exclude_unset); explicit null → CLEAR to NULL (= back to
+    # global default off); a value sets it. Any non-Literal string → 422. The
+    # generic setattr loop in update_project() writes SQL NULL on explicit-null.
+    effort_mode: EffortModeLiteral | None = Field(default=None)
 
     # Kanban #778: sources PATCH semantics mirror `agent_overrides`:
     # - key-absent → leave existing value unchanged (exclude_unset=True)
@@ -669,6 +691,12 @@ class ProjectRead(BaseModel):
     # violate the element shape don't 500 a read endpoint. Writes still go
     # through the strict `SourceEntry` validator on POST/PATCH.
     sources: list[dict[str, Any]] = Field(default_factory=list)
+
+    # Kanban #2300 (2026-06-11): per-project effort lever surfaced on read. NULL =
+    # global default off. Value-tolerant on read (str | None, not the strict
+    # Literal) for legacy / hand-edited resilience — parity with the other
+    # nullable-text reads; writes still go through EffortModeLiteral on POST/PATCH.
+    effort_mode: str | None = None
 
     # Kanban #951: per-project budget caps surfaced on every project read.
     # All three nullable — NULL = unlimited (no enforcement). FE renders
