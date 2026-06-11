@@ -122,7 +122,7 @@ class TaskRecord:
         rep: int,
         task_id: int | None,
         outcome: str,          # PASS / FAIL / TIMEOUT
-        failure_kind: str,     # '' / no_emission / wrong_answer / timeout / false_done_detected
+        failure_kind: str,     # '' / no_emission / wrong_answer / timeout / false_done_detected / runner_error
         wall_sec: float,
         answer_excerpt: str,   # 200 chars
         notes: str,
@@ -239,7 +239,14 @@ def _cancel_task(
 # ---------------------------------------------------------------------------
 
 def _excerpt(task: dict[str, Any]) -> str:
-    raw = task.get("status_change_reason") or task.get("description") or ""
+    # Prefer status_change_reason (model answer on completion), then halt_reason
+    # (informative when task is halted/quota-killed), then description (last resort).
+    raw = (
+        task.get("status_change_reason")
+        or task.get("halt_reason")
+        or task.get("description")
+        or ""
+    )
     return raw[:200]
 
 
@@ -362,8 +369,8 @@ def run_class_a(
         except Exception as exc:
             elapsed = time.monotonic() - t0
             records.append(TaskRecord(
-                "A", "A", rep, task_id, "FAIL", "wrong_answer",
-                elapsed, "", f"exception: {exc}"
+                "A", "A", rep, task_id, "FAIL", "runner_error",
+                elapsed, "", f"runner_error: {exc}"
             ))
     return records
 
@@ -479,8 +486,8 @@ def run_class_b(
         except Exception as exc:
             elapsed = time.monotonic() - t0
             records.append(TaskRecord(
-                "B", "B", rep, task_id, "FAIL", "wrong_answer",
-                elapsed, "", f"exception: {exc}"
+                "B", "B", rep, task_id, "FAIL", "runner_error",
+                elapsed, "", f"runner_error: {exc}"
             ))
     return records
 
@@ -577,8 +584,8 @@ def run_class_c(
         except Exception as exc:
             elapsed = time.monotonic() - t0
             records.append(TaskRecord(
-                "C", "C", rep, task_id, "FAIL", "no_emission",
-                elapsed, "", f"exception: {exc}"
+                "C", "C", rep, task_id, "FAIL", "runner_error",
+                elapsed, "", f"runner_error: {exc}"
             ))
     return records
 
@@ -689,8 +696,8 @@ def run_class_d(
             except Exception as exc:
                 elapsed = time.monotonic() - t0
                 records.append(TaskRecord(
-                    "D", phrasing_tag, rep, task_id, "FAIL", "no_emission",
-                    elapsed, "", f"exception: {exc}"
+                    "D", phrasing_tag, rep, task_id, "FAIL", "runner_error",
+                    elapsed, "", f"runner_error: {exc}"
                 ))
     return records
 
@@ -894,8 +901,8 @@ def run_class_e(
         except Exception as exc:
             elapsed = time.monotonic() - t0
             records.append(TaskRecord(
-                "E", "E", rep, task_id, "FAIL", "no_emission",
-                elapsed, "", f"exception: {exc}"
+                "E", "E", rep, task_id, "FAIL", "runner_error",
+                elapsed, "", f"runner_error: {exc}"
             ))
     return records
 
@@ -944,7 +951,7 @@ def _build_needle_doc(target_chars: int) -> str:
 
 _F_DOCS = [
     ("F1", 10_000),
-    ("F2", 30_000),
+    ("F2", 18_000),   # 20K API cap on tasks.description; 18K keeps safely under it
 ]
 
 
@@ -1030,8 +1037,8 @@ def run_class_f(
         except Exception as exc:
             elapsed = time.monotonic() - t0
             records.append(TaskRecord(
-                "F", phrasing_tag, rep, task_id, "FAIL", "wrong_answer",
-                elapsed, "", f"exception: {exc}"
+                "F", phrasing_tag, rep, task_id, "FAIL", "runner_error",
+                elapsed, "", f"runner_error: {exc}"
             ))
     return records
 
@@ -1057,6 +1064,7 @@ def _summarize(
 
     class_stats: list[dict[str, Any]] = []
     false_done_detections: list[dict[str, Any]] = []
+    runner_errors: list[dict[str, Any]] = []
 
     for cls in sorted(by_class):
         recs = by_class[cls]
@@ -1066,10 +1074,18 @@ def _summarize(
         mean_lat = round(statistics.mean(latencies), 1) if latencies else None
         median_lat = round(statistics.median(latencies), 1) if latencies else None
 
-        # False-done detections.
+        # False-done detections and runner_error collections.
         for r in recs:
             if r.failure_kind == "false_done_detected":
                 false_done_detections.append({
+                    "class": r.cls,
+                    "phrasing": r.phrasing,
+                    "rep": r.rep,
+                    "task_id": r.task_id,
+                    "notes": r.notes,
+                })
+            elif r.failure_kind == "runner_error":
+                runner_errors.append({
                     "class": r.cls,
                     "phrasing": r.phrasing,
                     "rep": r.rep,
@@ -1115,6 +1131,7 @@ def _summarize(
         "task_count": len(records),
         "class_stats": class_stats,
         "false_done_detections_2194": false_done_detections,
+        "runner_errors": runner_errors,
         "records": [r.to_dict() for r in records],
     }
 
@@ -1155,6 +1172,19 @@ def _write_markdown(
                     f"| {ph} | {pb['pass']} | {pb['total']} | {pb['rate_pct']}% |"
                 )
 
+    # Runner errors (probe-infrastructure failures — not model behavior).
+    rerrs = summary.get("runner_errors", [])
+    if rerrs:
+        lines += ["", "## Runner errors (probe-infrastructure failures)", ""]
+        lines += ["> runner_error = probe setup/poll failed; model behavior unknown for these tasks.", ""]
+        for d in rerrs:
+            lines.append(
+                f"- **[runner_error]** Class {d['class']} phrasing {d['phrasing']} rep {d['rep']} "
+                f"task_id={d['task_id']}: {d['notes']}"
+            )
+    else:
+        lines += ["", "## Runner errors (probe-infrastructure failures)", "", "None detected."]
+
     # False-done detections.
     fdd = summary.get("false_done_detections_2194", [])
     if fdd:
@@ -1174,9 +1204,11 @@ def _write_markdown(
     ]
     for r in summary["records"]:
         exc = (r["answer_excerpt"] or "")[:60].replace("|", "\\|")
+        # Visually flag runner_error rows in the table.
+        fk_display = f"**{r['failure_kind']}**" if r["failure_kind"] == "runner_error" else (r["failure_kind"] or "—")
         lines.append(
             f"| {r['class']} | {r['phrasing']} | {r['rep']} | {r['task_id']} "
-            f"| {r['outcome']} | {r['failure_kind'] or '—'} | {r['wall_sec']} | {exc} |"
+            f"| {r['outcome']} | {fk_display} | {r['wall_sec']} | {exc} |"
         )
 
     return "\n".join(lines) + "\n"
@@ -1349,6 +1381,14 @@ def main() -> int:
             f"  {st['class']:<8} {st['pass']:>5} {st['total']:>6} "
             f"{st['rate_pct']:>6.1f}%  {lm:>8}  {lmed:>10}"
         )
+
+    rerrs = summary.get("runner_errors", [])
+    if rerrs:
+        print(f"\n  WARNING: {len(rerrs)} runner_error(s) (probe-infrastructure failures):")
+        for d in rerrs:
+            print(f"    [runner_error] class={d['class']} phrasing={d['phrasing']} rep={d['rep']} task_id={d['task_id']}")
+    else:
+        print("\n  No runner errors.")
 
     fdd = summary.get("false_done_detections_2194", [])
     if fdd:
