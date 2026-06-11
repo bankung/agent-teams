@@ -400,13 +400,21 @@ async def _multiboard_has_work(
     api_base: str,
     headers: dict[str, str],
 ) -> bool:
-    """Peek at next-autorun for one project; return True if any work exists.
+    """Peek at next-autorun for one project; return True if ACTIONABLE work exists.
 
-    "Work" = next_task is not None OR pending_questions is non-empty. This
-    lets _run_multi_board_loop stop at the first active project without
-    double-processing: we peek here, then call _poll_once only for the first
-    project that has something. For idle projects this costs one extra GET
-    that _poll_once would issue anyway — no net difference. #2184
+    Actionable work = next_task is not None OR at least one pending_questions
+    entry passes _needs_resume (i.e. it has an unconsumed operator answer).
+
+    Critically, a pending question that is still AWAITING input (no answer yet,
+    or cursor already advanced past the latest answer) is NOT actionable — the
+    worker cannot do anything until the operator answers. Counting unanswered
+    questions as work caused board-starvation: a permanently-parked question on
+    board A (e.g. ps=4 debris, task 2283 on board 661) made has_work(A) = True
+    every tick, preventing board B from ever being polled. Kanban #2298.
+
+    The consumable-question predicate is _needs_resume — the SAME function that
+    _poll_once step (a) uses when it decides whether to resume a HITL task. Reuse
+    ensures the two callsites stay in sync with zero drift risk. #2298
     """
     try:
         resp = await client.get(f"{api_base}/api/tasks/next-autorun", headers=headers)
@@ -418,9 +426,10 @@ async def _multiboard_has_work(
         payload = resp.json()
     except Exception:
         return False
+    pending_questions = payload.get("pending_questions") or []
     return bool(
         payload.get("next_task") is not None
-        or payload.get("pending_questions")
+        or any(_needs_resume(q)[0] for q in pending_questions)
     )
 
 
@@ -434,9 +443,13 @@ async def _run_multi_board_loop(
       1. Every `multiboard_refresh_ticks()` ticks refresh the eligible project
          list from GET /api/projects. Log the set whenever it changes.
       2. Iterate eligible projects in id-ascending order; peek next-autorun per
-         project. At the FIRST project that has work, call _poll_once and end
-         the tick (serial — no other project processes that tick).
-      3. If no project has work, the tick ends idle.
+         project via _multiboard_has_work. "Has work" means ACTIONABLE work:
+         next_task non-null OR at least one pending_questions entry has an
+         unconsumed operator answer (_needs_resume). An unanswered parked question
+         is NOT actionable and must not starve later boards. Kanban #2298.
+      3. At the FIRST project with actionable work, call _poll_once and end the
+         tick (serial — no other project processes that tick).
+      4. If no project has work, the tick ends idle.
     """
     logger.info(
         "worker starting (multi-board): api_base=%s poll_interval=%ds provider=%s model=%s",

@@ -526,3 +526,169 @@ async def test_multiboard_poll_injects_project_id_into_state(
         f"initial_state['project_id'] must be 691 (the task's project), "
         f"got {captured_state['project_id']!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Kanban #2298 — unanswered parked question on A must not starve board B
+# ---------------------------------------------------------------------------
+
+
+def _pending_question(
+    *,
+    task_id: int = 100,
+    halt_reason: str = "question",
+    answered_at: str | None = None,
+    last_consumed_answered_at: str | None = None,
+) -> dict:
+    """Build a minimal pending_questions TaskRead dict for predicate tests."""
+    answer_history = []
+    if answered_at is not None:
+        answer_history.append({
+            "value": "yes",
+            "answered_at": answered_at,
+            "answered_by": "operator",
+            "is_valid": True,
+        })
+    resume_context = None
+    if last_consumed_answered_at is not None:
+        resume_context = {"last_consumed_answered_at": last_consumed_answered_at}
+    return {
+        "id": task_id,
+        "halt_reason": halt_reason,
+        "question_payload": {"question": "approve?", "answer_history": answer_history},
+        "resume_context": resume_context,
+    }
+
+
+async def test_has_work_unanswered_question_is_not_actionable() -> None:
+    """_multiboard_has_work returns False when the only pending question has no
+    operator answer yet (the 661/task-2283 parked-debris shape). Kanban #2298.
+    """
+    unanswered = _pending_question(task_id=2283, halt_reason="question", answered_at=None)
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "next_task": None,
+            "resume_tasks": [],
+            "pending_questions": [unanswered],
+            "blocked_count": 1,
+        })
+
+    async with _make_client(handler) as client:
+        result = await worker._multiboard_has_work(client, "http://test", {"X-Project-Id": "661"})
+
+    assert result is False, (
+        "_multiboard_has_work must return False for a board whose only pending "
+        "question has no operator answer (unanswered parked question is not actionable)"
+    )
+
+
+async def test_has_work_answered_question_is_actionable() -> None:
+    """_multiboard_has_work returns True when a pending question has a fresh
+    unconsumed operator answer — resume path must still fire. Kanban #2298.
+    """
+    answered = _pending_question(
+        task_id=2283,
+        halt_reason="question",
+        answered_at="2026-06-11T10:00:00Z",
+        last_consumed_answered_at=None,  # cursor not yet advanced
+    )
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "next_task": None,
+            "resume_tasks": [],
+            "pending_questions": [answered],
+            "blocked_count": 1,
+        })
+
+    async with _make_client(handler) as client:
+        result = await worker._multiboard_has_work(client, "http://test", {"X-Project-Id": "661"})
+
+    assert result is True, (
+        "_multiboard_has_work must return True when a pending question has an "
+        "unconsumed operator answer (resume path is actionable)"
+    )
+
+
+async def test_multiboard_starvation_unanswered_question_board_a_does_not_block_board_b(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Starvation repro (Kanban #2298): board 661 has ONLY an unanswered parked
+    question (the 2283 debris shape). Board 691 has a runnable task.
+    Before the fix, has_work(661)=True caused 691 to starve every tick.
+    After the fix, the unanswered question is not actionable so 691 is polled.
+
+    Uses fake_has_work that encodes the corrected predicate (not the old one)
+    so the loop-level starvation path is exercised.
+    """
+    monkeypatch.setenv("LANGGRAPH_POLL_INTERVAL_SEC", "1")
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake")
+    monkeypatch.setenv("LANGGRAPH_MULTIBOARD_REFRESH_TICKS", "1")
+
+    cfg = WorkerConfig()
+    assert cfg.multi_board is True
+
+    projects = [_proj(id=661, name="gemini-harness-test"), _proj(id=691, name="mini-secretary")]
+
+    async def fake_fetch_all(client, api_base):
+        return projects
+
+    # Board 661: unanswered question only — NOT actionable (fixed predicate).
+    # Board 691: has a runnable task — actionable.
+    async def fake_has_work(client, api_base, headers):
+        pid = headers.get("X-Project-Id")
+        if pid == "661":
+            return False  # unanswered question is not actionable after fix
+        if pid == "691":
+            return True
+        return False
+
+    async def fake_ensure_session(client, cfg, project_id, project_name):
+        return project_id * 10
+
+    poll_once_calls: list[str] = []
+
+    async def fake_poll_once(client, graph_module, cfg, headers):
+        poll_once_calls.append(headers.get("X-Project-Id"))
+
+    cancel_after = 1
+
+    async def fake_sleep(delay):
+        nonlocal cancel_after
+        cancel_after -= 1
+        if cancel_after <= 0:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(worker, "_fetch_all_projects", fake_fetch_all)
+    monkeypatch.setattr(worker, "_multiboard_has_work", fake_has_work)
+    monkeypatch.setattr(worker, "_ensure_project_session", fake_ensure_session)
+    monkeypatch.setattr(worker, "_poll_once", fake_poll_once)
+    monkeypatch.setattr(worker.asyncio, "sleep", fake_sleep)
+
+    graph_module = _make_graph_module(None)
+    with pytest.raises(asyncio.CancelledError):
+        await _run_multi_board_loop(cfg, graph_module)
+
+    # Board 691 must be polled; board 661's unanswered question must not block it.
+    assert poll_once_calls == ["691"], (
+        f"board 691 must be polled (unanswered question on 661 is not actionable); "
+        f"got poll_once_calls={poll_once_calls}"
+    )
+
+
+async def test_has_work_next_task_always_actionable() -> None:
+    """Board with next_task (no questions) is actionable — regression guard. #2298"""
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "next_task": {"id": 5, "title": "do work"},
+            "resume_tasks": [],
+            "pending_questions": [],
+            "blocked_count": 0,
+        })
+
+    async with _make_client(handler) as client:
+        result = await worker._multiboard_has_work(client, "http://test", {"X-Project-Id": "691"})
+
+    assert result is True, "_multiboard_has_work must return True when next_task is present"
