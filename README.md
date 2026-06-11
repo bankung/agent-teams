@@ -38,11 +38,29 @@ The gap it fills: a **self-hosted, persistent, governed, multi-domain orchestrat
 
 - **Two execution modes.** Mode A (production today): Claude Code or Codex drives each specialist interactively with per-action approval — you keep control. Mode B (actively in development): flip a task to `auto_headless` and the LangGraph engine runs it with no terminal open, Postgres-checkpointed.
 
+- **Governed real-world tool layer — email and calendar behind tiered gates.** Agents can read, triage, draft, reply, forward, and send email across Gmail and Outlook — and read/create/respond to calendar events on both. Every action passes a three-tier gate: auto-approved safe operations, an operator-proof token for destructive or send-class actions, and forced human escalation for anything that crosses an external send boundary. Every action lands in an audit trail. This is what "beyond code" means in practice.
+
 - **Rich planning views.** Board · List · Calendar · Gantt in one switcher. Calendar supports week/month with drag-to-reschedule. Gantt doubles as the milestone home — drag a task straight onto a milestone and watch the progress rollup update.
 
 - **Extend without migrations.** Add a new team or new agent types by editing constants and dropping a markdown file — no DB migration required. 8 teams and ~39 specialist agent definitions ship today. → [How to add a team](readme_dev.md#team-roster--dev-team) · [Full onboarding runbook](context/teams/dev/team-onboarding-runbook.md)
 
 - **Self-hosted, local-first, dogfooded.** Runs in Docker on your machine. Anthropic, OpenAI, Google Gemini, or fully-local Ollama — your choice, one `.env` variable. No code leaves your network. And the system building itself is the system you're reading about: the commit log and live Kanban are the proof.
+
+---
+
+## What's new in v0.6.0
+
+- **Email actions grew from triage to the full send ladder.** Reply, forward, send-to-internal, and external-send routes landed for both Gmail and Outlook — all behind the operator-proof gate, with external-send additionally forcing an out-of-band human confirmation. A Kanban audit step records every send action. An `INTERNAL_EMAIL_DOMAIN` guard and header-injection hardening ship alongside.
+
+- **Calendar: read, free/busy, create, and respond — Google and Outlook.** Agents can list events, query availability, create events, and respond to invitations. Read endpoints are auto-approved; create/respond pass the operator-proof gate. Both providers share a unified `/api/tools/calendar` router.
+
+- **One-command install.** `npx @bankung/agent-teams up --images` (Node 18+, Docker required) pulls pre-built images from GHCR and starts the full stack — no clone, no local build. Production images slimmed from ~847 MiB to ~216 MiB (~75% reduction).
+
+- **Board and UX.** First-run product tour (resumable, dark-mode), task templates in the New Task modal, append-only task comments, a file resources panel, calendar week view with drag-to-reschedule, editable acceptance criteria in the task drawer, an "On you (N)" chip surfacing tasks waiting on the operator's decision, DONE-lane keyset pagination, and shared-SSE + code-splitting for a faster board.
+
+- **Headless engine (Mode B) — progress and honest status.** One worker now serves multiple project boards concurrently. A local-model rig (Ollama) with a regression pack and capability probe hardens the engine, and a filesystem destination guard keeps file writes inside each project's declared working folder. Native Google Gemini provider added. Mode B remains actively in development — don't rely on it for critical work yet.
+
+- **Operations.** Per-task cost metering for Mode A runs captures prompt-cache token counts against each session. A `/tn-release` slash-command skill encodes the full weekly release flow end-to-end so milestone flips are never skipped. `/tn-email` and `/tn-jobs` skills bring secretary email and job-search operations into the paved-path skill family.
 
 ---
 
@@ -55,7 +73,7 @@ The gap it fills: a **self-hosted, persistent, governed, multi-domain orchestrat
 - an IDE like **Cursor** or **Devin Desktop** (formerly Windsurf) — no editor here; keep your own;
 - a from-scratch agent framework like **CrewAI** / **AG2 (AutoGen)** / **LangGraph** — it actually *uses* LangGraph for its headless engine rather than reinventing it.
 
-**Honest status on the headless engine:** today the production path is Mode A — Claude Code / Codex CLI driven interactively (per-action approval). The `langgraph` service (supervisor → specialist graph, Postgres-checkpointed) is the Mode B path and is **actively in development**. Don't rely on it for critical work yet.
+**Honest status on the headless engine:** today the production path is Mode A — Claude Code / Codex CLI driven interactively (per-action approval). The `langgraph` service (supervisor → specialist graph, Postgres-checkpointed) is the Mode B path and is **actively in development**. One worker now serves multiple project boards concurrently, a regression pack and capability probe run against a local-model (Ollama) rig to harden it, and a filesystem destination guard keeps writes inside each project's declared working folder. Don't rely on it for critical work yet.
 
 ---
 
@@ -85,6 +103,16 @@ The orchestration works across coding CLIs because the rules live in portable in
 
 ## Get started
 
+**Quickest path — no clone needed (Node 18 + Docker required):**
+
+```bash
+npx @bankung/agent-teams up --images
+```
+
+Pulls pre-built images from GHCR and starts the full stack. Then skip to step 3 below.
+
+**From a clone (contributor / source-build path):**
+
 1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) and restart your computer.
 2. Open a terminal **in this folder** and run the installer:
    - **macOS / Linux / WSL:** `./bin/install.sh`
@@ -106,7 +134,7 @@ The installer is safe to re-run; services keep running after you close the termi
 
 ## Slash-command skills (tn-*)
 
-These are reusable Claude Code commands that encode Kanban API conventions, preventing common mistakes (missing project_id, incomplete acceptance criteria, status-change guard violations). They activate after a Claude Code restart and are auto-detected on live-reload.
+These are reusable Claude Code commands that encode Kanban API conventions, preventing common mistakes (missing project_id, incomplete acceptance criteria, status-change guard violations). 16 skills ship today. They activate after a Claude Code restart and are auto-detected on live-reload.
 
 | Command | What it does |
 |---------|-------------|
@@ -124,9 +152,13 @@ These are reusable Claude Code commands that encode Kanban API conventions, prev
 | **Workflow** | |
 | `/tn-intense-review <scope>` | 2-round adversarial review + test-hardening pass (reviewers + determinism loop). |
 | `/tn-spec <idea>` | 2 rounds of spec pushback + revision before creating a task. |
+| `/tn-release [vX.Y.Z]` | Run the full weekly release flow — Tier-2 gate, merge dev→main, version bump, annotated tag, push, milestone flips (released + activate next), resume dev. |
 | **Project** | |
 | `/tn-bind <project>` | Bind the session to a project by name (resolves + persists the active project). |
 | `/tn-audit [project]` | On-demand project health audit (3 metrics + continue/review/pause). |
+| **Secretary** | |
+| `/tn-email <verb>` | Secretary email operations across Gmail and Outlook — search, read, triage, archive, mark, draft, trash. All mutation actions are HITL-gated. |
+| `/tn-jobs <verb>` | Job-search operations — mine alert emails, sweep application responses, reconcile against the tracker, deep-dive a role, check live posting status, log a status update. |
 
 Each skill lives at `.claude/skills/<name>/SKILL.md` and is invoked as `/<name>` in Claude Code.
 
