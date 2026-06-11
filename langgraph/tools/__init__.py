@@ -33,6 +33,8 @@ from .registry import GLOBAL_REGISTRY, ToolNotFoundError, ToolRegistry
 from .sandbox import (
     OUTPUT_CAP_BYTES,
     OUTPUT_CAP_MARKER,
+    WORKING_PATH_UNSET_CODE,
+    _allowlist_cache_clear,
     apply_output_cap,
     apply_sandbox,
     check_hard_kill_drift,
@@ -60,6 +62,7 @@ __all__ = [
     "ToolNotFoundError",
     "ToolRegistry",
     "ToolResult",
+    "WORKING_PATH_UNSET_CODE",
     "apply_output_cap",
     "apply_sandbox",
     "check_hard_kill_drift",

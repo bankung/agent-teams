@@ -41,6 +41,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any
 
 import httpx
@@ -61,6 +62,7 @@ from tools import (
     GLOBAL_REGISTRY,
     MAX_TOOL_LOOP_ITERATIONS,
     TOOL_LOOP_HALT_REASON,
+    WORKING_PATH_UNSET_CODE,
     InvokeContext,
     PermissionDecision,
     ToolNotFoundError,
@@ -233,8 +235,11 @@ def make_specialist_node(agent_name: str):
          - call `model.invoke(messages)`.
          - if the response has no `tool_calls` → final answer, exit loop.
          - else for each tool call:
-            a. `check_permission(tools_config, tool)` → auto_allow / halt / reject.
-            b. `fs_boundary_check(tool, ctx, args)` (pre-flight; write tools).
+            a. `fs_boundary_check(tool, ctx, args)` — destination-legitimacy
+               guard, pre-flight, BEFORE the tier gate (#2215 rule 6). A
+               `working_path_unset` violation HALTs (ask-where-to-save);
+               `fs_boundary` / `working_path_unmounted` feed back to the LLM.
+            b. `check_permission(tools_config, tool)` → auto_allow / halt / reject.
             c. on auto_allow: invoke the tool, then `apply_sandbox(...)`.
             d. on halt: emit halt_reason + return early.
             e. on reject: synthesise a `ToolResult(success=False, error_code='tier_not_allowed')`
@@ -258,7 +263,7 @@ def make_specialist_node(agent_name: str):
         # backwards compatibility with any caller that doesn't set state["project_id"].
         project_id = state.get("project_id") or resolve_project_id()
         tools_config = await _fetch_tools_config(project_id)
-        working_path, repo_root = _resolve_paths(project_id)
+        working_path, repo_root = await _resolve_paths(project_id)
 
         ctx = InvokeContext(
             task_id=task_id,
@@ -683,7 +688,29 @@ async def _handle_one_tool_call(
         )
         return _ToolCallOutcome(result)
 
-    # 2. Permission gate.
+    # 2. Pre-flight: fs destination-legitimacy guard (Kanban #2215).
+    #    Runs BEFORE the tier gate (locked rule 6): no point asking the
+    #    operator to authorize a write to an illegitimate destination. Only
+    #    fires for write/destructive tools with a `path` arg; everything else
+    #    returns None and falls through to the tier gate unchanged.
+    violation = fs_boundary_check(tool, ctx, args)
+    if violation is not None:
+        # `decision="pre_gate"` — the destination guard fires BEFORE the tier
+        # gate, so no PermissionDecision exists yet for the audit row.
+        await _audit(task_id, tool, args, violation, "pre_gate", project_id=ctx.project_id)
+        if violation.error_code == WORKING_PATH_UNSET_CODE:
+            # NULL working_path + illegitimate destination → HALT (HITL
+            # ask-where-to-save), mirroring the write-tier gate's halt shape.
+            halt_reason = (
+                f"working_path_unset: {tool.name} target not under _scratch and "
+                "not allowlisted (project has no working_path)"
+            )
+            return _ToolCallOutcome(violation, halt_reason=halt_reason)
+        # fs_boundary / working_path_unmounted → actionable error fed back to
+        # the LLM (it can pick a legal path or surface the unmounted config).
+        return _ToolCallOutcome(violation)
+
+    # 3. Permission gate.
     decision = check_permission(tools_config, tool)
 
     if decision is PermissionDecision.REJECT:
@@ -719,12 +746,8 @@ async def _handle_one_tool_call(
         return _ToolCallOutcome(result, halt_reason=halt_reason)
 
     # decision == AUTO_ALLOW
-    # 3. Pre-flight: fs-boundary check (only writes/destructive with path).
-    violation = fs_boundary_check(tool, ctx, args)
-    if violation is not None:
-        await _audit(task_id, tool, args, violation, decision, project_id=ctx.project_id)
-        return _ToolCallOutcome(violation)
-
+    # (The fs destination-legitimacy guard already ran in step 2, BEFORE the
+    #  tier gate — Kanban #2215 rule 6.)
     # 4. Invoke + post-flight sandbox guards.
     requested_timeout = args.get("timeout_s") if isinstance(args, dict) else None
     try:
@@ -960,18 +983,92 @@ async def _fetch_tools_config(project_id: int | None) -> dict[str, Any] | None:
     return cfg
 
 
-def _resolve_paths(project_id: int | None) -> tuple[str | None, str | None]:
+# Kanban #2215 — per-project working_path cache (resettable across tests, per
+# the #2187 cache-isolation lesson — mirrors worker._required_binaries_cache).
+# Maps project_id -> (monotonic_ts, working_path|None). Reset via
+# `_working_path_cache_clear()`.
+_WORKING_PATH_CACHE_TTL_SEC: float = 10.0
+_working_path_cache: dict[int, tuple[float, str | None]] = {}
+
+
+def _working_path_cache_clear() -> None:
+    """Test hook — clear the in-process working_path cache."""
+    _working_path_cache.clear()
+
+
+async def _fetch_project_working_path(project_id: int | None) -> str | None:
+    """GET /api/projects/{id}.working_path; None on any failure / null value.
+
+    Cached ~10s per project_id (mirrors _fetch_tools_config + the worker's
+    _fetch_project_field). FAIL-SOFT: a transient API error returns None
+    (treated upstream as "no working_path" → the NULL-working_path rules in
+    fs_boundary_check apply, which still keep /repo writes off the table unless
+    they are /repo/_scratch or allowlisted). Failures are NOT cached so the
+    next call retries.
+    """
+    if project_id is None:
+        return None
+    now = time.monotonic()
+    cached = _working_path_cache.get(project_id)
+    if cached is not None and (now - cached[0]) < _WORKING_PATH_CACHE_TTL_SEC:
+        return cached[1]
+
+    url = f"{resolve_api_base()}/api/projects/{project_id}"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url)
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "specialist_node: fetch working_path failed (project=%s): %r",
+            project_id,
+            exc,
+        )
+        return None  # do NOT cache the failure
+    if resp.status_code != 200:
+        logger.warning(
+            "specialist_node: GET /api/projects/%s for working_path returned %d",
+            project_id,
+            resp.status_code,
+        )
+        return None
+    try:
+        body = resp.json()
+    except Exception:
+        return None
+    value = body.get("working_path") if isinstance(body, dict) else None
+    if value is not None and not isinstance(value, str):
+        # Value-tolerant: a hand-edited non-string row is treated as unset.
+        logger.warning(
+            "specialist_node: project %s working_path non-string %r; treating as null",
+            project_id,
+            value,
+        )
+        value = None
+    working_path = value.strip() or None if isinstance(value, str) else None
+    _working_path_cache[project_id] = (now, working_path)
+    return working_path
+
+
+async def _resolve_paths(project_id: int | None) -> tuple[str | None, str | None]:
     """Return (working_path, repo_root) for the InvokeContext.
 
-    `working_path` is the per-project sandbox root (drives fs-boundary).
-    `repo_root` is the langgraph-container path the host worktree is
+    `working_path` is the per-project sandbox root (drives the fs destination
+    guard). `repo_root` is the langgraph-container path the host worktree is
     bind-mounted to — defaults to `/repo` (the live compose default).
 
-    For V1 the working_path is sourced from the env-var
-    `LANGGRAPH_WORKING_PATH`. A future iteration could fetch it from
-    `projects.working_path` via the api (similar to `_fetch_tools_config`).
+    Precedence for working_path (Kanban #2215):
+      1. env `LANGGRAPH_WORKING_PATH` (non-empty) — explicit override for the
+         rig / tests; keeps the pre-#2215 behaviour intact.
+      2. `projects.working_path` fetched from the API for this task's project.
+      3. None — no working_path (the NULL-working_path rules in
+         fs_boundary_check then apply: /repo/_scratch + allowlist allowed,
+         everything else → ask-where-to-save HALT).
     """
-    working_path = os.getenv("LANGGRAPH_WORKING_PATH", "").strip() or None
+    env_override = os.getenv("LANGGRAPH_WORKING_PATH", "").strip() or None
+    if env_override is not None:
+        working_path = env_override
+    else:
+        working_path = await _fetch_project_working_path(project_id)
     repo_root = os.getenv("LANGGRAPH_REPO_ROOT", "").strip() or "/repo"
     return working_path, repo_root
 
