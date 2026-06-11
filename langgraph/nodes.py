@@ -1174,6 +1174,11 @@ def _heuristic_clean(state: AgentState) -> bool:
       1. halt_reason is None / absent.
       2. final_result is a string >20 chars.
       3. No ToolMessage in messages has a payload with success=False / error.
+
+    NOTE: prior-audit-history suppression is handled in auditor_node (step 1)
+    before this function is called — if audit_retry_count > 0 or audit_report
+    is non-None, auditor_node skips _heuristic_clean entirely and forces the
+    LLM path. (#2194)
     """
     if state.get("halt_reason") is not None:
         return False
@@ -1343,7 +1348,21 @@ async def auditor_node(state: AgentState) -> dict[str, Any]:
     task_id = state.get("task_id")
 
     # 1) Heuristic pre-filter (Q4=A).
-    if _heuristic_clean(state):
+    # Guard: suppress the skip if this run already has audit history — either
+    # audit_retry_count > 0 (set by auto_resolve loop or escalate→retry_with_X
+    # resume path) or audit_report is non-None (a prior audit pass already
+    # ran in this run). Either signal means the structural check alone cannot
+    # be trusted to bless the answer. (#2194)
+    prior_audit_report = state.get("audit_report")
+    heuristic_skip_suppressed = retry_count > 0 or prior_audit_report is not None
+    if heuristic_skip_suppressed:
+        logger.info(
+            "auditor: task=%s heuristic skip suppressed (retry_count=%d, prior_audit=%s); forcing LLM audit",
+            task_id,
+            retry_count,
+            prior_audit_report is not None,
+        )
+    elif _heuristic_clean(state):
         final_result = state.get("final_result") or ""
         excerpt = final_result.strip()[:200]
         report = _build_pass_report(

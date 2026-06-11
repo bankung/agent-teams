@@ -578,3 +578,150 @@ async def test_malformed_twice_escalates_and_logs_raw(
     assert any("TOTALLY UNPARSEABLE OUTPUT XYZ" in m for m in raw_logs), (
         f"raw LLM text not found in warnings: {raw_logs}"
     )
+
+
+# ---------------------------------------------------------------------------
+# #2194 — heuristic skip suppressed after auto_resolve / prior audit history
+# ---------------------------------------------------------------------------
+# Reproduces the 2193 incident shape: state LOOKS structurally clean
+# (halt_reason=None, final_result is a >20-char planning narration, zero
+# failing ToolMessages) but the run already had audit history, so the
+# heuristic skip must be suppressed and the LLM path must run.
+
+
+_NARRATION_FINAL_RESULT = "I will now run the tools. (Invoking git_"  # 40 chars, >20
+
+
+async def test_heuristic_skip_suppressed_when_retry_count_gt0(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#2194 (a): audit_retry_count=1 + prior audit_report → LLM path runs.
+
+    State structurally matches a clean run (halt_reason=None, long final_result,
+    no failing ToolMessages) but audit_retry_count=1 signals a prior auto_resolve
+    spin. The heuristic skip must be suppressed; make_chat_model IS invoked and
+    the returned verdict is the mocked LLM verdict, NOT auto_pass / llm_skipped.
+    """
+    prior_report = {
+        "verdict": "auto_resolve",
+        "severity": "warn",
+        "evidence": ["zero tool calls on mandatory-tool brief"],
+        "action_taken": "retry_with_adjustment",
+        "escalation_payload": None,
+        "llm_skipped": False,
+        "audited_at": "2026-06-10T00:00:00Z",
+        "retry_count_at_audit": 0,
+    }
+    fake = _install_fake_llm(
+        monkeypatch,
+        {
+            "verdict": "auto_resolve",
+            "severity": "warn",
+            "evidence": ["still no tool calls after retry"],
+            "action_taken": "retry_with_adjustment",
+            "escalation_payload": None,
+        },
+    )
+    state: AgentState = {
+        "task_id": 2194,
+        "brief": "Run git_diff and git_status on the repo.",
+        "final_result": _NARRATION_FINAL_RESULT,
+        "halt_reason": None,
+        "messages": [],
+        "audit_retry_count": 1,
+        "audit_report": prior_report,
+    }
+    result = await auditor_node(state)
+    # LLM was invoked — heuristic skip was suppressed.
+    assert len(fake.calls) == 1, (
+        "make_chat_model was NOT called — heuristic skip should have been suppressed"
+    )
+    # Verdict comes from the mocked LLM, not from auto_pass.
+    assert result["audit_verdict"] == "auto_resolve"
+    report = result["audit_report"]
+    assert report["llm_skipped"] is False
+    assert report["action_taken"] != "auto_pass"
+
+
+async def test_heuristic_skip_suppressed_when_prior_audit_report_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#2194 (b): audit_retry_count=0 but audit_report non-None → LLM path runs.
+
+    Belt-and-braces: even if the retry counter wasn't incremented, a non-None
+    audit_report means a prior audit pass happened in this run. The skip must
+    be suppressed.
+    """
+    prior_report = {
+        "verdict": "auto_resolve",
+        "severity": "warn",
+        "evidence": ["prior audit via alternate path"],
+        "action_taken": "retry_with_adjustment",
+        "escalation_payload": None,
+        "llm_skipped": False,
+        "audited_at": "2026-06-10T00:00:00Z",
+        "retry_count_at_audit": 0,
+    }
+    fake = _install_fake_llm(
+        monkeypatch,
+        {
+            "verdict": "escalate",
+            "severity": "critical",
+            "evidence": ["narration only, no tool calls"],
+            "action_taken": "hitl_escalate",
+            "escalation_payload": {
+                "question": "Specialist only narrated; escalate?",
+                "options": ["accept", "retry_with_reprompt", "reject"],
+            },
+        },
+    )
+    # Use an InMemorySaver graph so the escalate interrupt is caught.
+    builder = StateGraph(AgentState)
+    builder.add_node("only", auditor_node)
+    builder.add_edge(START, "only")
+    builder.add_edge("only", END)
+    graph = builder.compile(checkpointer=InMemorySaver())
+    cfg = {"configurable": {"thread_id": "task-2194b"}}
+
+    state: AgentState = {
+        "task_id": 2194,
+        "brief": "Run git_diff and git_status on the repo.",
+        "final_result": _NARRATION_FINAL_RESULT,
+        "halt_reason": None,
+        "messages": [],
+        "audit_retry_count": 0,
+        "audit_report": prior_report,
+    }
+    await graph.ainvoke(state, config=cfg)
+    # LLM was invoked — heuristic skip was suppressed by prior audit_report.
+    assert len(fake.calls) == 1, (
+        "make_chat_model was NOT called — heuristic skip should have been suppressed"
+    )
+
+
+async def test_heuristic_skip_still_fires_on_genuine_first_clean_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#2194 (c): regression guard — clean first-pass run (retry=0, no prior report)
+    still skips the LLM. The fix must not break the happy-path heuristic skip.
+    """
+    _install_failing_llm(monkeypatch)  # raises if make_chat_model is called
+
+    state: AgentState = {
+        "task_id": 9999,
+        "brief": "Write a hello world",
+        "final_result": "Done — created hello.py and ran it successfully. Output: Hello, world!",
+        "halt_reason": None,
+        "messages": [
+            HumanMessage(content="Write a hello world"),
+            AIMessage(content="Done — see hello.py"),
+        ],
+        "audit_retry_count": 0,
+        # audit_report absent (no prior audit history)
+    }
+    result = await auditor_node(state)
+    # Heuristic skip fires — LLM not called.
+    assert result["audit_verdict"] == "pass"
+    report = result["audit_report"]
+    assert report["llm_skipped"] is True
+    assert report["action_taken"] == "auto_pass"
