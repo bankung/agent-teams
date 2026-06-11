@@ -18,13 +18,15 @@ Claude Code already gives you sub-agents, and you can keep several sessions open
 
 | | Self-hosted | Persistent task/project state | Beyond code | Governance/safety layer | Form |
 |---|:--:|:--:|:--:|:--:|---|
-| Cloud SWE agents (Devin, Cursor, Windsurf) | ✗ | ✗ session/codebase | ✗ code-only | black-box | product / IDE |
-| AI assistant (GitHub Copilot) | ✗ | ✗ chat-scoped | ✗ code-only | black-box | product |
-| Agent frameworks (CrewAI, AutoGen, LangGraph) | ✓ lib | ✗ you build it | ✓ DIY | ✗ you build it | library |
-| Self-hosted platform (OpenHands) | ✓ | ~ less structured | ~ dev-focused | local isolation | product / SDK |
+| Cloud SWE agents (Devin, Cursor, Devin Desktop — ex-Windsurf) | ✗ | ~ per-run cloud agents, no project board | ✗ code-only | black-box | product / IDE |
+| GitHub Copilot (incl. coding agent) | ✗ | ~ issue→PR runs, no project board | ✗ code-only | black-box | product |
+| Agent frameworks (CrewAI, AG2/AutoGen, LangGraph) | ✓ lib | ~ lib checkpointers (LangGraph); app/task state DIY | ✓ DIY | ~ platform tiers (CrewAI AMP); OSS DIY | library (+ managed platforms) |
+| Self-hosted platform (OpenHands) | ✓ | ~ less structured | ~ dev-focused | local isolation | product / SDK / cloud |
 | **agent-teams** | ✓ | ✓ Postgres Kanban + 5-zone context | ✓ team playbooks (dev/content/SEO/…) | ✓ defense-in-depth + AC + HITL + cost | **layer on Claude Code / Codex** |
 
-The gap it fills: a **self-hosted, persistent, governed, multi-domain orchestration layer** — the cloud agents and IDEs aren't self-hosted or persistent, and the frameworks hand you a toolbox and a weekend of plumbing. This is the part you'd otherwise build yourself, at night, instead of shipping: the state, the governance, and the team structure, already wired.
+*Competitor capabilities last verified 2026-06 — Copilot coding agent (GA 2025-09), LangGraph checkpointers + LangSmith Deployment (platform GA 2025-05), CrewAI AMP (v1.9.x), Windsurf renamed Devin Desktop (2026-06), AutoGen in maintenance mode (v0.7.5) with Microsoft Agent Framework / AG2 as successors, OpenHands v1.16.*
+
+The gap it fills: a **self-hosted, persistent, governed, multi-domain orchestration layer** — the cloud agents and IDEs aren't self-hosted and carry no cross-session project state; the frameworks give you primitives (some now ship checkpointing), but the operating layer — task contracts with verified acceptance criteria, HITL gates, budgets, multi-domain playbooks, the board itself — is still yours to build. agent-teams ships that part, already wired.
 
 ---
 
@@ -40,7 +42,7 @@ The gap it fills: a **self-hosted, persistent, governed, multi-domain orchestrat
 
 - **Extend without migrations.** Add a new team or new agent types by editing constants and dropping a markdown file — no DB migration required. 8 teams and ~39 specialist agent definitions ship today. → [How to add a team](readme_dev.md#team-roster--dev-team) · [Full onboarding runbook](context/teams/dev/team-onboarding-runbook.md)
 
-- **Self-hosted, local-first, dogfooded.** Runs in Docker on your machine. Anthropic, OpenAI, or fully-local Ollama — your choice, one `.env` variable. No code leaves your network. And the system building itself is the system you're reading about: the commit log and live Kanban are the proof.
+- **Self-hosted, local-first, dogfooded.** Runs in Docker on your machine. Anthropic, OpenAI, Google Gemini, or fully-local Ollama — your choice, one `.env` variable. No code leaves your network. And the system building itself is the system you're reading about: the commit log and live Kanban are the proof.
 
 ---
 
@@ -50,8 +52,8 @@ The gap it fills: a **self-hosted, persistent, governed, multi-domain orchestrat
 
 **It isn't:**
 - a frontier autonomous SWE agent like **Devin** — it orchestrates your coding agent, it doesn't replace one;
-- an IDE like **Cursor** or **Windsurf** — no editor here; keep your own;
-- a from-scratch agent framework like **CrewAI** / **AutoGen** / **LangGraph** — it actually *uses* LangGraph for its headless engine rather than reinventing it.
+- an IDE like **Cursor** or **Devin Desktop** (formerly Windsurf) — no editor here; keep your own;
+- a from-scratch agent framework like **CrewAI** / **AG2 (AutoGen)** / **LangGraph** — it actually *uses* LangGraph for its headless engine rather than reinventing it.
 
 **Honest status on the headless engine:** today the production path is Mode A — Claude Code / Codex CLI driven interactively (per-action approval). The `langgraph` service (supervisor → specialist graph, Postgres-checkpointed) is the Mode B path and is **actively in development**. Don't rely on it for critical work yet.
 
@@ -96,7 +98,7 @@ Two ways to put agents to work:
 
 The installer is safe to re-run; services keep running after you close the terminal.
 
-**Multi-provider, local-first.** Switch models with one `.env` variable (`LANGGRAPH_LLM_PROVIDER`): **Anthropic** (default), **OpenAI**, or **Ollama** for fully local inference — no API key, no network egress. With Ollama, nothing leaves your machine.
+**Multi-provider, local-first.** Switch models with one `.env` variable (`LANGGRAPH_LLM_PROVIDER`): **Anthropic** (default), **OpenAI**, **Google Gemini**, or **Ollama** for fully local inference — no API key, no network egress. With Ollama, nothing leaves your machine.
 
 **Stop / reset:** `docker compose down` to stop; `.\bin\reset.ps1` (or `./bin/reset.sh`) to wipe and start fresh.
 
