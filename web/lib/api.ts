@@ -94,12 +94,17 @@ export type ProjectRead = {
 // AcceptanceCriterion — one entry in TaskRead.acceptance_criteria (#797).
 // JSONB shape; verified_at is ISO 8601 string (serialized via mode='json' on
 // the backend per shared/decisions.md 2026-05-12 fix to #801).
+// Kanban #2127 — optional operator-gate fields on AC items. `gate='operator'`
+// marks the item as requiring operator action; `gate_kind` narrows the kind
+// (matches BE GateKind enum: key|commit|decision|hitl|external).
 export type AcceptanceCriterion = {
   text: string;
   status: "pending" | "passed" | "failed" | "na";
   verified_by: string | null;
   verified_at: string | null;
   notes: string | null;
+  gate?: "operator" | null;
+  gate_kind?: "key" | "commit" | "decision" | "hitl" | "external" | null;
 };
 
 // AnswerHistoryEntry — one entry in QuestionPayload.answer_history (#834).
@@ -241,6 +246,13 @@ export type TaskRead = {
   // decision matrix. NULL = task runs normally; non-null = halted with reason.
   // Present on every TaskRead response; FE mirrors the BE nullable TEXT column.
   halt_reason: string | null;
+  // Kanban #2127 — operator-gate fields. `operator_gate` is non-null when the
+  // task has a task-level gate (value = gate_kind string). `operator_gate_note`
+  // is the optional free-text note the Lead attached. Both are nullable TEXT
+  // columns on the BE; optional here for defensive resilience against pre-#2127
+  // serialized payloads that omit the fields.
+  operator_gate?: string | null;
+  operator_gate_note?: string | null;
   created_at: string;
   updated_at: string;
   started_at: string | null;

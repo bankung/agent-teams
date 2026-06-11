@@ -99,6 +99,18 @@ const Sep = () => (
 const isScheduledNoise = (t: TaskRead) =>
   t.is_template || t.title.startsWith("[schedule:");
 
+// Kanban #2127 — operator-gate predicate. Mirrors the BE ?operator_gate=any
+// filter: task-level `operator_gate` non-null, OR ≥1 AC item with
+// gate==='operator' AND status==='pending'. Defined at module scope so it is
+// stable across renders (safe for useMemo deps).
+const isOperatorGated = (t: TaskRead): boolean => {
+  if (t.operator_gate != null) return true;
+  if (!t.acceptance_criteria) return false;
+  return t.acceptance_criteria.some(
+    (ac) => ac.gate === "operator" && ac.status === "pending",
+  );
+};
+
 function groupByStatus(tasks: TaskRead[]) {
   const groups = new Map<TaskStatusValue, TaskRead[]>();
   for (const s of ALL_STATUSES) groups.set(s, []);
@@ -246,6 +258,11 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
   // pref only — no localStorage persistence for v1 (keeps the toggle visible
   // as a discoverable affordance every session).
   const [showAudit, setShowAudit] = useState(false);
+
+  // Kanban #2127 — operator-gate filter. "On you (N)" badge shows tasks that
+  // require operator action. Default OFF (show all tasks); operator toggles ON
+  // to see ONLY gated tasks. Session-scoped; no localStorage persistence.
+  const [showOperatorGateOnly, setShowOperatorGateOnly] = useState(false);
 
   // #1868 v1.1 — milestone filter. "all" = no filter (default); "none" = only
   // tasks with milestone_id == null; number = only tasks pointing at that
@@ -496,6 +513,17 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
     () => tasks.filter((t) => t.task_type === "audit").length,
     [tasks],
   );
+
+  // Kanban #2127 — operator-gate count. Mirrors the BE predicate for
+  // ?operator_gate=any: task-level operator_gate non-null OR ≥1 AC item with
+  // gate==='operator' AND status==='pending'. Computed against the unfiltered
+  // list so the badge shows the real count even when a milestone filter is on.
+  // Deduplication is implicit: each task contributes at most 1 to the count.
+  const operatorGateCount = useMemo(
+    () => tasks.filter(isOperatorGated).length,
+    [tasks],
+  );
+
   const auditTasks = useMemo(
     () =>
       [...tasks.filter((t) => t.task_type === "audit")].sort((a, b) => {
@@ -515,14 +543,18 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
   const visibleTasks = useMemo(() => {
     const base = showAudit ? tasks : tasks.filter((t) => t.task_type !== "audit");
     const noNoise = base.filter((t) => !isScheduledNoise(t));
+    // Kanban #2127 — operator-gate filter. When active, show ONLY gated tasks.
+    const gateFiltered = showOperatorGateOnly
+      ? noNoise.filter(isOperatorGated)
+      : noNoise;
     // #1868 v1.1 — milestone filter. "all" → no-op; "none" → milestone_id null
     // (treats undefined the same as null for legacy/pre-migration rows); number
     // → exact match.
-    if (milestoneFilter === "all") return noNoise;
+    if (milestoneFilter === "all") return gateFiltered;
     if (milestoneFilter === "none")
-      return noNoise.filter((t) => t.milestone_id == null);
-    return noNoise.filter((t) => t.milestone_id === milestoneFilter);
-  }, [tasks, showAudit, milestoneFilter]);
+      return gateFiltered.filter((t) => t.milestone_id == null);
+    return gateFiltered.filter((t) => t.milestone_id === milestoneFilter);
+  }, [tasks, showAudit, showOperatorGateOnly, milestoneFilter]);
 
   const grouped = useMemo(() => groupByStatus(visibleTasks), [visibleTasks]);
 
@@ -535,7 +567,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
   // fix: the prior content-keyed effect reverted both on every append.)
   useEffect(() => {
     setVisibleDoneCount(DONE_PAGE);
-  }, [milestoneFilter, showAudit]);
+  }, [milestoneFilter, showAudit, showOperatorGateOnly]);
 
   const selectedTask = useMemo(
     () =>
@@ -792,6 +824,23 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
             count={auditTaskCount}
             tone="amber"
             dataAttr="data-audit-task-toggle"
+          />
+        )}
+        {/* Kanban #2127 — operator-gate toggle chip; hidden when count=0. */}
+        {operatorGateCount > 0 && (
+          <HeaderIconBtn
+            icon="alert"
+            label={
+              showOperatorGateOnly
+                ? `Show all tasks (${operatorGateCount} on you)`
+                : `On you (${operatorGateCount})`
+            }
+            onClick={() => setShowOperatorGateOnly((v) => !v)}
+            active={showOperatorGateOnly}
+            ariaPressed={showOperatorGateOnly}
+            count={operatorGateCount}
+            tone="amber"
+            dataAttr="data-operator-gate-toggle"
           />
         )}
         {/* Scheduled/template chip — display-only; hidden when count=0. */}

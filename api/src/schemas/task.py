@@ -66,6 +66,20 @@ InteractionKindLiteral = Literal["work", "question", "decision"]
 # its recorded spawn-log entry speak the same vocabulary.
 ModelTierLiteral = Literal["haiku", "sonnet", "opus"]
 
+# Kanban #2127 (2026-06-11): wire enum for the operator-gate marker — the
+# "blocked-on-operator" kind. Five values; NULL = not gated. Used at BOTH the
+# task level (tasks.operator_gate, OperatorGateLiteral | None) AND the AC level
+# (AcceptanceCriterion.gate_kind). NOT backed by a src.constants tuple / DB
+# CHECK — the value is gated solely by this Literal at the API boundary (422 on
+# any other value), mirroring the #1677 ModelTierLiteral posture; so there is
+# no lockstep guard at the module bottom.
+#   key      — needs a credential / .env value (e.g. DEEPSEEK_API_KEY)
+#   commit   — humans-only zone write (e.g. context/standards/**)
+#   decision — needs an operator choice
+#   hitl     — needs operator approval / run of a gated action
+#   external — waiting on an external party
+OperatorGateLiteral = Literal["key", "commit", "decision", "hitl", "external"]
+
 ProcessStatusCode = Annotated[
     int, Field(description="tasks.process_status — see TaskStatus.ALL")
 ]
@@ -174,6 +188,24 @@ class AcceptanceCriterion(BaseModel):
     verified_by: str | None = None
     verified_at: datetime | None = None
     notes: str | None = None
+    # Kanban #2127 (2026-06-11): per-criterion operator-gate fields (the
+    # SOURCE OF TRUTH for "still waiting on operator"). Both OPTIONAL with None
+    # defaults so OLD-shaped AC arrays (no gate keys) keep validating under the
+    # `extra="forbid"` config — a freshly-filed criterion is un-gated. Rationale:
+    # a task often mixes agent-work ACs with operator-gated ACs; once the
+    # operator verifies a gated AC (status -> passed/na) it no longer counts as
+    # gating, so a task-level rollup alone would report stale-positive on
+    # recheck. An AC gates ONLY while status=='pending' (the list_tasks filter
+    # @>-matches {"gate":"operator","status":"pending",...}).
+    #   - `gate`: the only legal value is 'operator' (the marker that this
+    #     criterion is operator-blocked). None = not operator-gated.
+    #   - `gate_kind`: the 5-enum (OperatorGateLiteral) describing WHAT operator
+    #     action is needed. gate='operator' with gate_kind=None is allowed
+    #     (legal) — it counts under the `any` filter but matches no specific
+    #     gate_kind filter. Element shape (incl. unknown-key 422) enforced here
+    #     at the API boundary; the DB column stays plain JSONB with no CHECK.
+    gate: Literal["operator"] | None = None
+    gate_kind: OperatorGateLiteral | None = None
 
 
 class SubagentModelEntry(BaseModel):
@@ -546,6 +578,16 @@ class TaskCreate(BaseModel):
     # 'opus' (ModelTierLiteral) — any other string is rejected 422 by Pydantic.
     # Plain scalar field: flows into Task(**payload_dict) with no router edit.
     model_override: ModelTierLiteral | None = None
+    # Kanban #2127 (2026-06-11): task-level operator-gate rollup. None / absent
+    # on POST -> NULL in DB (= not gated). A value MUST be one of the 5-enum
+    # (OperatorGateLiteral) — any other string is rejected 422. `operator_gate_note`
+    # is free-form advisory text (no length cap, settable independently of
+    # operator_gate). Plain scalars: flow into Task(**payload_dict) with no
+    # router edit (mirror of model_override). No auto-derivation from ACs — the
+    # Lead sets this directly; the AC-level gate is the source of truth for the
+    # "what's on me" query.
+    operator_gate: OperatorGateLiteral | None = None
+    operator_gate_note: str | None = None
     # Kanban #830 (2026-05-12): interaction_kind discriminates agent-executed work
     # from user-interaction gate tasks created by the auto-run loop when ambiguity
     # is detected mid-task. 'work' is the default; 'question'/'decision' require
@@ -945,6 +987,22 @@ class TaskUpdate(BaseModel):
     # generic setattr loop in routers/tasks.py writes SQL NULL on explicit-null
     # for this nullable scalar — no special router branch needed.
     model_override: ModelTierLiteral | None = None
+    # Kanban #2127 (2026-06-11): PATCH-able task-level operator-gate. Semantics
+    # mirror model_override / halt_reason exactly (locked, halt_reason posture):
+    #   - key absent      → leave unchanged (exclude_unset=True in router)
+    #   - explicit null   → CLEAR (NULL — back to not-gated; null IS meaningful,
+    #                       column is nullable)
+    #   - one of the 5-enum → set / change the gate kind
+    #   - any other string → 422 (OperatorGateLiteral)
+    # No _reject_explicit_null validator — explicit null is the documented
+    # "clear" path. The generic setattr loop in routers/tasks.py writes SQL NULL
+    # on explicit-null for this nullable scalar — no special router branch.
+    operator_gate: OperatorGateLiteral | None = None
+    # operator_gate_note: advisory free-form text. SETTABLE INDEPENDENTLY of
+    # operator_gate (note-without-gate is legal) and clearing operator_gate does
+    # NOT cascade-clear the note (locked). NO min_length (advisory). Same PATCH
+    # semantics: key-absent=unchanged, explicit-null=clear, value=set.
+    operator_gate_note: str | None = None
     interaction_kind: InteractionKindLiteral | None = None
     question_payload: QuestionPayload | None = None
     resume_context: dict[str, Any] | None = None
@@ -1277,6 +1335,16 @@ class TaskRead(BaseModel):
     # RESOLVED tier in subagent_models. Value-strict on read (ModelTierLiteral)
     # — a hand-edited/corrupt out-of-set value would 500 here rather than leak.
     model_override: ModelTierLiteral | None = None
+    # Kanban #2127 (2026-06-11) — task-level operator-gate rollup. Backfilled to
+    # NULL on existing rows by migration 0064's nullable=true ADD COLUMN. NULL =
+    # not gated at the task level. operator_gate is value-strict on read
+    # (OperatorGateLiteral) — a hand-edited/corrupt out-of-set value would 500
+    # here rather than leak. operator_gate_note is free-form (no constraint).
+    # The AC-level gate fields surface inside acceptance_criteria (each
+    # AcceptanceCriterion now carries optional gate / gate_kind — raw JSONB
+    # passthrough, re-validated on read like the other AC fields).
+    operator_gate: OperatorGateLiteral | None = None
+    operator_gate_note: str | None = None
     # Kanban #830 (2026-05-12) — backfilled to 'work' on existing rows by migration 0019.
     interaction_kind: InteractionKindLiteral
     # Kanban #830 — nullable JSONB. question_payload element shape validated by

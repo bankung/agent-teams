@@ -442,6 +442,25 @@ class Task(Base):
     # Migration 0057_milestones adds the column; PG 16 metadata-only ADD COLUMN.
     due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
+    # Kanban #2127 (2026-06-11): queryable "blocked-on-operator" marker —
+    # task-level rollup. `operator_gate` is one of the 5-enum
+    # (key/commit/decision/hitl/external) or NULL (=not gated at the task level).
+    # `operator_gate_note` is free-form advisory text for the specific ask.
+    # Both set DIRECTLY by the Lead — NO auto-derivation, NO trigger, NO sweep
+    # (explicit prohibition; the AC-level gate is the source of truth for "still
+    # waiting on operator", the task-level column is a convenience rollup for
+    # tasks without ACs / a direct flag). No DB CHECK on operator_gate — the
+    # Pydantic OperatorGateLiteral at the API boundary gates the value set (422),
+    # mirroring the #1677 model_override posture (nullable TEXT, no DB DEFAULT).
+    # operator_gate_note has no length cap (advisory) and is settable
+    # independently of operator_gate. Migration 0064's nullable=true backfills
+    # existing rows to NULL. The "what's on me" filter
+    # (GET /api/tasks?operator_gate=...) matches a task iff this column IS NOT
+    # NULL [and equals the specific value] OR ≥1 AC item has gate='operator' AND
+    # status='pending' [and gate_kind=<value>] — see routers/tasks.py list_tasks.
+    operator_gate: Mapped[str | None] = mapped_column(Text, nullable=True)
+    operator_gate_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -667,6 +686,17 @@ class Task(Base):
             "ix_tasks_active_archived",
             "is_active",
             postgresql_where=text("is_active = false"),
+        ),
+        # Kanban #2127: GIN index for the operator-gate AC-level filter
+        # predicate. jsonb_path_ops opclass indexes the @> containment operator
+        # ONLY (NOT jsonb_path_exists / @?) — the list_tasks filter uses @>
+        # against the acceptance_criteria JSONB array. Mirror of migration
+        # 0064's index (keeps ORM autogenerate in lockstep with the live DDL).
+        Index(
+            "ix_tasks_ac_gin",
+            "acceptance_criteria",
+            postgresql_using="gin",
+            postgresql_ops={"acceptance_criteria": "jsonb_path_ops"},
         ),
     )
 

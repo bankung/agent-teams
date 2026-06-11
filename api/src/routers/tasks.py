@@ -17,7 +17,8 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi import status as http_status
-from sqlalchemy import or_, select
+from sqlalchemy import cast, or_, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -441,6 +442,20 @@ async def list_tasks(
             "compose."
         ),
     ),
+    operator_gate: Literal["any", "key", "commit", "decision", "hitl", "external"]
+    | None = Query(
+        default=None,
+        description=(
+            "Kanban #2127: filter to operator-gated ('blocked-on-operator') "
+            "tasks — answers 'what's on me?' in one query. 'any' = any gate "
+            "kind; a specific 5-enum value narrows to that kind. A task MATCHES "
+            "iff its task-level operator_gate IS NOT NULL [and equals the value "
+            "when not 'any'] OR it has >=1 acceptance_criteria item with "
+            "gate='operator' AND status='pending' [and gate_kind=<value> when "
+            "not 'any']. AC items that are passed/na no longer gate (cleared "
+            "automatically). Omit = no operator-gate filtering."
+        ),
+    ),
     session: AsyncSession = Depends(get_session),
 ) -> list[Task]:
     # Kanban #695: project scoping comes from the X-Project-Id header (session-
@@ -478,6 +493,30 @@ async def list_tasks(
     # Kanban #1868: filter to a single milestone's tasks.
     if milestone_id is not None:
         stmt = stmt.where(Task.milestone_id == milestone_id)
+    # Kanban #2127: operator-gate ("blocked-on-operator") filter. OR-rule
+    # (locked): task matches iff the task-level rollup column is set [and equals
+    # the specific value] OR >=1 acceptance_criteria item has gate='operator'
+    # AND status='pending' [and gate_kind=<value>]. The AC predicate uses the @>
+    # containment operator so it can use the ix_tasks_ac_gin GIN index
+    # (jsonb_path_ops opclass — indexes @> only, NOT jsonb_path_exists). On a
+    # JSONB array, `arr @> '[{...}]'` is true iff at least one element contains
+    # the right-hand object — exactly the "any pending operator-gated AC" test.
+    # A task whose gate ACs are all passed/na AND task-level NULL is NOT matched.
+    if operator_gate is not None:
+        # Build the @> right-hand containment object. 'any' omits gate_kind so it
+        # matches any pending operator-gated AC regardless of kind; a specific
+        # value adds gate_kind so only that kind's pending ACs match.
+        _ac_match: dict[str, str] = {"gate": "operator", "status": "pending"}
+        if operator_gate != "any":
+            _ac_match["gate_kind"] = operator_gate
+        _ac_contains = Task.acceptance_criteria.op("@>")(
+            cast([_ac_match], JSONB)
+        )
+        if operator_gate == "any":
+            _task_level = Task.operator_gate.is_not(None)
+        else:
+            _task_level = Task.operator_gate == operator_gate
+        stmt = stmt.where(or_(_task_level, _ac_contains))
     # Calendar M2: due_date range filter. NULL due_date rows are excluded when
     # any bound is provided (open-ended range is fine; either bound alone works).
     if due_from is not None:
