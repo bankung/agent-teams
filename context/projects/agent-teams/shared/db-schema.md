@@ -230,7 +230,12 @@ FOR EACH ROW EXECUTE FUNCTION tasks_audit_fn();
 
 **No audit trigger** on `sessions`, `session_runs`, or `session_compacts` — distinct from `tasks` / `tasks_history`. Sessions self-audit via the `session_compacts` archive history (each compact event archives the prior `session.md` to `_sessions/<id>/archive/compact_NNN.md`). The `tasks_audit_trg` pattern is `tasks`-only.
 
-<!-- No tables yet. First table goes above this line. -->
+### tool_calls
+**Purpose:** Append-only per-task activity rail (Kanban #980/#981; amended #2320). One row per specialist-tool invocation (engine, langgraph writer) OR per Lead-reported checkpoint (Mode A, `source='lead'`). NO soft-delete, NO audit trigger (it IS the audit log), no PATCH/DELETE on the wire. Project ownership via `task_id → tasks.project_id`.
+
+Key columns: `task_id` BIGINT FK CASCADE; `invoked_at` timestamptz default now(); `source` TEXT NOT NULL DEFAULT `'engine'` ∈ {engine,lead} (#2320, migration `0066_tool_calls_lead_source`); `kind` TEXT NULL ∈ {spawn,tool_result,ac_verified,commit,status_change,blocked,tool_gap,skill_gap,note} (lead rows only, Pydantic-gated, no DB CHECK); `summary` TEXT NULL (lead rows, 1..2000 #2136-sanitized); `tool_name` TEXT NOT NULL (`''` default on lead rows); engine columns `tier`/`input_json`/`duration_ms`/`permission_decision` NULLABLE since #2320 (engine NOT-NULL contract enforced by Pydantic `ToolCallCreate`); `success` bool; `error_code`/`error_msg`(1KB cap)/`output_summary`(256 cap) NULL.
+
+**Indexes:** `ix_tool_calls_task_id_invoked_at (task_id, invoked_at DESC)`, `ix_tool_calls_invoked_at`, `ix_tool_calls_tool_name`. No new index for #2320 (measured-first; mining queries are a later slice — query shape in decisions.md #2320 lock item 5). Added by `0028_tool_calls`; lead amendment `0066_tool_calls_lead_source`.
 
 ## Pending migrations (generated, not yet applied)
 

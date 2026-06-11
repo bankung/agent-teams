@@ -36,7 +36,12 @@ agent has no business appending more rows.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status as http_status
+from typing import Any
+
+from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import status as http_status
+from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,12 +49,16 @@ from src.constants import RecordStatus
 from src.db import get_or_404, get_session
 from src.models.task import Task
 from src.models.tool_call import ToolCall
-from src.schemas.tool_call import ToolCallCreate, ToolCallRead
+from src.schemas.tool_call import (
+    LeadActivityCreate,
+    ToolCallCreate,
+    ToolCallRead,
+)
 from src.services.session_project import (
     assert_task_belongs_to_session,
     require_project_id_header,
 )
-from src.services.tool_call_writer import record_tool_call
+from src.services.tool_call_writer import record_lead_activity, record_tool_call
 
 router = APIRouter(prefix="/tasks", tags=["tool-calls"])
 
@@ -96,29 +105,51 @@ async def list_tool_calls(
 )
 async def create_tool_call(
     task_id: int,
-    body: ToolCallCreate,
+    body: dict[str, Any] = Body(...),
     session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
 ) -> ToolCall:
-    """Append one audit row to the specialist-tool timeline (Kanban #981).
+    """Append one row to the activity rail — dual-contract (#981 + #2320).
 
-    Internal endpoint — consumed by `langgraph/audit.py::record_tool_invocation`.
-    NOT documented for public FE consumption; the audit table is append-only
-    on the wire (no PATCH / DELETE) and the writer service owns the only
-    persistence path.
+    Two write shapes share this URL; dispatch is by the `source` discriminator
+    (the #2124 same-URL body-shape lock):
 
-    Gate order mirrors GET:
+      * body `source == 'lead'`  → `LeadActivityCreate` (Lead checkpoint;
+        kind + summary required, engine-only columns left NULL).
+      * body without `source` (or `source == 'engine'`) → `ToolCallCreate`
+        (the #981 engine path — byte-identical behavior, never sends `source`).
+
+    422 fires with a clear `loc` on the appropriate path: invalid kind /
+    missing summary on the lead path; the unchanged engine 422s otherwise.
+
+    Internal endpoint — engine path consumed by
+    `langgraph/audit.py::record_tool_invocation`; lead path by the `tn-report`
+    skill. The audit table is append-only on the wire (no PATCH / DELETE) and
+    the writer service owns the only persistence path.
+
+    Gate order mirrors GET (run BEFORE the writer):
       1. require_project_id_header (400 on missing)
       2. get_or_404 (404 on unknown task)
       3. assert_task_belongs_to_session (400 on cross-project header)
       4. RecordStatus.DELETED → 410 (audit closed with the parent)
-      5. record_tool_call writer → 201 + persisted row
+      5. writer → 201 + persisted row
 
     Failure isolation: the writer commits synchronously (#949 Q9 lock).
-    On a write error (DB unreachable, FK violation, etc.) the writer
-    re-raises; the langgraph-side caller MUST treat a non-2xx response
-    as a sandbox-invariant violation and halt the task.
+    On a write error the writer re-raises; the langgraph-side caller MUST treat
+    a non-2xx response as a sandbox-invariant violation and halt the task.
     """
+    # Dispatch by the `source` discriminator. Validate the chosen shape and
+    # re-raise as RequestValidationError so FastAPI returns the standard 422
+    # body with a proper `loc` (engine-path 422s are byte-unchanged).
+    is_lead = isinstance(body, dict) and body.get("source") == "lead"
+    try:
+        if is_lead:
+            lead = LeadActivityCreate.model_validate(body)
+        else:
+            engine = ToolCallCreate.model_validate(body)
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors()) from exc
+
     task = await get_or_404(
         session, Task, detail=f"Task id={task_id} not found", id=task_id
     )
@@ -129,13 +160,22 @@ async def create_tool_call(
             detail=f"Task id={task_id} is deleted; tool-call audit is gone with the parent",
         )
 
-    row = await record_tool_call(
+    if is_lead:
+        return await record_lead_activity(
+            task_id=task_id,
+            kind=lead.kind,
+            summary=lead.summary,
+            success=lead.success,
+            tool_name=lead.tool_name,
+            db=session,
+        )
+
+    return await record_tool_call(
         task_id=task_id,
-        tool_name=body.tool_name,
-        tier=body.tier,
-        input_args=body.input_args,
-        result=body.result.model_dump(),
-        permission_decision=body.permission_decision,
+        tool_name=engine.tool_name,
+        tier=engine.tier,
+        input_args=engine.input_args,
+        result=engine.result.model_dump(),
+        permission_decision=engine.permission_decision,
         db=session,
     )
-    return row

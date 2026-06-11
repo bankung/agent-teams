@@ -10,18 +10,34 @@ producer and the POST endpoint is a thin shim that delegates to it.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Lead-row taxonomy (#2320). gap/blocked kinds are the improvement signal the
+# future auditor mines; the rest narrate the run. Gated by Pydantic Literal
+# only — NO DB CHECK (#980 posture: the audit log must never 23514).
+LeadActivityKind = Literal[
+    "spawn",
+    "tool_result",
+    "ac_verified",
+    "commit",
+    "status_change",
+    "blocked",
+    "tool_gap",
+    "skill_gap",
+    "note",
+]
+
 
 class ToolCallRead(BaseModel):
-    """Wire shape for a tool_calls row.
+    """Wire shape for a tool_calls / activity-rail row.
 
-    Mirrors the ORM 1:1. `input_json` is the raw JSONB payload (the
-    tool's validated input args at the moment of invocation). All fields
-    are server-written; serializing `None` for the three nullable
-    columns is the intended behavior.
+    Mirrors the ORM. Engine rows fill the engine-only columns
+    (tier/input_json/duration_ms/permission_decision); lead rows leave them
+    NULL and fill kind/summary instead (#2320). `source` is always present.
+    Serializing `None` for the nullable columns is intended behavior — the FE
+    timeline branches on `source`.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -29,15 +45,20 @@ class ToolCallRead(BaseModel):
     id: int
     task_id: int
     invoked_at: datetime
+    source: str
+    kind: str | None
+    summary: str | None
     tool_name: str
-    tier: str
-    input_json: dict[str, Any]
+    # Engine-only columns — Optional in the Read shape (#2320). Engine rows are
+    # never NULL here, so existing engine rows serialize identically.
+    tier: str | None
+    input_json: dict[str, Any] | None
     success: bool
     error_code: str | None
     error_msg: str | None
     output_summary: str | None
-    duration_ms: int
-    permission_decision: str
+    duration_ms: int | None
+    permission_decision: str | None
 
 
 class ToolCallResult(BaseModel):
@@ -89,4 +110,38 @@ class ToolCallCreate(BaseModel):
         ...,
         min_length=1,
         description="'auto_allow' / 'halt' / 'reject' (free-form on wire).",
+    )
+
+
+class LeadActivityCreate(BaseModel):
+    """POST body for a Lead report-back checkpoint (#2320).
+
+    Producer: the Lead via the `tn-report` skill. Shares the
+    `POST /api/tasks/{task_id}/tool-calls` URL with `ToolCallCreate`; the
+    router dispatches by the `source` discriminator (body `source:'lead'` →
+    this shape). One row per call = one activity-rail checkpoint.
+
+    Engine-only columns are NOT accepted here — they stay NULL for lead rows.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Required discriminator — selects this shape in the dual-contract router.
+    source: Literal["lead"]
+    kind: LeadActivityKind = Field(
+        ..., description="Checkpoint taxonomy — see LeadActivityKind."
+    )
+    summary: str = Field(
+        ...,
+        min_length=1,
+        max_length=2000,
+        description="Human-readable checkpoint evidence (sanitized + capped 2000 on persist, #2136).",
+    )
+    success: bool = Field(
+        True,
+        description="False marks a failure/blocker checkpoint (e.g. kind='blocked').",
+    )
+    tool_name: str | None = Field(
+        None,
+        description="Optional free label, e.g. the spawned agent name on kind='spawn'.",
     )

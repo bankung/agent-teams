@@ -23,6 +23,7 @@ string lands as "" (preserved verbatim — not coerced to NULL).
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +33,14 @@ from src.models.tool_call import ToolCall
 # Locked at #949 Q10 → A. Raw byte cut.
 _OUTPUT_SUMMARY_MAX_CHARS = 256
 _ERROR_MSG_MAX_CHARS = 1024
+
+# Lead-activity summary cap (#2320) + #2136 non-printable strip. The summary is
+# Lead-supplied and lands on an LLM-facing surface (the activity rail + future
+# auditor mining). Mirror the tools_email.py #2136 convention: keep
+# ASCII-printable (\x20-\x7E) + the Thai block (U+0E00-U+0E7F), replace the rest
+# with '?'. Applied BEFORE the cap so the cap counts post-sanitize chars.
+_LEAD_SUMMARY_MAX_CHARS = 2000
+_NON_PRINTABLE_RE = re.compile(r"[^\x20-\x7E฀-๿]")
 
 
 def _truncate(value: str | None, limit: int) -> str | None:
@@ -103,6 +112,51 @@ async def record_tool_call(
     # Synchronous commit — blocks until the row is durable. Per Q9 → A
     # lock: latency cost ~5 ms acceptable; the alternative (fire-and-
     # forget queue) lets a crash-mid-tool drop the audit row silently.
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+async def record_lead_activity(
+    task_id: int,
+    kind: str,
+    summary: str,
+    success: bool,
+    tool_name: str | None,
+    db: AsyncSession,
+) -> ToolCall:
+    """Write one Lead report-back checkpoint to the activity rail (#2320).
+
+    A lead row fills source='lead' + kind + summary; the engine-only columns
+    (tier / input_json / duration_ms / permission_decision) stay NULL. The
+    summary is sanitized (#2136 non-printable strip) then capped at 2000 chars
+    BEFORE persist — the value is Lead-supplied and surfaces on the rail UI and
+    the future improvement-auditor mining query.
+
+    Args:
+        task_id: Kanban task id that owns this checkpoint.
+        kind: lead-row taxonomy value (validated by LeadActivityCreate).
+        summary: human-readable evidence (sanitize + cap here).
+        success: False marks a failure/blocker checkpoint.
+        tool_name: optional free label (e.g. the agent name on kind='spawn').
+        db: AsyncSession the caller owns; the writer commits.
+
+    Returns:
+        The persisted ToolCall row (with `id` populated by the DB).
+    """
+    safe_summary = _NON_PRINTABLE_RE.sub("?", summary)[:_LEAD_SUMMARY_MAX_CHARS]
+    row = ToolCall(
+        task_id=task_id,
+        source="lead",
+        kind=kind,
+        summary=safe_summary,
+        # Engine-only columns left NULL for lead rows; tool_name is an optional
+        # free label (NOT NULL on the column, but defaulted to '' when absent so
+        # the existing NOT-NULL tool_name contract is preserved).
+        tool_name=tool_name or "",
+        success=bool(success),
+    )
+    db.add(row)
     await db.commit()
     await db.refresh(row)
     return row

@@ -18,6 +18,16 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-06-11 — #2320 Mode A Lead report-back into the #980 activity rail (design lock)
+**Scope:** backend + frontend + skills + db
+**Decision (operator locked scope 2026-06-11: Lead-reported checkpoints, NOT live subagent introspection):**
+1. **Reuse, not rebuild:** the #980 rail is the single activity surface — `tool_calls` table + `GET/POST /api/tasks/{id}/tool-calls` (#981) + `TaskToolCalls.tsx`. No new feed/table/endpoint family.
+2. **Event model:** `source` TEXT NOT NULL DEFAULT `'engine'` ∈ {engine,lead} (backfill-free — existing rows read 'engine'); `kind` TEXT NULL ∈ {spawn,tool_result,ac_verified,commit,status_change,blocked,tool_gap,skill_gap,note} (REQUIRED for lead rows via Pydantic, NULL on engine rows); `summary` TEXT NULL (REQUIRED for lead rows, 1..2000, #2136 sanitize convention). Engine-only columns `tier`/`input_json`/`duration_ms`/`permission_decision` relax to nullable at the DB; the ENGINE wire contract stays NOT-NULL-equivalent via the existing Pydantic create shape (no regression to #980/#981 writers).
+3. **Dual-contract POST** (same-URL body-shape dispatch, per the #2124 dual-contract lock): body `source:'lead'` → `LeadActivityCreate` {kind required-enum, summary required, optional success default true}; body without source (or 'engine') → existing `ToolCallCreate` path byte-unchanged. 422 on invalid kind / missing summary. Enum gated by Pydantic Literal only — NO DB CHECK (the audit log must never 23514; #980 posture).
+4. **Paved path:** new skill `tn-report` — one Lead checkpoint per call (spawn / tool_result / ac_verified / commit / status_change / blocked / tool_gap / skill_gap / note). Skill file lands via _scratch draft → operator moves into `.claude/skills/` if the in-session write is denied (humans-own-.claude posture); invokable next session.
+5. **Mining query shape (AC6, future improvement-auditor reads WITHOUT re-instrumenting):** lead-event aggregation = `SELECT t.project_id, tc.kind, count(*) FROM tool_calls tc JOIN tasks t ON t.id = tc.task_id WHERE tc.source='lead' [AND tc.kind IN ('tool_gap','skill_gap','blocked')] [AND tc.invoked_at >= ...] GROUP BY 1,2` — gap/blocked kinds are the improvement signal; `summary` is the human-readable evidence; engine rows keep `tool_name`-based aggregation. The auditor + per-recurring-memory mining remain SEPARATE follow-up tasks (operator go).
+6. **UI:** `TaskToolCalls.tsx` renders lead rows in the same timeline — header relabels to "Activity (N)" when ≥1 lead event present (else stays "Tool calls (N)"), per-row source chip for lead rows; hidden-when-empty preserved; TaskDetail location only (#2044 dashboard shell untouched).
+
 ## 2026-06-11 — #2300 Anthropic effort/thinking as per-project cost lever (Slice 1 design lock)
 **Scope:** backend + langgraph + frontend + db
 **Decision (verified against live Anthropic docs 2026-06-11 via claude-api skill):**
