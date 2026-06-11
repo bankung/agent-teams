@@ -39,7 +39,7 @@ export default async function ProjectGanttPage({ params }: Props) {
   }
 
   const rows = await listMilestones(project.id, { limit: 500 });
-  const milestones: MilestoneDetail[] = await Promise.all(
+  const milestonesRaw: MilestoneDetail[] = await Promise.all(
     rows.map(async (row) => {
       try {
         return await getMilestone(project.id, row.id);
@@ -51,6 +51,25 @@ export default async function ProjectGanttPage({ params }: Props) {
       }
     }),
   );
+
+  // Sort by status rank: active(0) → released(1) → planned(2) → cancelled(3).
+  // Unknown/missing statuses rank last (4). Stable: index tiebreak preserves
+  // the API's relative order within each rank.
+  const STATUS_RANK: Record<string, number> = {
+    active: 0,
+    released: 1,
+    planned: 2,
+    cancelled: 3,
+  };
+  const milestones = milestonesRaw
+    .map((m, i) => ({ m, i }))
+    .sort(
+      (a, b) =>
+        (STATUS_RANK[a.m.milestone_status] ?? 4) -
+          (STATUS_RANK[b.m.milestone_status] ?? 4) ||
+        a.i - b.i,
+    )
+    .map(({ m }) => m);
 
   const boardHref = `/p/${encodeURIComponent(project.name)}`;
 
