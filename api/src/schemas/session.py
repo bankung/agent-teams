@@ -37,6 +37,13 @@ SessionStatusLiteral = Literal["active", "compacting", "closed"]
 SessionRunStatusLiteral = Literal["running", "done", "error", "timeout"]
 SessionCompactTriggerLiteral = Literal["size", "manual", "run_count"]
 
+# Kanban #2300 (2026-06-11): wire enum for session_runs.effort — the resolved
+# Anthropic effort for the run (= what was actually sent). Full 6-value ladder:
+# a manual 'max' task run is metered too. Unlike the three Literals above there
+# is NO src.constants lockstep tuple / DB CHECK — the value is gated solely by
+# this Literal at the API boundary (#1677 posture, mirrors tasks.effort_override).
+EffortSessionLiteral = Literal["off", "low", "medium", "high", "extra", "max"]
+
 
 # =============================================================================
 # Session
@@ -162,6 +169,11 @@ class SessionRunUpdate(BaseModel):
     # Not persisted; forwarded to compute_cost alongside input/output_tokens.
     cache_read_input_tokens: int | None = Field(default=None, ge=0)
     cache_creation_input_tokens: int | None = Field(default=None, ge=0)
+    # Kanban #2300 (2026-06-11): resolved effort for this run. PERSISTED to the
+    # row (plain nullable TEXT) via the generic setattr loop in update_session_run.
+    # None / absent → unchanged; a value MUST be EffortSessionLiteral (422 on any
+    # other string — the typed field validates even under extra='ignore').
+    effort: EffortSessionLiteral | None = None
 
 
 class SessionRunRead(BaseModel):
@@ -176,6 +188,9 @@ class SessionRunRead(BaseModel):
     # Kanban #2135: provider/model persisted for cost rollup.
     provider: str | None
     model: str | None
+    # Kanban #2300: resolved effort for the run. Value-tolerant on read (str | None,
+    # not the strict Literal) — legacy / hand-edited rows don't 500 a read endpoint.
+    effort: str | None
     total_input_tokens: int
     total_output_tokens: int
     # G2 (#1689): persisted cache token columns (Anthropic prompt-cache fields).

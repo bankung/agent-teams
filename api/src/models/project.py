@@ -138,6 +138,14 @@ class Project(Base):
         default=list,
     )
 
+    # Kanban #2300 (2026-06-11): per-project Anthropic effort/thinking cost lever.
+    # One of off/low/medium/high/extra/auto or NULL (= global default off — no
+    # project silently pays). Pydantic EffortModeLiteral gates the value at the
+    # API boundary (422); NO DB CHECK (#1677 posture, mirrors model_override).
+    # Deliberately NOT a key in agent_overrides (that JSONB is a strict role->tier
+    # map). Resolution: task.effort_override > project.effort_mode > off (worker).
+    effort_mode: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Kanban #951 (2026-05-16): per-project budget caps for the headless-engine
     # pickup gate. All three NULL = UNLIMITED (pre-#951 default behavior).
     # NUMERIC(10,2) — user-typed dollars, 2 places. Pydantic ProjectUpdate

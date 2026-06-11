@@ -278,3 +278,51 @@ def test_module_level_nodes_are_distinct_objects() -> None:
         nodes.reviewer_specialist_node,
     ]
     assert len({id(o) for o in objs}) == 5
+
+
+# ---------------------------------------------------------------------------
+# 5) Kanban #2300 — per-effort model cache reuses one model per effort level
+# ---------------------------------------------------------------------------
+
+
+def test_effort_cache_reuses_model_per_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A FRESH factory node builds (and tool-binds) one model per distinct effort
+    level on first use and REUSES it thereafter (design lock D5 cache).
+
+    Build a fresh `make_specialist_node` so the closure caches are empty (no
+    cross-test leak). Spy on make_chat_model to count constructions per effort:
+      - two None-effort runs → make_chat_model() called ONCE (cached, zero-arg);
+      - one 'high' run       → make_chat_model(effort='high') called ONCE;
+      - a second 'high' run  → no new construction (cache hit).
+    """
+    _patch_tools_config(monkeypatch, _AUTO_ALLOW_ALL_CONFIG)
+    _spy_build_cached_system_content(monkeypatch)
+
+    calls: list[dict[str, Any]] = []
+
+    def _spy_make(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls.append(kwargs)
+        return _ScriptedModel([_ai_final("ok")])
+
+    monkeypatch.setattr(nodes, "make_chat_model", _spy_make)
+
+    node = nodes.make_specialist_node("dev-backend")
+
+    # Two default (None-effort) runs → ONE zero-arg construction.
+    _run_node(node, {"task_id": 1, "brief": "a", "assigned_role": 2})
+    _run_node(node, {"task_id": 2, "brief": "b", "assigned_role": 2, "effort": None})
+    default_calls = [c for c in calls if "effort" not in c]
+    assert len(default_calls) == 1, f"default model rebuilt: {calls}"
+
+    # First 'high' run → ONE construction with effort='high'.
+    _run_node(node, {"task_id": 3, "brief": "c", "assigned_role": 2, "effort": "high"})
+    high_calls = [c for c in calls if c.get("effort") == "high"]
+    assert len(high_calls) == 1, f"high not constructed once: {calls}"
+
+    # Second 'high' run → cache hit, NO new construction.
+    _run_node(node, {"task_id": 4, "brief": "d", "assigned_role": 2, "effort": "high"})
+    high_calls = [c for c in calls if c.get("effort") == "high"]
+    assert len(high_calls) == 1, f"high model rebuilt on cache hit: {calls}"
+
+    # Total: 1 default + 1 high = 2 constructions across 4 runs.
+    assert len(calls) == 2, f"expected 2 total constructions, got {calls}"

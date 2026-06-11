@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 
 import {
   getTaskToolCalls,
+  type LeadEventKind,
   type ToolCallPermissionDecision,
   type ToolCallRead,
   type ToolCallTier,
@@ -41,8 +42,21 @@ const PERMISSION_CLASS: Record<ToolCallPermissionDecision, string> = {
   reject: "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300",
 };
 
-function formatDuration(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return "—";
+// #2320 — Lead event kind chip palette.
+const KIND_CLASS: Record<LeadEventKind, string> = {
+  spawn:         "bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300",
+  tool_result:   "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+  ac_verified:   "bg-green-50 text-green-700 dark:bg-green-900/30 dark:text-green-300",
+  commit:        "bg-blue-50 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
+  status_change: "bg-amber-50 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
+  blocked:       "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300",
+  tool_gap:      "bg-orange-50 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300",
+  skill_gap:     "bg-orange-50 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300",
+  note:          "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+};
+
+function formatDuration(ms: number | null): string {
+  if (ms === null || !Number.isFinite(ms) || ms < 0) return "—";
   if (ms < 1000) return `${Math.round(ms)}ms`;
   const s = ms / 1000;
   if (s < 60) return `${s.toFixed(s < 10 ? 2 : 1)}s`;
@@ -117,6 +131,9 @@ export function TaskToolCalls({ projectId, taskId }: Props) {
   }
 
   const count = rows?.length ?? 0;
+  // #2320 — relabel header to "Activity" when ≥1 lead event is present.
+  const hasLeadRows = rows?.some((r) => r.source === "lead") ?? false;
+  const headerLabel = hasLeadRows ? "Activity" : "Tool calls";
 
   const handleToggle = async () => {
     setExpanded((v) => !v);
@@ -176,7 +193,7 @@ export function TaskToolCalls({ projectId, taskId }: Props) {
           </svg>
         </span>
         <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-          Tool calls{count > 0 ? ` (${count})` : ""}
+          {headerLabel}{count > 0 ? ` (${count})` : ""}
         </h3>
       </button>
 
@@ -194,9 +211,13 @@ export function TaskToolCalls({ projectId, taskId }: Props) {
           )}
           {rows !== null && rows.length > 0 && (
             <ol className="flex flex-col gap-1">
-              {rows.map((row) => (
-                <ToolCallRow key={row.id} row={row} />
-              ))}
+              {rows.map((row) =>
+                row.source === "lead" ? (
+                  <LeadEventRow key={row.id} row={row} />
+                ) : (
+                  <ToolCallRow key={row.id} row={row} />
+                ),
+              )}
             </ol>
           )}
         </div>
@@ -205,12 +226,66 @@ export function TaskToolCalls({ projectId, taskId }: Props) {
   );
 }
 
+// #2320 — Lead activity event row. Renders kind badge + summary + timestamp.
+// No expand affordance (no input_json / tier / permission data on lead rows).
+function LeadEventRow({ row }: { row: ToolCallRead }) {
+  const kindClass =
+    row.kind ? (KIND_CLASS[row.kind] ?? KIND_CLASS.note) : KIND_CLASS.note;
+
+  return (
+    <li
+      className="rounded border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950/40"
+      data-lead-event-row
+      data-lead-event-id={row.id}
+      data-lead-event-kind={row.kind ?? ""}
+    >
+      <div className="flex flex-wrap items-center gap-2 px-2 py-1.5">
+        {/* "lead" source chip */}
+        <span
+          className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300"
+          data-lead-source-chip
+        >
+          lead
+        </span>
+        {/* kind badge */}
+        {row.kind && (
+          <span
+            className={`inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide ${kindClass}`}
+            data-lead-kind-badge
+          >
+            {row.kind}
+          </span>
+        )}
+        {/* summary */}
+        {row.summary && (
+          <span
+            className="flex-1 text-xs text-zinc-800 dark:text-zinc-200"
+            data-lead-summary
+          >
+            {row.summary}
+          </span>
+        )}
+        {/* timestamp */}
+        <span
+          className="ml-auto font-mono text-[11px] text-zinc-500 tabular-nums dark:text-zinc-400"
+          title={row.invoked_at}
+          data-lead-invoked-at
+        >
+          {formatRelative(row.invoked_at)}
+        </span>
+      </div>
+    </li>
+  );
+}
+
 function ToolCallRow({ row }: { row: ToolCallRead }) {
   const [open, setOpen] = useState(false);
   const [outputExpanded, setOutputExpanded] = useState(false);
 
-  const tierClass = TIER_CLASS[row.tier] ?? TIER_CLASS.read;
-  const permClass = PERMISSION_CLASS[row.permission_decision];
+  const tierClass = (row.tier ? TIER_CLASS[row.tier] : null) ?? TIER_CLASS.read;
+  const permClass = row.permission_decision
+    ? PERMISSION_CLASS[row.permission_decision]
+    : PERMISSION_CLASS.auto_allow;
   const statusGlyph = row.success ? (
     <Icon name="status-done" size={12} aria-label="success" />
   ) : (
@@ -257,12 +332,14 @@ function ToolCallRow({ row }: { row: ToolCallRead }) {
         >
           {row.tool_name}
         </span>
-        <span
-          className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${tierClass}`}
-          data-tool-call-tier-chip
-        >
-          {row.tier}
-        </span>
+        {row.tier && (
+          <span
+            className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${tierClass}`}
+            data-tool-call-tier-chip
+          >
+            {row.tier}
+          </span>
+        )}
         <span className="font-mono text-[11px] text-zinc-500 tabular-nums dark:text-zinc-400">
           {formatDuration(row.duration_ms)}
         </span>
@@ -285,12 +362,14 @@ function ToolCallRow({ row }: { row: ToolCallRead }) {
           data-tool-call-detail
         >
           <div className="flex flex-wrap items-center gap-2 text-[11px]">
-            <span
-              className={`inline-flex items-center rounded px-1.5 py-0.5 font-medium uppercase tracking-wide ${permClass}`}
-              data-tool-call-permission
-            >
-              {row.permission_decision.replace("_", " ")}
-            </span>
+            {row.permission_decision && (
+              <span
+                className={`inline-flex items-center rounded px-1.5 py-0.5 font-medium uppercase tracking-wide ${permClass}`}
+                data-tool-call-permission
+              >
+                {row.permission_decision.replace("_", " ")}
+              </span>
+            )}
             <span
               className="font-mono text-zinc-500 dark:text-zinc-400"
               title={row.invoked_at}
@@ -311,17 +390,19 @@ function ToolCallRow({ row }: { row: ToolCallRead }) {
             </div>
           )}
 
-          <div>
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-              Input
-            </p>
-            <pre
-              data-tool-call-input
-              className="mt-0.5 max-h-48 overflow-auto rounded bg-zinc-100 px-2 py-1 font-mono text-[11px] text-zinc-800 dark:bg-zinc-900 dark:text-zinc-200"
-            >
-              {JSON.stringify(row.input_json, null, 2)}
-            </pre>
-          </div>
+          {row.input_json !== null && (
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                Input
+              </p>
+              <pre
+                data-tool-call-input
+                className="mt-0.5 max-h-48 overflow-auto rounded bg-zinc-100 px-2 py-1 font-mono text-[11px] text-zinc-800 dark:bg-zinc-900 dark:text-zinc-200"
+              >
+                {JSON.stringify(row.input_json, null, 2)}
+              </pre>
+            </div>
+          )}
 
           {row.output_summary && (
             <div>

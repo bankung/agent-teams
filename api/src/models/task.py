@@ -245,6 +245,14 @@ class Task(Base):
     # inherit; non-null = the explicit tier for every spawn on this task.
     # Migration 0056's nullable=true backfills existing rows to NULL.
     model_override: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Kanban #2300 (2026-06-11): per-task Anthropic effort carrier. One of
+    # off/low/medium/high/extra/max or NULL (= inherit). Precedence:
+    # task.effort_override > project.effort_mode > off. In 'auto' project mode the
+    # worker auto-resolves a level and WRITES it here at spawn for visibility.
+    # 'max' is manual-only (Slice-2 UI); auto never selects it (server-side clamp
+    # caps at 'extra'). Pydantic EffortOverrideLiteral gates the value (422); NO
+    # DB CHECK (#1677 posture). NULL = inherit; non-null = the explicit level.
+    effort_override: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Self-ref FK: spawned children point at the template they came from.
     # ON DELETE SET NULL — defense-in-depth; app never hard-deletes templates.
     spawned_from_task_id: Mapped[int | None] = mapped_column(

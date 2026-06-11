@@ -63,6 +63,11 @@ def test_agent_state_keys_are_stable() -> None:
         # project_id so nodes can fetch tools_config for the correct project
         # even when LANGGRAPH_PROJECT_ID env is unset.
         "project_id",
+        # Kanban #2300 (2026-06-11) — resolved Anthropic effort lever, injected
+        # by worker at spawn (carrier > project effort_mode > off). Specialist
+        # nodes read it to pick an effort-bound model; forwarded to
+        # session_runs.effort on finalize. None = off.
+        "effort",
     }
     annotations = set(AgentState.__annotations__.keys())
     assert annotations == expected

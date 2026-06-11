@@ -37,12 +37,14 @@ if TYPE_CHECKING:
 
 
 class ToolCall(Base):
-    """One specialist-tool invocation audit row.
+    """One activity-rail row — engine tool invocation OR Lead checkpoint.
 
-    Append-only. Every column except `error_code`, `error_msg`, and
-    `output_summary` is NOT NULL — the writer service guarantees the
-    contract. Clients cannot create/edit audit rows; the only public
-    surface is `GET /api/tasks/{task_id}/tool-calls`.
+    Append-only. Two sources share this table (#2320): `source='engine'`
+    rows are specialist-tool audit rows (the #980 contract — engine-only
+    columns always filled, guaranteed by `ToolCallCreate`); `source='lead'`
+    rows are Lead report-back checkpoints (kind+summary filled, engine-only
+    columns NULL). Clients cannot edit rows; the only write surface is
+    `POST /api/tasks/{task_id}/tool-calls` (dual-contract).
     """
 
     __tablename__ = "tool_calls"
@@ -65,13 +67,25 @@ class ToolCall(Base):
         server_default=func.now(),
     )
 
-    tool_name: Mapped[str] = mapped_column(Text, nullable=False)
-    # tier / permission_decision: free-form text (no CHECK). The langgraph
-    # container is the source of truth; the audit log should not 23514 on a
-    # tier or verdict that hasn't been added to a DB-side enum yet.
-    tier: Mapped[str] = mapped_column(Text, nullable=False)
+    # source: 'engine' | 'lead' (#2320). NOT NULL, server_default 'engine' —
+    # engine POST path never sends it; existing rows + that path read 'engine'.
+    # Free-form text (no DB CHECK); Pydantic Literal gates the value.
+    source: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'engine'")
+    )
+    # kind / summary: lead-row only. NULL on engine rows; REQUIRED for lead
+    # rows via LeadActivityCreate (Pydantic).
+    kind: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    input_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    tool_name: Mapped[str] = mapped_column(Text, nullable=False)
+    # tier / input_json / duration_ms / permission_decision: engine-only.
+    # Relaxed to nullable at the DB (#2320) so lead rows leave them NULL; the
+    # engine wire contract keeps them required via ToolCallCreate (Pydantic).
+    # Still free-form text (no CHECK) — the audit log must not 23514.
+    tier: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    input_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     success: Mapped[bool] = mapped_column(Boolean, nullable=False)
     error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -81,9 +95,9 @@ class ToolCall(Base):
     # (#949 Q10 → A). NULL when output is None.
     output_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    permission_decision: Mapped[str] = mapped_column(Text, nullable=False)
+    permission_decision: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Convenience relationship for service-layer reads (NOT required for the
     # endpoint, which fetches by task_id directly). Not back-populated on

@@ -10,7 +10,7 @@ healthy — better than a healthy container that crashes on first /invoke.
 Public surface (kept stable so callers — nodes.py, graph.py lifespan — don't
 break across provider swaps):
 
-- `make_chat_model(model: str | None = None) -> BaseChatModel`
+- `make_chat_model(model: str | None = None, effort: str | None = None) -> BaseChatModel`
 - `resolve_provider() -> Literal["anthropic", "openai", "ollama", "google"]`
 - `resolve_model(provider: str | None = None) -> str`
 - `DEFAULT_ANTHROPIC_MODEL`, `DEFAULT_OPENAI_MODEL`,
@@ -375,11 +375,36 @@ def _require_api_key(provider: ProviderName) -> str:
     return key
 
 
-def make_chat_model(model: str | None = None) -> BaseChatModel:
+# Kanban #2300 (2026-06-11): map our preset ladder onto langchain_anthropic's
+# native `effort` Literal {low,medium,high,xhigh,max}. Only 'extra' is renamed
+# (→ 'xhigh', the API's top-of-adaptive tier); the rest pass through. 'off' and
+# 'auto' never reach here (the node resolves them away first). Verified vs
+# langchain_anthropic==1.4.3: the top-level `effort` ctor param is a convenience
+# shorthand that the lib injects as `output_config.effort`, and `thinking` maps
+# straight to the Messages-API `thinking` block — no model_kwargs/extra_body
+# needed (design lock D1).
+_EFFORT_TO_ANTHROPIC: dict[str, str] = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "extra": "xhigh",
+    "max": "max",
+}
+
+
+def make_chat_model(
+    model: str | None = None, effort: str | None = None
+) -> BaseChatModel:
     """Construct a chat model for the configured provider.
 
     Args:
         model: optional override; if None, resolved via `resolve_model()`.
+        effort: optional Anthropic effort lever (Kanban #2300). One of
+            low/medium/high/extra/max → adaptive thinking + the mapped
+            `output_config.effort` (extra→xhigh). None or 'off' → EXACTLY
+            today's no-thinking construction (bit-identical no-op). IGNORED by
+            the openai/google/ollama branches — the lever is Anthropic-only
+            (design lock D7); those providers construct identically regardless.
 
     Returns:
         A langchain `BaseChatModel` (`ChatAnthropic`, `ChatOpenAI`, `ChatGoogleGenerativeAI`, or `ChatOllama`).
@@ -401,6 +426,20 @@ def make_chat_model(model: str | None = None) -> BaseChatModel:
         api_key = _require_api_key(provider)
         from langchain_anthropic import ChatAnthropic
 
+        # Kanban #2300 — effort lever. A mapped effort enables adaptive thinking
+        # + output_config.effort; anything else (None / 'off' / unknown) builds
+        # EXACTLY today's model (no thinking, no output_config). NEVER pass
+        # temperature/top_p/top_k/budget_tokens on this path (HTTP 400 on Opus
+        # 4.8/4.7 when paired with effort/thinking — design lock D1).
+        anthropic_effort = _EFFORT_TO_ANTHROPIC.get(effort) if effort else None
+        if anthropic_effort is not None:
+            return ChatAnthropic(
+                model=chosen_model,
+                api_key=api_key,
+                max_retries=1,
+                thinking={"type": "adaptive"},
+                effort=anthropic_effort,
+            )
         return ChatAnthropic(model=chosen_model, api_key=api_key, max_retries=1)
 
     if provider == "openai":

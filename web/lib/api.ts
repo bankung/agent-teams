@@ -89,6 +89,9 @@ export type ProjectRead = {
   // Backfilled to 24 by migration 0047. Optional on the FE type for
   // defensive resilience against pre-migration serialized payloads.
   hitl_nudge_threshold_hours?: number | null;
+  // Kanban #2300 (2026-06-11) — per-project thinking effort for headless engine.
+  // NULL = use global default (= off). Values: off|low|medium|high|extra|auto.
+  effort_mode?: string | null;
 };
 
 // AcceptanceCriterion — one entry in TaskRead.acceptance_criteria (#797).
@@ -501,6 +504,9 @@ export type ProjectUpdateBody = {
   // (= nudges disabled); explicit int → set threshold (0 is accepted but
   // app-layer treats it identical to NULL = disabled).
   hitl_nudge_threshold_hours?: number | null;
+  // Kanban #2300 (2026-06-11) — per-project thinking effort for headless engine.
+  // NULL = global default (= off). Values: off|low|medium|high|extra|auto.
+  effort_mode?: "off" | "low" | "medium" | "high" | "extra" | "auto" | null;
 };
 
 export async function updateProject(
@@ -1094,25 +1100,49 @@ export async function resolveHitlTask(
 // timing / input + truncated output). Section is lazy-loaded in TaskDetail
 // and hidden entirely when the array is empty. Tier drives chip color in the
 // UI (read=zinc / write=amber / network=blue / destructive=red).
+//
+// Kanban #2320 — the same rail now carries Lead-reported activity events.
+// `source`: "engine" = original tool-call rows; "lead" = Lead-reported event.
+// `kind`: one of spawn/tool_result/ac_verified/commit/status_change/blocked/
+//         tool_gap/skill_gap/note on lead rows; null on engine rows.
+// `summary`: human-readable text set by Lead; null on engine rows.
+// Engine-only fields (tier/input_json/duration_ms/permission_decision) are
+// nullable on the wire — always null on lead rows.
 export type ToolCallTier = "read" | "write" | "network" | "destructive";
 export type ToolCallPermissionDecision =
   | "auto_allow"
   | "halt"
   | "reject";
+export type ToolCallSource = "engine" | "lead";
+export type LeadEventKind =
+  | "spawn"
+  | "tool_result"
+  | "ac_verified"
+  | "commit"
+  | "status_change"
+  | "blocked"
+  | "tool_gap"
+  | "skill_gap"
+  | "note";
 
 export type ToolCallRead = {
   id: number;
   task_id: number;
   invoked_at: string; // ISO 8601
   tool_name: string;
-  tier: ToolCallTier;
-  input_json: Record<string, unknown>;
+  // #2320 — source + lead-event fields. Defaults to "engine" on legacy rows.
+  source: ToolCallSource;
+  kind: LeadEventKind | null; // non-null on lead rows
+  summary: string | null;     // non-null on lead rows
+  // Engine-only fields — nullable on lead rows.
+  tier: ToolCallTier | null;
+  input_json: Record<string, unknown> | null;
   success: boolean;
   error_code: string | null;
   error_msg: string | null;
   output_summary: string | null; // first 256 chars of tool output
-  duration_ms: number;
-  permission_decision: ToolCallPermissionDecision;
+  duration_ms: number | null;
+  permission_decision: ToolCallPermissionDecision | null;
 };
 
 // #980 — GET /api/tasks/{id}/tool-calls. Backend returns [] for tasks with

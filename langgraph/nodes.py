@@ -254,6 +254,40 @@ def make_specialist_node(agent_name: str):
     role with no `dev-<role>.md` still runs, it just omits that bundle slice.
     """
 
+    # Kanban #2300 — per-effort model caches, scoped to THIS factory closure
+    # (one set per specialist node). `make_chat_model()` runs once per FACTORY
+    # at graph build today, but effort varies PER TASK (design lock D5) — so we
+    # build (and tool-bind) one model per distinct effort level on first use and
+    # reuse it thereafter. Keys: effort string or None. The None entry is the
+    # default no-thinking model — byte-identical to today's construction. The
+    # bound registry is project-independent (per-project gating happens at
+    # invoke-time via tools_config/ctx, NOT at bind-time), so one bound model per
+    # effort serves every board.
+    _model_by_effort: dict[str | None, Any] = {}
+    _bound_by_effort: dict[str | None, Any] = {}
+    # Identity of the make_chat_model callable that populated the caches. When it
+    # changes (tests monkeypatch `nodes.make_chat_model`), the caches are stale
+    # and must be rebuilt — without this guard a cached model would leak across
+    # monkeypatch swaps (#2187-class cache-isolation bug). In production the
+    # identity is stable so this never fires (zero overhead).
+    _cache_factory_id: list[int | None] = [None]
+
+    def _model_for_effort(effort: str | None) -> Any:
+        current = id(make_chat_model)
+        if _cache_factory_id[0] != current:
+            _model_by_effort.clear()
+            _bound_by_effort.clear()
+            _cache_factory_id[0] = current
+        if effort not in _model_by_effort:
+            # Default (None / 'off') → zero-arg call, byte-identical to today's
+            # construction (and to every existing test's zero-arg mock). Only a
+            # real effort level passes the kwarg through.
+            if effort is None or effort == "off":
+                _model_by_effort[effort] = make_chat_model()
+            else:
+                _model_by_effort[effort] = make_chat_model(effort=effort)
+        return _model_by_effort[effort]
+
     async def _specialist_node(state: AgentState) -> dict:
         brief = state.get("brief", "")
         task_id = state.get("task_id")
@@ -273,11 +307,24 @@ def make_specialist_node(agent_name: str):
             host_allowlist=list((tools_config or {}).get("http_hosts") or []),
         )
 
-        model = make_chat_model()
+        # Kanban #2300 — select the per-task effort-bound model from the factory
+        # cache. None / 'off' → the default (today's) model + binding.
+        effort = state.get("effort")
+        model = _model_for_effort(effort)
         # Feature-flag tool binding by provider. Ollama returns a model that
         # doesn't support tool-use; bind_tools may raise or silently drop the
         # tools. We try, and on failure log + fall back to the no-tools path.
-        bound = _bind_tools_safely(model, project_id, tools_config)
+        # Cache the SUCCESSFUL binding per effort level and reuse it (the bound
+        # registry is project-agnostic). We deliberately do NOT cache a None
+        # result: `_bind_tools_safely` returns None when THIS call's tools_config
+        # has tools disabled, which is a per-project/per-call decision — caching
+        # it would wrongly suppress binding on a later same-effort call where
+        # tools ARE enabled (multi-board correctness).
+        bound = _bound_by_effort.get(effort)
+        if bound is None:
+            bound = _bind_tools_safely(model, project_id, tools_config)
+            if bound is not None:
+                _bound_by_effort[effort] = bound
 
         # Kanban #1116 — wrap role brief with safety prelude (L22 prevention).
         # Kanban #1186 — inflate stable context (safety prelude + CLAUDE.md +

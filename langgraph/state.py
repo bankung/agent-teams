@@ -69,3 +69,8 @@ class AgentState(TypedDict, total=False):
     usage_output_tokens: int
     usage_cache_read_tokens: int
     usage_cache_creation_tokens: int
+    # Kanban #2300 — resolved Anthropic effort lever for this run (carrier >
+    # project effort_mode > off), injected by the worker at spawn. None = off
+    # (no thinking). Specialist nodes read this and select an effort-bound model;
+    # other providers ignore it. Forwarded to session_runs.effort on finalize.
+    effort: str | None

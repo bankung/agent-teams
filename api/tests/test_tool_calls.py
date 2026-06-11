@@ -95,7 +95,13 @@ def test_orm_metadata_includes_tool_calls() -> None:
 
 def test_tool_call_model_columns_match_migration() -> None:
     """Schema-source-of-truth check — the ORM declares every column the
-    migration adds, with the right nullability."""
+    migration adds, with the right nullability.
+
+    Updated for #2320: the rail now carries lead rows too. `source` is NOT NULL
+    (server_default 'engine'); `kind`/`summary` are lead-only (nullable); the
+    engine-only columns tier/input_json/duration_ms/permission_decision relaxed
+    to nullable (lead rows leave them NULL — the engine NOT-NULL contract moved
+    to the Pydantic ToolCallCreate layer)."""
     from src.models.tool_call import ToolCall
 
     cols = {c.name: c for c in ToolCall.__table__.columns}
@@ -103,14 +109,21 @@ def test_tool_call_model_columns_match_migration() -> None:
         "id",
         "task_id",
         "invoked_at",
+        "source",
         "tool_name",
+        "success",
+    }
+    expected_nullable = {
+        "kind",
+        "summary",
         "tier",
         "input_json",
-        "success",
         "duration_ms",
         "permission_decision",
+        "error_code",
+        "error_msg",
+        "output_summary",
     }
-    expected_nullable = {"error_code", "error_msg", "output_summary"}
     assert set(cols.keys()) == expected_not_null | expected_nullable
     for n in expected_not_null:
         assert not cols[n].nullable, f"{n} should be NOT NULL"
