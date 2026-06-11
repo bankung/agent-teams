@@ -14,7 +14,7 @@
 services:
   db:
     image: postgres:16-alpine
-    container_name: agent-teams-db-latest
+    container_name: agent-teams-db
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
@@ -34,7 +34,7 @@ services:
     build:
       context: ./api
       dockerfile: Dockerfile
-    container_name: agent-teams-api-latest
+    container_name: agent-teams-api
     depends_on:
       db:
         condition: service_healthy
@@ -164,7 +164,7 @@ services:
     build:
       context: ./web
       dockerfile: Dockerfile
-    container_name: agent-teams-web-latest
+    container_name: agent-teams-web
     depends_on:
       api:
         condition: service_healthy
@@ -211,7 +211,7 @@ services:
     build:
       context: ./langgraph
       dockerfile: Dockerfile
-    container_name: agent-teams-langgraph-latest
+    container_name: agent-teams-langgraph
     depends_on:
       db:
         condition: service_healthy
