@@ -249,10 +249,11 @@ services:
       # gemini-flash-latest has quota; gemini-2.0-flash has quota=0.
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       GOOGLE_MODEL: ${GOOGLE_MODEL:-gemini-flash-latest}
-      # Kanban #852 — background worker config. The worker polls the api
-      # service (compose-internal hostname `api`, port 8456). LANGGRAPH_PROJECT_ID
-      # is REQUIRED — the lifespan refuses to start without it.
-      LANGGRAPH_PROJECT_ID: ${LANGGRAPH_PROJECT_ID:-1}
+      # Kanban #852/#2184 — background worker config. The worker polls the api
+      # service (compose-internal hostname `api`, port 8456).
+      # empty = multi-board (DB-driven discovery of consented+tools-enabled
+      # projects, #2184); set = single-board pin to that project id.
+      LANGGRAPH_PROJECT_ID: ${LANGGRAPH_PROJECT_ID:-}
       # #2135 — enables #1886 usage metering; empty = reporting disabled;
       # Lead pins a persistent session id in .env.
       LANGGRAPH_SESSION_ID: ${LANGGRAPH_SESSION_ID:-}

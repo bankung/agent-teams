@@ -68,6 +68,8 @@ async def record_tool_invocation(
     input_args: dict[str, Any],
     result: Any,
     decision: Any,
+    *,
+    project_id: int | None = None,
 ) -> None:
     """Record one specialist-tool invocation in the audit table.
 
@@ -81,6 +83,11 @@ async def record_tool_invocation(
             Serialised via `.model_dump()` for the POST body.
         decision: a `PermissionDecision` enum value (from
             `tools/permission_gate.py`). `.value` is the wire string.
+        project_id: the project that owns the task. Preferred over the
+            LANGGRAPH_PROJECT_ID env-var so that multi-board workers
+            (where the env-var is unset) still send a valid X-Project-Id
+            header. Falls back to resolve_project_id() when not provided
+            (single-board / legacy callers). Kanban #2231.
 
     Behaviour:
       - Builds the POST payload synchronously (raises on bad inputs so
@@ -91,7 +98,7 @@ async def record_tool_invocation(
         returns without raising — see module docstring.
     """
     payload = _build_payload(task_id, tool, input_args, result, decision)
-    await _post_audit_row(task_id, payload)
+    await _post_audit_row(task_id, payload, project_id=project_id)
 
 
 def _build_payload(
@@ -144,16 +151,33 @@ def _build_payload(
     }
 
 
-async def _post_audit_row(task_id: int, payload: dict[str, Any]) -> None:
+async def _post_audit_row(
+    task_id: int,
+    payload: dict[str, Any],
+    *,
+    project_id: int | None = None,
+) -> None:
     """POST the audit payload synchronously; log + swallow transport errors.
 
     The api endpoint commits BEFORE returning 201 — a 201 response means
     the row is durable. Anything else (transport error, non-2xx) is
     logged at WARNING and the function returns; the loop continues.
+
+    `project_id` is used to build the X-Project-Id header directly when
+    provided (multi-board mode where LANGGRAPH_PROJECT_ID is unset).
+    Falls back to `_project_id_header()` (env-var) when not provided.
+    Kanban #2231.
     """
     url = f"{resolve_api_base()}/api/tasks/{task_id}/tool-calls"
+    # Prefer explicit project_id (threaded from state["project_id"] via the
+    # caller) over the env-var fallback so multi-board workers send a valid
+    # X-Project-Id even when LANGGRAPH_PROJECT_ID is unset.
+    if project_id is not None:
+        pid_header: dict[str, str] = {"X-Project-Id": str(project_id)}
+    else:
+        pid_header = _project_id_header()
     headers = {
-        **_project_id_header(),
+        **pid_header,
         "Content-Type": "application/json",
     }
     try:

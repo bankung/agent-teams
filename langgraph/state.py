@@ -30,6 +30,10 @@ HaltReason = Literal["question", "decision", "error"] | None
 class AgentState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
     task_id: int
+    # Kanban #2185 — multi-board tool fix: worker injects the per-task project_id
+    # so nodes can fetch tools_config for the correct project even when
+    # LANGGRAPH_PROJECT_ID is unset (multi-board mode).
+    project_id: int | None
     assigned_role: int | None  # 1..5 per TaskRole; None → general
     brief: str  # task description / spec — input to the specialist
     intermediate_results: dict[str, str]

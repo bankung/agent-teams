@@ -252,10 +252,11 @@ def make_specialist_node(agent_name: str):
     async def _specialist_node(state: AgentState) -> dict:
         brief = state.get("brief", "")
         task_id = state.get("task_id")
-        # Project id sourced from LANGGRAPH_PROJECT_ID — the engine container
-        # is bound to a single project. A future multi-project engine would
-        # fetch task → project_id via the api.
-        project_id = resolve_project_id()
+        # Kanban #2185 — multi-board tool fix: prefer the project_id injected
+        # by the worker into state (set for every task in both single- and
+        # multi-board mode). Fall back to resolve_project_id() (env-var) for
+        # backwards compatibility with any caller that doesn't set state["project_id"].
+        project_id = state.get("project_id") or resolve_project_id()
         tools_config = await _fetch_tools_config(project_id)
         working_path, repo_root = _resolve_paths(project_id)
 
@@ -697,7 +698,7 @@ async def _handle_one_tool_call(
             ),
             retry_safe=False,
         )
-        await _audit(task_id, tool, args, result, decision)
+        await _audit(task_id, tool, args, result, decision, project_id=ctx.project_id)
         return _ToolCallOutcome(result)
 
     if decision is PermissionDecision.HALT:
@@ -711,7 +712,7 @@ async def _handle_one_tool_call(
             ),
             retry_safe=False,
         )
-        await _audit(task_id, tool, args, result, decision)
+        await _audit(task_id, tool, args, result, decision, project_id=ctx.project_id)
         halt_reason = (
             f"tool_permission_review: {tool.name} tier={tool.tier.value}"
         )
@@ -721,7 +722,7 @@ async def _handle_one_tool_call(
     # 3. Pre-flight: fs-boundary check (only writes/destructive with path).
     violation = fs_boundary_check(tool, ctx, args)
     if violation is not None:
-        await _audit(task_id, tool, args, violation, decision)
+        await _audit(task_id, tool, args, violation, decision, project_id=ctx.project_id)
         return _ToolCallOutcome(violation)
 
     # 4. Invoke + post-flight sandbox guards.
@@ -748,7 +749,7 @@ async def _handle_one_tool_call(
     )
 
     # 5. Audit. Always.
-    await _audit(task_id, tool, args, result, decision)
+    await _audit(task_id, tool, args, result, decision, project_id=ctx.project_id)
     return _ToolCallOutcome(result)
 
 
@@ -758,12 +759,18 @@ async def _audit(
     args: dict[str, Any],
     result: ToolResult,
     decision: Any,
+    *,
+    project_id: int | None = None,
 ) -> None:
     """Audit-write with defensive task_id check + failure isolation.
 
     Calls `record_tool_invocation` (which is best-effort over httpx).
     A missing task_id (state didn't carry one — only happens in unit
     tests) skips the audit gracefully.
+
+    `project_id` is forwarded to `record_tool_invocation` so the audit
+    POST sends X-Project-Id from the task's actual project rather than
+    the (possibly unset) LANGGRAPH_PROJECT_ID env-var. Kanban #2231.
     """
     if task_id is None:
         logger.debug(
@@ -772,7 +779,7 @@ async def _audit(
         )
         return
     try:
-        await record_tool_invocation(task_id, tool, args, result, decision)
+        await record_tool_invocation(task_id, tool, args, result, decision, project_id=project_id)
     except Exception:
         # record_tool_invocation already swallows httpx errors; this catch
         # is only for truly unexpected failures. Never let audit break the loop.

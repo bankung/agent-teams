@@ -57,6 +57,7 @@ from approval_evaluator import evaluate_policy
 import config as _config
 from config import resolve_session_id
 from content_safety import sanitize_agent_action, scan_task_content
+import multiboard as _multiboard
 from hitl import (
     CheckpointMissingError,
     EngineCrashError,
@@ -153,18 +154,33 @@ def classify_exception(exc: BaseException) -> tuple[str, str]:
 class WorkerConfig:
     """Resolved at lifespan startup.  Raises RuntimeError on any missing /
     malformed required env-var so the container fails fast instead of starting
-    a worker that immediately crashes on the first poll."""
+    a worker that immediately crashes on the first poll.
+
+    Kanban #2184 — multi-board mode:
+      LANGGRAPH_PROJECT_ID SET   -> single-board mode (byte-identical to pre-#2184).
+      LANGGRAPH_PROJECT_ID UNSET -> multi-board mode: discover eligible projects
+                                    via GET /api/projects on each refresh cycle.
+      In multi-board mode project_id is None and multi_board=True.
+    """
 
     def __init__(self) -> None:
         proj = os.getenv("LANGGRAPH_PROJECT_ID", "").strip()
-        if not proj or not proj.isdigit() or int(proj) < 1:
-            raise RuntimeError(
-                "LANGGRAPH_PROJECT_ID env-var is required (positive integer). "
-                "Set LANGGRAPH_PROJECT_ID=<id> in .env — use the project the "
-                "Kanban session is bound to (dogfood default: 1). "
-                "Without it the worker doesn't know which project's task board to poll."
-            )
-        self.project_id: int = int(proj)
+        if proj:
+            # Single-board mode: env set — validate same rules as before.
+            if not proj.isdigit() or int(proj) < 1:
+                raise RuntimeError(
+                    "LANGGRAPH_PROJECT_ID env-var must be a positive integer. "
+                    "Set LANGGRAPH_PROJECT_ID=<id> in .env — use the project the "
+                    "Kanban session is bound to (dogfood default: 1). "
+                    "Without it the worker doesn't know which project's task board to poll."
+                )
+            self.project_id: int | None = int(proj)
+            self.multi_board: bool = False
+        else:
+            # Multi-board mode: no project pinned — worker discovers eligible
+            # projects at runtime via GET /api/projects. #2184
+            self.project_id = None
+            self.multi_board = True
 
         self.api_base: str = _config.resolve_api_base()
         if not self.api_base:
@@ -197,8 +213,23 @@ async def run_worker_loop(graph_module: ModuleType) -> None:
     each iteration.  This avoids a circular import (worker imports graph
     statically -> graph imports worker statically) and lets a future hot
     reload swap the compiled graph in-place.
+
+    Kanban #2184: when LANGGRAPH_PROJECT_ID is unset, delegates to
+    `_run_multi_board_loop` instead of the single-board path below.
     """
     cfg = WorkerConfig()
+    if cfg.multi_board:
+        # Warn if LANGGRAPH_SESSION_ID is set — it's single-board-only. #2184
+        if os.getenv("LANGGRAPH_SESSION_ID", "").strip():
+            logger.warning(
+                "LANGGRAPH_SESSION_ID is set but multi-board mode is active "
+                "(LANGGRAPH_PROJECT_ID unset) — session env override ignored; "
+                "per-project sessions are managed in-process. #2184"
+            )
+        await _run_multi_board_loop(cfg, graph_module)
+        return
+
+    # Single-board mode — byte-identical to pre-#2184.
     logger.info(
         "worker starting: project_id=%d api_base=%s poll_interval=%ds provider=%s model=%s",
         cfg.project_id,
@@ -236,6 +267,224 @@ async def run_worker_loop(graph_module: ModuleType) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Multi-board loop (Kanban #2184)
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_all_projects(
+    client: httpx.AsyncClient,
+    api_base: str,
+) -> list[dict] | None:
+    """GET /api/projects and return the list.  Returns None on any failure.
+
+    No X-Project-Id header needed — list endpoint is not project-scoped.
+    """
+    try:
+        resp = await client.get(f"{api_base}/api/projects")
+    except httpx.HTTPError as exc:
+        logger.warning("multi-board: GET /api/projects HTTP error: %r", exc)
+        return None
+    if resp.status_code != 200:
+        logger.warning(
+            "multi-board: GET /api/projects returned %d: %s",
+            resp.status_code,
+            resp.text[:200],
+        )
+        return None
+    try:
+        return resp.json()
+    except Exception:
+        logger.warning("multi-board: GET /api/projects returned non-JSON body")
+        return None
+
+
+async def _ensure_project_session(
+    client: httpx.AsyncClient,
+    cfg: WorkerConfig,
+    project_id: int,
+    project_name: str | None,
+) -> int | None:
+    """Return (or create) a session_id for `project_id` in the process cache.
+
+    Creates via POST /api/sessions with process_label 'harness-worker (<name>)'.
+    On creation failure: logs warning + returns None (usage reporting skipped,
+    worker does NOT crash). #2184
+    """
+    cached = _multiboard.get_cached_session(project_id)
+    if cached is not None:
+        return cached
+
+    label = f"harness-worker ({project_name or project_id})"
+    url = f"{cfg.api_base}/api/sessions"
+    try:
+        resp = await client.post(
+            url,
+            json={"project_id": project_id, "process_label": label},
+        )
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "multi-board: session create HTTP error for project %d: %r",
+            project_id,
+            exc,
+        )
+        return None
+    if resp.status_code != 201:
+        logger.warning(
+            "multi-board: session create returned %d for project %d: %s",
+            resp.status_code,
+            project_id,
+            resp.text[:200],
+        )
+        return None
+    try:
+        session_id = resp.json().get("id")
+    except Exception:
+        logger.warning(
+            "multi-board: session create non-JSON for project %d", project_id
+        )
+        return None
+    if not isinstance(session_id, int):
+        logger.warning(
+            "multi-board: session create missing int id for project %d", project_id
+        )
+        return None
+    _multiboard.put_cached_session(project_id, session_id)
+    logger.info(
+        "multi-board: session created: project_id=%d session_id=%d label=%r",
+        project_id,
+        session_id,
+        label,
+    )
+    return session_id
+
+
+async def _multiboard_has_work(
+    client: httpx.AsyncClient,
+    api_base: str,
+    headers: dict[str, str],
+) -> bool:
+    """Peek at next-autorun for one project; return True if any work exists.
+
+    "Work" = next_task is not None OR pending_questions is non-empty. This
+    lets _run_multi_board_loop stop at the first active project without
+    double-processing: we peek here, then call _poll_once only for the first
+    project that has something. For idle projects this costs one extra GET
+    that _poll_once would issue anyway — no net difference. #2184
+    """
+    try:
+        resp = await client.get(f"{api_base}/api/tasks/next-autorun", headers=headers)
+    except httpx.HTTPError:
+        return False
+    if resp.status_code != 200:
+        return False
+    try:
+        payload = resp.json()
+    except Exception:
+        return False
+    return bool(
+        payload.get("next_task") is not None
+        or payload.get("pending_questions")
+    )
+
+
+async def _run_multi_board_loop(
+    cfg: WorkerConfig,
+    graph_module: ModuleType,
+) -> None:
+    """Multi-board poll loop — LANGGRAPH_PROJECT_ID unset path. Kanban #2184.
+
+    Per-tick semantics (serial):
+      1. Every `multiboard_refresh_ticks()` ticks refresh the eligible project
+         list from GET /api/projects. Log the set whenever it changes.
+      2. Iterate eligible projects in id-ascending order; peek next-autorun per
+         project. At the FIRST project that has work, call _poll_once and end
+         the tick (serial — no other project processes that tick).
+      3. If no project has work, the tick ends idle.
+    """
+    logger.info(
+        "worker starting (multi-board): api_base=%s poll_interval=%ds provider=%s model=%s",
+        cfg.api_base,
+        cfg.poll_interval_sec,
+        resolve_provider(),
+        resolve_model(),
+    )
+    eligible: list[dict] = []
+    last_eligible_ids: set[int] = set()
+    tick = 0
+    refresh_ticks = _multiboard.multiboard_refresh_ticks()
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        while True:
+            # Refresh eligible list every N ticks. #2184
+            if tick % refresh_ticks == 0:
+                raw = await _fetch_all_projects(client, cfg.api_base)
+                if raw is not None:
+                    eligible = _multiboard.filter_eligible(raw)
+                    new_ids = {p["id"] for p in eligible}
+                    if new_ids != last_eligible_ids:
+                        logger.info(
+                            "multi-board eligible projects: %s",
+                            [(p["id"], p.get("name")) for p in eligible],
+                        )
+                        last_eligible_ids = new_ids
+                if not eligible:
+                    logger.info(
+                        "multi-board: no eligible projects; sleeping (tick=%d)", tick
+                    )
+
+            tick += 1
+
+            # Find first project with work; process it; end tick. #2184
+            for project in eligible:
+                project_id: int = project["id"]
+                project_name: str | None = project.get("name")
+                headers = {
+                    "X-Project-Id": str(project_id),
+                    "Content-Type": "application/json",
+                }
+                has_work = await _multiboard_has_work(client, cfg.api_base, headers)
+                if not has_work:
+                    continue
+
+                # Ensure per-project session for usage metering. #2184
+                session_id = await _ensure_project_session(
+                    client, cfg, project_id, project_name
+                )
+                # Inject session_id into env so resolve_session_id() inside
+                # _poll_once picks it up — restored immediately after. Safe
+                # because this coroutine is serial (no concurrent _poll_once).
+                _prev_session_env = os.environ.get("LANGGRAPH_SESSION_ID")
+                if session_id is not None:
+                    os.environ["LANGGRAPH_SESSION_ID"] = str(session_id)
+                elif "LANGGRAPH_SESSION_ID" in os.environ:
+                    del os.environ["LANGGRAPH_SESSION_ID"]
+                try:
+                    try:
+                        await _poll_once(client, graph_module, cfg, headers)
+                    except asyncio.CancelledError:
+                        logger.info("multi-board: worker shutdown — exiting loop")
+                        raise
+                    except Exception:
+                        logger.exception(
+                            "multi-board: iteration crashed for project %d; continuing",
+                            project_id,
+                        )
+                finally:
+                    # Restore previous session env exactly. #2184
+                    if _prev_session_env is not None:
+                        os.environ["LANGGRAPH_SESSION_ID"] = _prev_session_env
+                    elif "LANGGRAPH_SESSION_ID" in os.environ:
+                        del os.environ["LANGGRAPH_SESSION_ID"]
+                break  # first actionable project processed; end tick. #2184
+
+            try:
+                await asyncio.sleep(cfg.poll_interval_sec)
+            except asyncio.CancelledError:
+                logger.info("multi-board: worker shutdown during sleep — exiting loop")
+                raise
+
+
+# ---------------------------------------------------------------------------
 # One poll tick
 # ---------------------------------------------------------------------------
 
@@ -259,6 +508,11 @@ async def _poll_once(
       c. Pick `next_task` and run it through the normal IN_PROGRESS → DONE /
          BLOCKED path.
     """
+    # Resolve effective project_id from headers (supports multi-board where
+    # cfg.project_id may be None — the per-project headers carry the right id).
+    # #2184
+    _effective_project_id: int = cfg.project_id or int(headers.get("X-Project-Id", 0))
+
     # 1) Poll the Kanban for the next eligible task.
     resp = await client.get(f"{cfg.api_base}/api/tasks/next-autorun", headers=headers)
     if resp.status_code != 200:
@@ -349,7 +603,7 @@ async def _poll_once(
     # PATCH BLOCKED with halt_reason='runtime_prereq_missing' naming the missing
     # binary. None / empty → skip entirely (project byte-for-byte unaffected).
     required_binaries = await _fetch_project_required_binaries(
-        client, cfg, headers, cfg.project_id
+        client, cfg, headers, _effective_project_id
     )
     missing = [
         b for b in (required_binaries or []) if shutil.which(b) is None
@@ -360,7 +614,7 @@ async def _poll_once(
             "missing host binaries %s (project %d declares required_binaries=%s)",
             task_id,
             missing,
-            cfg.project_id,
+            _effective_project_id,
             required_binaries,
         )
         await _patch_task(
@@ -454,6 +708,11 @@ async def _poll_once(
         # know which run row to PATCH with token usage. None when
         # LANGGRAPH_SESSION_ID is unset (usage reporting disabled).
         "session_run_id": session_run_id,
+        # Kanban #2185 — multi-board tool fix: pass the per-task project_id so
+        # nodes can fetch tools_config for the correct project even when
+        # LANGGRAPH_PROJECT_ID env is unset (multi-board mode). In single-board
+        # mode _effective_project_id == cfg.project_id, so behavior is identical.
+        "project_id": _effective_project_id,
     }
     config = {"configurable": {"thread_id": f"task-{task_id}"}}
 
@@ -571,7 +830,7 @@ async def _poll_once(
         "question_payload"
     ):
         policies = await _fetch_project_policies(
-            client, cfg, headers, cfg.project_id
+            client, cfg, headers, _effective_project_id
         )
         action, default_answer, rule_name = evaluate_policy(
             body["question_payload"], policies
