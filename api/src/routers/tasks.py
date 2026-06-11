@@ -525,6 +525,7 @@ async def get_next_autorun(
     No side effects; purely SELECT.
     """
     project_id = session_project_id
+    now = datetime.now(timezone.utc)  # shared by HITL gate + scheduled_at filter (#1972)
 
     # --- HITL timeout gate (Kanban #989) -------------------------------------
     # On-demand enforcement (Q2 → A, design lock #950 — mirrors the #951
@@ -540,7 +541,6 @@ async def get_next_autorun(
     session_project = await session.get(Project, project_id)
     if session_project is not None and session_project.hitl_timeout_hours is not None:
         timeout_hours = session_project.hitl_timeout_hours
-        now = datetime.now(timezone.utc)
         threshold = timedelta(hours=timeout_hours)
         paused_q = select(Task).where(
             Task.project_id == project_id,
@@ -570,7 +570,8 @@ async def get_next_autorun(
 
     # --- next_task -----------------------------------------------------------
     # Highest-priority runnable TODO task: auto_pickup or auto_headless,
-    # not halted, not blocked by an in-progress/todo blocker.
+    # not halted, not blocked by an in-progress/todo blocker,
+    # and scheduled_at is either unset or already reached (Kanban #1972).
     next_task_stmt = (
         select(Task)
         .outerjoin(blocker, Task.blocked_by == blocker.id)
@@ -581,6 +582,7 @@ async def get_next_autorun(
             Task.run_mode.in_([TaskRunMode.AUTO_PICKUP, TaskRunMode.AUTO_HEADLESS]),
             Task.halt_reason.is_(None),
             or_(Task.blocked_by.is_(None), blocker.process_status == TaskStatus.DONE),
+            or_(Task.scheduled_at.is_(None), Task.scheduled_at <= now),
         )
         .order_by(
             Task.priority.desc(),

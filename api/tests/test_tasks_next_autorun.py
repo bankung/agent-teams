@@ -18,11 +18,13 @@ Coverage:
   (f) pending_questions returns question/decision tasks not yet DONE
   (g) blocked_count correct when tasks have active blockers
   (h) empty project → next_task=null, resume_tasks=[], pending_questions=[], blocked_count=0
+  (i-l) scheduled_at enforcement — Kanban #1972
 """
 
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -443,3 +445,106 @@ async def test_empty_project_returns_null_and_zero(client, scaffold_cleanup) -> 
     assert body["resume_tasks"] == [], body
     assert body["pending_questions"] == [], body
     assert body["blocked_count"] == 0, body
+
+
+# ---------------------------------------------------------------------------
+# (i-l) scheduled_at enforcement — Kanban #1972
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_next_task_excludes_future_scheduled_at(client, scaffold_cleanup) -> None:
+    """auto_pickup task with scheduled_at=+1h must NOT be returned as next_task (AC[0])."""
+    pid = await _make_fresh_project(client, scaffold_cleanup, "k1972-i")
+
+    future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    future_task = await _make_task(
+        client,
+        pid,
+        "future scheduled task",
+        run_mode="auto_pickup",
+        task_kind="ai",
+        scheduled_at=future,
+    )
+
+    body = await _get_next_autorun(client, pid)
+    assert body["next_task"] is None, (
+        f"future-scheduled task {future_task['id']} must NOT be picked up early: {body}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_next_task_includes_past_scheduled_at(client, scaffold_cleanup) -> None:
+    """auto_pickup task with scheduled_at=-1h (already elapsed) IS returned."""
+    pid = await _make_fresh_project(client, scaffold_cleanup, "k1972-j")
+
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    past_task = await _make_task(
+        client,
+        pid,
+        "past scheduled task",
+        run_mode="auto_pickup",
+        task_kind="ai",
+        scheduled_at=past,
+    )
+
+    body = await _get_next_autorun(client, pid)
+    assert body["next_task"] is not None, body
+    assert body["next_task"]["id"] == past_task["id"], (
+        f"expected past-scheduled task {past_task['id']}, got {body['next_task']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_next_task_includes_null_scheduled_at(client, scaffold_cleanup) -> None:
+    """auto_pickup task with scheduled_at=NULL (default) is always eligible."""
+    pid = await _make_fresh_project(client, scaffold_cleanup, "k1972-k")
+
+    null_task = await _make_task(
+        client,
+        pid,
+        "unscheduled task",
+        run_mode="auto_pickup",
+        task_kind="ai",
+    )
+
+    body = await _get_next_autorun(client, pid)
+    assert body["next_task"] is not None, body
+    assert body["next_task"]["id"] == null_task["id"], (
+        f"expected null-scheduled task {null_task['id']}, got {body['next_task']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_next_task_scheduled_at_ordering_unchanged(client, scaffold_cleanup) -> None:
+    """With two eligible tasks, priority ordering is unaffected by scheduled_at presence.
+
+    Arrange: urgent task (priority=4, scheduled_at=-1h) + normal task (priority=2, no
+    scheduled_at). The urgent task should still win because priority DESC is the primary sort.
+    """
+    pid = await _make_fresh_project(client, scaffold_cleanup, "k1972-l")
+
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    urgent = await _make_task(
+        client,
+        pid,
+        "urgent past-scheduled",
+        run_mode="auto_pickup",
+        task_kind="ai",
+        priority=4,
+        scheduled_at=past,
+    )
+    await _make_task(
+        client,
+        pid,
+        "normal unscheduled",
+        run_mode="auto_pickup",
+        task_kind="ai",
+        priority=2,
+    )
+
+    body = await _get_next_autorun(client, pid)
+    assert body["next_task"] is not None, body
+    assert body["next_task"]["id"] == urgent["id"], (
+        f"expected priority-4 task {urgent['id']}, got {body['next_task']['id']}"
+    )
