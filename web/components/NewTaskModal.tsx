@@ -392,10 +392,18 @@ export function NewTaskModal({
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
+
+    // #1909 AC3 — client-side pre-flight: BE caps acceptance_criteria at 50.
+    // Count non-empty rows before the POST and show an inline error so the
+    // operator can trim the list without a round-trip 422.
+    const nonEmptyAc = acceptanceCriteria.filter((r) => r.text.trim() !== "");
+    if (nonEmptyAc.length > 50) {
+      setError(`Too many acceptance criteria (${nonEmptyAc.length}/50 max). Remove ${nonEmptyAc.length - 50} before submitting.`);
+      return;
+    }
+
     setError(null);
     setSubmitting(true);
-
-    const nonEmptyAc = acceptanceCriteria.filter((r) => r.text.trim() !== "");
     const body: TaskCreateBody = {
       project_id: projectId,
       title: trimmedTitle,

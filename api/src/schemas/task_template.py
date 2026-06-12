@@ -21,10 +21,13 @@ exposed via the explicit `status` field below per the #1303 spec
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+_PLACEHOLDER_RE = re.compile(r"^[\w.-]+$", re.ASCII)
 
 
 def _validate_str_list(values: list[Any], label: str) -> list[str]:
@@ -86,7 +89,13 @@ class TaskTemplateCreate(BaseModel):
     @field_validator("placeholders")
     @classmethod
     def _check_placeholders(cls, v: list[Any]) -> list[str]:
-        return _validate_str_list(v, "placeholders")
+        validated = _validate_str_list(v, "placeholders")
+        for i, key in enumerate(validated):
+            if not _PLACEHOLDER_RE.fullmatch(key):
+                raise ValueError(
+                    f"placeholders[{i}]={key!r} must match ^[\\w.-]+$"
+                )
+        return validated
 
     @field_validator("acceptance_criteria_template")
     @classmethod
@@ -128,7 +137,13 @@ class TaskTemplateUpdate(BaseModel):
     def _check_placeholders(cls, v: list[Any] | None) -> list[str] | None:
         if v is None:
             return None
-        return _validate_str_list(v, "placeholders")
+        validated = _validate_str_list(v, "placeholders")
+        for i, key in enumerate(validated):
+            if not _PLACEHOLDER_RE.fullmatch(key):
+                raise ValueError(
+                    f"placeholders[{i}]={key!r} must match ^[\\w.-]+$"
+                )
+        return validated
 
     @field_validator("acceptance_criteria_template")
     @classmethod

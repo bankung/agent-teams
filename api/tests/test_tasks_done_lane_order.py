@@ -11,6 +11,10 @@ Coverage:
   (f) unknown order value is rejected with 422 (Literal enforcement)
   (g) order=done_lane composes with include_cancelled gate (no ps!=5 leakage)
   (h) no-overlap / no-gap: two pages are disjoint and together stay DESC
+  (i) Kanban #2122-L1: done_lane guard — pending=true → 422
+  (j) Kanban #2122-L1: done_lane guard — process_status=2 (non-DONE) → 422
+  (k) Kanban #2122-L1: done_lane guard — no process_status → 422
+  (l) Kanban #2122-L1: done_lane guard — process_status=5 → 200 (valid combo)
 """
 
 from __future__ import annotations
@@ -451,3 +455,120 @@ async def test_done_lane_two_pages_disjoint_and_globally_desc(client):
     finally:
         for tid in tids:
             await client.delete(f"/api/tasks/{tid}", headers=headers)
+
+
+# -----------------------------------------------------------------------
+# (i–l) Kanban #2122-L1: done_lane order guard
+# -----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_done_lane_guard_pending_true_422(client):
+    """order=done_lane + pending=true must return 422.
+
+    NEGATIVE: pending=true is incompatible with done_lane (which is DONE-scope only).
+    POSITIVE: the error detail names the constraint so callers can fix the call.
+    """
+    project_id = await _get_project_id(client)
+    resp = await client.get(
+        "/api/tasks",
+        params={"order": "done_lane", "pending": "true"},
+        headers={"X-Project-Id": str(project_id)},
+    )
+    assert resp.status_code == 422, (
+        f"order=done_lane + pending=true must 422; got {resp.status_code}: {resp.text}"
+    )
+    detail = resp.json().get("detail", "")
+    assert "done_lane" in detail and "pending" in detail, (
+        f"422 detail must mention 'done_lane' and 'pending'; got: {detail!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_done_lane_guard_non_done_process_status_422(client):
+    """order=done_lane + process_status=2 (IN_PROGRESS) must return 422.
+
+    NEGATIVE: only process_status=5 is valid with done_lane.
+    POSITIVE: the error detail names the constraint.
+    """
+    project_id = await _get_project_id(client)
+    resp = await client.get(
+        "/api/tasks",
+        params={"order": "done_lane", "process_status": 2},
+        headers={"X-Project-Id": str(project_id)},
+    )
+    assert resp.status_code == 422, (
+        f"order=done_lane + process_status=2 must 422; got {resp.status_code}: {resp.text}"
+    )
+    detail = resp.json().get("detail", "")
+    assert "done_lane" in detail and "process_status=5" in detail, (
+        f"422 detail must mention 'done_lane' and 'process_status=5'; got: {detail!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_done_lane_guard_no_process_status_422(client):
+    """order=done_lane with no process_status must return 422.
+
+    NEGATIVE: omitting process_status means the scope is not pinned to DONE.
+    POSITIVE: precise 422 returned (not a silent order-by on all tasks).
+    """
+    project_id = await _get_project_id(client)
+    resp = await client.get(
+        "/api/tasks",
+        params={"order": "done_lane"},
+        headers={"X-Project-Id": str(project_id)},
+    )
+    assert resp.status_code == 422, (
+        f"order=done_lane without process_status must 422; got {resp.status_code}: {resp.text}"
+    )
+    detail = resp.json().get("detail", "")
+    assert "done_lane" in detail, (
+        f"422 detail must mention 'done_lane'; got: {detail!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_done_lane_guard_process_status_5_200(client):
+    """order=done_lane + process_status=5 must return 200 (the only valid combo).
+
+    POSITIVE: the valid combination is accepted; response is a list.
+    NEGATIVE: must not return 422 (the guard must not over-reject).
+    """
+    project_id = await _get_project_id(client)
+    resp = await client.get(
+        "/api/tasks",
+        params={"order": "done_lane", "process_status": 5, "limit": 1},
+        headers={"X-Project-Id": str(project_id)},
+    )
+    assert resp.status_code == 200, (
+        f"order=done_lane + process_status=5 must be 200; got {resp.status_code}: {resp.text}"
+    )
+    assert isinstance(resp.json(), list), "Response must be a list"
+
+
+@pytest.mark.asyncio
+async def test_done_lane_guard_triple_combo_pending_and_ps5_422(client):
+    """order=done_lane + process_status=5 + pending=true must return 422.
+
+    DELIBERATE contract pin (Kanban #2122 AC1):
+      done_lane declares pending=true incompatible even though the general
+      precedence rule says process_status wins and pending is silently ignored
+      for other order modes.  For done_lane we REJECT instead of silently
+      ignoring, because the combination is semantically contradictory (done_lane
+      is DONE-scope only; pending=true asks for non-DONE tasks).  The order
+      param's Query description explicitly calls this out.
+
+    NEGATIVE: the triple combo must not be silently accepted.
+    POSITIVE: 422 is returned, not 200.
+    """
+    project_id = await _get_project_id(client)
+    resp = await client.get(
+        "/api/tasks",
+        params={"order": "done_lane", "process_status": 5, "pending": "true"},
+        headers={"X-Project-Id": str(project_id)},
+    )
+    assert resp.status_code == 422, (
+        f"order=done_lane + process_status=5 + pending=true must 422; "
+        f"got {resp.status_code}: {resp.text}"
+    )

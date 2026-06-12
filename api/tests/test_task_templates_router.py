@@ -296,3 +296,105 @@ async def test_post_gated_succeeds_with_valid_token(client, monkeypatch) -> None
         f"/api/task-templates/{resp.json()['id']}",
         headers={"X-Operator-Token": "secret-token-123"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Kanban #1909-N1: placeholder key pattern (^[\w.-]+$)
+# ---------------------------------------------------------------------------
+
+
+def _payload_with_placeholders(keys: list[str]) -> dict:
+    """Minimal POST body overriding the placeholders field."""
+    p = _template_payload()
+    p["placeholders"] = keys
+    return p
+
+
+@pytest.mark.asyncio
+async def test_placeholder_invalid_space_422(client) -> None:
+    """'my key' (space) must be rejected with 422 naming the value.
+
+    NEGATIVE: space is not in [\\w.-]; the FE substitution regex would never
+    match it → the placeholder creates an orphaned input that silently never subs.
+    """
+    resp = await client.post(
+        "/api/task-templates", json=_payload_with_placeholders(["my key"])
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.text
+    assert "my key" in body, f"422 detail must name the offending value; got: {body!r}"
+
+
+@pytest.mark.asyncio
+async def test_placeholder_invalid_colon_422(client) -> None:
+    """'a:b' (colon) must be rejected with 422 naming the index/value."""
+    resp = await client.post(
+        "/api/task-templates", json=_payload_with_placeholders(["good_key", "a:b"])
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.text
+    assert "a:b" in body, f"422 detail must name the offending value; got: {body!r}"
+
+
+@pytest.mark.asyncio
+async def test_placeholder_invalid_non_ascii_422(client) -> None:
+    """Non-ASCII key ('ไทย') must be rejected with 422 (\\w matches only ASCII word chars)."""
+    resp = await client.post(
+        "/api/task-templates", json=_payload_with_placeholders(["ไทย"])
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_placeholder_valid_patterns_accepted(client) -> None:
+    """Valid keys — 'branch_name', 'my-key', 'a.b_c' — must be accepted (201).
+
+    POSITIVE: all three patterns that the FE regex matches are allowed.
+    """
+    resp = await client.post(
+        "/api/task-templates",
+        json=_payload_with_placeholders(["branch_name", "my-key", "a.b_c"]),
+    )
+    assert resp.status_code == 201, resp.text
+    del_resp = await client.delete(f"/api/task-templates/{resp.json()['id']}")
+    assert del_resp.status_code == 204, del_resp.text
+
+
+@pytest.mark.asyncio
+async def test_placeholder_patch_invalid_key_422(client) -> None:
+    """PATCH with an invalid placeholder key ('bad value') must return 422.
+
+    Covers the Update path — _check_placeholders on TaskTemplateUpdate.
+    NEGATIVE: invalid key on PATCH must not silently persist.
+    POSITIVE: same 422 contract as Create.
+    """
+    created = (
+        await client.post("/api/task-templates", json=_template_payload())
+    ).json()
+    tid = created["id"]
+    resp = await client.patch(
+        f"/api/task-templates/{tid}", json={"placeholders": ["bad value"]}
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.text
+    assert "bad value" in body, f"422 detail must name the offending value; got: {body!r}"
+    # Cleanup — template still exists (PATCH failed, nothing was mutated).
+    await client.delete(f"/api/task-templates/{tid}")
+
+
+@pytest.mark.asyncio
+async def test_placeholder_patch_valid_key_accepted(client) -> None:
+    """PATCH with valid placeholder keys must be accepted (200).
+
+    POSITIVE: Update path passes the same regex constraint without over-rejecting.
+    """
+    created = (
+        await client.post("/api/task-templates", json=_template_payload())
+    ).json()
+    tid = created["id"]
+    resp = await client.patch(
+        f"/api/task-templates/{tid}", json={"placeholders": ["new_key", "other.key"]}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["placeholders"] == ["new_key", "other.key"]
+    await client.delete(f"/api/task-templates/{tid}")

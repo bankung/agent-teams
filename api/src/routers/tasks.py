@@ -406,7 +406,9 @@ async def list_tasks(
             "Kanban #2112: opt-in ordering mode. Omit (default) → id ASC "
             "(backward-compatible). 'done_lane' → ORDER BY updated_at DESC, "
             "id DESC, enabling keyset pagination for the Done column. "
-            "Use with process_status=5 + before_updated_at/before_id."
+            "Requires process_status=5 and is incompatible with pending=true; "
+            "any other combination returns 422. "
+            "Use with before_updated_at/before_id for keyset paging."
         ),
     ),
     before_updated_at: datetime | None = Query(
@@ -532,6 +534,17 @@ async def list_tasks(
     # so all existing callers are unaffected.
     # Caveat: a DONE task whose updated_at mutates between page loads may shift
     # pages — same reshuffle the client sortDoneLane already exhibits; acceptable.
+    # Kanban #2122-L1: done_lane is only meaningful for the DONE lane; enforce the
+    # contract explicitly so callers get a precise error instead of silently
+    # ordering non-DONE rows by updated_at (misleading).
+    if order == "done_lane" and (process_status != TaskStatus.DONE or pending):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "order=done_lane requires process_status=5 (DONE lane only) "
+                "and is incompatible with pending=true"
+            ),
+        )
     if order == "done_lane":
         if before_updated_at is not None and before_id is not None:
             # Composite keyset: strictly after the cursor in DESC order.
