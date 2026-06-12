@@ -18,6 +18,16 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-06-12 — auto-run batch 2: #2104 audit truthfulness + #2155 interrupt usage metering + #1265 consolidation
+**Scope:** backend + langgraph + secretary
+**Decision:**
+1. **#2104 — audit `approval_mode` now reflects ACTUAL gate state:** new value **`dormant`** written to `_runtime/email-actions.jsonl` (and the calendar audit — same gate + same sink, fixed in the same pass) whenever the operator-proof gate is fail-open (OPERATOR_ACTION_KEY unset); `operator_proof` only when the gate is ACTIVE (token verified). Valid `approval_mode` set: `auto` (MODIFY tier) / `operator_proof` / `dormant` / `operator_confirm` (EXTERNAL_SEND). No closed-enum consumer exists (grep-verified). Helper `_resolve_approval_mode()` takes no decision arg — gate-ACTIVE+unverified is structurally unreachable at audit time (403 fires first; reviewer-verified no bypass branch in operator_auth). Live active-key re-verify remains #2102.
+2. **#2155 item 1 — HITL-RESUME usage metering fixed:** root cause was NOT the initial-interrupt path (that one already PATCHed usage) — `_resume_hitl_task` simply never called `_patch_session_run_usage`; now it does (resume-to-DONE + resume-that-interrupts-again; best-effort; skipped on the finalize give-up path by design). `session_run_id` rides the LangGraph checkpoint state, so no signature change. Live HITL re-verify queued in #2329; task stays IN_PROGRESS until then.
+3. **#2155 item 2 — test-deps DECISION: document, don't bake.** Canonical one-off `docker run` runbook (with the two observed footguns: compose-level `HITL_DEMO_ENABLED=1` missing from `--env-file`, and git-bash `/repo` path mangling) → `shared/runbooks/langgraph-test-deps.md`; `.claude/teams/dev.md` one-liner proposed there for humans.
+4. **#1265 → consolidated into #2326** (operator batch-rule: ALL key-gated work runs in ONE funded-key session): blocked_by FK set; #2326 description item (4) carries the live cache-read verification steps.
+5. **Known gaps registered pre-multi-user-epic (#2155 item 4):** (a) `GET /api/usage/daily` is unauthenticated + cross-project BY DESIGN in single-operator posture — must gate before multi-user; (b) `halt_reason` is ascii-filtered only — full L23 parity (homoglyphs/base64/comment obfuscation) deferred. Fold both into the multi-user hardening epic when it opens.
+**Verification:** langgraph 635/15 (one-off container); scoped email/calendar 168 passed; review APPROVE-WITH-NITS (0 blocker/major; all minors+nits folded in-gate incl. dead-param drop); full api suite = Lead gate (this batch's run).
+
 ## 2026-06-12 — #2301 default Anthropic model → claude-opus-4-8 + pricing refresh (+ Fable-5 descope)
 **Scope:** langgraph + backend
 **Decision:**

@@ -39,3 +39,18 @@ PATCH **overwrites** token/cost fields (does not increment). Re-reporting the sa
 
 - `ai_task_parser` cost: explicitly excluded per **#856** (one-off parse calls, not task runs).
 - `compact_runner` cost is currently metered into `session_compacts.compact_cost_usd` (separate audit table). Consolidating it into `session_runs` is a possible follow-up — a semantic decision, deferred.
+
+## Pricing-alias staleness risk (#2155 item 3, 2026-06-12)
+
+`("google", "gemini-flash-latest")` in `api/src/services/cost_tracker.py` PRICING is pinned
+to 2.5-flash rates ($0.30/$2.50 per MTok). Google controls what the alias resolves to
+server-side; if Google repoints it, our cost figures drift SILENTLY (exact-key match — no
+fallback fires, no error).
+
+- **Detection:** when `session_runs.model = gemini-flash-latest` traffic exists, spot-check
+  computed `total_cost_usd` against Google's live pricing page; also compare
+  `api/src/pricing.py` `_last_updated` (2026-06-11 as of #2301) against any Google pricing
+  announcement.
+- **Mitigation:** >5% drift → update `cost_tracker.py` PRICING + `pricing.py` snapshot
+  together, bump `_last_updated`, re-run `api/tests/test_pricing.py` + `test_cost_tracker.py`
+  (+ `test_compact_runner.py` — its cost snapshots pin rates; #2301 precedent).
