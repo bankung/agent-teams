@@ -77,6 +77,7 @@ from src.routers.tools_email import (
     _enforce_tool_grant_or_403,
     _require_creds,
     _require_outlook_creds,
+    _resolve_approval_mode,
     _write_action_audit,
 )
 
@@ -393,7 +394,7 @@ async def create_event(
         action="calendar_create_event",
         tier=CalendarTier.WRITE,  # type: ignore[arg-type]  # TODO(#1963): widen _write_action_audit tier param
         message_ids=[event_id],
-        approval_mode="operator_proof",
+        approval_mode=_resolve_approval_mode(),
         result="success",
     )
     return CreateEventResponse(event_id=event_id, html_link=created.get("html_link"))
@@ -471,7 +472,7 @@ async def respond(
         action=f"calendar_respond_{body.response}",
         tier=CalendarTier.WRITE,  # type: ignore[arg-type]  # TODO(#1963): widen _write_action_audit tier param
         message_ids=[body.event_id],
-        approval_mode="operator_proof",
+        approval_mode=_resolve_approval_mode(),
         result="success",
     )
     return RespondResponse(event_id=result["event_id"], response=result["response"])

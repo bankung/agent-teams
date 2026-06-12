@@ -380,11 +380,11 @@ async def test_create_event_success_gate_inactive(client, monkeypatch, provider,
     # POSITIVE — create_event ran with the supplied args.
     assert calls and calls[0]["title"] == "Sprint review"
     assert calls[0]["attendees"] == ["bob@x.com"]
-    # Action-audit row written (operator_proof mode, event id referenced).
+    # Action-audit row written (gate INACTIVE -> "dormant", Kanban #2104 fix).
     lines = _read_lines(audit)
     assert len(lines) == 1, lines
     assert lines[0]["action"] == "calendar_create_event"
-    assert lines[0]["approval_mode"] == "operator_proof"
+    assert lines[0]["approval_mode"] == "dormant"
     assert lines[0]["message_ids"] == ["new-ev-123"]
 
 
@@ -596,7 +596,8 @@ async def test_respond_success_gate_inactive(client, monkeypatch, provider, tmp_
     lines = _read_lines(audit)
     assert len(lines) == 1
     assert lines[0]["action"] == "calendar_respond_accept"
-    assert lines[0]["approval_mode"] == "operator_proof"
+    # Gate INACTIVE -> "dormant" (Kanban #2104 fix).
+    assert lines[0]["approval_mode"] == "dormant"
 
 
 @pytest.mark.asyncio

@@ -367,6 +367,7 @@ async def test_draft_writes_one_action_audit_line(client, monkeypatch, _actions_
 async def test_trash_writes_action_audit_line_with_delete_tier(client, monkeypatch, _actions_to_tmp):
     """A successful /gmail/trash also writes ONE action-audit line at the delete tier.
 
+    Gate INACTIVE (OPERATOR_ACTION_KEY unset) -> approval_mode="dormant" (Kanban #2104).
     (AC5/AC8 wired the sink into the existing trash route too, so Tier-2 delete is
     captured in the same trail.)
     """
@@ -384,7 +385,8 @@ async def test_trash_writes_action_audit_line_with_delete_tier(client, monkeypat
     assert len(lines) == 1
     assert lines[0]["action"] == "trash"
     assert lines[0]["tier"] == EmailTier.DELETE.value
-    assert lines[0]["approval_mode"] == "operator_proof"
+    # Gate INACTIVE (fail-open) -> "dormant", NOT "operator_proof" (Kanban #2104 fix).
+    assert lines[0]["approval_mode"] == "dormant"
 
 
 # ===========================================================================
