@@ -1,27 +1,23 @@
 ---
 story: context-system
-version: 1
+version: 2
 updated: 2026-06-12
 updated_by: lead @ #2332
 ---
 
 ## Current state
 
-- Story-based context system design LOCKED by operator 2026-06-12 (2 pushback rounds +
-  versioning round). Full spec: Lead memory `project_story_context_system.md` until the
-  CLAUDE.md section lands (draft in `_scratch/draft-claudemd-context-lifecycle.md`).
-- Core split shipped conceptually: activity rail = immutable per-task EVENTS (#2330 rule,
-  mandatory during work) · `shared/stories/<slug>.md` = mutable thread STATE (this file
-  format; `_template.md` alongside).
-- Activity-rail-mandatory rule active since 2026-06-12 (Lead memory
-  `feedback_activity_rail_mandatory.md`); doc placement tracked in #2330 (TODO, gate=commit).
+- System FULLY ACTIVE: the "Context lifecycle + story records" section is IN CLAUDE.md
+  (applied via operator ii 2026-06-12) — #2330 + #2332 both closed DONE. Canonical spec
+  = CLAUDE.md section; decisions.md entry "#2330/#2332 story-based context system" =
+  the lock record; Lead memory mirrors for cross-session recall.
+- Surfaces live: `shared/stories/_template.md` + this doc (first dogfood);
+  rail-mandatory checkpoints in effect since 2026-06-12.
 - /tn-git-commit skill landed at `.claude/skills/tn-git-commit/` via operator ii,
   commit 472e4e5 (local; push held) — #2331 awaits only the next-session invokability smoke.
 
 ## Open threads
 
-- #2330 — encode rail-mandatory rule into CLAUDE.md/teams-doc/SKILL.md (operator applies; gate=commit)
-- #2332 — THIS task: operator must apply the CLAUDE.md section from `_scratch/draft-claudemd-context-lifecycle.md` (gate=commit); then DONE
 - #2331 — /tn-git-commit invokability smoke at next session start, then DONE
 - Sunset evaluation due ~2026-07-03 (or ~30 chain pickups): story-doc read-rate +
   ~10-sample ground-truth audit; build /tn-task-context skill only if evaluation passes
@@ -42,4 +38,5 @@ updated_by: lead @ #2332
 
 ## Changelog
 
+v2 2026-06-12 #2332 — CLAUDE.md section applied (operator ii); #2330+#2332 closed; threads pruned to #2331 + sunset
 v1 2026-06-12 #2332 — story opened (dogfood): design lock recorded; template landed; threads #2330/#2331/#2332 + sunset registered
