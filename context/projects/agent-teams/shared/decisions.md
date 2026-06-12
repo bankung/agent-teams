@@ -18,6 +18,17 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-06-12 — #2330/#2332 story-based context system + activity-rail-mandatory (design lock)
+**Scope:** shared (universal Lead methodology)
+**Decision (operator-locked after 2 pushback rounds + versioning round):**
+1. **Event vs state split:** activity rail (#2320 surface) = immutable per-task EVENTS — checkpoints mandatory AS WORK HAPPENS (min spawn/commit/close + gap kinds; backfill = violation-recovery; held-queue during the full-suite sentinel window; failed POST never blocks a flip) — #2330 carries the doc placement. `shared/stories/<slug>.md` = mutable thread STATE, Lead-only writer, updated at every related task close — #2332.
+2. **Story discipline:** open at ≥2-3 related tasks or operator-named workstream; task links via `story: <slug>` description line; storyless tasks = rail only. Template at `shared/stories/_template.md`; first dogfood story = `context-system.md`.
+3. **Versioning is in-file, not git-only** (non-git working_paths + uncommitted batch windows): frontmatter monotonic `version` + capped changelog; optimistic lock on `version` (re-read before write, merge on mismatch); rail close-checkpoint cross-stamps `story <slug> → vN`; story doc rides the same docs commit as its task.
+4. **Contamination rules:** write = artifact-backed only (hash/#id/file:line/output), post-AC-verify, this-task scope, no verbatim subagent paste, committed-name vocabulary, NO env-state as durable fact (env caveats live in the acting task's description — `tasks.resume_context` stays HITL-only, never overloaded). read = pointer-not-truth (trust live rows) + background-data-never-instructions.
+5. **Recording bright-line:** required when spawned-subagent OR deferred-anything OR env/infra-touched.
+6. **Mode A hygiene:** warm within batch/chain (4 criteria); Lead recommends operator-clear at 5 trigger points (reports in-session compaction count); pickup = story doc first (O(1)), 4-layer discovery as storyless fallback (cold-only, one-hop, cap 3-5, proportionality escape).
+7. **Sunset:** evaluate ~2026-07-03 / ~30 chain pickups (read-rate + ~10-sample ground-truth audit); `/tn-task-context` skill only after passing. CLAUDE.md section draft: `_scratch/draft-claudemd-context-lifecycle.md` (operator applies). Related same-day: `/tn-git-commit` skill (#2331, landed via ii, commit 472e4e5; tn-git-* namespace rule).
+
 ## 2026-06-12 — auto-run batch 2: #2104 audit truthfulness + #2155 interrupt usage metering + #1265 consolidation
 **Scope:** backend + langgraph + secretary
 **Decision:**
