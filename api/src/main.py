@@ -25,6 +25,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from src.middleware.rate_limit import limiter
 from src.middleware.request_size import request_size_middleware
+from src.routers import agent_validation as agent_validation_router
 from src.routers import audit as audit_router
 from src.routers import credentials as credentials_router
 from src.routers import dashboard as dashboard_router
@@ -437,6 +438,9 @@ def create_app() -> FastAPI:
     app.include_router(settings_router.router, prefix="/api")
     # Kanban #2135 — provider cost rollup (cross-project, no X-Project-Id).
     app.include_router(usage_router.router, prefix="/api")
+    # Kanban #1016 — agent-frontmatter validator (platform-level, no
+    # X-Project-Id). Scans .claude/agents/*.md; read-only, GET-only.
+    app.include_router(agent_validation_router.router, prefix="/api")
 
     return app
 

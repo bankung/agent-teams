@@ -532,4 +532,14 @@ Complementary to (not replacing) `langgraph/tools/permission_gate` (tier-based, 
 
 **Output-folder convention:** `working_path`+team=data-analytics → `<wp>/analysis/outputs/<task_id>/`; `working_path` set → `<wp>/outputs/<task_id>/`; `working_path` null → role-folder scan `<repo_root>/context/projects/<name>/<role>/` for `task-<id>-*` files + `<id>/` subdir (DIRECT files only; name-filter runs BEFORE stat — 9P bind-mount RPCs are ~47ms/file, an unfiltered scan of a 1356-file dir took 40-78s).
 
+### GET /api/agents/validate (Kanban #1016, 2026-06-12)
+
+**Purpose:** scan-all validator for `.claude/agents/*.md` frontmatter — file:line diagnostics for what Claude Code's session-start parse only reports as "agent doesn't exist". Same service backs the CLI: `docker exec agent-teams-api python -m scripts.validate_agents` (exit 1 on any error).
+
+**Headers:** none — platform-level resource (no `X-Project-Id`). GET only; POST → 405. NO parameters by design (the spec's `POST body={path}` variant was dropped — it would be an arbitrary-path read primitive); scan dir is fixed server-side (`<repo_root>/.claude/agents`).
+
+**Response 200:** `{"files_scanned": int, "diagnostics": [{"file": basename, "line": int, "field": str, "message": str, "severity": "error"|"warning"}], "error_count": int, "warning_count": int}` — basenames only on the wire, OSError messages path-stripped.
+
+**Severity model:** errors = missing/duplicate/regex-violating `name` (fullmatch `^[a-z0-9]+(-[a-z0-9]+)*$`), missing `description`, bad `model` enum (opus/sonnet/haiku), malformed YAML (mark line), missing/empty frontmatter. Warnings = unknown frontmatter keys (real files carry e.g. `email_actions`) + unknown tool names. `tools` accepts YAML list | `"All tools"` | absent. Calibration lock: the real 38-file agents dir = 0 errors / 2 known warnings. Parser is line-oriented with `yaml.safe_load` fallback (strict whole-block YAML false-errors on mid-sentence colons in descriptions); BOM-tolerant (`utf-8-sig`).
+
 <!-- No endpoints documented yet. First endpoint goes above this line. -->
