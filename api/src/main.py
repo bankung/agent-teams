@@ -46,6 +46,7 @@ from src.routers import scaffold as scaffold_router
 from src.routers import sessions as sessions_router
 from src.routers import settings as settings_router
 from src.routers import task_templates as task_templates_router
+from src.routers import task_outputs as task_outputs_router
 from src.routers import tasks as tasks_router
 from src.routers import teams as teams_router
 from src.routers import tool_calls as tool_calls_router
@@ -377,6 +378,8 @@ def create_app() -> FastAPI:
     app.include_router(events_router.router, prefix="/api")  # Kanban #782 SSE
     # Kanban #980 — specialist-tool audit timeline (sub-resource of tasks).
     app.include_router(tool_calls_router.router, prefix="/api")
+    # Kanban #1305 — task-output listing + file serving (sub-resource of tasks).
+    app.include_router(task_outputs_router.router, prefix="/api")
     # Kanban #1082 — auditor cross-project daily-rollup aggregation.
     app.include_router(audit_router.router, prefix="/api")
     # Kanban #953 — per-project financial separation (transactions ledger + P&L).

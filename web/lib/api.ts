@@ -2351,6 +2351,53 @@ export async function getDailyUsage(opts?: {
   return jsonFetch<DailyUsageResponse>(buildPath("/api/usage/daily", qs));
 }
 
+// ============================================================================
+// Kanban #1305 — Task output files (listing + raw bytes).
+// ============================================================================
+
+// TaskOutputEntry — one item from GET /api/tasks/{id}/outputs.
+// kind ∈ chart | doc | export | text per the #1305 contract.
+export type TaskOutputEntry = {
+  filename: string;
+  mime: string;
+  size: number;
+  kind: "chart" | "doc" | "export" | "text";
+};
+
+// getTaskOutputs — GET /api/tasks/{id}/outputs → list.
+// Returns [] when the task has no outputs (never throws on 404/empty).
+export async function getTaskOutputs(
+  projectId: number,
+  taskId: number,
+): Promise<TaskOutputEntry[]> {
+  return jsonFetch<TaskOutputEntry[]>(`/api/tasks/${taskId}/outputs`, {
+    headers: { "X-Project-Id": String(projectId) },
+  });
+}
+
+// fetchTaskOutputBytes — fetch a task output file as a Blob via the browser
+// fetch() with X-Project-Id header.  The raw bytes API requires the header
+// (400 without it), so we cannot use a plain <img src> or <iframe src>.
+// Callers: create a blob URL, use it, then revoke on cleanup.
+export async function fetchTaskOutputBytes(
+  projectId: number,
+  taskId: number,
+  filename: string,
+): Promise<Blob> {
+  const url = `${apiBaseUrl()}/api/tasks/${taskId}/outputs/${encodeURIComponent(filename)}`;
+  const response = await fetch(url, {
+    cache: "no-store",
+    headers: { "X-Project-Id": String(projectId) },
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { detail?: unknown };
+    const message =
+      formatDetail(body.detail) ?? `${response.status} ${response.statusText}`;
+    throw new HttpError(response.status, body.detail, message);
+  }
+  return response.blob();
+}
+
 // deleteResource — DELETE /api/resources/{id}. Operator-gated; soft-delete +
 // move file to trash. 204 (no body) on success; idempotent. Returns void.
 export async function deleteResource(resourceId: number): Promise<void> {

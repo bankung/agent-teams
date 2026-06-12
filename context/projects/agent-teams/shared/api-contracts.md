@@ -520,4 +520,16 @@ Complementary to (not replacing) `langgraph/tools/permission_gate` (tier-based, 
 - Predicate (mirrors phase-1 `InboxBadge.tsx`): `interaction_kind IN ('question','decision') AND process_status NOT IN (5,6) AND tasks.status=1 AND projects.status=1`.
 - `oldest_age_hours` = age of the oldest pending task's `created_at`; `null` when `count=0`. `by_project` sorted by `project_name`. Single GROUP BY query (no N+1). No side effects.
 
+### GET /api/tasks/{task_id}/outputs + /outputs/{filename} (Kanban #1305, 2026-06-12)
+
+**Purpose:** task-output viewer — list + serve files agents wrote to the task's output folder. Consumed by `web/components/TaskOutputs.tsx` (drawer Outputs section).
+
+**Headers:** `X-Project-Id` required on both. Gate order (mirrors tool-calls): 400 missing header → 404 unknown task → 400 cross-project → 410 soft-deleted parent.
+
+**Listing 200:** `[ {"filename": str, "mime": str, "size": int, "kind": "chart"|"doc"|"export"|"text"} ]` — flat, sorted by filename, capped at `MAX_OUTPUT_FILES=50` (warning logged on truncation). Empty / no folder → `[]` (NOT an error). kind by ext: png/svg/html→chart; md→doc; csv/json→export; else→text.
+
+**File serve:** filename validated (reject `/ \ .. NUL " CR LF` → 404, no echo; same rejection applied at listing-scan time); must be in the listing (client input never joined onto a root); containment via `Path.resolve()`+`is_relative_to`. Default `Content-Disposition: inline`; `?download=1` → `attachment`; **active content (.html/.htm/.svg/.xml) always forced `attachment`** (stored-XSS guard — FE previews via fetch+sandboxed iframe, never this inline path). Always `X-Content-Type-Options: nosniff`. Served as in-memory `Response` (threadpool `read_bytes`, 50 MB cap) — **FileResponse is BANNED on this app**: it deadlocks the whole server under the BaseHTTPMiddleware stack (live-reproduced 2026-06-12; TestClient cannot see it — real-socket probes required).
+
+**Output-folder convention:** `working_path`+team=data-analytics → `<wp>/analysis/outputs/<task_id>/`; `working_path` set → `<wp>/outputs/<task_id>/`; `working_path` null → role-folder scan `<repo_root>/context/projects/<name>/<role>/` for `task-<id>-*` files + `<id>/` subdir (DIRECT files only; name-filter runs BEFORE stat — 9P bind-mount RPCs are ~47ms/file, an unfiltered scan of a 1356-file dir took 40-78s).
+
 <!-- No endpoints documented yet. First endpoint goes above this line. -->
