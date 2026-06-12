@@ -2068,6 +2068,19 @@ async def _resume_hitl_task(
         body.get("halt_reason"),
     )
 
+    # Kanban #2155 — HITL resume must also PATCH usage. The session_run_id was
+    # stored in graph state at initial-run start (worker.py initial_state key)
+    # and survives in the LangGraph checkpoint, so final_state.get("session_run_id")
+    # returns it here without needing an extra parameter. Mirrors _run_task lines
+    # 960-969 exactly. Best-effort: never raises.
+    # NOTE: only fires when the finalize PATCH succeeds — the give-up path (resp is None) returns before this block.
+    if isinstance(final_state, dict):
+        run_id_from_state = final_state.get("session_run_id")
+        if run_id_from_state is not None:
+            await _patch_session_run_usage(
+                client, cfg, headers, run_id_from_state, final_state
+            )
+
 
 def _build_resume_halt_body(
     exc: HITLError,
