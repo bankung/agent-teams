@@ -18,6 +18,16 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-06-12 — #2327 per-role effort overrides via operator file (no UI) — design lock
+**Scope:** langgraph only
+**Decision (operator-approved 2026-06-12: per-role, file-config, no settings page):**
+1. **File, not DB/UI:** `_runtime/effort-overrides.json` (container `/repo/_runtime/effort-overrides.json`) — operator-editable runtime state, same posture as the #2215 write-allowlist (TTL-cached read ~5s, takes effect on next spawn, no restart, not committed to git). No migration, no API/schema/FE change.
+2. **Shape:** top-level keys = project-id STRINGS (multi-board) + optional `"default"` block; second level = canonical role names `frontend|backend|devops|tester|reviewer|general` (TaskRole 1..5 + null→general per langgraph/state.py); values = effort string `off|low|medium|high|extra|max`. Object value form (`{"effort": ...}`) is RESERVED forward-compat for a later per-role `model` key — not built in this slice.
+3. **Resolution chain (supersedes the #2300 chain):** `tasks.effort_override` (carrier) > `file[project][role]` (fallback `file["default"][role]`) > `projects.effort_mode` (incl. auto heuristic) > off. File beats auto (explicit operator intent > heuristic); carrier beats file (per-task manual stays topmost).
+4. **`max` permitted in the file** — operator-authored = manual control (same posture as the Slice-2 carrier); the AUTO path still never selects max (clamp unchanged).
+5. **Visibility parity with auto:** when the file resolves the effort and the carrier is empty, worker best-effort PATCHes the resolved value to `tasks.effort_override` (and `session_runs.effort` records it as before).
+6. **Fail-safe:** missing/unreadable file, invalid JSON, wrong shapes → no per-role overrides (fall through), warn, never crash; invalid effort values ignored per-entry with warn. Cache path-keyed (testable with tmp paths) like the allowlist reader.
+
 ## 2026-06-11 — #2320 Mode A Lead report-back into the #980 activity rail (design lock)
 **Scope:** backend + frontend + skills + db
 **Decision (operator locked scope 2026-06-11: Lead-reported checkpoints, NOT live subagent introspection):**

@@ -65,6 +65,14 @@ def _isolate_working_path_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
         sandbox._allowlist_cache_clear()
     except Exception:
         pass
+    try:
+        # Kanban #2327 — clear effort-overrides cache alongside the allowlist
+        # cache so a tmp-path override from one test never leaks into the next.
+        import worker as _w
+
+        _w._effort_overrides_cache_clear()
+    except Exception:
+        pass
 
 
 @pytest.fixture(autouse=True)

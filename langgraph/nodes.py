@@ -265,19 +265,24 @@ def make_specialist_node(agent_name: str):
     # effort serves every board.
     _model_by_effort: dict[str | None, Any] = {}
     _bound_by_effort: dict[str | None, Any] = {}
-    # Identity of the make_chat_model callable that populated the caches. When it
+    # Reference to the make_chat_model callable that populated the caches. When it
     # changes (tests monkeypatch `nodes.make_chat_model`), the caches are stale
     # and must be rebuilt — without this guard a cached model would leak across
     # monkeypatch swaps (#2187-class cache-isolation bug). In production the
     # identity is stable so this never fires (zero overhead).
-    _cache_factory_id: list[int | None] = [None]
+    #
+    # Stores the CALLABLE OBJECT (not its id()) so the reference keeps it alive.
+    # Storing id() risks CPython memory reuse: once a lambda is GC'd its address
+    # can be reused by a new lambda with the SAME id(), defeating the guard
+    # (#2327 regression, bisected 2026-06-12).
+    _cache_factory_ref: list[Any] = [None]
 
     def _model_for_effort(effort: str | None) -> Any:
-        current = id(make_chat_model)
-        if _cache_factory_id[0] != current:
+        current = make_chat_model
+        if _cache_factory_ref[0] is not current:
             _model_by_effort.clear()
             _bound_by_effort.clear()
-            _cache_factory_id[0] = current
+            _cache_factory_ref[0] = current
         if effort not in _model_by_effort:
             # Default (None / 'off') → zero-arg call, byte-identical to today's
             # construction (and to every existing test's zero-arg mock). Only a

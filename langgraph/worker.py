@@ -40,6 +40,7 @@ iteration body is wrapped in try/except inside `run_worker_loop` — only
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import os
@@ -709,11 +710,11 @@ async def _poll_once(
             client, cfg, headers, session_id, task_id
         )
 
-    # 2c) Kanban #2300 — resolve the Anthropic effort lever for this spawn
-    # (carrier > project effort_mode > off). In 'auto' project mode this also
-    # PATCHes the resolved level back to tasks.effort_override (best-effort).
+    # 2c) Kanban #2300/#2327 — resolve the Anthropic effort lever for this spawn
+    # (carrier > file[project][role] > project effort_mode > off). File and auto
+    # paths both PATCH the resolved level back to tasks.effort_override (best-effort).
     # Cost: one cached project-field GET per spawn; None on the live default
-    # path (provider=ollama / all projects NULL) — behavior byte-identical.
+    # path (provider=ollama / all projects NULL / no file) — behavior byte-identical.
     resolved_effort = await _resolve_effort_for_spawn(
         client, cfg, headers, task, _effective_project_id
     )
@@ -1451,7 +1452,7 @@ async def _fetch_project_required_binaries(
 
 
 # ---------------------------------------------------------------------------
-# Effort lever resolution (Kanban #2300)
+# Effort lever resolution (Kanban #2300 + #2327)
 # ---------------------------------------------------------------------------
 
 # Ladder order for the auto-path server-side clamp. 'off' is the floor; 'extra'
@@ -1468,6 +1469,115 @@ _EFFORT_CARRIER_VALUES: frozenset[str] = frozenset(
 _EFFORT_PROJECT_PRESETS: frozenset[str] = frozenset(
     {"off", "low", "medium", "high", "extra"}
 )
+
+# Kanban #2327 — role-code → canonical name used as the second-level key in
+# effort-overrides.json. None / unknown int → "general".
+_ROLE_CODE_TO_NAME: dict[int, str] = {
+    1: "frontend",
+    2: "backend",
+    3: "devops",
+    4: "tester",
+    5: "reviewer",
+}
+
+# Kanban #2327 — per-role effort overrides file (operator-editable runtime).
+# Default path matches the write-allowlist convention (#2215); overridable via
+# env for tests/rig (LANGGRAPH_<FEATURE>_PATH naming mirrors LANGGRAPH_WORKING_PATH).
+_EFFORT_OVERRIDES_PATH: str = os.getenv(
+    "LANGGRAPH_EFFORT_OVERRIDES_PATH", "/repo/_runtime/effort-overrides.json"
+)
+_EFFORT_OVERRIDES_TTL_SEC: float = 5.0
+# Path-keyed cache {path: (timestamp, parsed_dict_or_None)} — same pattern as
+# sandbox._allowlist_cache (M1 #2215 keying prevents cross-path cache collisions).
+_effort_overrides_cache: dict[str, tuple[float, dict | None]] = {}
+
+
+def _effort_overrides_cache_clear() -> None:
+    """Test hook — drop the cached overrides so the next read re-parses."""
+    _effort_overrides_cache.clear()
+
+
+def _read_effort_overrides(
+    path: str = _EFFORT_OVERRIDES_PATH,
+) -> dict | None:
+    """Return parsed effort-overrides.json or None.
+
+    Cached ~5s per `path` (TTL-keyed like sandbox._read_allowlist).
+    NEVER raises: missing file → None (debug); unreadable / invalid JSON /
+    non-dict top level → None (warn). A None return means "no file overrides"
+    and the caller falls through to the project effort_mode (fail-safe D6).
+    """
+    now = time.monotonic()
+    cached = _effort_overrides_cache.get(path)
+    if cached is not None and (now - cached[0]) < _EFFORT_OVERRIDES_TTL_SEC:
+        return cached[1]
+
+    result: dict | None = None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = json.load(fh)
+        if not isinstance(raw, dict):
+            logger.warning(
+                "effort-overrides: top-level value is %s, expected dict; ignoring",
+                type(raw).__name__,
+            )
+        else:
+            result = raw
+    except FileNotFoundError:
+        logger.debug("effort-overrides: file not found at %r; no overrides", path)
+    except Exception as exc:  # JSON decode errors, OSError, etc.
+        logger.warning("effort-overrides: read failed (%r): %r", path, exc)
+
+    _effort_overrides_cache[path] = (now, result)
+    return result
+
+
+def _file_effort_for(task: dict[str, Any], project_id: int) -> str | None:
+    """Look up a per-role effort value from the overrides file (Kanban #2327).
+
+    Resolution order:
+      1. parsed[str(project_id)][role_name]
+      2. parsed["default"][role_name]
+      3. None — caller falls through to project effort_mode.
+
+    Value must be a string in _EFFORT_CARRIER_VALUES (same legal set as the task
+    carrier, so 'max' is accepted — operator-authored = manual control, D4).
+    Invalid string values are warned and ignored per-entry; an object value with
+    a valid "effort" key is accepted (forward-compat for a future per-role model
+    key, D2); an object without one is ignored.
+
+    Never raises.
+    """
+    # Pass the current module-level path (not the default-arg snapshot) so that
+    # test monkeypatching of _EFFORT_OVERRIDES_PATH takes effect.
+    parsed = _read_effort_overrides(_EFFORT_OVERRIDES_PATH)
+    if parsed is None:
+        return None
+
+    role_code = task.get("assigned_role")
+    role_name = _ROLE_CODE_TO_NAME.get(role_code, "general")  # type: ignore[arg-type]
+
+    for block_key in (str(project_id), "default"):
+        block = parsed.get(block_key)
+        if not isinstance(block, dict):
+            continue
+        raw_val = block.get(role_name)
+        if raw_val is None:
+            continue
+        # Accept dict forward-compat shape: {"effort": "high", ...}
+        if isinstance(raw_val, dict):
+            raw_val = raw_val.get("effort")
+            if raw_val is None:
+                continue
+        if isinstance(raw_val, str) and raw_val in _EFFORT_CARRIER_VALUES:
+            return raw_val
+        logger.warning(
+            "effort-overrides: invalid value %r for project %r role %r; ignoring",
+            raw_val,
+            block_key,
+            role_name,
+        )
+    return None
 
 
 async def _fetch_project_effort_mode(
@@ -1563,11 +1673,15 @@ async def _resolve_effort_for_spawn(
     task: dict[str, Any],
     project_id: int,
 ) -> str | None:
-    """Resolve the effort level for a task spawn (Kanban #2300).
+    """Resolve the effort level for a task spawn (Kanban #2300 + #2327).
 
-    Precedence (design lock D3): task carrier > project effort_mode > off.
+    Precedence (design lock D3, superseded by #2327):
+      carrier > file[project][role] (fallback file["default"][role]) > project effort_mode > off.
       1. A valid `tasks.effort_override` carrier wins outright (incl. manual 'max').
-      2. Else fetch the project's `effort_mode`:
+      2. Else check effort-overrides.json for this project+role (Kanban #2327).
+         When the file resolves it, best-effort PATCH the carrier for visibility
+         (same as the auto path). 'max' passes through UNCLAMPED (operator intent).
+      3. Else fetch the project's `effort_mode`:
          - a preset (off/low/medium/high/extra) → use it directly;
          - 'auto' → `_resolve_auto_effort(task)`, then UNCONDITIONALLY clamped
            through `_clamp_effort` (server-side cap at 'extra', AC7) AND written
@@ -1580,6 +1694,25 @@ async def _resolve_effort_for_spawn(
     carrier = task.get("effort_override")
     if isinstance(carrier, str) and carrier in _EFFORT_CARRIER_VALUES:
         return carrier
+
+    # Kanban #2327 — file layer: slots between carrier and project mode.
+    file_effort = _file_effort_for(task, project_id)
+    if file_effort is not None:
+        # Visibility parity: PATCH the carrier so the operator sees what resolved
+        # (same as the auto path; best-effort — never block the run on failure).
+        task_id = task.get("id")
+        if task_id is not None:
+            try:
+                await _patch_task(
+                    client, cfg, headers, task_id, {"effort_override": file_effort}
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "effort file-resolution: carrier PATCH failed for task %s: %r",
+                    task_id,
+                    exc,
+                )
+        return file_effort
 
     mode = await _fetch_project_effort_mode(client, cfg, headers, project_id)
     if mode in _EFFORT_PROJECT_PRESETS:
