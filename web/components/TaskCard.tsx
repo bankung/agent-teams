@@ -12,6 +12,7 @@ import { PendingBadge } from "./PendingBadge";
 import { RecurrenceIndicator } from "./RecurrenceIndicator";
 import { StepCounter } from "./StepCounter";
 import { Icon } from "./Icon";
+import { TaskActivityStrip } from "./TaskActivityStrip";
 
 type Props = {
   task: TaskRead;
@@ -20,6 +21,8 @@ type Props = {
   // true, the card paints with a 2-second ring-pulse keyframe (defined in
   // globals.css) so the operator's eye lands on the matched card.
   highlighted?: boolean;
+  // Kanban #2334 — project id needed to fetch the activity rail for IN_PROGRESS cards.
+  projectId?: number;
 };
 
 const PRIORITY_LABEL: Record<number, string> = {
@@ -54,7 +57,7 @@ const ROLE_CLASS: Record<number, string> = {
   [TaskRole.SECURITY_REVIEWER]: "text-rose-700 bg-rose-50 dark:text-rose-300 dark:bg-rose-900/30",
 };
 
-export function TaskCard({ task, onOpenDetail, highlighted = false }: Props) {
+export function TaskCard({ task, onOpenDetail, highlighted = false, projectId }: Props) {
   const isAi = task.task_kind === "ai";
   const isPending = task.is_pending && task.process_status === TaskStatus.IN_PROGRESS;
   const inProgress = task.process_status === TaskStatus.IN_PROGRESS;
@@ -181,6 +184,10 @@ export function TaskCard({ task, onOpenDetail, highlighted = false }: Props) {
           </span>
         )}
       </div>
+      {/* Kanban #2334 — activity strip + running/idle dot for IN_PROGRESS cards only. */}
+      {inProgress && projectId !== undefined && (
+        <TaskActivityStrip projectId={projectId} taskId={task.id} />
+      )}
     </article>
   );
 }

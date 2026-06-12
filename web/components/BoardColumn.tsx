@@ -32,9 +32,11 @@ type Props = {
   // Kanban #2112 — disables the button and shows "Loading…" while a server
   // fetch is in-flight.
   loadMoreLoading?: boolean;
+  // Kanban #2334 — passed through to TaskCard for the activity strip on IN_PROGRESS cards.
+  projectId?: number;
 };
 
-export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, sortable = false, highlightedTaskId = null, totalCount, onLoadMore, loadMoreLoading = false }: Props) {
+export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, sortable = false, highlightedTaskId = null, totalCount, onLoadMore, loadMoreLoading = false, projectId }: Props) {
   const { isOver, setNodeRef } = useDroppable({ id: columnId });
   const taskIds = tasks.map((t) => t.id);
   const dropHighlight = isOver ? " ring-2 ring-blue-400/50" : "";
@@ -74,6 +76,7 @@ export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, so
                 task={task}
                 onOpenDetail={onOpenDetail}
                 highlighted={highlightedTaskId === task.id}
+                projectId={projectId}
               />
             ))
           )}

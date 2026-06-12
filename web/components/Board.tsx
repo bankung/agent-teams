@@ -905,6 +905,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
           onLoadMoreDone={handleLoadMoreDone}
           onCrossLaneDrop={onCrossLaneDrop}
           onSameLaneReorder={onSameLaneReorder}
+          projectId={project.id}
         />
       )}
       {/* #1238 GOV3 — Audit History archive below the lanes. Self-collapses;

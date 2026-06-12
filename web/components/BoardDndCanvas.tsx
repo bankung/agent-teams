@@ -47,6 +47,8 @@ type Props = {
   onLoadMoreDone: () => void;
   onCrossLaneDrop: OnCrossLaneDrop;
   onSameLaneReorder: OnSameLaneReorder;
+  // Kanban #2334 — passed through to BoardColumn/TaskCard for activity strip.
+  projectId?: number;
 };
 
 // #2122 N1 — derive the column-key→process_status map from the columns prop
@@ -73,6 +75,7 @@ export function BoardDndCanvas({
   onLoadMoreDone,
   onCrossLaneDrop,
   onSameLaneReorder,
+  projectId,
 }: Props) {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -145,6 +148,7 @@ export function BoardDndCanvas({
               onOpenDetail={onOpenDetail}
               sortable={col.statuses.includes(TaskStatus.TODO)}
               highlightedTaskId={highlightedTaskId}
+              projectId={projectId}
             />
           );
         })}

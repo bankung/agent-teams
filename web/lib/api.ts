@@ -1147,13 +1147,20 @@ export type ToolCallRead = {
 
 // #980 — GET /api/tasks/{id}/tool-calls. Backend returns [] for tasks with
 // no recorded calls; callers should hide the section in that case.
+// Kanban #2334 — optional `limit` arg (1..50) appends ?limit=N.  Client slices
+// to `limit` regardless as a guard against endpoints that return all rows.
 export async function getTaskToolCalls(
   projectId: number,
   taskId: number,
+  limit?: number,
 ): Promise<ToolCallRead[]> {
-  return jsonFetch<ToolCallRead[]>(`/api/tasks/${taskId}/tool-calls`, {
-    headers: { "X-Project-Id": String(projectId) },
-  });
+  const qs = limit !== undefined ? `?limit=${limit}` : "";
+  const rows = await jsonFetch<ToolCallRead[]>(
+    `/api/tasks/${taskId}/tool-calls${qs}`,
+    { headers: { "X-Project-Id": String(projectId) } },
+  );
+  // Client-side guard: slice to `limit` even when the endpoint ignores it.
+  return limit !== undefined ? rows.slice(0, limit) : rows;
 }
 
 // ============================================================================
