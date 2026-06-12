@@ -173,10 +173,11 @@ def test_session_compact_request_rejects_unknown_trigger() -> None:
 
 
 def test_compact_cost_locked_snapshot_for_haiku_45() -> None:
-    """1234 input + 234 output haiku tokens => $0.0019 (rounded HALF_UP @ 4dp).
+    """1234 input + 234 output haiku tokens => $0.0024 (rounded HALF_UP @ 4dp).
 
-    Math: 1234 * 0.8 / 1e6 + 234 * 4 / 1e6
-        = 0.0009872 + 0.000936 = 0.0019232 → 0.0019.
+    Math: 1234 * 1.0 / 1e6 + 234 * 5.0 / 1e6
+        = 0.001234 + 0.001170 = 0.002404 → 0.0024.
+    Rate refreshed per Kanban #2301 (2026-06-11): $1/$5 per MTok input/output.
     """
     from src.services.cost_tracker import compute_cost
 
@@ -184,7 +185,7 @@ def test_compact_cost_locked_snapshot_for_haiku_45() -> None:
         "anthropic", "claude-haiku-4-5-20251001",
         _STUB_INPUT_TOKENS, _STUB_OUTPUT_TOKENS,
     )
-    assert cost == Decimal("0.0019")
+    assert cost == Decimal("0.0024")
 
 
 # =============================================================================
@@ -215,7 +216,7 @@ async def test_compact_happy_path_replaces_history_and_inserts_audit_row(
         assert body["before_tokens"] >= 1
         assert body["after_tokens"] >= 1
         # Cost from stub-locked usage tokens — see snapshot test.
-        assert Decimal(body["compact_cost_usd"]) == Decimal("0.0019")
+        assert Decimal(body["compact_cost_usd"]) == Decimal("0.0024")
 
         # Filesystem: archive file exists with the stubbed summary embedded.
         from src.settings import get_settings

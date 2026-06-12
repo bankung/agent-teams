@@ -105,7 +105,7 @@ providers is a `.env` change + container restart — no code edits.
 LANGGRAPH_LLM_PROVIDER=anthropic   # or: openai, ollama
 ANTHROPIC_API_KEY=sk-ant-...        # required when provider=anthropic
 OPENAI_API_KEY=sk-...               # required when provider=openai
-ANTHROPIC_MODEL=claude-sonnet-4-6   # optional override (default shown)
+ANTHROPIC_MODEL=claude-opus-4-8   # optional override (default shown)
 OPENAI_MODEL=gpt-4o                 # optional override (default shown)
 OLLAMA_MODEL=llama3.2               # ollama-only; see Ollama section below
 OLLAMA_BASE_URL=http://host.docker.internal:11434  # ollama-only
@@ -137,8 +137,8 @@ docker compose restart langgraph
 ### Model overrides
 
 `ANTHROPIC_MODEL` / `OPENAI_MODEL` override the default model per provider —
-e.g., set `ANTHROPIC_MODEL=claude-opus-4-7` to swap the model without touching
-the SDK selector. Names are validated at startup: lowercase letters, digits,
+e.g., set `ANTHROPIC_MODEL=claude-sonnet-4-6` to drop to a cheaper/faster model
+than the opus-4-8 default, without touching the SDK selector. Names are validated at startup: lowercase letters, digits,
 dot, hyphen only. The common copy-paste gotcha — `claude_sonnet_4_6`
 (underscores) vs `claude-sonnet-4-6` (hyphens) — is caught with an explicit
 error message.

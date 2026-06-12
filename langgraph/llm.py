@@ -248,7 +248,7 @@ def build_cached_system_content(
     return bundle + "\n\n---\n\n" + role_brief
 
 
-DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
+DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-8"
 DEFAULT_OPENAI_MODEL = "gpt-4o"
 # Ollama runs locally; `llama3.2` is a small, fast default. Users typically
 # `ollama pull qwen2.5:7b` or similar for better quality and set OLLAMA_MODEL.
@@ -428,9 +428,11 @@ def make_chat_model(
 
         # Kanban #2300 — effort lever. A mapped effort enables adaptive thinking
         # + output_config.effort; anything else (None / 'off' / unknown) builds
-        # EXACTLY today's model (no thinking, no output_config). NEVER pass
-        # temperature/top_p/top_k/budget_tokens on this path (HTTP 400 on Opus
-        # 4.8/4.7 when paired with effort/thinking — design lock D1).
+        # EXACTLY today's model (no thinking, no output_config).
+        # IMPORTANT — claude-opus-4-8 (DEFAULT_ANTHROPIC_MODEL as of #2301): when
+        # thinking is enabled it must be adaptive + output_config.effort —
+        # budget_tokens is REMOVED, and temperature/top_p/top_k 400 alongside.
+        # The plain no-effort build below stays valid (design lock D1, #2300).
         anthropic_effort = _EFFORT_TO_ANTHROPIC.get(effort) if effort else None
         if anthropic_effort is not None:
             return ChatAnthropic(

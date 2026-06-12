@@ -24,11 +24,11 @@ from src.pricing import MODEL_PRICING, lookup_price
 # ----------------------------------------------------------------------
 
 def test_lookup_bare_opus_input() -> None:
-    assert lookup_price("opus", "input") == 15.00
+    assert lookup_price("opus", "input") == 5.00
 
 
 def test_lookup_bare_opus_output() -> None:
-    assert lookup_price("opus", "output") == 75.00
+    assert lookup_price("opus", "output") == 25.00
 
 
 def test_lookup_bare_sonnet_input() -> None:
@@ -40,11 +40,11 @@ def test_lookup_bare_sonnet_output() -> None:
 
 
 def test_lookup_bare_haiku_input() -> None:
-    assert lookup_price("haiku", "input") == 0.80
+    assert lookup_price("haiku", "input") == 1.00
 
 
 def test_lookup_bare_haiku_output() -> None:
-    assert lookup_price("haiku", "output") == 4.00
+    assert lookup_price("haiku", "output") == 5.00
 
 
 # ----------------------------------------------------------------------
@@ -80,8 +80,8 @@ def test_lookup_model_name_with_hyphens_and_dots() -> None:
 
 def test_lookup_prefixed_anthropic_explicit() -> None:
     """Explicit `anthropic:opus` works identically to bare `opus`."""
-    assert lookup_price("anthropic:opus", "input") == 15.00
-    assert lookup_price("anthropic:opus", "output") == 75.00
+    assert lookup_price("anthropic:opus", "input") == 5.00
+    assert lookup_price("anthropic:opus", "output") == 25.00
 
 
 # ----------------------------------------------------------------------

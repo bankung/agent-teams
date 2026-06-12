@@ -21,12 +21,14 @@ from decimal import ROUND_HALF_UP, Decimal
 # task_cost_estimator.py) resolves the env-supplied model name to the right
 # key via a normalizer; both name-shapes are reachable here.
 PRICING: dict[tuple[str, str], dict[str, float]] = {
+    ("anthropic", "claude-opus-4-8"): {"input": 5.0, "output": 25.0},  # exact key — hits before alias
     ("anthropic", "claude-opus-4-7"): {"input": 15.0, "output": 75.0},
     ("anthropic", "claude-sonnet-4-6"): {"input": 3.0, "output": 15.0},
-    ("anthropic", "claude-haiku-4-5-20251001"): {"input": 0.8, "output": 4.0},
+    ("anthropic", "claude-haiku-4-5-20251001"): {"input": 1.0, "output": 5.0},
     # #944 generic tier names (env-var ANTHROPIC_MODEL aliases). Resolver maps
     # any "claude-opus-4-*" / "claude-haiku*" string to these when the precise
     # tag doesn't hit. Rates from the #944 spec.
+    # NOTE: claude-opus-4-x carries legacy-Opus rates ($15/$75); claude-opus-4-8 has its own exact key above.
     ("anthropic", "claude-opus-4-x"): {"input": 15.0, "output": 75.0},
     ("anthropic", "claude-haiku"): {"input": 1.0, "output": 5.0},
     # OpenAI (Kanban #944) — rates locked from the #944 spec; reconfirm when
