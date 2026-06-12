@@ -1,8 +1,8 @@
 ---
 story: context-system
-version: 2
+version: 3
 updated: 2026-06-12
-updated_by: lead @ #2332
+updated_by: lead @ #2331
 ---
 
 ## Current state
@@ -13,20 +13,23 @@ updated_by: lead @ #2332
   the lock record; Lead memory mirrors for cross-session recall.
 - Surfaces live: `shared/stories/_template.md` + this doc (first dogfood);
   rail-mandatory checkpoints in effect since 2026-06-12.
-- /tn-git-commit skill landed at `.claude/skills/tn-git-commit/` via operator ii,
-  commit 472e4e5 (local; push held) — #2331 awaits only the next-session invokability smoke.
+- /tn-git-commit live: landed via operator ii (commit 472e4e5), smoke-passed SAME session
+  — skill registry hot-loaded mid-session (#2331 closed; see Gotchas).
 
 ## Open threads
 
-- #2331 — /tn-git-commit invokability smoke at next session start, then DONE
 - Sunset evaluation due ~2026-07-03 (or ~30 chain pickups): story-doc read-rate +
   ~10-sample ground-truth audit; build /tn-task-context skill only if evaluation passes
+- Operator-side: push go-signal pending for the day's local commits on dev
 
 ## Gotchas
 
 - Story versioning cannot rely on git alone: non-git `working_path` projects have no
   history, and batch-commit windows leave edits unversioned — hence in-file
   version+changelog as primary (this file's frontmatter).
+- SKILLS hot-load mid-session (observed 2026-06-12: /tn-git-commit became invokable
+  minutes after landing, no restart) — unlike `.claude/agents/*.md` which still load
+  only at session start. Don't defer skill smokes to the next session by default.
 - `tasks.resume_context` is HITL-flow server-written (api/src/services/content_moderation.py
   "No re-scan on resume_context") — do NOT overload it for handoffs.
 
@@ -38,5 +41,6 @@ updated_by: lead @ #2332
 
 ## Changelog
 
+v3 2026-06-12 #2331 — /tn-git-commit smoke-passed same-session (skills hot-load gotcha recorded); #2331 closed; threads = sunset + push-signal
 v2 2026-06-12 #2332 — CLAUDE.md section applied (operator ii); #2330+#2332 closed; threads pruned to #2331 + sunset
 v1 2026-06-12 #2332 — story opened (dogfood): design lock recorded; template landed; threads #2330/#2331/#2332 + sunset registered
