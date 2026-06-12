@@ -542,4 +542,16 @@ Complementary to (not replacing) `langgraph/tools/permission_gate` (tier-based, 
 
 **Severity model:** errors = missing/duplicate/regex-violating `name` (fullmatch `^[a-z0-9]+(-[a-z0-9]+)*$`), missing `description`, bad `model` enum (opus/sonnet/haiku), malformed YAML (mark line), missing/empty frontmatter. Warnings = unknown frontmatter keys (real files carry e.g. `email_actions`) + unknown tool names. `tools` accepts YAML list | `"All tools"` | absent. Calibration lock: the real 38-file agents dir = 0 errors / 2 known warnings. Parser is line-oriented with `yaml.safe_load` fallback (strict whole-block YAML false-errors on mid-sentence colons in descriptions); BOM-tolerant (`utf-8-sig`).
 
+### GET /api/agents + /api/agents/{name} (Kanban #1017, 2026-06-12)
+
+**Purpose:** agent gallery — browse every installed `.claude/agents/*.md` with metadata; consumed by `web/app/agents` (grid + filters) and `web/app/agents/[name]` (detail). Built on the #1016 validation service (single parser).
+
+**Headers:** none (platform-level, like /api/agents/validate). GET only.
+
+**Listing 200:** flat array sorted by name: `{name, description, model: opus|sonnet|haiku|null, tools_summary ("All tools"|"N tools"), tool_count: int|null, hook_count: int, source_file: basename, domain, valid: bool, validation_errors: [diagnostics]}`. `domain` = name-prefix heuristic (dev/novel/content/secretary/sem/seo/data/general/other — agents carry no domain field). Invalid files still listed (`valid:false`; warnings don't invalidate).
+
+**Detail 200:** all of the above + `{raw_frontmatter: str (verbatim), full_description: str, spawns: [{task_id, project_id, project_name, model: str|null, at: str|null}]}` — spawns = cross-project scan of `tasks.subagent_models` JSONB (`@>` pre-filter + `jsonb_array_elements` LATERAL, parametrized `text()`, soft-deleted excluded, newest-first w/ `at`→updated_at COALESCE fallback, cap 20). `at` can be null on legacy rows — FE must guard. 404: unknown name, regex-violating name (`AGENT_NAME_RE.fullmatch` gate before any FS/DB access), and RESERVED names.
+
+**Route-order invariant:** FastAPI matches in REGISTRATION ORDER — the validation router's static `/agents/validate` registers before this router's `/{name}` in `main.py` (load-bearing); `RESERVED_AGENT_NAMES = {"validate"}` backstops it (reserved name → validator ERROR diagnostic + gallery-detail 404).
+
 <!-- No endpoints documented yet. First endpoint goes above this line. -->

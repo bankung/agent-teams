@@ -67,6 +67,12 @@ from src.schemas.agent_metadata import (
 
 logger = logging.getLogger(__name__)
 
+# Static sub-paths under /api/agents/ — route-order makes these unreachable as
+# agent names.  RESERVED_AGENT_NAMES backstops the router-order guarantee so a
+# file named ``validate.md`` is surfaced as invalid rather than silently
+# shadowed.
+RESERVED_AGENT_NAMES: frozenset[str] = frozenset({"validate"})
+
 # Frontmatter fence: the block between the first ``---`` line and the next
 # ``---`` line (contract §7).
 _FENCE = "---"
@@ -336,20 +342,32 @@ def _validate_one_file(
             )
         )
     else:
-        # Valid name shape → register / check uniqueness across the directory.
-        prior = name_to_file.get(name)
-        if prior is not None:
+        # Valid name shape — check reserved names before registering.
+        if name in RESERVED_AGENT_NAMES:
             diags.append(
                 _make_diag(
                     basename,
                     name_line,
                     "name",
-                    f"duplicate name {name!r} — also declared in {prior}",
+                    f"name {name!r} is reserved by the /api/agents/validate route",
                     "error",
                 )
             )
         else:
-            name_to_file[name] = basename
+            # Register / check uniqueness across the directory.
+            prior = name_to_file.get(name)
+            if prior is not None:
+                diags.append(
+                    _make_diag(
+                        basename,
+                        name_line,
+                        "name",
+                        f"duplicate name {name!r} — also declared in {prior}",
+                        "error",
+                    )
+                )
+            else:
+                name_to_file[name] = basename
 
     # --- description (required, non-empty) ---
     desc_line = _find_key_line(fm_text, "description", fence_offset)
@@ -552,3 +570,236 @@ def default_agents_dir(repo_root: Path) -> Path:
     this is ``/repo/.claude/agents``.
     """
     return repo_root / ".claude" / "agents"
+
+
+# ===========================================================================
+# Agent gallery (Kanban #1017) — listing + detail.
+#
+# Built ON TOP of the validator above: every gallery row reuses the same
+# frontmatter parse + per-file diagnostics, so an invalid file STILL appears
+# (with valid=false + its error diagnostics) instead of being dropped.
+# ===========================================================================
+
+# Domain is a presentation HEURISTIC, not a real frontmatter field — agents
+# carry no `domain` key. We derive it from the agent NAME prefix. The table is
+# ordered longest/most-specific prefix first so e.g. `platform-ads-*` wins over
+# a hypothetical `platform-*` and the ads families map to `sem`. Anything that
+# matches no prefix falls through to `other`. Documented as a heuristic on the
+# wire (the `domain` field) — callers must not treat it as authoritative.
+#
+# Each entry is (matcher, domain). `matcher` is matched against the agent name
+# with the rule in the third tuple slot: "prefix" = name.startswith(matcher),
+# "exact-or-prefix" = name == matcher OR name.startswith(matcher) (used for the
+# families like `secretary` / `general` that appear both bare and hyphenated).
+_DOMAIN_RULES: tuple[tuple[str, str, str], ...] = (
+    ("dev-", "dev", "prefix"),
+    ("novel-", "novel", "prefix"),
+    ("content-", "content", "prefix"),
+    ("secretary", "secretary", "exact-or-prefix"),
+    ("sem-", "sem", "prefix"),
+    ("seo-", "seo", "prefix"),
+    ("google-ads-", "sem", "prefix"),
+    ("meta-ads-", "sem", "prefix"),
+    ("platform-ads-", "sem", "prefix"),
+    ("bi-", "data", "prefix"),
+    ("dashboard-", "data", "prefix"),
+    ("sql-", "data", "prefix"),
+    ("analytics-", "data", "prefix"),
+    ("data-", "data", "prefix"),
+    ("general", "general", "exact-or-prefix"),
+)
+
+
+def _domain_for_name(name: str) -> str:
+    """Derive the presentation ``domain`` from an agent name prefix (heuristic).
+
+    First matching rule wins (see ``_DOMAIN_RULES`` ordering). Returns
+    ``"other"`` when nothing matches. A non-string / empty name (e.g. an
+    unparseable file) also yields ``"other"``.
+    """
+    if not isinstance(name, str) or not name:
+        return "other"
+    for matcher, domain, kind in _DOMAIN_RULES:
+        if kind == "prefix":
+            if name.startswith(matcher):
+                return domain
+        elif name == matcher or name.startswith(matcher):
+            return domain
+    return "other"
+
+
+def _count_hooks(hooks: object) -> int:
+    """Count hook matcher entries across all top-level event keys in ``hooks:``.
+
+    Frontmatter ``hooks:`` is a mapping of EVENT NAME (``PreToolUse``,
+    ``PostToolUse``, ...) → a LIST of matcher entries. We sum the list lengths
+    across every top-level event key:
+
+        hooks:
+          PreToolUse:
+            - matcher: "Bash"      # 1 entry
+              hooks: [...]
+        →  hook_count == 1
+
+    Rules (kept deliberately simple, per the contract):
+      * ``hooks`` absent / not a mapping        → 0
+      * a value that is a list                  → + len(list)
+      * a value that is a non-list, non-null    → + 1 (a lone entry)
+      * a null value                            → + 0
+    The nested ``hooks:`` list INSIDE one matcher entry is NOT recursed into —
+    we count matcher entries, not individual command hooks.
+    """
+    if not isinstance(hooks, dict):
+        return 0
+    total = 0
+    for value in hooks.values():
+        if isinstance(value, list):
+            total += len(value)
+        elif value is not None:
+            total += 1
+    return total
+
+
+def _summarize_tools(data: dict[str, object]) -> tuple[str, int | None]:
+    """Return ``(tools_summary, tool_count)`` from a parsed frontmatter dict.
+
+    ``"All tools"`` + ``None`` when ``tools`` is absent or the literal
+    ``"All tools"``; otherwise ``"N tools"`` + ``N`` for an explicit list. A
+    malformed ``tools`` value (string that is not the literal, or a non-list /
+    non-string) is treated as "all tools" for the SUMMARY — the validator
+    already emits the ERROR diagnostic, so the gallery does not double-report;
+    it just shows a non-misleading placeholder.
+    """
+    if "tools" not in data:
+        return ALL_TOOLS_LITERAL, None
+    tools = data.get("tools")
+    if isinstance(tools, list):
+        n = len(tools)
+        return f"{n} tools", n
+    # Either the literal "All tools" or an off-spec value (validator flagged).
+    return ALL_TOOLS_LITERAL, None
+
+
+def _summarize_one_file(
+    path: Path, name_to_file: dict[str, str]
+) -> dict[str, object]:
+    """Build one gallery summary dict for a single agent file.
+
+    Reuses :func:`_validate_one_file` (so the SAME diagnostics drive the
+    gallery and ``/validate``) plus a best-effort re-parse for the display
+    fields. A file that fails to parse still yields a row — ``description=""``,
+    ``model=None``, all-tools summary — with its error diagnostics attached.
+
+    ``name_to_file`` is the running first-declarer map for cross-file duplicate
+    detection (mutated by ``_validate_one_file``); the caller threads the same
+    dict across all files so duplicate-name diagnostics match ``/validate``.
+    """
+    basename = path.name
+
+    # Diagnostics first (single source of truth, mutates name_to_file).
+    diagnostics = _validate_one_file(path, name_to_file)
+    has_error = any(d["severity"] == "error" for d in diagnostics)
+
+    # Best-effort re-parse for the DISPLAY fields. Wrapped defensively: a file
+    # that already produced ERROR diagnostics may not parse cleanly — we never
+    # let that raise (the row must still render).
+    raw_frontmatter = ""
+    full_description = ""
+    name = basename[:-3] if basename.endswith(".md") else basename
+    model: str | None = None
+    tools_summary, tool_count = ALL_TOOLS_LITERAL, None
+    hook_count = 0
+
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+        fm_text, _fence = _extract_frontmatter(text)
+        if fm_text is not None:
+            raw_frontmatter = fm_text
+            try:
+                data = _parse_frontmatter_block(fm_text)
+            except _FrontmatterError:
+                data = {}
+            if isinstance(data, dict):
+                fm_name = data.get("name")
+                if isinstance(fm_name, str) and fm_name.strip():
+                    name = fm_name
+                desc = data.get("description")
+                if isinstance(desc, str):
+                    full_description = desc
+                fm_model = data.get("model")
+                if fm_model in MODEL_TIERS:
+                    model = fm_model  # type: ignore[assignment]  # mypy cannot narrow via 'in MODEL_TIERS'; guarded above. #1017
+                tools_summary, tool_count = _summarize_tools(data)
+                hook_count = _count_hooks(data.get("hooks"))
+    except OSError:
+        # Unreadable file — _validate_one_file already emitted the read error.
+        pass
+
+    return {
+        "name": name,
+        "description": full_description,
+        "model": model,
+        "tools_summary": tools_summary,
+        "tool_count": tool_count,
+        "hook_count": hook_count,
+        "source_file": basename,
+        "domain": _domain_for_name(name),
+        "valid": not has_error,
+        "validation_errors": diagnostics,
+        # Detail-only fields (ignored by the AgentSummary serializer on the
+        # listing endpoint; consumed by AgentDetail on the detail endpoint).
+        "raw_frontmatter": raw_frontmatter,
+        "full_description": full_description,
+    }
+
+
+def list_agents(agents_dir: Path) -> list[dict[str, object]]:
+    """Build the gallery listing for ``GET /api/agents`` (contract §1).
+
+    Returns one summary dict per agent file (underscore-prefixed includes
+    skipped, same rule as the validator), SORTED BY ``name``. Invalid files are
+    included (``valid=false`` + diagnostics). A missing directory yields ``[]``.
+
+    Each dict carries the detail-only keys too (``raw_frontmatter`` /
+    ``full_description``); the listing serializer (``AgentSummary``) simply
+    ignores them.
+    """
+    try:
+        candidates = sorted(
+            (p for p in agents_dir.iterdir() if _is_agent_file(p)),
+            key=lambda p: p.name,
+        )
+    except (FileNotFoundError, NotADirectoryError, PermissionError):
+        logger.warning(
+            "agent_gallery: agents dir %r is not readable; listed 0 agents",
+            str(agents_dir),
+        )
+        return []
+
+    # Visit in sorted-FILENAME order so duplicate-name detection is
+    # deterministic (matches /validate), then re-sort the OUTPUT by agent name
+    # for the response (contract §1: "sorted by name").
+    name_to_file: dict[str, str] = {}
+    rows = [_summarize_one_file(p, name_to_file) for p in candidates]
+    rows.sort(key=lambda r: r["name"])
+    return rows
+
+
+def get_agent_summary(agents_dir: Path, name: str) -> dict[str, object] | None:
+    """Return the single gallery row whose agent ``name`` matches, or ``None``.
+
+    Resolves by matching the SCANNED listing (never joins ``name`` onto a
+    filesystem path — the router validates the regex first, but this is the
+    second line of defense: we only ever return a row that the directory scan
+    actually produced). The match is on the derived ``name`` field (the
+    frontmatter name when parseable, else the filename stem).
+
+    Returns ``None`` immediately for reserved names (e.g. ``"validate"``) so
+    the gallery router 404s cleanly — the validator route owns that path.
+    """
+    if name in RESERVED_AGENT_NAMES:
+        return None
+    for row in list_agents(agents_dir):
+        if row["name"] == name:
+            return row
+    return None

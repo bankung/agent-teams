@@ -103,6 +103,79 @@ class AgentValidationResponse(BaseModel):
     warning_count: int
 
 
+# ---------------------------------------------------------------------------
+# Agent gallery (Kanban #1017) — listing + detail wire shapes.
+#
+# These build ON TOP of the #1016 validator: every row reuses the same parse +
+# diagnostics path, so an invalid file still appears in the gallery (with
+# ``valid=false`` and its error diagnostics) rather than vanishing.
+# ---------------------------------------------------------------------------
+
+
+class AgentSummary(BaseModel):
+    """One row in ``GET /api/agents`` (contract §1).
+
+    Derived entirely from a file's frontmatter + the validator's diagnostics.
+    A file that fails to parse still produces a row (``valid=false``,
+    ``description=""``) so the gallery never silently drops a broken agent.
+
+    Field notes:
+      * ``model`` — the frontmatter tier, or ``None`` when absent (inherit) /
+        unparseable.
+      * ``tools_summary`` / ``tool_count`` — ``"All tools"`` + ``None`` when the
+        ``tools`` key is absent or the literal ``"All tools"``; otherwise
+        ``"N tools"`` + ``N`` for an explicit list.
+      * ``hook_count`` — number of hook matcher entries across all top-level
+        event keys in ``hooks:`` (0 when absent). See the service for the exact
+        counting rule.
+      * ``domain`` — derived from the name prefix via a heuristic table (agents
+        carry no domain field); ``"other"`` when no prefix matches.
+      * ``valid`` — ``False`` iff the file has any ERROR-severity diagnostic
+        (warnings do NOT flip it).
+      * ``validation_errors`` — the file's diagnostics (errors AND warnings),
+        same shape as ``GET /api/agents/validate``.
+    """
+
+    name: str
+    description: str
+    model: ModelTierLiteral | None
+    tools_summary: str
+    tool_count: int | None
+    hook_count: int
+    source_file: str
+    domain: str
+    valid: bool
+    validation_errors: list[AgentDiagnostic]
+
+
+class AgentSpawn(BaseModel):
+    """One recent spawn of an agent (contract §2).
+
+    Sourced from ``tasks.subagent_models`` (a JSONB array of
+    ``{agent, model, at}`` per task), joined to the owning project for a
+    human-readable ``project_name``. ``model`` / ``at`` are nullable because a
+    historical log entry may omit them.
+    """
+
+    task_id: int
+    project_id: int
+    project_name: str
+    model: str | None
+    at: str | None
+
+
+class AgentDetail(AgentSummary):
+    """Response for ``GET /api/agents/{name}`` (contract §2).
+
+    Everything in :class:`AgentSummary` PLUS the raw frontmatter text, the full
+    (untruncated) description, and recent cross-project spawn history.
+    """
+
+    raw_frontmatter: str
+    full_description: str
+    spawns: list[AgentSpawn]
+
+
 class AgentMetadata(BaseModel):
     """Canonical schema for a VALID agent frontmatter block (contract §1).
 

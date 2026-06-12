@@ -25,6 +25,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from src.middleware.rate_limit import limiter
 from src.middleware.request_size import request_size_middleware
+from src.routers import agent_gallery as agent_gallery_router
 from src.routers import agent_validation as agent_validation_router
 from src.routers import audit as audit_router
 from src.routers import credentials as credentials_router
@@ -441,6 +442,12 @@ def create_app() -> FastAPI:
     # Kanban #1016 — agent-frontmatter validator (platform-level, no
     # X-Project-Id). Scans .claude/agents/*.md; read-only, GET-only.
     app.include_router(agent_validation_router.router, prefix="/api")
+    # Kanban #1017 — agent gallery (platform-level, no X-Project-Id). Registered
+    # AFTER the validator: FastAPI/Starlette matches in REGISTRATION ORDER; the
+    # validation router's static /agents/validate is registered first so it wins
+    # over /agents/{name} — order is load-bearing; RESERVED_AGENT_NAMES
+    # backstops it.
+    app.include_router(agent_gallery_router.router, prefix="/api")
 
     return app
 
