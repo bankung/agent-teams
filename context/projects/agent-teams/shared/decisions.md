@@ -18,6 +18,24 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-06-12 — #2301 default Anthropic model → claude-opus-4-8 + pricing refresh (+ Fable-5 descope)
+**Scope:** langgraph + backend
+**Decision:**
+1. **Default flip:** `DEFAULT_ANTHROPIC_MODEL` claude-sonnet-4-6 → **claude-opus-4-8** (langgraph/llm.py). Intentional cost posture: at the CORRECTED rates Opus 4.8 ($5/$25) is only **~1.67x** Sonnet 4.6 ($3/$15) — the "~5x" impression came from pricing.py's stale legacy-Opus $15/$75 entry. Mitigations if spend bites: #2300 effort lever (project `effort_mode` / task carrier / #2327 file) + #1677 per-task `model_override`.
+2. **Pricing refresh (operator-verified against the live Anthropic models page 2026-06-11):** `api/src/pricing.py` opus 15/75→5/25, haiku 0.80/4→1/5, sonnet 3/15 unchanged, `_last_updated`=2026-06-11. **Scope addition (same intent — correct live cost accounting):** `api/src/services/cost_tracker.py` gained exact key `("anthropic","claude-opus-4-8")` 5/25 (exact match hits before the `claude-opus-4-x` family alias) + `claude-haiku-4-5-20251001` 0.8/4→1/5. The `claude-opus-4-x` alias DELIBERATELY keeps legacy $15/$75 (catches unversioned/legacy opus names; unverified today — commented in-file).
+3. **Opus 4.8 API surface reminder (cross-ref #2300 lock D1, documented in llm.py):** when thinking is enabled it must be adaptive + `output_config.effort`; `budget_tokens` is removed and temperature/top_p/top_k 400 alongside. The plain no-effort build stays valid.
+4. **Fable-5 DESCOPE:** operator reports Fable 5 loses subscription access after 22 Jun 2026 — ALL Fable-5 work removed from this task; `ModelTierLiteral` stays haiku/sonnet/opus (no fable tier). Revisit only on a further operator update.
+**Verification:** langgraph suite 632/15 green (the −1 vs the morning's 633 = deleted `test_minimal.py` debris, accounted); scoped api pricing/cost/estimator/usage sets 70 passed; live `GET /api/usage/daily` 200 post-reload. Live Anthropic call verification remains operator-gated under #2326 (no key in .env).
+
+## 2026-06-12 — #2122-L1/N1 + #1909 hardening batch — contract decisions
+**Scope:** backend + frontend
+**Decision:**
+1. **done_lane guard = explicit 422, not auto-scope** (#2122 L1, AC offered both): `order=done_lane` now requires `process_status=5` and rejects `pending=true`. **Triple combo (`process_status=5&pending=true`) also 422s — DELIBERATE divergence** from the "process_status wins, pending silently ignored" precedence rule (reviewer MINOR-1 adjudicated by Lead): done_lane prefers rejection over silent-ignore; pinned by `test_done_lane_guard_triple_combo_pending_and_ps5_422`. Contract line added to api-contracts-core.md.
+2. **Milestone-filtered DONE pagination stays a documented v1 limitation** (#2122 AC3 decision): server keyset paging remains cross-milestone; FE `doneHasMore` re-anchors on filter toggle (#2112 M1 behavior). True milestone-scoped DONE paging only if a real need appears — single-operator, milestone-filtered Done-lane scrolling is rare; not worth the keyset complexity today.
+3. **Template placeholder keys constrained to `^[\w.-]+$` (re.ASCII)** (#1909 N-1): BE Create+Update now match the FE substitution regex key-space exactly (`[\w.-]+`, ASCII) — closes the orphaned-placeholder-input silent-drop gap; 422 names the offending index/value. The 3 seeded dev templates remain valid (`method/path/purpose`, `symptom`, `[]`).
+4. **FE pre-flight AC cap** (#1909 N-3): NewTaskModal blocks >50 non-empty AC rows inline before the POST (boundary agrees with BE `max_length=50`: 50 OK / 51 blocked). **BoardDndCanvas `COLUMN_PS` is now derived** from the columns prop via exported `buildColumnPs` (statuses[0] = canonical drop status — currently identical to the old literal; multi-status forward note covered in its unit test) (#2122 N1).
+**Verification:** scoped api sets 32 passed; FE 15 files/216 tests x5 consecutive full-suite runs green; Tier-1 live probes 10/10 PASS (422 shapes + DONE-lane ordering + no-row-created isolation + usage/daily shape); review APPROVE-WITH-NITS, all nits folded in-gate.
+
 ## 2026-06-12 — #2327 per-role effort overrides via operator file (no UI) — design lock
 **Scope:** langgraph only
 **Decision (operator-approved 2026-06-12: per-role, file-config, no settings page):**
