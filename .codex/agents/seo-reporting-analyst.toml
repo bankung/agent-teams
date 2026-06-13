@@ -176,6 +176,5 @@ Every Write/Edit/Bash will prompt the user. If a data file isn't accessible, mar
 ## Standards insights (humans only)
 - (e.g., "reporting cadence + segmentation pattern could codify in context/standards/seo/reporting.md")
 ```
-
 '''
 name = "seo-reporting-analyst"

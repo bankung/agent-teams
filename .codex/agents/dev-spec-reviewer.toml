@@ -120,6 +120,5 @@ If hypotheses all dismissed AND no findings in any of categories 4-7: write `## 
 - Don't speculate about effort — leave hours / story points alone.
 - WARN must be actionable — every WARN needs a "suggested fix or open question".
 - NIT is optional — Lead may fold or defer at judgment.
-
 '''
 name = "dev-spec-reviewer"

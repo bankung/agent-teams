@@ -10,7 +10,7 @@
 # Per-agent scope:
 #   This hook only fires when .codex/agents/project-auditor.md wires it via
 #   frontmatter `hooks: PreToolUse:` (per the per-agent-hooks pattern). It does
-#   NOT live in .codex/settings.json — other agents (Lead, dev-*, etc.) are
+#   NOT live in .codex/hooks.json — other agents (Lead, dev-*, etc.) are
 #   unaffected. See feedback_per_agent_hooks memory for the per-agent semantics.
 #
 # Whitelist-not-blacklist philosophy for Bash:
@@ -37,7 +37,7 @@
 # Lead handoff: the matching frontmatter block belongs in
 #   .codex/agents/project-auditor.md
 # Lead drafts that file in parallel; this hook does NOT touch agent files,
-# settings.json, or any other hook.
+# hooks.json, or any other hook.
 
 $ErrorActionPreference = 'Stop'
 

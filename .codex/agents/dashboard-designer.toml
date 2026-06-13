@@ -139,6 +139,5 @@ Every Write/Edit/Bash/WebFetch/WebSearch will prompt the user. If denied for an 
 ## Standards insights (humans only)
 - (e.g., "exec-dashboard 5-section pattern could go to context/standards/data/dashboard-patterns.md if data standards lane exists")
 ```
-
 '''
 name = "dashboard-designer"

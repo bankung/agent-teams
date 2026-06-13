@@ -41,6 +41,5 @@ Every Write/Edit/Bash will prompt the user. If denied, stop and report with the 
 - **Issues for writer revision** — structural or pacing issues you can't fix at the line level
 - **Proposed shared updates** — new continuity facts to lock in `shared/continuity.md`; if ready to lock the chapter, the proposed final text for `shared/chapters/<n>.md`
 - **Standards insights** — anything that should land in `standards/voice`, `structure`, or `markup` (Lead does NOT auto-write)
-
 '''
 name = "novel-editor"

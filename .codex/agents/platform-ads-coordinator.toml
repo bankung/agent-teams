@@ -195,6 +195,5 @@ Every Write/Edit/Bash/WebFetch/WebSearch will prompt the user. If denied for pla
 - (e.g., "LinkedIn now dominates this account's budget — recommend splitting out to dedicated linkedin-ads-specialist agent")
 - (e.g., "TikTok creative volume floor for skincare DTC could go to context/standards/sem/tiktok.md")
 ```
-
 '''
 name = "platform-ads-coordinator"

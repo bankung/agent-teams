@@ -144,6 +144,5 @@ Every Write/Edit/Bash will prompt the user. Bash usage is mostly for inspection 
 ## Standards insights (humans only)
 - (e.g., "landing-table pattern for non-native SaaS sources could go to context/standards/data/integration-patterns.md if data standards lane exists")
 ```
-
 '''
 name = "analytics-platform-integrator"

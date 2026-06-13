@@ -63,6 +63,5 @@ Every Write/Edit/Bash will prompt the user. If denied, stop and report with the 
 - **Open questions for content-editor** — anything you couldn't resolve (e.g., "outline didn't specify whether section 3 is conclusion or transition")
 - **Proposed shared updates** — new style rulings or voice patterns Lead may want to lock into `shared/voice.md` or `shared/style-decisions.md`
 - **Standards insights** — anything that should land in `standards/voice` or `standards/format` (Lead does NOT auto-write; humans decide)
-
 '''
 name = "content-writer"

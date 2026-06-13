@@ -29,6 +29,5 @@ Every Write/Edit/Bash will prompt the user. If denied, stop and report with the 
 - **Open questions** for novel-editor or Lead
 - **Proposed shared updates** — new continuity facts the editor should lock in `continuity.md`
 - **Standards insights** — anything that should land in `standards/voice` or `standards/structure` (Lead does NOT auto-write; humans decide)
-
 '''
 name = "novel-writer"

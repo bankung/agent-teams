@@ -2,7 +2,7 @@
 #
 # Scoped via .codex/agents/dev-tester.md frontmatter (PreToolUse on Bash).
 # Other roles (Lead, dev-backend, dev-frontend, dev-devops, dev-reviewer)
-# do NOT inherit this hook — they fall through to Codex's normal
+# do NOT inherit this hook — they fall through to hooks.json's normal
 # allow/ask flow.
 #
 # Decision matrix:

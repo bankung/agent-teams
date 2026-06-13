@@ -145,6 +145,5 @@ Every Write/Edit/Bash/WebFetch/WebSearch will prompt the user. If a fetch is den
 ## Standards insights (humans only)
 - (e.g., "schema-markup pattern X works for Thai e-commerce; consider context/standards/seo/thai-schema.md")
 ```
-
 '''
 name = "technical-seo-specialist"

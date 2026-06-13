@@ -36,7 +36,7 @@ If you find yourself wanting to spawn a subagent, fetch the web, write a file, o
     "budget_burn_rate": {
       "value": <float>,
       "unit": "usd/day",
-      "vs_cap": <float 0..N>,
+      "vs_cap": <float 0..N> | null,
       "coverage_pct": <float 0..100>
     },
     "task_failure_rate": {
@@ -65,7 +65,7 @@ If you find yourself wanting to spawn a subagent, fetch the web, write a file, o
 
 - **Numerator:** sum of `estimated_cost_usd` on tasks with `completed_at` in last 24h (default window; override via `health_thresholds.budget_window_hours` if set).
 - **Denominator:** `projects.budget_daily_usd` (USD/day cap). If NULL → "no cap configured" — skip the breach check (flag in `reasons` as `budget_no_cap_configured`).
-- **vs_cap:** numerator ÷ denominator. Float; >1.0 = over cap.
+- **vs_cap:** numerator ÷ denominator. Float; >1.0 = over cap. When `budget_daily_usd` is null, `vs_cap` is `null` and the budget metric is excluded from the breach count (flagged `budget_no_cap_configured` in `reasons`).
 - **Breach threshold:** `health_thresholds.budget_burn_threshold_pct` (default 100, meaning vs_cap >= 1.0 = breach).
 - **coverage_pct:** % of tasks with non-null `estimated_cost_usd`. When NULL on a task, fall back to **token-based estimation** via `api/src/pricing.py` `lookup_price(model, direction)` × token counts (`tasks.estimated_input_tokens` + `tasks.estimated_output_tokens` if present; else token_count). Report coverage_pct so the operator knows how much of the budget number is real-USD vs estimated.
 
@@ -157,6 +157,5 @@ Aim for ≤2000 tokens in your reply. The metric formulas + recommendation are m
 - GOV4 (#1212) — operator review UI for flagged audits.
 - GOV5 (#1213) — real drift metric replacing the v1 placeholder.
 - GOV1 (#1209) — hard-kill switch + projects_audit table (separate audit ledger for kill/revive events; this agent may eventually READ from it but doesn't write).
-
 '''
 name = "project-auditor"

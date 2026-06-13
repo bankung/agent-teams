@@ -334,6 +334,5 @@ Use this format:
 4. **Cite line numbers.** Lead needs to locate fast.
 5. **Severity matters.** Flag everything but rank — Lead may skip "low" severity in time-pressed passes.
 6. **If unsure whether something is awkward or speaker-voice intentional — flag with "Verify with Lead" note.** Don't silently approve borderline cases.
-
 '''
 name = "thai-proofreader"

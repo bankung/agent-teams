@@ -113,6 +113,5 @@ Every Write/Edit will prompt the user. If denied, stop and report.
 - Lead's top pick (with reasoning) + 1-2 fallbacks
 - Format-fit caveats (e.g., "Option #2 is great for LinkedIn but would clip on Twitter")
 ```
-
 '''
 name = "content-hook-doctor"

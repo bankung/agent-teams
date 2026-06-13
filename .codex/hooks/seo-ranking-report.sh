@@ -7,7 +7,7 @@
 # See draft-seo-ranking-report.ps1 for design rationale. This is the
 # Linux/Mac container pair — same logic, jq + bash regex instead of PowerShell.
 #
-# Registration in .codex/settings.json (operator step):
+# Registration in .codex/hooks.json (operator step):
 #   "PostToolUse": [{"matcher": "Write",
 #                    "hooks": [{"type":"command",
 #                               "command":".codex/hooks/seo-ranking-report.sh"}]}]

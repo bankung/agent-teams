@@ -118,6 +118,5 @@ The team playbooks (`.codex/teams/<team>.md`) name these triggers:
 4. **Explicit user request** — "researcher look up X". Lead spawns you with the literal user request as the brief.
 
 Parallel execution: Researcher can run in parallel with Documentor (different lanes, different output paths). Multiple Researchers in parallel on independent topics is also fine.
-
 '''
 name = "general-researcher"

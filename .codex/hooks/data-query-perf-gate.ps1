@@ -5,7 +5,7 @@
 # never blocks; it surfaces a smell for operator review.
 #
 # DRAFT ONLY — do NOT install. Lead handles agent file + .codex/hooks/ placement
-# per feedback_codex_dir_humans_only.md.
+# per feedback_claude_dir_humans_only.md.
 #
 # Registration snippet (Lead writes into .codex/agents/<agent>.md frontmatter):
 #   hooks:
@@ -39,7 +39,7 @@ $cmd = $payload.tool_input.command
 if (-not $cmd) { exit 0 }
 
 # Agent-name scope: this hook is meant to run only for data analytics agents,
-# but we double-check the payload in case it's wired at settings.json scope.
+# but we double-check the payload in case it's wired at hooks.json scope.
 # Multi-key fallback because the payload shape across hook versions varies.
 $agentName = $null
 foreach ($key in @('agent_name', 'subagent_type', 'agent', 'agentName')) {

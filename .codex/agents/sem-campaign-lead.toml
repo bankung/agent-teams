@@ -133,6 +133,5 @@ Every Write/Edit/Bash/WebFetch/WebSearch will prompt the user. If denied for com
 ## Standards insights (humans only — Lead does NOT auto-write)
 - (e.g., "Thai DTC platform-mix heuristic could go to context/standards/sem/thai.md if sem standards lane exists")
 ```
-
 '''
 name = "sem-campaign-lead"

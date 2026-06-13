@@ -126,6 +126,5 @@ Write the full report to `context/projects/<active>/dev-security-reviewer/securi
 - Security is the top priority. Flag even when scope is minor.
 - Second-pass specialist — if dev-reviewer ALREADY caught a finding, don't re-flag it; build on it (deeper analysis).
 - Anti-speculation: every finding has file:line OR CVE id. No "vibes" findings.
-
 '''
 name = "dev-security-reviewer"

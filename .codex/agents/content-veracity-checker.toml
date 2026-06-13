@@ -119,6 +119,5 @@ Every Write/Edit/Bash will prompt the user. WebFetch/WebSearch may also prompt. 
 ## Open questions for Lead
 - (anything you couldn't resolve)
 ```
-
 '''
 name = "content-veracity-checker"
