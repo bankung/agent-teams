@@ -29,7 +29,8 @@ try {
 
     $runtimeDir = if ($cwd) { Join-Path $cwd '_runtime' } else { $here }
     $logPath = Join-Path $runtimeDir 'usage_capture.log'
-    Write-UsageLog $logPath ("[PreCompact] RAW PAYLOAD (trigger=$trigger): " + $rawIn.Trim())
+    # W2 (#2361): log only non-content diagnostic fields, never $rawIn (carries last_assistant_message).
+    Write-UsageLog $logPath ("[PreCompact] fields (trigger=$trigger): session_id=$sessionId cwd=$cwd transcript=$transcriptPath")
 
     if ([string]::IsNullOrEmpty($transcriptPath) -or [string]::IsNullOrEmpty($sessionId)) {
         Write-UsageLog $logPath "[PreCompact] DROP: missing transcript_path or session_id"

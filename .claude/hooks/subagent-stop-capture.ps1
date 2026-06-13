@@ -56,7 +56,8 @@ try {
     $runtimeDir = if ($cwd) { Join-Path $cwd '_runtime' } else { $here }
     $logPath = Join-Path $runtimeDir 'usage_capture.log'
 
-    Write-UsageLog $logPath ("[SubagentStop] RAW PAYLOAD: " + $rawIn.Trim())
+    # W2 (#2361): log only non-content diagnostic fields, never $rawIn (carries last_assistant_message).
+    Write-UsageLog $logPath ("[SubagentStop] fields: session_id=$sessionId agent_id=$agentIdRaw cwd=$cwd transcript=$transcriptPath")
 
     if ([string]::IsNullOrEmpty($transcriptPath)) {
         Write-UsageLog $logPath "[SubagentStop] DROP: no transcript_path in payload"

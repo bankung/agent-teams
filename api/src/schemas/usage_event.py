@@ -35,10 +35,10 @@ class UsageEventCreate(BaseModel):
         ..., min_length=1, max_length=255, description="Model identifier (price-card key)."
     )
 
-    input_tokens: int = Field(0, ge=0)
-    output_tokens: int = Field(0, ge=0)
-    cache_read_input_tokens: int = Field(0, ge=0)
-    cache_creation_input_tokens: int = Field(0, ge=0)
+    input_tokens: int = Field(0, ge=0, le=1_000_000_000)
+    output_tokens: int = Field(0, ge=0, le=1_000_000_000)
+    cache_read_input_tokens: int = Field(0, ge=0, le=1_000_000_000)
+    cache_creation_input_tokens: int = Field(0, ge=0, le=1_000_000_000)
 
     occurred_at: datetime | None = Field(
         None,

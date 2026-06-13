@@ -417,3 +417,41 @@ async def test_overlength_field_is_422(client) -> None:
         headers={"X-Project-Id": str(project_id)},
     )
     assert resp2.status_code == 422, resp2.text
+
+
+# ---------------------------------------------------------------------------
+# Token upper-bound tests (2026-06-13, Fix 1 — le=1_000_000_000 guard).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_token_above_1b_is_422(client) -> None:
+    """cache_read_input_tokens=2_000_000_000 (2B) exceeds le=1_000_000_000 → 422.
+
+    Guards the Numeric(10,4) cost-overflow path: a 2B-token event at any
+    non-zero price would exceed the $999,999.9999 column ceiling.
+    """
+    project_id = await _project_id(client)
+    resp = await client.post(
+        "/api/usage/events",
+        json={"model": "claude-opus-4-8", "cache_read_input_tokens": 2_000_000_000},
+        headers={"X-Project-Id": str(project_id)},
+    )
+    # NEGATIVE: above the 1B ceiling → rejected, not stored.
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_token_60m_is_accepted(client) -> None:
+    """cache_read_input_tokens=60_000_000 (60M, matching observed live row id=9)
+    is ACCEPTED — guards against a too-tight bound that would reject real data.
+    """
+    project_id = await _project_id(client)
+    resp = await client.post(
+        "/api/usage/events",
+        json={"model": "claude-opus-4-8", "cache_read_input_tokens": 60_000_000},
+        headers={"X-Project-Id": str(project_id)},
+    )
+    # POSITIVE: 60M is well within the 1B ceiling.
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["cache_read_input_tokens"] == 60_000_000

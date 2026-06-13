@@ -80,6 +80,8 @@ def resolve_pricing_key(provider: str, model: str) -> tuple[str, str]:
 
     if provider == "anthropic":
         m = model.lower()
+        if "opus-4-8" in m:
+            return ("anthropic", "claude-opus-4-8")
         if "opus" in m:
             return ("anthropic", "claude-opus-4-x")
         if "haiku" in m:

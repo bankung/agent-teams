@@ -238,3 +238,25 @@ def test_haiku_4_5_rate_updated_to_1_5() -> None:
 
     rates = PRICING[("anthropic", "claude-haiku-4-5-20251001")]
     assert rates == {"input": 1.0, "output": 5.0}, f"expected {{input:1.0, output:5.0}}, got {rates}"
+
+
+# ---------------------------------------------------------------------------
+# Opus-4-8 versioned-id pricing guard (2026-06-13, Fix 2).
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_pricing_key_opus_4_8_versioned_id_uses_5_25_rates() -> None:
+    """A versioned model id like 'claude-opus-4-8-20250514' must resolve to
+    ('anthropic', 'claude-opus-4-8') at $5/$25, NOT the generic 'claude-opus-4-x'
+    alias at $15/$75 (which would be 3x overcount).
+
+    The guard 'if "opus-4-8" in m' must fire BEFORE the generic 'if "opus" in m'.
+    """
+    from src.services.cost_tracker import PRICING, resolve_pricing_key
+
+    key = resolve_pricing_key("anthropic", "claude-opus-4-8-20250514")
+    assert key == ("anthropic", "claude-opus-4-8"), (
+        f"versioned opus-4-8 id resolved to {key!r}; expected exact claude-opus-4-8 key"
+    )
+    # Confirm the resolved key carries the correct $5/$25 rates, not legacy $15/$75.
+    assert PRICING[key] == {"input": 5.0, "output": 25.0}
