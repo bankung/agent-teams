@@ -52,7 +52,6 @@ The gap it fills: a **self-hosted, persistent, governed, multi-domain orchestrat
 
 - **Context metering and lifecycle tracking.** Mode-A token and cost metering ships with a new append-only `usage_events` ledger. Claude Code `SubagentStop` and `SessionEnd` hooks capture task-scoped token usage (per subagent run and at session end); the API computes cost server-side, idempotent-deduped on `dedup_key`. Early warning on per-project rate limits (60 requests per 10s, 429-before-DB-work) gates runaway capture loops. Files: `usage_events.py`, `cost_tracker.py`, lifecycle hooks in `.claude/hooks/`.
 - **Cross-session context — story docs and activity rail.** `context/projects/<p>/shared/stories/` holds living per-thread state (Lead-only writer, in-file versioning with optimistic lock) that survives sessions and compactions. A separate activity rail records immutable per-task events. This is what lets a task be picked up cleanly in a fresh session — no context bloat, no re-explaining. Files: the `_template.md` story scaffold + the story-context decisions lock.
-- **Leaner task queries.** The `/tn-tasks-next` skill now reads the slim `GET /api/tasks/summary` projection (board and ordering fields only, ~8× smaller payloads). Lead reads shrink from 421 KB to 52 KB at list-500, keeping context windows comfortably small.
 - **Agent gallery — browse specialist definitions.** A new `/agents` page (+ detail cards) and `GET /api/agents` endpoint let you explore the 38+ specialist agent definitions, view their tools, hooks, and spawn history across projects. See who does what and which agents are in-flight.
 - **Task output viewer.** In-progress tasks now surface their generated artifacts (code files, HTML, CSVs, logs, markdown). `GET /api/tasks/{id}/outputs` lists files; the TaskDetail Outputs section previews them (images, HTML in a sandbox iframe, CSV tables, raw downloads). Guards against traversal and header injection; 50-file cap per task.
 - **Board activity feed.** IN_PROGRESS cards show a live 3-row activity strip — recent tool calls, running/idle state, relative timestamps. 10-second visibility-aware polling keeps you abreast without noise. `GET /api/tool-calls?limit` supports optional paging.
@@ -80,7 +79,7 @@ The gap it fills: a **self-hosted, persistent, governed, multi-domain orchestrat
 
 - **Headless engine (Mode B) — progress and honest status.** One worker now serves multiple project boards concurrently. A local-model rig (Ollama) with a regression pack and capability probe hardens the engine, and a filesystem destination guard keeps file writes inside each project's declared working folder. Native Google Gemini provider added. Mode B remains actively in development — don't rely on it for critical work yet.
 
-- **Operations.** Per-task cost metering for Mode A runs captures prompt-cache token counts against each session. A `/tn-release` slash-command skill encodes the full weekly release flow end-to-end so milestone flips are never skipped. `/tn-email` and `/tn-jobs` skills bring secretary email and job-search operations into the paved-path skill family.
+- **Operations.** Per-task cost metering for Mode A runs captures prompt-cache token counts against each session. A `/tn-release` slash-command skill encodes the full weekly release flow end-to-end so milestone flips are never skipped. The `/tn-email` skill brings secretary email operations into the paved-path skill family.
 
 ---
 
@@ -154,7 +153,7 @@ The installer is safe to re-run; services keep running after you close the termi
 
 ## Slash-command skills (tn-*)
 
-These are reusable Claude Code commands that encode Kanban API conventions, preventing common mistakes (missing project_id, incomplete acceptance criteria, status-change guard violations). 16 skills ship today. They activate after a Claude Code restart and are auto-detected on live-reload.
+These are reusable Claude Code commands that encode Kanban API conventions, preventing common mistakes (missing project_id, incomplete acceptance criteria, status-change guard violations). 15 skills ship today. They activate after a Claude Code restart and are auto-detected on live-reload.
 
 | Command | What it does |
 |---------|-------------|
@@ -178,7 +177,6 @@ These are reusable Claude Code commands that encode Kanban API conventions, prev
 | `/tn-audit [project]` | On-demand project health audit (3 metrics + continue/review/pause). |
 | **Secretary** | |
 | `/tn-email <verb>` | Secretary email operations across Gmail and Outlook — search, read, triage, archive, mark, draft, trash. All mutation actions are HITL-gated. |
-| `/tn-jobs <verb>` | Job-search operations — mine alert emails, sweep application responses, reconcile against the tracker, deep-dive a role, check live posting status, log a status update. |
 
 Each skill lives at `.claude/skills/<name>/SKILL.md` and is invoked as `/<name>` in Claude Code.
 
