@@ -48,6 +48,19 @@ The gap it fills: a **self-hosted, persistent, governed, multi-domain orchestrat
 
 ---
 
+## What's new in v0.6.3
+
+- **Context metering and lifecycle tracking.** Mode-A token and cost metering ships with a new append-only `usage_events` ledger. Claude Code `SubagentStop` and `SessionEnd` hooks capture task-scoped token usage (per subagent run and at session end); the API computes cost server-side, idempotent-deduped on `dedup_key`. Early warning on per-project rate limits (60 requests per 10s, 429-before-DB-work) gates runaway capture loops. Files: `usage_events.py`, `cost_tracker.py`, lifecycle hooks in `.claude/hooks/`.
+- **Cross-session context — story docs and activity rail.** `context/projects/<p>/shared/stories/` holds living per-thread state (Lead-only writer, in-file versioning with optimistic lock) that survives sessions and compactions. A separate activity rail records immutable per-task events. This is what lets a task be picked up cleanly in a fresh session — no context bloat, no re-explaining. Files: the `_template.md` story scaffold + the story-context decisions lock.
+- **Leaner task queries.** The `/tn-tasks-next` skill now reads the slim `GET /api/tasks/summary` projection (board and ordering fields only, ~8× smaller payloads). Lead reads shrink from 421 KB to 52 KB at list-500, keeping context windows comfortably small.
+- **Agent gallery — browse specialist definitions.** A new `/agents` page (+ detail cards) and `GET /api/agents` endpoint let you explore the 38+ specialist agent definitions, view their tools, hooks, and spawn history across projects. See who does what and which agents are in-flight.
+- **Task output viewer.** In-progress tasks now surface their generated artifacts (code files, HTML, CSVs, logs, markdown). `GET /api/tasks/{id}/outputs` lists files; the TaskDetail Outputs section previews them (images, HTML in a sandbox iframe, CSV tables, raw downloads). Guards against traversal and header injection; 50-file cap per task.
+- **Board activity feed.** IN_PROGRESS cards show a live 3-row activity strip — recent tool calls, running/idle state, relative timestamps. 10-second visibility-aware polling keeps you abreast without noise. `GET /api/tool-calls?limit` supports optional paging.
+- **Per-role effort overrides.** Mode-B engine now respects `_runtime/effort-overrides.json` (operator-authored, TTL-cached) to dial specialist effort level per role (e.g. a tester gets more thorough reasoning). Falls back gracefully to project mode or off if the file is missing or unparseable.
+- **Hardening.** API host port now binds to `127.0.0.1` (localhost-only by default) to close unintended LAN exposure. Token inputs are bounded server-side so computed cost stays within the ledger's numeric column. Capture hooks drop conversation content from entry logs.
+
+---
+
 ## What's new in v0.6.2
 
 - **Lighter task-list API.** A new `GET /api/tasks/summary` endpoint returns a slim projection — board and ordering fields only, omitting the heavy `description` and `acceptance_criteria` payloads. List responses are ~8× smaller, keeping the Lead and the board fast and comfortably inside smaller models' context windows.
