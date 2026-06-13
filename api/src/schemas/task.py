@@ -1547,6 +1547,28 @@ class TaskReorder(BaseModel):
         return self
 
 
+class TaskCostEstimateBackfill(BaseModel):
+    """Request body for PUT /api/tasks/{id}/cost-estimate (Kanban #2357).
+
+    Manual/backfill override for the three estimated-cost columns that are
+    normally written only by the done-flip heuristic (#944) or the create-time
+    proposal (#1194). This is the sanctioned write path for explicit overrides.
+
+    Server computes estimated_cost_usd via cost_tracker; caller supplies
+    raw token counts and the provider/model identity.
+
+    `extra='forbid'` rejects unknown keys at 422 (parity with other action
+    request bodies).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    estimated_input_tokens: int = Field(ge=0)
+    estimated_output_tokens: int = Field(ge=0)
+    provider: str = "anthropic"
+    model: str = "claude-opus-4-8"
+
+
 class SnoozeRequest(BaseModel):
     """Request body for POST /api/tasks/{id}/snooze (Kanban #1011, AC5).
 

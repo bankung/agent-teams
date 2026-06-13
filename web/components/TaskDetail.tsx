@@ -26,6 +26,7 @@ import { RunModeBadge } from "./RunModeBadge";
 import { TaskKindBadge } from "./TaskKindBadge";
 import { TaskComments } from "./TaskComments";
 import { TaskMuteToggle } from "./TaskMuteToggle";
+import { TaskOutputs } from "./TaskOutputs";
 import { TaskToolCalls } from "./TaskToolCalls";
 import { ModelTierSelect } from "./ModelTierSelect";
 
@@ -820,6 +821,9 @@ export function TaskDetail({
               )}
             </dl>
           </Section>
+
+          {/* #1305 — task output files section */}
+          <TaskOutputs projectId={projectId} taskId={task.id} />
 
           {/* #980 — per-task tool-call audit; self-hides when 0 rows */}
           <TaskToolCalls projectId={projectId} taskId={task.id} />

@@ -15,7 +15,7 @@ allowed-tools:
 `$ARGUMENTS` may contain an N (default **10**; accept 5/10/20) and an optional `milestone:<id>`
 to pin a single milestone. Read-only (no mutations).
 
-> NOTE: the API `GET /tasks` orders by `id` only — so ALL the ordering below is done CLIENT-SIDE
+> NOTE: the API `GET /tasks/summary` (like `/tasks`) orders by `id` only — so ALL the ordering below is done CLIENT-SIDE
 > by this skill from the raw rows. Codes: priority 1 LOW / 2 NORMAL / 3 HIGH / 4 URGENT (higher =
 > more important); process_status 1 TODO / 2 IN_PROGRESS / 3 REVIEW / 4 BLOCKED / 5 DONE / 6 CANCELLED.
 
@@ -34,10 +34,13 @@ Build the milestone order:
 
 ## Step 3 — fetch the actionable task pool
 ```
-curl --silent -H "X-Project-Id: <id>" "http://localhost:8456/api/tasks?pending=true&limit=500" \
+curl --silent -H "X-Project-Id: <id>" "http://localhost:8456/api/tasks/summary?pending=true&limit=500" \
   -o _scratch/tn_next_tasks.json -w "%{http_code}"
 ```
-`pending=true` returns process_status != 5 and excludes cancelled. `limit=500` is the server
+`/api/tasks/summary` is the slim list projection (#2345) — SAME query + SAME `id` order as
+`/api/tasks`, but ~8x smaller (full ~421KB → slim ~52KB at limit=500), carrying every field this
+skill orders on (`id`, `title`, `process_status`, `priority`, `milestone_id`, `blocked_by`,
+`sort_order`). `pending=true` returns process_status != 5 and excludes cancelled. `limit=500` is the server
 maximum (default is 50; values above 500 return HTTP 422). If the actionable pool may exceed 500,
 paginate with `offset=<n>` and merge the pages before ordering. From this pool:
 - **Actionable** = process_status in {1 TODO, 2 IN_PROGRESS, 3 REVIEW}. EXCLUDE 4 BLOCKED (can't act

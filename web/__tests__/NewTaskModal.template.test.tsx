@@ -971,4 +971,77 @@ describe("NewTaskModal — Task Template Picker (#1310)", () => {
     const body = mockCreateTask.mock.calls[0][1];
     expect(body).not.toHaveProperty("acceptance_criteria");
   });
+
+  // -----------------------------------------------------------------------
+  // #1909 AC3 — client-side AC > 50 pre-flight guard
+  // -----------------------------------------------------------------------
+
+  // Helper: render with template 3 (no placeholders, has 1 AC row pre-filled)
+  // then programmatically inflate the AC list to `count` rows by clicking
+  // "+ Add criterion" repeatedly and returning the container + submit button.
+  async function renderWithAcCount(count: number) {
+    const { container } = await renderOpenModal();
+    const user = userEvent.setup();
+
+    const select = await getTemplateSelect(container);
+    await user.selectOptions(select, "3");
+
+    // Wait for AC editor to appear (template 3 has 1 pre-filled AC row)
+    await waitFor(() => {
+      expect(q(container, "[data-new-task-ac-editor]")).not.toBeNull();
+    });
+
+    // Add rows until the total is `count` (template 3 starts with 1 row)
+    const addBtn = q(container, "[data-new-task-ac-add]") as HTMLButtonElement;
+    for (let i = 1; i < count; i++) {
+      fireEvent.click(addBtn);
+    }
+
+    // Fill the title so canSubmit is true
+    const titleInput = q(container, "[data-new-task-title]") as HTMLInputElement;
+    fireEvent.change(titleInput, { target: { value: "AC guard test" } });
+
+    // Fill each AC row with non-empty text so they count as non-empty
+    await waitFor(() => {
+      const rows = qAll(container, "[data-new-task-ac-row]") as NodeListOf<HTMLInputElement>;
+      expect(rows.length).toBe(count);
+    });
+    const rows = qAll(container, "[data-new-task-ac-row]") as NodeListOf<HTMLInputElement>;
+    rows.forEach((row, i) => {
+      if (row.value.trim() === "") {
+        fireEvent.change(row, { target: { value: `criterion ${i + 1}` } });
+      }
+    });
+
+    const submitBtn = q(container, "[data-new-task-submit]") as HTMLButtonElement;
+    return { container, submitBtn, user };
+  }
+
+  it("#1909 AC3a: >50 non-empty AC rows shows inline error and does NOT call fetch", async () => {
+    // 51 rows exceeds the cap
+    const { container, submitBtn, user } = await renderWithAcCount(51);
+
+    await user.click(submitBtn);
+
+    // Inline error must appear
+    await waitFor(() => {
+      const errorEl = q(container, "[data-new-task-error]");
+      expect(errorEl).not.toBeNull();
+      expect(errorEl!.textContent).toMatch(/51/);
+      expect(errorEl!.textContent).toMatch(/50/);
+    });
+
+    // createTask must NOT have been called
+    expect(mockCreateTask).not.toHaveBeenCalled();
+  });
+
+  it("#1909 AC3b: exactly 50 non-empty AC rows submits normally (fetch IS called)", async () => {
+    const { submitBtn, user } = await renderWithAcCount(50);
+
+    await user.click(submitBtn);
+
+    await waitFor(() => {
+      expect(mockCreateTask).toHaveBeenCalledOnce();
+    });
+  });
 });

@@ -95,7 +95,7 @@ services:
       AZURE_OAUTH_TENANT: ${AZURE_OAUTH_TENANT:-consumers}
       AZURE_OAUTH_REDIRECT_URI: ${AZURE_OAUTH_REDIRECT_URI:-http://localhost:8456/api/tools/email/auth/outlook/callback}
     ports:
-      - "${API_PORT:-8456}:8456"
+      - "127.0.0.1:${API_PORT:-8456}:8456"
     volumes:
       # Named volume gives /repo a writable, persisted filesystem so scaffold/
       # session/resource/audit writes (REPO_ROOT=/repo) succeed without a source

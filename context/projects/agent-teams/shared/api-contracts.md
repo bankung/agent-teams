@@ -520,4 +520,38 @@ Complementary to (not replacing) `langgraph/tools/permission_gate` (tier-based, 
 - Predicate (mirrors phase-1 `InboxBadge.tsx`): `interaction_kind IN ('question','decision') AND process_status NOT IN (5,6) AND tasks.status=1 AND projects.status=1`.
 - `oldest_age_hours` = age of the oldest pending task's `created_at`; `null` when `count=0`. `by_project` sorted by `project_name`. Single GROUP BY query (no N+1). No side effects.
 
+### GET /api/tasks/{task_id}/outputs + /outputs/{filename} (Kanban #1305, 2026-06-12)
+
+**Purpose:** task-output viewer — list + serve files agents wrote to the task's output folder. Consumed by `web/components/TaskOutputs.tsx` (drawer Outputs section).
+
+**Headers:** `X-Project-Id` required on both. Gate order (mirrors tool-calls): 400 missing header → 404 unknown task → 400 cross-project → 410 soft-deleted parent.
+
+**Listing 200:** `[ {"filename": str, "mime": str, "size": int, "kind": "chart"|"doc"|"export"|"text"} ]` — flat, sorted by filename, capped at `MAX_OUTPUT_FILES=50` (warning logged on truncation). Empty / no folder → `[]` (NOT an error). kind by ext: png/svg/html→chart; md→doc; csv/json→export; else→text.
+
+**File serve:** filename validated (reject `/ \ .. NUL " CR LF` → 404, no echo; same rejection applied at listing-scan time); must be in the listing (client input never joined onto a root); containment via `Path.resolve()`+`is_relative_to`. Default `Content-Disposition: inline`; `?download=1` → `attachment`; **active content (.html/.htm/.svg/.xml) always forced `attachment`** (stored-XSS guard — FE previews via fetch+sandboxed iframe, never this inline path). Always `X-Content-Type-Options: nosniff`. Served as in-memory `Response` (threadpool `read_bytes`, 50 MB cap) — **FileResponse is BANNED on this app**: it deadlocks the whole server under the BaseHTTPMiddleware stack (live-reproduced 2026-06-12; TestClient cannot see it — real-socket probes required).
+
+**Output-folder convention:** `working_path`+team=data-analytics → `<wp>/analysis/outputs/<task_id>/`; `working_path` set → `<wp>/outputs/<task_id>/`; `working_path` null → role-folder scan `<repo_root>/context/projects/<name>/<role>/` for `task-<id>-*` files + `<id>/` subdir (DIRECT files only; name-filter runs BEFORE stat — 9P bind-mount RPCs are ~47ms/file, an unfiltered scan of a 1356-file dir took 40-78s).
+
+### GET /api/agents/validate (Kanban #1016, 2026-06-12)
+
+**Purpose:** scan-all validator for `.claude/agents/*.md` frontmatter — file:line diagnostics for what Claude Code's session-start parse only reports as "agent doesn't exist". Same service backs the CLI: `docker exec agent-teams-api python -m scripts.validate_agents` (exit 1 on any error).
+
+**Headers:** none — platform-level resource (no `X-Project-Id`). GET only; POST → 405. NO parameters by design (the spec's `POST body={path}` variant was dropped — it would be an arbitrary-path read primitive); scan dir is fixed server-side (`<repo_root>/.claude/agents`).
+
+**Response 200:** `{"files_scanned": int, "diagnostics": [{"file": basename, "line": int, "field": str, "message": str, "severity": "error"|"warning"}], "error_count": int, "warning_count": int}` — basenames only on the wire, OSError messages path-stripped.
+
+**Severity model:** errors = missing/duplicate/regex-violating `name` (fullmatch `^[a-z0-9]+(-[a-z0-9]+)*$`), missing `description`, bad `model` enum (opus/sonnet/haiku), malformed YAML (mark line), missing/empty frontmatter. Warnings = unknown frontmatter keys (real files carry e.g. `email_actions`) + unknown tool names. `tools` accepts YAML list | `"All tools"` | absent. Calibration lock: the real 38-file agents dir = 0 errors / 2 known warnings. Parser is line-oriented with `yaml.safe_load` fallback (strict whole-block YAML false-errors on mid-sentence colons in descriptions); BOM-tolerant (`utf-8-sig`).
+
+### GET /api/agents + /api/agents/{name} (Kanban #1017, 2026-06-12)
+
+**Purpose:** agent gallery — browse every installed `.claude/agents/*.md` with metadata; consumed by `web/app/agents` (grid + filters) and `web/app/agents/[name]` (detail). Built on the #1016 validation service (single parser).
+
+**Headers:** none (platform-level, like /api/agents/validate). GET only.
+
+**Listing 200:** flat array sorted by name: `{name, description, model: opus|sonnet|haiku|null, tools_summary ("All tools"|"N tools"), tool_count: int|null, hook_count: int, source_file: basename, domain, valid: bool, validation_errors: [diagnostics]}`. `domain` = name-prefix heuristic (dev/novel/content/secretary/sem/seo/data/general/other — agents carry no domain field). Invalid files still listed (`valid:false`; warnings don't invalidate).
+
+**Detail 200:** all of the above + `{raw_frontmatter: str (verbatim), full_description: str, spawns: [{task_id, project_id, project_name, model: str|null, at: str|null}]}` — spawns = cross-project scan of `tasks.subagent_models` JSONB (`@>` pre-filter + `jsonb_array_elements` LATERAL, parametrized `text()`, soft-deleted excluded, newest-first w/ `at`→updated_at COALESCE fallback, cap 20). `at` can be null on legacy rows — FE must guard. 404: unknown name, regex-violating name (`AGENT_NAME_RE.fullmatch` gate before any FS/DB access), and RESERVED names.
+
+**Route-order invariant:** FastAPI matches in REGISTRATION ORDER — the validation router's static `/agents/validate` registers before this router's `/{name}` in `main.py` (load-bearing); `RESERVED_AGENT_NAMES = {"validate"}` backstops it (reserved name → validator ERROR diagnostic + gallery-detail 404).
+
 <!-- No endpoints documented yet. First endpoint goes above this line. -->

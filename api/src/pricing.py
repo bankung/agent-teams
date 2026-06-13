@@ -54,9 +54,9 @@ from typing import Literal
 
 MODEL_PRICING: dict = {
     "anthropic": {
-        "opus":   {"input_per_M": 15.00, "output_per_M": 75.00},
+        "opus":   {"input_per_M":  5.00, "output_per_M": 25.00},
         "sonnet": {"input_per_M":  3.00, "output_per_M": 15.00},
-        "haiku":  {"input_per_M":  0.80, "output_per_M":  4.00},
+        "haiku":  {"input_per_M":  1.00, "output_per_M":  5.00},
     },
     "openai": {
         "gpt-4.1":     {"input_per_M": 5.00,  "output_per_M": 15.00},
@@ -80,7 +80,7 @@ MODEL_PRICING: dict = {
         "13b": {"input_per_M": 0.0005, "output_per_M": 0.0005},
         "70b": {"input_per_M": 0.005,  "output_per_M": 0.005},
     },
-    "_last_updated": "2026-05-18",
+    "_last_updated": "2026-06-11",
     "_notes": (
         "Public pricing snapshot. Local LLM = electricity+amortized hardware "
         "estimate for consumer-GPU self-hosted; operator-tunable per project "

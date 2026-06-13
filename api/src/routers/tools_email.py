@@ -92,7 +92,7 @@ from src.services.session_project import (
     optional_agent_role_header,
     require_project_id_header,
 )
-from src.services.operator_auth import OperatorDecision, require_operator_proof
+from src.services.operator_auth import OperatorDecision, _gate_active, require_operator_proof
 from src.services.notify_ntfy import send_push
 from src.services.tool_grants import GrantDecision, check_grant
 from src.tools.email import (
@@ -279,6 +279,26 @@ def _write_action_audit(
         # Audit is observability, not correctness — never let a disk hiccup
         # turn a successful action into a 500.
         logger.warning("_write_action_audit: write failed (best-effort): %s", exc)
+
+
+def _resolve_approval_mode() -> str:
+    """Return the actual approval_mode string for a proof-gated action audit row.
+
+    Three outcomes for proof-required tiers (DELETE, REPLY, SEND_INTERNAL):
+      - Gate ACTIVE + OPERATOR proof presented -> "operator_proof" (verified).
+      - Gate ACTIVE + NOT_OPERATOR           -> action is rejected (403) before
+        this helper is called; never reaches _write_action_audit. The
+        operator_proof parameter is therefore structurally unreachable here —
+        the 403 fires before the audit path, so the parameter carried no
+        information and has been removed.
+      - Gate INACTIVE (OPERATOR_ACTION_KEY unset, fail-open) -> "dormant".
+
+    The MODIFY tier ("auto") and the EXTERNAL_SEND tier ("operator_confirm") are
+    handled at the call sites and do NOT go through this helper.
+    """
+    if _gate_active():
+        return "operator_proof"
+    return "dormant"
 
 
 # ---------------------------------------------------------------------------
@@ -840,7 +860,7 @@ async def gmail_trash(
         action="trash",
         tier=EmailTier.DELETE,
         message_ids=trashed,
-        approval_mode="operator_proof",
+        approval_mode=_resolve_approval_mode(),
         result="success" if len(trashed) > 0 else ("partial" if errors else "noop"),
     )
 
@@ -1156,7 +1176,7 @@ async def gmail_reply(
     gate.log_audit("gmail", session_project_id, "reply", _SEND_UNITS_PER_CALL, success=True)
     _write_action_audit(
         agent_role=agent_role, action="reply", tier=EmailTier.REPLY,
-        message_ids=[msg_id] if msg_id else [], approval_mode="operator_proof",
+        message_ids=[msg_id] if msg_id else [], approval_mode=_resolve_approval_mode(),
         result="success",
     )
     await _write_send_audit_task(
@@ -1207,7 +1227,7 @@ async def gmail_forward(
     gate.log_audit("gmail", session_project_id, "forward", _SEND_UNITS_PER_CALL, success=True)
     _write_action_audit(
         agent_role=agent_role, action="forward", tier=EmailTier.REPLY,
-        message_ids=[msg_id] if msg_id else [], approval_mode="operator_proof",
+        message_ids=[msg_id] if msg_id else [], approval_mode=_resolve_approval_mode(),
         result="success",
     )
     await _write_send_audit_task(
@@ -1265,7 +1285,7 @@ async def gmail_send_internal(
     gate.log_audit("gmail", session_project_id, "send_internal", _SEND_UNITS_PER_CALL, success=True)
     _write_action_audit(
         agent_role=agent_role, action="send_internal", tier=EmailTier.SEND_INTERNAL,
-        message_ids=[msg_id] if msg_id else [], approval_mode="operator_proof",
+        message_ids=[msg_id] if msg_id else [], approval_mode=_resolve_approval_mode(),
         result="success",
     )
     await _write_send_audit_task(
@@ -1911,7 +1931,7 @@ async def outlook_trash(
         action="trash",
         tier=EmailTier.DELETE,
         message_ids=trashed,
-        approval_mode="operator_proof",
+        approval_mode=_resolve_approval_mode(),
         result="success" if len(trashed) > 0 else ("partial" if errors else "noop"),
     )
 
@@ -2302,7 +2322,7 @@ async def outlook_reply(
     gate.log_audit("outlook", session_project_id, "reply", _OUTLOOK_SEND_UNITS_PER_CALL, success=True)
     _write_action_audit(
         agent_role=agent_role, action="reply", tier=EmailTier.REPLY,
-        message_ids=[msg_id] if msg_id else [], approval_mode="operator_proof",
+        message_ids=[msg_id] if msg_id else [], approval_mode=_resolve_approval_mode(),
         result="success",
     )
     await _write_send_audit_task(
@@ -2352,7 +2372,7 @@ async def outlook_forward(
     gate.log_audit("outlook", session_project_id, "forward", _OUTLOOK_SEND_UNITS_PER_CALL, success=True)
     _write_action_audit(
         agent_role=agent_role, action="forward", tier=EmailTier.REPLY,
-        message_ids=[msg_id] if msg_id else [], approval_mode="operator_proof",
+        message_ids=[msg_id] if msg_id else [], approval_mode=_resolve_approval_mode(),
         result="success",
     )
     await _write_send_audit_task(
@@ -2405,7 +2425,7 @@ async def outlook_send_internal(
     gate.log_audit("outlook", session_project_id, "send_internal", _OUTLOOK_SEND_UNITS_PER_CALL, success=True)
     _write_action_audit(
         agent_role=agent_role, action="send_internal", tier=EmailTier.SEND_INTERNAL,
-        message_ids=[msg_id] if msg_id else [], approval_mode="operator_proof",
+        message_ids=[msg_id] if msg_id else [], approval_mode=_resolve_approval_mode(),
         result="success",
     )
     await _write_send_audit_task(

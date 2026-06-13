@@ -237,8 +237,9 @@ function HeaderIconLink({
 export function computeDoneTotalCount(
   milestoneFilter: "all" | "none" | number,
   projectStats: ProjectStatsEntry[],
+  projectId: number,
 ): number | undefined {
-  if (milestoneFilter === "all") return projectStats[0]?.counts["5"];
+  if (milestoneFilter === "all") return projectStats.find((s) => s.id === projectId)?.counts["5"];
   return undefined;
 }
 
@@ -576,8 +577,8 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
   // loaded count (accurate for the filtered subset).
   // NOTE: client-only toggles (audit/operator-gate) may make "all" approximate.
   const doneTotalCount = useMemo<number | undefined>(
-    () => computeDoneTotalCount(milestoneFilter, projectStats),
-    [milestoneFilter, projectStats],
+    () => computeDoneTotalCount(milestoneFilter, projectStats, project.id),
+    [milestoneFilter, projectStats, project.id],
   );
 
   // Reset the client-side DONE display window (visibleDoneCount) ONLY when the
@@ -816,21 +817,14 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
             (Renders nothing when is_paused=false.) */}
         <PausedBanner project={project} />
       </header>
-      {/* Wave A.1 — toolbar row: left cluster (task-count + audit + scheduled
-          chips), centre (inline headless control), right (+New).
+      {/* Wave A.1 — toolbar row: left cluster (audit + scheduled chips),
+          centre (inline headless control), right (+New).
           Audit/scheduled moved here from nav row; headless banner condensed
           from standalone full-width section. */}
       <div
         className="mb-3 flex flex-wrap items-center gap-2"
         data-board-toolbar-row
       >
-        {/* Left cluster: task count + task-context filter chips */}
-        <span
-          className="text-sm tabular-nums text-zinc-500 dark:text-zinc-400"
-          data-board-task-count
-        >
-          {visibleTasks.length} task{visibleTasks.length === 1 ? "" : "s"}
-        </span>
         {/* Audit-filter chip — amber toggle; hidden when count=0. */}
         {auditTaskCount > 0 && (
           <HeaderIconBtn
@@ -928,6 +922,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
           onLoadMoreDone={handleLoadMoreDone}
           onCrossLaneDrop={onCrossLaneDrop}
           onSameLaneReorder={onSameLaneReorder}
+          projectId={project.id}
         />
       )}
       {/* #1238 GOV3 — Audit History archive below the lanes. Self-collapses;

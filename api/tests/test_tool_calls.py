@@ -838,6 +838,139 @@ async def test_post_tool_call_truncates_output_via_writer(client) -> None:
         await client.delete(f"/api/tasks/{task_id}", headers=headers)
 
 
+# =============================================================================
+# 5. GET ?limit= query parameter (Kanban #2334)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_get_tool_calls_limit_1_returns_newest_row(
+    client, db_session
+) -> None:
+    """limit=1 returns exactly 1 row — the most-recent by invoked_at DESC."""
+    import asyncio
+
+    from src.services.tool_call_writer import record_tool_call
+
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    create = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k2334-limit-1"},
+        headers=headers,
+    )
+    task_id = create.json()["id"]
+
+    try:
+        for i, tname in enumerate(("file_edit", "git_diff", "shell_run"), start=1):
+            await record_tool_call(
+                task_id=task_id,
+                tool_name=tname,
+                tier="read",
+                input_args={"i": i},
+                result=_result_dict(output=f"out-{i}"),
+                permission_decision="auto_allow",
+                db=db_session,
+            )
+            await asyncio.sleep(0.005)
+
+        resp = await client.get(
+            f"/api/tasks/{task_id}/tool-calls?limit=1", headers=headers
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert len(body) == 1
+        # Ordering unchanged — newest first.
+        assert body[0]["tool_name"] == "shell_run"
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_get_tool_calls_limit_greater_than_rowcount_returns_all(
+    client, db_session
+) -> None:
+    """limit > actual row count returns all rows (no error)."""
+    from src.services.tool_call_writer import record_tool_call
+
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    create = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k2334-limit-big"},
+        headers=headers,
+    )
+    task_id = create.json()["id"]
+
+    try:
+        # Insert 2 rows; request limit=50.
+        for tname in ("file_edit", "git_diff"):
+            await record_tool_call(
+                task_id=task_id,
+                tool_name=tname,
+                tier="read",
+                input_args={},
+                result=_result_dict(),
+                permission_decision="auto_allow",
+                db=db_session,
+            )
+
+        resp = await client.get(
+            f"/api/tasks/{task_id}/tool-calls?limit=50", headers=headers
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert len(body) == 2
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_get_tool_calls_limit_0_returns_422(client) -> None:
+    """limit=0 is below the ge=1 bound — FastAPI Query validation → 422."""
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    create = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k2334-limit-0"},
+        headers=headers,
+    )
+    task_id = create.json()["id"]
+
+    try:
+        resp = await client.get(
+            f"/api/tasks/{task_id}/tool-calls?limit=0", headers=headers
+        )
+        assert resp.status_code == 422, resp.text
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_get_tool_calls_limit_51_returns_422(client) -> None:
+    """limit=51 exceeds the le=50 bound — FastAPI Query validation → 422."""
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    create = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k2334-limit-51"},
+        headers=headers,
+    )
+    task_id = create.json()["id"]
+
+    try:
+        resp = await client.get(
+            f"/api/tasks/{task_id}/tool-calls?limit=51", headers=headers
+        )
+        assert resp.status_code == 422, resp.text
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
 @pytest.mark.asyncio
 async def test_cascade_delete_on_hard_task_delete(
     client, db_session

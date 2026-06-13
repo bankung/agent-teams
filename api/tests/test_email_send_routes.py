@@ -934,3 +934,92 @@ async def test_write_send_audit_task_caps_excerpt(monkeypatch):
     excerpt_body = excerpt_region.split("…", 1)[0]
     assert excerpt_body.count("y") == tools_email._AUDIT_BODY_EXCERPT_CHARS
     assert len(excerpt_body) == tools_email._AUDIT_BODY_EXCERPT_CHARS
+
+
+# ===========================================================================
+# Kanban #2104 — approval_mode reflects actual gate state (not hardcoded label)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_approval_mode_dormant_when_gate_inactive(client, monkeypatch, _actions_to_tmp, _no_db_audit):
+    """(i) Gate INACTIVE (OPERATOR_ACTION_KEY unset) -> approval_mode='dormant'.
+
+    NEGATIVE: 'operator_proof' must NOT appear — that would be the old bug.
+    POSITIVE: 'dormant' appears, proving the fix threads gate state to the audit.
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)  # gate dormant / fail-open.
+    _seed_gmail(monkeypatch)
+    from src.tools.email import gmail_client
+
+    monkeypatch.setattr(
+        gmail_client, "send_reply",
+        lambda c, **k: {"message_id": "m-dormant", "thread_id": "t-d"},
+    )
+    resp = await client.post(
+        f"{_BASE}/gmail/reply", headers=_HDR,
+        json={"message_id": "abc123", "body": "hello"},
+    )
+    assert resp.status_code == 200, resp.text
+    lines = _read_lines(_actions_to_tmp)
+    assert len(lines) == 1
+    row = lines[0]
+    # The fix: dormant gate -> "dormant", not the old hardcoded "operator_proof".
+    assert row["approval_mode"] == "dormant", (
+        f"expected 'dormant' (gate inactive); got {row['approval_mode']!r}"
+    )
+    assert row["approval_mode"] != "operator_proof"
+
+
+@pytest.mark.asyncio
+async def test_approval_mode_operator_proof_when_gate_active_and_token_valid(
+    client, monkeypatch, _actions_to_tmp, _no_db_audit
+):
+    """(ii) Gate ACTIVE + valid X-Operator-Token -> approval_mode='operator_proof'.
+
+    POSITIVE: the token was truly verified; the audit row must reflect that.
+    """
+    monkeypatch.setenv(_KEY_ENV, _TOKEN)  # gate ACTIVE.
+    _seed_gmail(monkeypatch)
+    from src.tools.email import gmail_client
+
+    monkeypatch.setattr(
+        gmail_client, "send_reply",
+        lambda c, **k: {"message_id": "m-proven", "thread_id": "t-p"},
+    )
+    resp = await client.post(
+        f"{_BASE}/gmail/reply",
+        headers={**_HDR, "X-Operator-Token": _TOKEN},
+        json={"message_id": "abc123", "body": "hello"},
+    )
+    assert resp.status_code == 200, resp.text
+    lines = _read_lines(_actions_to_tmp)
+    assert len(lines) == 1
+    row = lines[0]
+    # Token presented + verified -> "operator_proof".
+    assert row["approval_mode"] == "operator_proof", (
+        f"expected 'operator_proof' (token verified); got {row['approval_mode']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_approval_mode_auto_for_tier1_modify_unchanged(client, monkeypatch, _actions_to_tmp):
+    """(iii) Tier-1 MODIFY actions keep approval_mode='auto' — unchanged by #2104.
+
+    Regression guard: the fix must not disturb auto-approve MODIFY rows.
+    """
+    monkeypatch.setenv(_KEY_ENV, _TOKEN)  # gate ACTIVE — modify is still OPEN.
+    _seed_gmail(monkeypatch)
+    from src.tools.email import gmail_client
+
+    monkeypatch.setattr(gmail_client, "modify_labels", lambda c, ids, a, r: (list(ids), []))
+
+    resp = await client.post(
+        f"{_BASE}/gmail/mark", headers=_HDR,
+        json={"message_ids": ["abc123def456"], "read": True},
+    )
+    assert resp.status_code == 200, resp.text
+    lines = _read_lines(_actions_to_tmp)
+    assert len(lines) == 1
+    # MODIFY tier must remain "auto" — not touched by #2104.
+    assert lines[0]["approval_mode"] == "auto"

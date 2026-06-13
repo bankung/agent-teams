@@ -25,6 +25,8 @@ from starlette.middleware.cors import CORSMiddleware
 
 from src.middleware.rate_limit import limiter
 from src.middleware.request_size import request_size_middleware
+from src.routers import agent_gallery as agent_gallery_router
+from src.routers import agent_validation as agent_validation_router
 from src.routers import audit as audit_router
 from src.routers import credentials as credentials_router
 from src.routers import dashboard as dashboard_router
@@ -46,6 +48,7 @@ from src.routers import scaffold as scaffold_router
 from src.routers import sessions as sessions_router
 from src.routers import settings as settings_router
 from src.routers import task_templates as task_templates_router
+from src.routers import task_outputs as task_outputs_router
 from src.routers import tasks as tasks_router
 from src.routers import teams as teams_router
 from src.routers import tool_calls as tool_calls_router
@@ -54,6 +57,7 @@ from src.routers import tools_calendar as tools_calendar_router
 from src.routers import tools_directory as tools_directory_router
 from src.routers import transactions as transactions_router
 from src.routers import usage as usage_router
+from src.routers import usage_events as usage_events_router
 from src.routers import user_actions as user_actions_router
 from src.services.row_changed_listener import start_listener, stop_listener
 from src.settings import get_settings
@@ -377,6 +381,8 @@ def create_app() -> FastAPI:
     app.include_router(events_router.router, prefix="/api")  # Kanban #782 SSE
     # Kanban #980 — specialist-tool audit timeline (sub-resource of tasks).
     app.include_router(tool_calls_router.router, prefix="/api")
+    # Kanban #1305 — task-output listing + file serving (sub-resource of tasks).
+    app.include_router(task_outputs_router.router, prefix="/api")
     # Kanban #1082 — auditor cross-project daily-rollup aggregation.
     app.include_router(audit_router.router, prefix="/api")
     # Kanban #953 — per-project financial separation (transactions ledger + P&L).
@@ -434,6 +440,19 @@ def create_app() -> FastAPI:
     app.include_router(settings_router.router, prefix="/api")
     # Kanban #2135 — provider cost rollup (cross-project, no X-Project-Id).
     app.include_router(usage_router.router, prefix="/api")
+    # Kanban #2354 — Mode-A usage-event ingest (project-scoped, X-Project-Id).
+    # Separate router from the rollup above; shares /usage prefix, distinct path
+    # (/events vs /daily) so no route collision. POST /api/usage/events.
+    app.include_router(usage_events_router.router, prefix="/api")
+    # Kanban #1016 — agent-frontmatter validator (platform-level, no
+    # X-Project-Id). Scans .claude/agents/*.md; read-only, GET-only.
+    app.include_router(agent_validation_router.router, prefix="/api")
+    # Kanban #1017 — agent gallery (platform-level, no X-Project-Id). Registered
+    # AFTER the validator: FastAPI/Starlette matches in REGISTRATION ORDER; the
+    # validation router's static /agents/validate is registered first so it wins
+    # over /agents/{name} — order is load-bearing; RESERVED_AGENT_NAMES
+    # backstops it.
+    app.include_router(agent_gallery_router.router, prefix="/api")
 
     return app
 

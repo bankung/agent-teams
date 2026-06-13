@@ -39,6 +39,7 @@ services:
       db:
         condition: service_healthy
     environment:
+      OPERATOR_ACTION_KEY: ${OPERATOR_ACTION_KEY:-}
       # Inside the compose network the api talks to the `db` service by hostname,
       # NOT localhost. The .env DATABASE_URL is for running uvicorn locally
       # against the same compose db (host = localhost).
@@ -139,7 +140,7 @@ services:
       AZURE_OAUTH_TENANT: ${AZURE_OAUTH_TENANT:-consumers}
       AZURE_OAUTH_REDIRECT_URI: ${AZURE_OAUTH_REDIRECT_URI:-http://localhost:8456/api/tools/email/auth/outlook/callback}
     ports:
-      - "${API_PORT:-8456}:8456"
+      - "127.0.0.1:${API_PORT:-8456}:8456"
     volumes:
       # Bind the repo root read-write. Working dir inside the container is
       # /repo/api (set by Dockerfile WORKDIR). The mount overlays the build-time

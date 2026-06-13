@@ -1147,13 +1147,20 @@ export type ToolCallRead = {
 
 // #980 — GET /api/tasks/{id}/tool-calls. Backend returns [] for tasks with
 // no recorded calls; callers should hide the section in that case.
+// Kanban #2334 — optional `limit` arg (1..50) appends ?limit=N.  Client slices
+// to `limit` regardless as a guard against endpoints that return all rows.
 export async function getTaskToolCalls(
   projectId: number,
   taskId: number,
+  limit?: number,
 ): Promise<ToolCallRead[]> {
-  return jsonFetch<ToolCallRead[]>(`/api/tasks/${taskId}/tool-calls`, {
-    headers: { "X-Project-Id": String(projectId) },
-  });
+  const qs = limit !== undefined ? `?limit=${limit}` : "";
+  const rows = await jsonFetch<ToolCallRead[]>(
+    `/api/tasks/${taskId}/tool-calls${qs}`,
+    { headers: { "X-Project-Id": String(projectId) } },
+  );
+  // Client-side guard: slice to `limit` even when the endpoint ignores it.
+  return limit !== undefined ? rows.slice(0, limit) : rows;
 }
 
 // ============================================================================
@@ -2344,6 +2351,53 @@ export async function getDailyUsage(opts?: {
   return jsonFetch<DailyUsageResponse>(buildPath("/api/usage/daily", qs));
 }
 
+// ============================================================================
+// Kanban #1305 — Task output files (listing + raw bytes).
+// ============================================================================
+
+// TaskOutputEntry — one item from GET /api/tasks/{id}/outputs.
+// kind ∈ chart | doc | export | text per the #1305 contract.
+export type TaskOutputEntry = {
+  filename: string;
+  mime: string;
+  size: number;
+  kind: "chart" | "doc" | "export" | "text";
+};
+
+// getTaskOutputs — GET /api/tasks/{id}/outputs → list.
+// Returns [] when the task has no outputs (never throws on 404/empty).
+export async function getTaskOutputs(
+  projectId: number,
+  taskId: number,
+): Promise<TaskOutputEntry[]> {
+  return jsonFetch<TaskOutputEntry[]>(`/api/tasks/${taskId}/outputs`, {
+    headers: { "X-Project-Id": String(projectId) },
+  });
+}
+
+// fetchTaskOutputBytes — fetch a task output file as a Blob via the browser
+// fetch() with X-Project-Id header.  The raw bytes API requires the header
+// (400 without it), so we cannot use a plain <img src> or <iframe src>.
+// Callers: create a blob URL, use it, then revoke on cleanup.
+export async function fetchTaskOutputBytes(
+  projectId: number,
+  taskId: number,
+  filename: string,
+): Promise<Blob> {
+  const url = `${apiBaseUrl()}/api/tasks/${taskId}/outputs/${encodeURIComponent(filename)}`;
+  const response = await fetch(url, {
+    cache: "no-store",
+    headers: { "X-Project-Id": String(projectId) },
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { detail?: unknown };
+    const message =
+      formatDetail(body.detail) ?? `${response.status} ${response.statusText}`;
+    throw new HttpError(response.status, body.detail, message);
+  }
+  return response.blob();
+}
+
 // deleteResource — DELETE /api/resources/{id}. Operator-gated; soft-delete +
 // move file to trash. 204 (no body) on success; idempotent. Returns void.
 export async function deleteResource(resourceId: number): Promise<void> {
@@ -2361,4 +2415,91 @@ export async function deleteResource(resourceId: number): Promise<void> {
       formatDetail(body.detail) ?? `${response.status} ${response.statusText}`;
     throw new HttpError(response.status, body.detail, message);
   }
+}
+
+// ============================================================================
+// Kanban #1017 — Agent gallery. Platform-level resource (NO X-Project-Id
+// header; mirrors /api/agents/validate #1016). Two endpoints:
+//   GET /api/agents          → flat AgentSummary[] sorted by name
+//   GET /api/agents/{name}   → AgentDetail (summary + raw_frontmatter +
+//                              full_description + recent spawns); 404 unknown.
+// ============================================================================
+
+// AgentModelTier — model enum on the frontmatter. `null` = no `model:` key on
+// the agent (Claude Code falls back to the session default).
+export type AgentModelTier = "opus" | "sonnet" | "haiku";
+
+// AgentDomain — which team/domain the agent belongs to. "other" is the catch-
+// all for files that don't map to a known team.
+export type AgentDomain =
+  | "dev"
+  | "novel"
+  | "content"
+  | "secretary"
+  | "sem"
+  | "seo"
+  | "data"
+  | "general"
+  | "other";
+
+// AgentValidationError — one frontmatter diagnostic. Same shape as the
+// /api/agents/validate diagnostics (Kanban #1016): file basename, 1-based line,
+// the offending field, a human message, and severity. `error` = blocking
+// (agent won't load); `warning` = unknown key / unknown tool.
+export type AgentValidationError = {
+  file: string;
+  line: number;
+  field: string;
+  message: string;
+  severity: "error" | "warning";
+};
+
+// AgentSummary — one row in GET /api/agents.
+//   tools_summary: human label — "All tools" | "N tools".
+//   tool_count:    null when the agent grants "All tools" (no explicit list).
+//   source_file:   basename only (path-stripped on the wire).
+//   valid:         false when validation_errors carries any severity='error'.
+export type AgentSummary = {
+  name: string;
+  description: string;
+  model: AgentModelTier | null;
+  tools_summary: string;
+  tool_count: number | null;
+  hook_count: number;
+  source_file: string;
+  domain: AgentDomain;
+  valid: boolean;
+  validation_errors: AgentValidationError[];
+};
+
+// AgentSpawn — one row in AgentDetail.spawns. A task this agent was spawned
+// for. `at` is an ISO 8601 timestamp (feed to formatRelative); null on legacy
+// rows that pre-date the timestamp column. Newest first, capped at 20 by the BE.
+export type AgentSpawn = {
+  task_id: number;
+  project_id: number;
+  project_name: string;
+  model: string | null;
+  at: string | null;
+};
+
+// AgentDetail — GET /api/agents/{name}. Everything in AgentSummary plus the
+// raw frontmatter block, the full (untruncated) description, and recent spawns.
+export type AgentDetail = AgentSummary & {
+  raw_frontmatter: string;
+  full_description: string;
+  spawns: AgentSpawn[];
+};
+
+// getAgents — GET /api/agents. Platform-level (no X-Project-Id). Returns the
+// full agent listing sorted by name (BE pre-sorts; FE sort control re-orders
+// client-side).
+export async function getAgents(): Promise<AgentSummary[]> {
+  return jsonFetch<AgentSummary[]>(`/api/agents`);
+}
+
+// getAgentDetail — GET /api/agents/{name}. 404 (HttpError) on unknown name —
+// the detail page discriminates on .status === 404 → notFound().
+export async function getAgentDetail(name: string): Promise<AgentDetail> {
+  return jsonFetch<AgentDetail>(`/api/agents/${encodeURIComponent(name)}`);
 }

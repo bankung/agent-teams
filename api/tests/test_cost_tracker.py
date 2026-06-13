@@ -58,12 +58,19 @@ def test_compute_cost_unknown_provider_raises_value_error() -> None:
 
 
 def test_pricing_table_has_three_locked_models() -> None:
-    """Spec lock: V1 ships exactly the three Anthropic models."""
+    """Spec lock: the core Anthropic exact keys are present.
+
+    V1 CTX-3 locked three keys (opus-4-7, sonnet-4-6, haiku-4-5-20251001).
+    Kanban #2301 added claude-opus-4-8 as a 4th exact key.
+    Kanban #944 added claude-opus-4-x and claude-haiku alias entries.
+    This test pins all exact-key presences so regressions are caught immediately.
+    """
     from src.services.cost_tracker import PRICING
 
     assert ("anthropic", "claude-opus-4-7") in PRICING
     assert ("anthropic", "claude-sonnet-4-6") in PRICING
     assert ("anthropic", "claude-haiku-4-5-20251001") in PRICING
+    assert ("anthropic", "claude-opus-4-8") in PRICING
     assert PRICING[("anthropic", "claude-opus-4-7")] == {"input": 15.0, "output": 75.0}
 
 
@@ -197,3 +204,59 @@ def test_compute_cost_cache_savings_vs_uncached_amortization() -> None:
     # Exact arithmetic check.
     assert uncached_total == Decimal("0.3000")
     assert cached_total == Decimal("0.0645")
+
+
+# ---------------------------------------------------------------------------
+# Kanban #2301 — claude-opus-4-8 exact key + updated rates
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_pricing_key_opus_4_8_returns_exact_key_not_alias() -> None:
+    """claude-opus-4-8 must hit the exact key, not the claude-opus-4-x alias.
+
+    The exact key carries $5/$25; the alias carries legacy $15/$75. If the
+    alias fires instead, cost accounting is 3x too high.
+    """
+    from src.services.cost_tracker import PRICING, resolve_pricing_key
+
+    key = resolve_pricing_key("anthropic", "claude-opus-4-8")
+    assert key == ("anthropic", "claude-opus-4-8"), f"expected exact key, got {key}"
+    assert PRICING[key] == {"input": 5.0, "output": 25.0}
+
+
+def test_compute_cost_opus_4_8_uses_5_25_rates() -> None:
+    """1M input @ $5 + 1M output @ $25 = $30.0000 (not legacy $90)."""
+    from src.services.cost_tracker import compute_cost
+
+    result = compute_cost("anthropic", "claude-opus-4-8", 1_000_000, 1_000_000)
+    assert result == Decimal("30.0000"), f"expected $30.0000 at $5/$25 rates, got {result}"
+
+
+def test_haiku_4_5_rate_updated_to_1_5() -> None:
+    """claude-haiku-4-5-20251001 updated to $1/$5 (Kanban #2301 verified 2026-06-11)."""
+    from src.services.cost_tracker import PRICING
+
+    rates = PRICING[("anthropic", "claude-haiku-4-5-20251001")]
+    assert rates == {"input": 1.0, "output": 5.0}, f"expected {{input:1.0, output:5.0}}, got {rates}"
+
+
+# ---------------------------------------------------------------------------
+# Opus-4-8 versioned-id pricing guard (2026-06-13, Fix 2).
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_pricing_key_opus_4_8_versioned_id_uses_5_25_rates() -> None:
+    """A versioned model id like 'claude-opus-4-8-20250514' must resolve to
+    ('anthropic', 'claude-opus-4-8') at $5/$25, NOT the generic 'claude-opus-4-x'
+    alias at $15/$75 (which would be 3x overcount).
+
+    The guard 'if "opus-4-8" in m' must fire BEFORE the generic 'if "opus" in m'.
+    """
+    from src.services.cost_tracker import PRICING, resolve_pricing_key
+
+    key = resolve_pricing_key("anthropic", "claude-opus-4-8-20250514")
+    assert key == ("anthropic", "claude-opus-4-8"), (
+        f"versioned opus-4-8 id resolved to {key!r}; expected exact claude-opus-4-8 key"
+    )
+    # Confirm the resolved key carries the correct $5/$25 rates, not legacy $15/$75.
+    assert PRICING[key] == {"input": 5.0, "output": 25.0}

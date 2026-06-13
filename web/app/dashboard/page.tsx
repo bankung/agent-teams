@@ -440,6 +440,15 @@ export default async function DashboardPage() {
           {/* #1582 — first-visit product tour: auto-fires once for new users;
               this button is the always-available "Take the tour" replay. */}
           <ProductTour />
+          {/* #1017 — agent gallery entry. Minimal text link, matches the
+              header's other nav affordances. */}
+          <Link
+            href="/agents"
+            data-nav-agents
+            className="text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+          >
+            Agents
+          </Link>
           <ThemePicker />
         </span>
       </header>

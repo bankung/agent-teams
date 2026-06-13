@@ -38,7 +38,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi import status as http_status
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
@@ -66,6 +66,7 @@ router = APIRouter(prefix="/tasks", tags=["tool-calls"])
 @router.get("/{task_id}/tool-calls", response_model=list[ToolCallRead])
 async def list_tool_calls(
     task_id: int,
+    limit: int | None = Query(default=None, ge=1, le=50),
     session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
 ) -> list[ToolCall]:
@@ -74,6 +75,9 @@ async def list_tool_calls(
     See module docstring for the full contract. The query lands on the
     `ix_tool_calls_task_id_invoked_at` composite index — single B-tree
     walk, no separate sort.
+
+    Optional `limit` (1..50): caps the number of rows returned. Omitted →
+    full list (byte-identical to previous behavior). Kanban #2334.
     """
     task = await get_or_404(
         session, Task, detail=f"Task id={task_id} not found", id=task_id
@@ -94,6 +98,8 @@ async def list_tool_calls(
         .where(ToolCall.task_id == task_id)
         .order_by(ToolCall.invoked_at.desc(), ToolCall.id.desc())
     )
+    if limit is not None:
+        stmt = stmt.limit(limit)
     result = await session.execute(stmt)
     return list(result.scalars().all())
 

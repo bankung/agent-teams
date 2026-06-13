@@ -251,7 +251,7 @@ def test_make_chat_model_invalid_model_override(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_default_model_constants_are_canonical() -> None:
-    assert DEFAULT_ANTHROPIC_MODEL == "claude-sonnet-4-6"
+    assert DEFAULT_ANTHROPIC_MODEL == "claude-opus-4-8"
     assert DEFAULT_OPENAI_MODEL == "gpt-4o"
     # Kanban #891 — ollama defaults pinned here to catch a future drift.
     assert DEFAULT_OLLAMA_MODEL == "llama3.2"

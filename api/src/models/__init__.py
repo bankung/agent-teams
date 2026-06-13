@@ -15,6 +15,7 @@ from src.models.task_comment import TaskComment
 from src.models.task_template import TaskTemplate
 from src.models.tool_call import ToolCall
 from src.models.transaction import Transaction
+from src.models.usage_event import UsageEvent
 
 __all__ = [
     "Base",
@@ -36,4 +37,5 @@ __all__ = [
     "TaskTemplate",
     "ToolCall",
     "Transaction",
+    "UsageEvent",
 ]

@@ -21,6 +21,7 @@ import {
   type DragEndEvent,
 } from "@dnd-kit/core";
 import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
+import { useMemo } from "react";
 
 import type { TaskRead } from "@/lib/api";
 import { TaskStatus, type TaskStatusValue } from "@/lib/constants";
@@ -49,15 +50,21 @@ type Props = {
   onLoadMoreDone: () => void;
   onCrossLaneDrop: OnCrossLaneDrop;
   onSameLaneReorder: OnSameLaneReorder;
+  // Kanban #2334 — passed through to BoardColumn/TaskCard for activity strip.
+  projectId?: number;
 };
 
-const COLUMN_PS: Record<string, TaskStatusValue> = {
-  "1": TaskStatus.TODO,
-  "2": TaskStatus.IN_PROGRESS,
-  "3": TaskStatus.REVIEW,
-  "4": TaskStatus.BLOCKED,
-  "5": TaskStatus.DONE,
-};
+// #2122 N1 — derive the column-key→process_status map from the columns prop
+// instead of a hardcoded literal, so a rename/add in Board.tsx propagates here
+// automatically. Each column's statuses[0] is the canonical status for that lane;
+// cross-lane drops (over.id = col.key string) resolve through this map.
+export function buildColumnPs(columns: Column[]): Record<string, TaskStatusValue> {
+  const map: Record<string, TaskStatusValue> = {};
+  for (const col of columns) {
+    if (col.statuses.length > 0) map[col.key] = col.statuses[0];
+  }
+  return map;
+}
 
 export function BoardDndCanvas({
   columns,
@@ -72,11 +79,14 @@ export function BoardDndCanvas({
   onLoadMoreDone,
   onCrossLaneDrop,
   onSameLaneReorder,
+  projectId,
 }: Props) {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
+
+  const columnPs = useMemo(() => buildColumnPs(columns), [columns]);
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
@@ -89,7 +99,7 @@ export function BoardDndCanvas({
     let newPs: TaskStatusValue | undefined;
     let overTask: TaskRead | undefined;
     if (typeof over.id === "string") {
-      newPs = COLUMN_PS[over.id];
+      newPs = columnPs[over.id];
     } else {
       overTask = tasks.find((t) => t.id === over.id);
       if (overTask === undefined) return;
@@ -141,6 +151,7 @@ export function BoardDndCanvas({
               onOpenDetail={onOpenDetail}
               sortable={col.statuses.includes(TaskStatus.TODO)}
               highlightedTaskId={highlightedTaskId}
+              projectId={projectId}
             />
           );
         })}
