@@ -231,6 +231,17 @@ function HeaderIconLink({
   );
 }
 
+/** Pure helper — exported for unit testing (Kanban #2346 FE-m2).
+ * Only "all" has a server-side rollup in projectStats; "none" and numeric ids
+ * have no matching rollup row, so return undefined → BoardColumn uses loaded count. */
+export function computeDoneTotalCount(
+  milestoneFilter: "all" | "none" | number,
+  projectStats: ProjectStatsEntry[],
+): number | undefined {
+  if (milestoneFilter === "all") return projectStats[0]?.counts["5"];
+  return undefined;
+}
+
 export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, project, projectStats, progressStats }: Props) {
   const router = useRouter();
   const pathname = usePathname();
@@ -557,6 +568,17 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
   }, [tasks, showAudit, showOperatorGateOnly, milestoneFilter]);
 
   const grouped = useMemo(() => groupByStatus(visibleTasks), [visibleTasks]);
+
+  // Kanban #2346 — true DONE total for the column header badge.
+  // "all": projectStats[0]?.counts["5"] is the server total (SSR-fetched).
+  // "none" (milestone_id IS NULL) and numeric milestone ids: no server rollup
+  // available client-side — return undefined so BoardColumn falls back to the
+  // loaded count (accurate for the filtered subset).
+  // NOTE: client-only toggles (audit/operator-gate) may make "all" approximate.
+  const doneTotalCount = useMemo<number | undefined>(
+    () => computeDoneTotalCount(milestoneFilter, projectStats),
+    [milestoneFilter, projectStats],
+  );
 
   // Reset the client-side DONE display window (visibleDoneCount) ONLY when the
   // filter inputs change. Keyed on the filter state directly — NOT on the DONE
@@ -900,6 +922,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
           visibleDoneCount={visibleDoneCount}
           doneHasMore={doneHasMore}
           doneLoadingMore={doneLoadingMore}
+          doneTotalCount={doneTotalCount}
           onOpenDetail={onOpenDetail}
           highlightedTaskId={highlightedTaskId}
           onLoadMoreDone={handleLoadMoreDone}
