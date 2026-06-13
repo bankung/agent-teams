@@ -45,6 +45,10 @@ from src.models.usage_event import UsageEvent
 from src.schemas.usage_event import UsageEventCreate, UsageEventRead
 from src.services.cost_tracker import compute_cost, resolve_pricing_key
 from src.services.session_project import require_project_id_header
+from src.services.usage_events_rate_limit import (
+    RateLimitError,
+    check_and_consume as _rl_check,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +110,18 @@ async def create_usage_event(
     See the module docstring for the full contract. project_id = the
     X-Project-Id header value (canonical).
     """
+    # Per-project rate limit (Kanban #2355): stop runaway hook loops before they
+    # flood the ledger. Default 60 req / 10s per project. Idempotent retries
+    # with a dedup_key are still allowed through — the check fires first, so a
+    # tight-loop retry storm is caught even if every hit carries a dedup_key.
+    try:
+        _rl_check(session_project_id)
+    except RateLimitError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded for this project: {exc}",
+        ) from exc
+
     # Idempotent fast path: a known dedup_key returns the existing row (200).
     if body.dedup_key is not None:
         existing = await _existing_by_dedup_key(

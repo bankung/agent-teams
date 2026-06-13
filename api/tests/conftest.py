@@ -411,6 +411,12 @@ def _reset_rate_limiter_per_test():
         _reset_webhook_rl()
     except Exception:
         pass
+    try:
+        from src.services.usage_events_rate_limit import reset as _reset_ue_rl
+
+        _reset_ue_rl()
+    except Exception:
+        pass
     yield
 
 
