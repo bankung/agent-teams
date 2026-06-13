@@ -1,4 +1,4 @@
-# PreToolUse hook for dev-researcher — Bash tool
+# PreToolUse hook for general-researcher — Bash tool
 # Allow: firecrawl CLI commands only
 # Block: everything else
 
@@ -12,7 +12,7 @@ if ($command -match '^firecrawl\s') {
         hookSpecificOutput = @{
             hookEventName            = "PreToolUse"
             permissionDecision       = "allow"
-            permissionDecisionReason = "firecrawl CLI command auto-approved for dev-researcher"
+            permissionDecisionReason = "firecrawl CLI command auto-approved for general-researcher"
         }
     } | ConvertTo-Json -Compress -Depth 4
     Write-Output $output
@@ -24,7 +24,7 @@ $output = @{
     hookSpecificOutput = @{
         hookEventName            = "PreToolUse"
         permissionDecision       = "deny"
-        permissionDecisionReason = "dev-researcher Bash is restricted to firecrawl commands only"
+        permissionDecisionReason = "general-researcher Bash is restricted to firecrawl commands only"
     }
 } | ConvertTo-Json -Compress -Depth 4
 Write-Output $output

@@ -8,7 +8,7 @@
 # list, citation marker patterns, fail-open policy). This is the Linux/Mac
 # container pair — same logic, jq + bash regex instead of PowerShell.
 #
-# Registration in .codex/settings.json (operator step):
+# Registration in .codex/hooks.json (operator step):
 #   "PreToolUse": [{"matcher": "Edit|Write",
 #                   "hooks": [{"type":"command",
 #                              "command":".codex/hooks/seo-factcheck-gate.sh"}]}]

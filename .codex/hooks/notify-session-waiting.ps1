@@ -1,0 +1,164 @@
+# notify-session-waiting.ps1 — Codex Notification hook (Kanban #1937).
+# Fires when the Codex session emits a Notification event (idle / waiting
+# for user input at a permission prompt). Reads the active project context from
+# _runtime/lead_project_id.txt, pulls the current IN_PROGRESS task, and POSTs a
+# push notification via POST /api/notifications/deliver so the web_push fan-out
+# (and/or local-file fallback) reaches the operator even when the terminal is not
+# in focus.
+#
+# WHY: Kanban #1937 — Live-session waiting bridge. Connects the Codex
+# Notification hook event to the existing notification fabric so blocked/idle
+# sessions surface as real push notifications rather than silent terminal waits.
+#
+# Design constraints:
+#   - MUST be best-effort: exit 0 on any error; NEVER block or fail the session.
+#   - Runs under PowerShell 5.1 (Windows host); no third-party modules.
+#   - Short curl timeouts to avoid adding latency to the session halt UI.
+#   - Reads STDIN JSON (hook payload) for the optional `message` field.
+
+$ErrorActionPreference = 'SilentlyContinue'   # never throw; we exit 0 on any error
+
+# ---------------------------------------------------------------------------
+# Step 1 — Resolve the bound project id
+# ---------------------------------------------------------------------------
+
+try {
+    $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
+    $projectIdFile = Join-Path $repoRoot '_runtime\lead_project_id.txt'
+
+    if (-not (Test-Path $projectIdFile)) { exit 0 }
+
+    $raw = (Get-Content -Raw -Path $projectIdFile -ErrorAction Stop).Trim()
+    $projectId = 0
+    if (-not [int]::TryParse($raw, [ref]$projectId) -or $projectId -le 0) { exit 0 }
+} catch { exit 0 }
+
+# ---------------------------------------------------------------------------
+# Step 2 — Read the Notification event from STDIN
+# ---------------------------------------------------------------------------
+
+$hookMessage = ''
+try {
+    $stdinRaw = [Console]::In.ReadToEnd()
+    if ($stdinRaw -and $stdinRaw.Length -gt 4096) { $stdinRaw = $stdinRaw.Substring(0, 4096) }
+    if ($stdinRaw) {
+        $hookPayload = $stdinRaw | ConvertFrom-Json -ErrorAction Stop
+        if ($hookPayload.PSObject.Properties.Name -contains 'message') {
+            $hookMessage = [string]$hookPayload.message
+            if ($hookMessage.Length -gt 200) { $hookMessage = $hookMessage.Substring(0, 200) }
+        }
+    }
+} catch { <# best-effort; proceed with empty message #> }
+
+# ---------------------------------------------------------------------------
+# Step 3 — GET IN_PROGRESS tasks (process_status=2) for the project
+# ---------------------------------------------------------------------------
+
+$taskId = $null
+$taskTitle = ''
+$taskPriority = $null
+
+try {
+    $tasksJson = & curl.exe --silent --max-time 4 `
+        -H "X-Project-Id: $projectId" `
+        "http://localhost:8456/api/tasks?process_status=2&limit=50" 2>$null
+
+    if ($LASTEXITCODE -eq 0 -and $tasksJson) {
+        $tasks = $tasksJson | ConvertFrom-Json -ErrorAction Stop
+        if ($tasks -and $tasks.Count -gt 0) {
+            # Pick the highest priority (HIGHEST numeric code; LOW=1..URGENT=4) task;
+            # break ties by most recently started (latest started_at).
+            $best = $tasks |
+                Sort-Object -Property @{Expression='priority';Descending=$true},
+                                      @{Expression='started_at';Descending=$true} |
+                Select-Object -First 1
+            $taskId    = $best.id
+            $taskTitle = [string]$best.title
+            $taskPriority = $best.priority
+        }
+    }
+} catch { <# best-effort; proceed without task context #> }
+
+# ---------------------------------------------------------------------------
+# Step 4 — Compute downstream_block_count
+# ---------------------------------------------------------------------------
+
+$downstreamBlockCount = 0
+
+if ($taskId) {
+    try {
+        # Tasks that list THIS task as their blocked_by blocker and are not DONE/CANCELLED.
+        # Reverse-lookup endpoint (index ix_tasks_blocked_by) — already returns only
+        # tasks blocked by $taskId, so no all-tasks fetch + client filter (#2046).
+        $blockedJson = & curl.exe --silent --max-time 4 `
+            -H "X-Project-Id: $projectId" `
+            "http://localhost:8456/api/tasks/$taskId/blocks" 2>$null
+
+        if ($LASTEXITCODE -eq 0 -and $blockedJson) {
+            $blockers = $blockedJson | ConvertFrom-Json -ErrorAction Stop
+            if ($blockers) {
+                $downstreamBlockCount = @(
+                    $blockers | Where-Object {
+                        $_.process_status -notin @(5, 6)   # not DONE or CANCELLED
+                    }
+                ).Count
+            }
+        }
+    } catch { <# best-effort; proceed with 0 #> }
+}
+
+# ---------------------------------------------------------------------------
+# Step 5 — Build notification payload and POST to /api/notifications/deliver
+# ---------------------------------------------------------------------------
+
+# We need a task_id for the deliver endpoint (required field, ge=1).
+# If no IN_PROGRESS task was found, we cannot deliver via the endpoint
+# (no task_id anchor). Fall through silently — the local-file fallback
+# won't fire here, but that's acceptable; the session is not blocked.
+if (-not $taskId) { exit 0 }
+
+# Compose a human-readable message.
+$summaryMsg = if ($hookMessage) { $hookMessage } else { 'Codex session is waiting for your attention.' }
+$contextMsg = "Task #${taskId}: $taskTitle"
+if ($downstreamBlockCount -gt 0) {
+    $contextMsg += " (blocks $downstreamBlockCount downstream task$(if($downstreamBlockCount -ne 1){'s'}))"
+}
+
+# Build the JSON body. Use ConvertTo-Json to ensure proper escaping.
+$payloadObj = @{
+    task_id    = [int]$taskId
+    kind       = 'web_push'
+    event_kind = 'session_waiting'
+    payload    = @{
+        title              = 'Codex — session waiting'
+        message            = $summaryMsg
+        task_context       = $contextMsg
+        task_priority      = $taskPriority
+        downstream_blocked = $downstreamBlockCount
+        project_id         = $projectId
+    }
+}
+
+try {
+    $bodyJson = $payloadObj | ConvertTo-Json -Compress -Depth 5 -ErrorAction Stop
+} catch { exit 0 }
+
+# Write body to a temp file so curl doesn't choke on special characters in the
+# JSON string on Windows (avoids the PowerShell -d "@-" stdin pipe complexity).
+try {
+    $tmpFile = [System.IO.Path]::GetTempFileName()
+    [System.IO.File]::WriteAllText($tmpFile, $bodyJson, [System.Text.Encoding]::UTF8)
+} catch { exit 0 }
+
+try {
+    & curl.exe --silent --max-time 6 `
+        -X POST `
+        -H "Content-Type: application/json" `
+        -H "X-Project-Id: $projectId" `
+        --data "@$tmpFile" `
+        "http://localhost:8456/api/notifications/deliver" 2>$null | Out-Null
+} catch { <# best-effort; outcome irrelevant #> } finally {
+    try { Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue } catch {}
+}
+
+exit 0

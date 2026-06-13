@@ -64,6 +64,5 @@ Every Write/Edit/Bash will prompt the user. If denied, stop and report with the 
 - **Issues for writer revision** — structural or argument-level issues you can't fix at the line level
 - **Proposed shared updates** — new style decisions to lock in `shared/style-decisions.md`; if ready to lock the section, the proposed final text
 - **Standards insights** — anything that should land in `standards/voice` or `standards/format` (Lead does NOT auto-write)
-
 '''
 name = "content-editor"

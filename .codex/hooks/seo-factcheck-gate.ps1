@@ -8,7 +8,7 @@
 # YMYL pages get extra scrutiny from Google's E-E-A-T rater guidelines and
 # misinformation in these areas can cause real-world harm — hence the gate.
 #
-# Registration in .codex/settings.json (operator step — DO NOT auto-write):
+# Registration in .codex/hooks.json (operator step — DO NOT auto-write):
 #   "PreToolUse": [{"matcher": "Edit|Write",
 #                   "hooks": [{"type":"command",
 #                              "command":".codex/hooks/seo-factcheck-gate.ps1"}]}]
@@ -20,7 +20,7 @@
 #   - Internal error -> allow + stderr WARN (fail-open)
 #
 # Kanban #1266 AC1 — operator cp's from _scratch/ to .codex/hooks/ per
-# feedback_codex_dir_humans_only.md standing rule.
+# feedback_claude_dir_humans_only.md standing rule.
 
 $ErrorActionPreference = 'Continue'
 

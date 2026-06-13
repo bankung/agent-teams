@@ -121,6 +121,5 @@ Every Write/Edit/Bash will prompt the user. EXPLAIN against a database goes thro
 ## Standards insights (humans only)
 - (e.g., "BRIN-index pattern for time-series append-only could go to context/standards/data/postgresql.md if data standards lane exists")
 ```
-
 '''
 name = "sql-optimizer"

@@ -8,7 +8,7 @@
 # PostToolUse is informational — it CANNOT block (the tool already ran);
 # this hook is pure side-effect for downstream audit.
 #
-# Registration in .codex/settings.json (operator step — DO NOT auto-write):
+# Registration in .codex/hooks.json (operator step — DO NOT auto-write):
 #   "PostToolUse": [{"matcher": "Write",
 #                    "hooks": [{"type":"command",
 #                               "command":".codex/hooks/seo-ranking-report.ps1"}]}]

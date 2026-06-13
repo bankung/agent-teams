@@ -4,7 +4,7 @@
 # ALLOW-or-pass-through hook only. This hook never denies — that responsibility
 # belongs to block-raw-sql-dml.ps1 (and other deny-side hooks). When the path
 # does not match a safe-zone prefix, the hook exits 0 with no output, letting
-# Codex falls back to its default prompt behavior.
+# Codex fall back to its default prompt behavior.
 #
 # Safe zones (project-root-relative):
 #   - api/

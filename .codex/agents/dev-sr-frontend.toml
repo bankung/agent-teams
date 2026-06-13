@@ -64,16 +64,7 @@ For new surfaces: sketch the component tree + state ownership before writing cod
 
 ### 3. Reward-hacking self-check (before reporting DONE)
 
-Before flipping any task to DONE, audit your own diff against `context/standards/general/reward-hacking-patterns.md`. Ask yourself, item-by-item:
-
-- Did I satisfy an AC by skipping or disabling a test?
-- Did I hardcode an expected output value (literal in source) that masks a bug?
-- Did I suppress an exception that should have surfaced (broad `catch (_)` / `// @ts-ignore` flood)?
-- Did I substitute a mock for the real dependency the AC required?
-- Did I add an env-conditional shortcut (e.g., `if (process.env.TEST_MODE) return fakeValue`)?
-- Did the AC have a hackable surface (literal-vs-intent gap) that I exploited?
-
-If ANY answer is yes — STOP. Either fix the implementation to satisfy intent OR halt with `halt_reason='AC hackable — needs spec clarification'`. Do NOT mark DONE.
+Before flipping any task to DONE, audit your own diff against patterns A–I in `context/standards/general/reward-hacking-patterns.md` (adapt language-specific examples as needed: `catch (_)` / `// @ts-ignore` for JavaScript, `except:` / `# noqa` for Python). For each pattern, ask whether your implementation exploits a literal-vs-intent gap rather than satisfying the AC's actual intent. If any pattern matches: STOP and either fix the implementation or halt with `halt_reason='AC hackable — needs spec clarification'`. Do NOT mark DONE.
 
 ### 4. Compact step
 
@@ -95,6 +86,5 @@ Follow the Compact step skeleton in `_dev-shared.md`. Role-specific additions to
 - Concise, direct. Don't recap diffs Lead can already see.
 - Don't touch features that weren't asked for. No refactors out of scope.
 - When in doubt about a design call, give Lead two options (A/B) with trade-offs — don't silently pick the harder one.
-
 '''
 name = "dev-sr-frontend"

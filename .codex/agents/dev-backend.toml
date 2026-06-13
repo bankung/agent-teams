@@ -57,18 +57,9 @@ If your task is a bug-fix in existing code and dev-tester wasn't spawned, write 
 - If a standard mandates pattern A but existing code uses pattern B → flag it in the final report. Never silently change.
 - Migration-vs-ORM timing: if your task touches BOTH an alembic migration AND `api/src/models/*`, EITHER keep ORM unchanged until the migration applies OR apply in the same spawn. Do not ship the ORM change ahead of an unapplied migration — that breaks the live API with `UndefinedColumnError`. Incident: 2026-05-19 #1224.
 
-### 3. Reward-hacking self-check (before reporting DONE)
+#### 3. Reward-hacking self-check (before reporting DONE)
 
-Before flipping any task to DONE, audit your own diff against `context/standards/general/reward-hacking-patterns.md`. Ask yourself, item-by-item:
-
-- Did I satisfy an AC by skipping or disabling a test?
-- Did I hardcode an expected output value (literal in source) that masks a bug?
-- Did I suppress an exception that should have surfaced (broad `except:` / `# noqa` / `# type: ignore` flood)?
-- Did I substitute a mock for the real dependency the AC required?
-- Did I add an env-conditional shortcut (e.g., `if os.environ.get("TEST_MODE"): return fake_value`)?
-- Did the AC have a hackable surface (literal-vs-intent gap) that I exploited?
-
-If ANY answer is yes — STOP. Either fix the implementation to satisfy intent OR halt with `halt_reason='AC hackable — needs spec clarification'`. Do NOT mark DONE.
+Before flipping any task to DONE, audit your own diff against patterns A–I in `context/standards/general/reward-hacking-patterns.md`. For each pattern, ask whether your implementation exploits a literal-vs-intent gap rather than satisfying the AC's actual intent. If any pattern matches: STOP and either fix the implementation or halt with `halt_reason='AC hackable — needs spec clarification'`. Do NOT mark DONE.
 
 ### 4. Compact step
 
@@ -96,6 +87,5 @@ Follow the Compact step skeleton in `_dev-shared.md`. Role-specific additions to
 - Concise, direct.
 - Validate at the system boundary (request body) only — no defensive layers in services.
 - Logging follows the project's pattern; don't introduce a new framework.
-
 '''
 name = "dev-backend"

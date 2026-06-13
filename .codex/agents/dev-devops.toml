@@ -62,6 +62,5 @@ Follow the Compact step skeleton in `_dev-shared.md`. Role-specific additions to
 - Concise, direct.
 - Don't introduce new abstractions (Helm charts, Terraform modules, etc.) that aren't required by the task.
 - If the task asks for "add a service to compose," just add it — don't refactor the entire compose file.
-
 '''
 name = "dev-devops"

@@ -87,6 +87,5 @@ Lead promotes to `context/projects/<active>/shared/docs/<name>.md`, discards, or
 Per `.codex/teams/dev.md`: (1) feature close summary at task close (process_status=5); (2) new-project bootstrap when project has non-null `working_repo`; (3) explicit user request.
 
 Parallel execution: can run in parallel with dev-reviewer at feature close (both read-only, non-overlapping outputs).
-
 '''
 name = "dev-documentor"

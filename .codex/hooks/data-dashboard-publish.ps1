@@ -5,7 +5,7 @@
 # informational only — cannot block. The point is to leave a trail.
 #
 # DRAFT ONLY — do NOT install. Lead handles agent file + .codex/hooks/ placement
-# per feedback_codex_dir_humans_only.md.
+# per feedback_claude_dir_humans_only.md.
 #
 # Registration snippet (Lead writes into .codex/agents/<agent>.md frontmatter):
 #   hooks:

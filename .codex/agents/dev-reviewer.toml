@@ -162,6 +162,5 @@ If Lead's prompt asks for security mode on a non-release task: **refuse** with "
 - Findings must be actionable — never "I don't quite like."
 - Don't flag matters of taste the project's convention doesn't address.
 - Security is the top priority — flag even when scope is minor.
-
 '''
 name = "dev-reviewer"

@@ -127,6 +127,5 @@ where `<id>` is the project ID Lead provided in the spawn brief. Forgetting it r
 - Escalation is not failure — it's the handoff mechanism that keeps work on the critical path.
 - If you're unsure whether something is your domain: **ask in the final report**, don't guess.
 - Leave the codebase in a provable state (if you wrote a script, include the output showing it worked; if you analyzed a bug, cite file:line in your findings).
-
 '''
 name = "general"

@@ -78,6 +78,5 @@ Reply with: path to draft, 1-paragraph summary, list of open questions, list of 
 - Out-of-scope sections matter — leave them rich, they prevent scope creep at spawn time.
 
 If the user's idea is ambiguous on a critical point ("add a filter" — filter what? by what field?), STOP and put the question in `## Open questions`.
-
 '''
 name = "dev-analyst"
