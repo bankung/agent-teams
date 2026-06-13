@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import types as _types
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
@@ -44,6 +45,7 @@ from src.schemas.task import (
     HitlResolveResponse,
     NextAutorunResponse,
     SnoozeRequest,
+    TaskCostEstimateBackfill,
     TaskCreate,
     TaskRead,
     TaskReorder,
@@ -64,6 +66,7 @@ from src.services.recurrence import fire_template, next_cron_fire
 from src.services.budget_enforcer import check_budget
 from src.services.budget_gate import check_budget as check_spawn_budget
 from src.services.run_mode import assert_consent_for_run_mode
+from src.services.cost_tracker import compute_cost, resolve_pricing_key
 from src.services.task_cost_estimator import estimate_task_cost, resolve_provider_model
 from src.services.task_interaction import (
     _validate_answer,
@@ -3123,6 +3126,50 @@ async def snooze_task(
     now = datetime.now(timezone.utc)
     shift = timedelta(hours=payload.hours - 24)
     task.last_nudge_at = now + shift
+    task.updated_at = func.now()
+
+    await session.commit()
+    await session.refresh(task)
+    return task
+
+
+@router.put(
+    "/{task_id}/cost-estimate",
+    response_model=TaskRead,
+    status_code=http_status.HTTP_200_OK,
+)
+async def set_task_cost_estimate(
+    task_id: int,
+    payload: TaskCostEstimateBackfill,
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+) -> Task:
+    """Kanban #2357: manual/backfill override for the three estimated-cost columns.
+
+    Distinct from the done-flip heuristic (#944) and the create-time proposal
+    (#1194) — this is an explicit operator/Lead write path for corrections.
+    Overwrites even when the columns are already non-null (override is the point).
+    """
+    task = await get_or_404(
+        session, Task, detail=f"Task id={task_id} not found", id=task_id
+    )
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+
+    try:
+        key_provider, key_model = resolve_pricing_key(payload.provider, payload.model)
+        cost = compute_cost(
+            key_provider,
+            key_model,
+            payload.estimated_input_tokens,
+            payload.estimated_output_tokens,
+        )
+    except ValueError:
+        # Unknown provider/model — store zero cost; preserve token counts.
+        cost = Decimal("0.0000")
+
+    task.estimated_input_tokens = payload.estimated_input_tokens
+    task.estimated_output_tokens = payload.estimated_output_tokens
+    task.estimated_cost_usd = cost
     task.updated_at = func.now()
 
     await session.commit()
