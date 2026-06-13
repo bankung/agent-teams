@@ -817,21 +817,14 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
             (Renders nothing when is_paused=false.) */}
         <PausedBanner project={project} />
       </header>
-      {/* Wave A.1 — toolbar row: left cluster (task-count + audit + scheduled
-          chips), centre (inline headless control), right (+New).
+      {/* Wave A.1 — toolbar row: left cluster (audit + scheduled chips),
+          centre (inline headless control), right (+New).
           Audit/scheduled moved here from nav row; headless banner condensed
           from standalone full-width section. */}
       <div
         className="mb-3 flex flex-wrap items-center gap-2"
         data-board-toolbar-row
       >
-        {/* Left cluster: task count + task-context filter chips */}
-        <span
-          className="text-sm tabular-nums text-zinc-500 dark:text-zinc-400"
-          data-board-task-count
-        >
-          {visibleTasks.length} task{visibleTasks.length === 1 ? "" : "s"}
-        </span>
         {/* Audit-filter chip — amber toggle; hidden when count=0. */}
         {auditTaskCount > 0 && (
           <HeaderIconBtn
