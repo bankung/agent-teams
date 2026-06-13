@@ -208,22 +208,26 @@ import { Board, computeDoneTotalCount } from "@/components/Board";
 // ---------------------------------------------------------------------------
 
 describe("computeDoneTotalCount — pure helper", () => {
-  const stats = [makeProjectStats()]; // counts["5"] = 123
+  const stats = [makeProjectStats()]; // counts["5"] = 123, id = 1
 
-  it("all + stats → counts['5']", () => {
-    expect(computeDoneTotalCount("all", stats)).toBe(123);
+  it("all + stats → counts['5'] for matching project id", () => {
+    expect(computeDoneTotalCount("all", stats, 1)).toBe(123);
+  });
+
+  it("all + non-matching project id → undefined", () => {
+    expect(computeDoneTotalCount("all", stats, 999)).toBeUndefined();
   });
 
   it("none → undefined (no server rollup for unassigned-milestone subset)", () => {
-    expect(computeDoneTotalCount("none", stats)).toBeUndefined();
+    expect(computeDoneTotalCount("none", stats, 1)).toBeUndefined();
   });
 
   it("numeric milestone id → undefined (no rollup row client-side)", () => {
-    expect(computeDoneTotalCount(7, stats)).toBeUndefined();
+    expect(computeDoneTotalCount(7, stats, 1)).toBeUndefined();
   });
 
   it("all + empty projectStats → undefined (no stats row yet)", () => {
-    expect(computeDoneTotalCount("all", [])).toBeUndefined();
+    expect(computeDoneTotalCount("all", [], 1)).toBeUndefined();
   });
 });
 

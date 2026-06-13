@@ -172,6 +172,25 @@ describe("TaskOutputs — export kind (csv)", () => {
     "r3a,r3b,r3c\nr4a,r4b,r4c\nr5a,r5b,r5c\nr6a,r6b,r6c\n" +
     "r7a,r7b,r7c\nr8a,r8b,r8c\nr9a,r9b,r9c\nr10a,r10b,r10c\nr11a,r11b,r11c";
 
+  it("renders CRLF-encoded CSV without stray \\r in cells (FE-M2)", async () => {
+    // Windows CRLF CSV — each line ends with \r\n.
+    const crlfCsv = "a,b\r\n1,2\r\n";
+    mockGetTaskOutputs.mockResolvedValue([
+      entry({ filename: "crlf.csv", kind: "export", mime: "text/csv" }),
+    ]);
+    mockFetchTaskOutputBytes.mockResolvedValue(textBlob(crlfCsv, "text/csv"));
+
+    render(<TaskOutputs projectId={1} taskId={1305} />);
+
+    // Header cells must be "a" and "b" — not "a\r" / "b\r".
+    await screen.findByText("a");
+    expect(screen.getByText("b")).toBeInTheDocument();
+
+    // Data cells must be "1" and "2" — not "1\r" / "2\r".
+    await screen.findByText("1");
+    expect(screen.getByText("2")).toBeInTheDocument();
+  });
+
   it("renders CSV as a table with first 10 rows and row-count note", async () => {
     mockGetTaskOutputs.mockResolvedValue([
       entry({ filename: "data.csv", kind: "export", mime: "text/csv" }),

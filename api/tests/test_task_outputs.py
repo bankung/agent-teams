@@ -656,3 +656,129 @@ def test_list_task_outputs_capped_at_50(tmp_path: Path, monkeypatch) -> None:
     # The returned names must be the first 50 in sorted order.
     all_names = sorted(f"file{i:03d}.txt" for i in range(55))
     assert [e["filename"] for e in listing] == all_names[:50]
+
+
+# =============================================================================
+# 8. Content-Disposition param injection — Security-W1/N1 (#2350)
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "report.csv; filename=pwned.exe",  # semicolon — CD param injector
+        "report.csv;filename=pwned.exe",   # semicolon without space
+        "it's-a-trap.csv",                 # single-quote — CD param injector
+        "file\x0cname.txt",                # form-feed — control char
+        "file\x0bname.txt",                # vertical-tab — control char
+        "file\x01name.txt",                # SOH — generic control char
+    ],
+)
+def test_is_safe_filename_rejects_cd_param_injection(filename: str) -> None:
+    """Semicolons, single-quotes, and control chars are rejected by is_safe_filename."""
+    assert svc.is_safe_filename(filename) is False
+
+
+def test_cd_param_injection_file_excluded_from_listing(tmp_path: Path) -> None:
+    """An on-disk file named with a semicolon is excluded from the listing.
+
+    LISTING path: the injected filename must NOT appear in list_task_outputs.
+    A clean file in the same dir MUST still appear (proves the skip is selective).
+    """
+    task_id = 2350
+    outdir = tmp_path / "outputs" / str(task_id)
+    outdir.mkdir(parents=True)
+    (outdir / "clean.csv").write_text("a,b\n1,2\n")
+    evil_path = outdir / "report.csv; filename=pwned.exe"
+    try:
+        evil_path.write_text("injected")
+    except (OSError, ValueError):
+        pytest.skip("platform does not allow semicolon in filenames")
+
+    proj = _fake_project("p", team="dev", working_path=str(tmp_path))
+    listing = svc.list_task_outputs(proj, task_id, repo_root=Path("/repo"))
+    names = [e["filename"] for e in listing]
+    # NEGATIVE: injected name must not appear
+    assert "report.csv; filename=pwned.exe" not in names
+    # POSITIVE: clean file still listed
+    assert "clean.csv" in names
+
+
+@pytest.mark.asyncio
+async def test_cd_param_injection_serve_path_404(
+    client, scaffold_cleanup, tmp_path
+) -> None:
+    """SERVE path: requesting a filename with ';' returns 404 (never 200).
+
+    Proves the injection name is blocked at the router gate (is_safe_filename),
+    not just at the listing level — defense-in-depth.
+    """
+    name = scaffold_cleanup(_unique_name("k2350-cd-inject"))
+    proj = await client.post(
+        "/api/projects",
+        json=_project_create_payload(name, working_path=str(tmp_path)),
+    )
+    project_id = proj.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    create = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k2350-cd-inject-task"},
+        headers=headers,
+    )
+    task_id = create.json()["id"]
+    outdir = tmp_path / "outputs" / str(task_id)
+    outdir.mkdir(parents=True)
+    (outdir / "legit.txt").write_text("ok")
+    try:
+        # Semicolon in the URL path segment → 404 (router gate rejects before serve)
+        resp = await client.get(
+            f"/api/tasks/{task_id}/outputs/report.csv; filename=pwned.exe",
+            headers=headers,
+        )
+        assert resp.status_code == 404, resp.text
+        # NEGATIVE lock: a legit name is still serveable (route is not broken)
+        ok = await client.get(
+            f"/api/tasks/{task_id}/outputs/legit.txt", headers=headers
+        )
+        assert ok.status_code == 200, ok.text
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_control_char_filename_serve_path_404(
+    client, scaffold_cleanup, tmp_path
+) -> None:
+    """SERVE path: a percent-encoded control character in the filename → 404.
+
+    A literal \\x0c cannot be placed in an HTTP URL (httpx rejects it before
+    send), so we use the percent-encoded form %0C.  FastAPI decodes the path
+    param → the decoded string contains \\x0c → is_safe_filename returns False
+    → 404. This confirms the control-char guard is wired end-to-end in the
+    serving route.
+    """
+    name = scaffold_cleanup(_unique_name("k2350-ctrl-char"))
+    proj = await client.post(
+        "/api/projects",
+        json=_project_create_payload(name, working_path=str(tmp_path)),
+    )
+    project_id = proj.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    create = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k2350-ctrl-char-task"},
+        headers=headers,
+    )
+    task_id = create.json()["id"]
+    outdir = tmp_path / "outputs" / str(task_id)
+    outdir.mkdir(parents=True)
+    (outdir / "clean.txt").write_text("ok")
+    try:
+        # %0C = form-feed (0x0C) — a control character; router gate must 404.
+        resp = await client.get(
+            f"/api/tasks/{task_id}/outputs/file%0Cname.txt",
+            headers=headers,
+        )
+        assert resp.status_code == 404, resp.text
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)

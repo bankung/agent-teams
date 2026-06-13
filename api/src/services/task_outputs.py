@@ -36,9 +36,11 @@ Resolution rules (all three branches):
 
 Security (this serves files over HTTP):
   * The `filename` path param is the ONLY client-controlled path component.
-    `is_safe_filename` rejects `/`, `\\`, `..`, null bytes, double-quotes
-    (Content-Disposition injection), and CR/LF (HTTP header injection) BEFORE
-    any filesystem touch — the router calls it first and 404s on a bad name.
+    `is_safe_filename` rejects `/`, `\\`, `..`, double-quotes (Content-
+    Disposition quoted-string break), `;` and `'` (Content-Disposition param
+    injection), and any control character including CR/LF/NUL (HTTP header
+    injection) BEFORE any filesystem touch — the router calls it first and
+    404s on a bad name.
   * `_scan_dir_direct_files` also skips on-disk entries whose names fail
     `is_safe_filename` (defense-in-depth: agent-written names are not trusted).
   * `resolve_output_file` NEVER joins client input onto a root directly. It
@@ -95,22 +97,25 @@ def is_safe_filename(filename: str) -> bool:
     The `filename` path param is the only client-controlled path component. A
     safe filename is a single path segment: no directory separators (`/` or
     `\\`), no `..` traversal token, no null byte, no double-quote (breaks the
-    Content-Disposition quoted-string), and no CR/LF (HTTP header injection).
+    Content-Disposition quoted-string), no CR/LF/control chars (HTTP header
+    injection), no semicolon or single-quote (Content-Disposition param
+    injection — e.g. `report.csv; filename=pwned.exe`).
     Empty / dot names are also rejected. Called by the router BEFORE any
     filesystem access; a False return maps to 404 (we never echo the rejected
     path back).
     """
     if not filename or filename in (".", ".."):
         return False
-    if "\x00" in filename:
-        return False
     if "/" in filename or "\\" in filename:
         return False
     if ".." in filename:
         return False
-    # Reject double-quote (breaks the Content-Disposition quoted-string) and
-    # CR/LF (HTTP header injection) - filenames are agent-written, not trusted.
-    if '"' in filename or "\r" in filename or "\n" in filename:
+    # Reject double-quote (breaks the Content-Disposition quoted-string),
+    # semicolon and single-quote (Content-Disposition param injection), and
+    # any control character (covers NUL, CR, LF, form-feed, vertical-tab, …).
+    if '"' in filename or ";" in filename or "'" in filename:
+        return False
+    if any(ord(c) < 0x20 for c in filename):
         return False
     return True
 

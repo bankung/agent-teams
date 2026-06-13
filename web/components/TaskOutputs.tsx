@@ -102,7 +102,7 @@ function formatBytes(n: number): string {
 // parseCsvNaive — v1 naive CSV: split on newlines then commas.
 // Comment: does NOT handle quoted commas / multi-line fields — v1 limitation.
 function parseCsvNaive(raw: string): { headers: string[]; rows: string[][]; totalDataRows: number } {
-  const lines = raw.trim().split("\n").filter((l) => l.trim().length > 0);
+  const lines = raw.trim().split(/\r?\n/).filter((l) => l.trim().length > 0);
   if (lines.length === 0) return { headers: [], rows: [], totalDataRows: 0 };
   const headers = lines[0].split(",").map((c) => c.trim());
   const dataLines = lines.slice(1);
