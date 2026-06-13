@@ -1270,6 +1270,41 @@ class TaskUpdate(BaseModel):
         return self
 
 
+class TaskSummaryRead(BaseModel):
+    """Slim task projection for list/ordering consumers (Kanban #2345).
+
+    SAME shape as `TaskRead` for the included scalar fields (types copied
+    verbatim) but OMITS the heavy `description` + `acceptance_criteria` +
+    `subagent_models` + all JSONB/niche fields — those dominate the payload
+    (~64% of a `/api/tasks?pending=true` response). A non-1M-context Lead can
+    page the board / pick the next task off this projection without
+    downloading the long-form prose. Served by GET /api/tasks/summary.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    project_id: int
+    parent_task_id: int | None
+    title: str
+    process_status: int
+    priority: int
+    assigned_role: int | None
+    task_type: TaskTypeLiteral
+    task_kind: TaskKindLiteral
+    milestone_id: int | None = None
+    blocked_by: int | None
+    sort_order: float | None
+    due_date: date | None = None
+    operator_gate: OperatorGateLiteral | None = None
+    is_pending: bool
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+    is_active: bool = True
+
+
 class TaskRead(BaseModel):
     """Full task row as returned by the API."""
 

@@ -41,6 +41,9 @@ type Props = {
   // Kanban #2112 — server-pagination signals for the DONE lane.
   doneHasMore: boolean;
   doneLoadingMore: boolean;
+  // Kanban #2346 — true DONE total from server stats (projectStats.counts["5"]).
+  // Undefined when a milestone filter is active (rollup not client-loaded).
+  doneTotalCount?: number;
   onOpenDetail: (task: TaskRead) => void;
   highlightedTaskId: number | null;
   onLoadMoreDone: () => void;
@@ -63,6 +66,7 @@ export function BoardDndCanvas({
   visibleDoneCount,
   doneHasMore,
   doneLoadingMore,
+  doneTotalCount,
   onOpenDetail,
   highlightedTaskId,
   onLoadMoreDone,
@@ -121,8 +125,7 @@ export function BoardDndCanvas({
           // Kanban #2112 — show Load-more when:
           //   (a) client-side slice still has hidden rows, OR
           //   (b) server has more pages (doneHasMore).
-          // totalCount reflects only what's loaded client-side (not the server
-          // total, which is unknown); the column header shows loaded count.
+          // Kanban #2346 — totalCount uses doneTotalCount (server stat) when available.
           const hasClientRemainder = isDone && colTasks.length > visibleDoneCount;
           const showLoadMore = isDone && (hasClientRemainder || doneHasMore);
           return (
@@ -132,7 +135,7 @@ export function BoardDndCanvas({
               statuses={col.statuses}
               label={col.label}
               tasks={renderedTasks}
-              totalCount={isDone ? colTasks.length : undefined}
+              totalCount={isDone ? (doneTotalCount ?? colTasks.length) : undefined}
               onLoadMore={showLoadMore ? onLoadMoreDone : undefined}
               loadMoreLoading={isDone ? doneLoadingMore : undefined}
               onOpenDetail={onOpenDetail}

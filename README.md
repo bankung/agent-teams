@@ -48,6 +48,13 @@ The gap it fills: a **self-hosted, persistent, governed, multi-domain orchestrat
 
 ---
 
+## What's new in v0.6.2
+
+- **Lighter task-list API.** A new `GET /api/tasks/summary` endpoint returns a slim projection — board and ordering fields only, omitting the heavy `description` and `acceptance_criteria` payloads. List responses are ~8× smaller, keeping the Lead and the board fast and comfortably inside smaller models' context windows.
+- **Kanban DONE-lane count fix.** The DONE column header now shows the true project total (from the project stats) instead of just the first loaded page, which was capped at 50.
+
+---
+
 ## What's new in v0.6.0
 
 - **Email actions grew from triage to the full send ladder.** Reply, forward, send-to-internal, and external-send routes landed for both Gmail and Outlook — all behind the operator-proof gate, with external-send additionally forcing an out-of-band human confirmation. A Kanban audit step records every send action. An `INTERNAL_EMAIL_DOMAIN` guard and header-injection hardening ship alongside.

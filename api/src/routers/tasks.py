@@ -47,6 +47,7 @@ from src.schemas.task import (
     TaskCreate,
     TaskRead,
     TaskReorder,
+    TaskSummaryRead,
     TaskUpdate,
 )
 from src.middleware.rate_limit import limiter
@@ -735,6 +736,89 @@ async def get_next_autorun(
         pending_questions=question_rows,
         blocked_count=blocked_count,
     )
+
+
+@router.get("/summary", response_model=list[TaskSummaryRead])
+async def list_task_summaries(
+    session_project_id: int = Depends(require_project_id_header),
+    process_status: int | None = Query(
+        default=None, ge=1, le=6, description="Filter by tasks.process_status (1..6, 6=CANCELLED)"
+    ),
+    milestone_id: int | None = Query(
+        default=None,
+        ge=1,
+        description="Filter to tasks assigned to the given milestone id (Kanban #1868).",
+    ),
+    pending: bool = Query(
+        default=False,
+        description=(
+            "If true, return only rows with process_status != 5. Convenience "
+            "shortcut for the Lead-bootstrap 'list pending tasks' query. When "
+            "both `pending=true` and `process_status=N` are provided, "
+            "`process_status` wins (more specific) and `pending` is ignored."
+        ),
+    ),
+    include_cancelled: bool = Query(
+        default=False,
+        description=(
+            "If true, include CANCELLED (process_status=6) rows. By default "
+            "cancelled rows are excluded (parity with list_tasks / soft-delete). "
+            "Silently ignored when an explicit `process_status=N` is provided."
+        ),
+    ),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    include_deleted: bool = Query(
+        default=False,
+        description="If true, include soft-deleted (status=0) rows. Debug-only.",
+    ),
+    include_archived: bool = Query(
+        default=False,
+        description=(
+            "Kanban #1240: if true, include auto-archived (is_active=false) "
+            "rows. By default archived rows are excluded (parity with list_tasks)."
+        ),
+    ),
+    session: AsyncSession = Depends(get_session),
+) -> list[Task]:
+    """Kanban #2345: SLIM task projection for list/ordering consumers.
+
+    Mirrors a subset of `list_tasks`' filter semantics (process_status,
+    pending, include_cancelled, milestone_id, soft-delete + is_active
+    default-exclude, limit/offset, id ASC ordering) but returns
+    `TaskSummaryRead` — which omits the heavy `description` +
+    `acceptance_criteria` + `subagent_models` + all JSONB/niche fields. A
+    `?pending=true&limit=500` response is ~5-6x smaller than the full
+    `/api/tasks` equivalent, so non-1M-context Leads can page the board /
+    pick the next task without downloading the long-form prose.
+
+    Self-contained (does NOT share code with `list_tasks`) so the commit
+    cherry-picks cleanly onto the released line. The done_lane/keyset order
+    mode and the operator_gate / due-range / parent filters are intentionally
+    out of scope — use `list_tasks` for those. Read-only; no side effects.
+    """
+    # Kanban #695: project scoping comes from the X-Project-Id header.
+    stmt = select(Task).where(Task.project_id == session_project_id)
+    if not include_deleted:
+        stmt = stmt.where(Task.status == RecordStatus.ACTIVE)
+    # Kanban #1240: default-exclude auto-archived rows (is_active=false).
+    if not include_archived:
+        stmt = stmt.where(Task.is_active.is_(True))
+    if process_status is not None:
+        stmt = stmt.where(Task.process_status == process_status)
+    elif pending:
+        # Kanban #697: explicit process_status wins; pending ignored on conflict.
+        stmt = stmt.where(Task.process_status != TaskStatus.DONE)
+    # Kanban #854: cancelled rows excluded by default (skipped when explicit
+    # process_status filter is provided — more specific wins).
+    if process_status is None and not include_cancelled:
+        stmt = stmt.where(Task.process_status != TaskStatus.CANCELLED)
+    # Kanban #1868: filter to a single milestone's tasks.
+    if milestone_id is not None:
+        stmt = stmt.where(Task.milestone_id == milestone_id)
+    stmt = stmt.order_by(Task.id.asc()).limit(limit).offset(offset)
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
 
 
 @router.post("/ai-parse", response_model=ParseResponse)
