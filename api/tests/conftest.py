@@ -587,6 +587,22 @@ async def db_session():
 
 
 @pytest.fixture(autouse=True)
+def _operator_gate_inactive_by_default(monkeypatch):
+    """Baseline the operator-proof gate OFF for the suite (Kanban #2349).
+
+    OPERATOR_ACTION_KEY is now set in the api container env (docker-compose
+    activation) -> gate ACTIVE -> business-logic tests that don't send
+    X-Operator-Token would 403. Delenv here restores the pre-activation
+    default (gate inactive). Gate-AWARE tests (test_calendar_tools,
+    test_email_tier1_actions, test_email_send_routes) re-activate it with
+    their own monkeypatch.setenv, which runs after this autouse setup and
+    overrides it -> they are unaffected.
+    """
+    monkeypatch.delenv("OPERATOR_ACTION_KEY", raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _redirect_email_actions_audit(monkeypatch, tmp_path):
     """Redirect tools_email._EMAIL_ACTIONS_PATH to tmp_path for every test.
 

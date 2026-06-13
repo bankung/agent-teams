@@ -39,6 +39,7 @@ services:
       db:
         condition: service_healthy
     environment:
+      OPERATOR_ACTION_KEY: ${OPERATOR_ACTION_KEY:-}
       # Inside the compose network the api talks to the `db` service by hostname,
       # NOT localhost. The .env DATABASE_URL is for running uvicorn locally
       # against the same compose db (host = localhost).
