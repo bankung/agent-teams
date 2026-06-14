@@ -29,13 +29,10 @@ import { filterRoleOptions } from "@/lib/enabledRoles";
 import { extractErrorMessage } from "@/lib/errors";
 import { ActionTemplatePicker } from "./ActionTemplatePicker";
 import { TaskTemplatePicker } from "./TaskTemplatePicker";
-import { DatePicker } from "./DatePicker";
 import { PauseOverrideBlock } from "./PauseOverrideBlock";
-import { HandoffTemplatePicker } from "./HandoffTemplatePicker";
 import { Icon } from "./Icon";
-import { MilestoneCombobox } from "./MilestoneCombobox";
 import { ModalShell } from "./ModalShell";
-import { ModelTierSelect } from "./ModelTierSelect";
+import { TaskFormFields } from "./TaskFormFields";
 
 // Trigger button + dialog for POST /api/tasks (Kanban #855 FE).
 // Visual pattern mirrors NewProjectModal: zinc-bordered panel, focus on first
@@ -536,25 +533,6 @@ export function NewTaskModal({
               disabled={submitting}
             />
 
-            <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-              Title <span className="text-red-600 dark:text-red-400">*</span>
-              <input
-                ref={titleInputRef}
-                type="text"
-                value={title}
-                onChange={(e) => {
-                  setTitle(e.target.value);
-                  if (error !== null) setError(null);
-                }}
-                placeholder="Short imperative summary"
-                autoComplete="off"
-                disabled={submitting}
-                aria-invalid={title.length > 0 && !titleValid}
-                className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
-                data-new-task-title
-              />
-            </label>
-
             {/* #1310 — Task Template picker (native <select>). Pre-fills
                 description + AC client-side. Empty-state note when the team has
                 no templates; manual entry below stays fully usable. */}
@@ -592,181 +570,89 @@ export function NewTaskModal({
                 </div>
               )}
 
-            <div className="mt-3 grid grid-cols-2 gap-3">
-              <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                Lane <span className="text-red-600 dark:text-red-400">*</span>
-                <select
-                  value={processStatus}
-                  onChange={(e) => {
-                    setProcessStatus(
-                      Number(e.target.value) as TaskStatusValue,
-                    );
-                    if (error !== null) setError(null);
-                  }}
-                  disabled={submitting}
-                  className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
-                  data-new-task-lane
-                >
-                  {LANE_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                Priority <span className="text-red-600 dark:text-red-400">*</span>
-                <select
-                  value={priority}
-                  onChange={(e) => {
-                    setPriority(Number(e.target.value) as TaskPriorityValue);
-                    if (error !== null) setError(null);
-                  }}
-                  disabled={submitting}
-                  className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
-                  data-new-task-priority
-                >
-                  {PRIORITY_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
-            {/* Wave B (#4) — task_type selector. 'feature' is the default;
-                'bug' triggers the red left-accent border on the board + ListView. */}
+            {/* Lane — NewTaskModal-only (AiTaskModal always files to TODO). */}
             <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-              Type <span className="text-red-600 dark:text-red-400">*</span>
+              Lane <span className="text-red-600 dark:text-red-400">*</span>
               <select
-                value={taskType}
+                value={processStatus}
                 onChange={(e) => {
-                  setTaskType(e.target.value as typeof taskType);
+                  setProcessStatus(Number(e.target.value) as TaskStatusValue);
                   if (error !== null) setError(null);
                 }}
                 disabled={submitting}
                 className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
-                data-new-task-type
+                data-new-task-lane
               >
-                <option value="feature">Feature</option>
-                <option value="bug">Bug</option>
-                <option value="chore">Chore</option>
-                <option value="docs">Docs</option>
-                <option value="refactor">Refactor</option>
-              </select>
-            </label>
-
-            <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-              Role <span className="font-normal text-zinc-400">(optional)</span>
-              <select
-                value={role === "" ? "" : String(role)}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setRole(v === "" ? "" : (Number(v) as TaskRoleValue));
-                  if (error !== null) setError(null);
-                }}
-                disabled={submitting}
-                className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
-                data-new-task-role
-              >
-                {visibleRoleOptions.map((o) => (
-                  <option key={String(o.value)} value={o.value}>
+                {LANE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
                     {o.label}
                   </option>
                 ))}
               </select>
             </label>
 
-            {/* #1677 — per-task model-tier override dropdown */}
-            <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-              Model tier{" "}
-              <span className="font-normal text-zinc-400">(optional)</span>
-              <ModelTierSelect
-                value={modelOverride ?? ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setModelOverride(
-                    v === "" ? null : (v as "haiku" | "sonnet" | "opus"),
-                  );
-                  if (error !== null) setError(null);
-                }}
-                disabled={submitting}
-                data-new-task-model-override
-              />
-            </label>
-
-            <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-              Blocked by{" "}
-              <span className="font-normal text-zinc-400">
-                (optional task id)
-              </span>
-              <input
-                type="number"
-                min={1}
-                step={1}
-                value={blockedBy}
-                onChange={(e) => {
-                  setBlockedBy(e.target.value);
-                  if (error !== null) setError(null);
-                }}
-                placeholder="e.g. 123"
-                disabled={submitting}
-                aria-invalid={blockedBy.length > 0 && !blockedByValid}
-                className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
-                data-new-task-blocked-by
-              />
-            </label>
-
-            {/* #1868 — optional milestone picker + due date. */}
-            <div className="mt-3 grid grid-cols-2 gap-3">
-              <div className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                Milestone{" "}
-                <span className="font-normal text-zinc-400">(optional)</span>
-                <MilestoneCombobox
-                  value={milestoneId === "" ? null : milestoneId}
-                  onChange={(id) => {
-                    setMilestoneId(id === null ? "" : id);
-                    if (error !== null) setError(null);
-                  }}
-                  milestones={milestones}
-                  disabled={submitting}
-                  inputProps={{ "data-new-task-milestone": true }}
-                />
-              </div>
-              <div className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                Due date{" "}
-                <span className="font-normal text-zinc-400">(optional)</span>
-                <DatePicker
-                  value={dueDate}
-                  onChange={(v) => {
-                    setDueDate(v ?? "");
-                    if (error !== null) setError(null);
-                  }}
-                  disabled={submitting}
-                  inputProps={{ "data-new-task-due-date": true }}
-                />
-              </div>
-            </div>
-
-            <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-              Description{" "}
-              <span className="font-normal text-zinc-400">(optional)</span>
-              <textarea
-                value={description}
-                onChange={(e) => {
-                  setDescription(e.target.value);
-                  setDescriptionDirty(true);
-                  if (error !== null) setError(null);
-                }}
-                placeholder="Markdown supported"
-                rows={4}
-                disabled={submitting}
-                className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
-                data-new-task-description
-              />
-            </label>
+            {/* #2373 R3 — shared common fields + Advanced disclosure. */}
+            <TaskFormFields
+              prefix="new-task"
+              title={title}
+              onTitleChange={(v) => {
+                setTitle(v);
+                if (error !== null) setError(null);
+              }}
+              titleValid={titleValid}
+              titleRef={titleInputRef}
+              taskType={taskType}
+              onTaskTypeChange={(v) => {
+                setTaskType(v);
+                if (error !== null) setError(null);
+              }}
+              priority={priority}
+              onPriorityChange={(v) => {
+                setPriority(v);
+                if (error !== null) setError(null);
+              }}
+              role={role}
+              onRoleChange={(v) => {
+                setRole(v);
+                if (error !== null) setError(null);
+              }}
+              roleOptions={visibleRoleOptions}
+              milestoneId={milestoneId}
+              onMilestoneChange={(v) => {
+                setMilestoneId(v);
+                if (error !== null) setError(null);
+              }}
+              milestones={milestones}
+              dueDate={dueDate}
+              onDueDateChange={(v) => {
+                setDueDate(v);
+                if (error !== null) setError(null);
+              }}
+              description={description}
+              onDescriptionChange={(v) => {
+                setDescription(v);
+                setDescriptionDirty(true);
+                if (error !== null) setError(null);
+              }}
+              blockedBy={blockedBy}
+              onBlockedByChange={(v) => {
+                setBlockedBy(v);
+                if (error !== null) setError(null);
+              }}
+              blockedByValid={blockedByValid}
+              modelOverride={modelOverride}
+              onModelOverrideChange={(v) => {
+                setModelOverride(v);
+                if (error !== null) setError(null);
+              }}
+              projectId={projectId}
+              handoffTemplateId={handoffTemplateId}
+              onHandoffTemplateChange={(id) => {
+                setHandoffTemplateId(id);
+                if (error !== null) setError(null);
+              }}
+              disabled={submitting}
+            />
 
             {/* #1310 — acceptance-criteria editor. Visible only when a template
                 is selected; seeded from the template (substituted), then freely
@@ -831,19 +717,6 @@ export function NewTaskModal({
                 </button>
               </div>
             )}
-
-            {/* #1343 — handoff template picker. Self-hides when no templates
-                exist (empty GET response). On DONE-flip BE atomically spawns
-                the child task per the chosen template (#1004 spawn hook). */}
-            <HandoffTemplatePicker
-              projectId={projectId}
-              selectedId={handoffTemplateId}
-              onSelect={(id) => {
-                setHandoffTemplateId(id);
-                if (error !== null) setError(null);
-              }}
-              disabled={submitting}
-            />
 
             {/* #1238 GOV3 — paused-project override (E3: extracted to PauseOverrideBlock). */}
             {isProjectPaused && (
