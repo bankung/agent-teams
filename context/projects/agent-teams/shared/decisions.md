@@ -18,6 +18,18 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-06-14 — #2367 backlog re-milestone: the 4-kind milestone taxonomy
+**Scope:** shared (project backlog organization)
+**Decision:** Every milestone on agent-teams is exactly one of 4 KINDS, and every actionable task files under one milestone by the **NATURE of its work** (not a vague feature bucket):
+1. **Version** — release buckets, hold only that release's themed scope: `v0.7.0` (#34). (Released v0.1–v0.6.x = history.)
+2. **Capability axis** — HOW the platform/agents gain capability: `skills` (#39), `tools` (#40 — external integrations / email / calendar / OAuth), `hooks` (#41 — lifecycle/capture/gate + hook+agent telemetry), `operator-auth` (#24 — security / authz / operator-vs-AI write gates), `performance` (#27, **renamed from `platform-perf`** — perf + model-tier/cost routing), `context-management` (#42, **NEW** — context-reading efficiency + cross-session context + memory discovery/retrieval / Mode-A context hygiene).
+3. **Workstream** — focused multi-task initiatives with their own lifecycle: `mode-a-cost` (#37), `mode-b-engine` (#26, **renamed from `platform-engine`**).
+4. **Domain / project-type** — non-dev team scaffolds (agent role / project type): `netops` (#38), `data` (#21), `social` (#30), `secretary` (#29).
+Coherent platform epics kept as-is: `agent-gallery` (#18, **renamed from `ag`** — 9-task gallery-management UI epic), `platform` (#25 — genuine core-app feature bucket), `methodology` (#23 — standards promotion), `aa-followups` (#17 — auto-audit follow-ups). #19 left intact (operator's private grouping; its authz/notify tasks stay grouped there by operator preference).
+**Actions executed (#2367, operator go 2026-06-14):** created `context-management` (#42); renamed #27/#26/#18 per above; moved 13 tasks to correct homes (no-milestone bucket → 0; emptied grab-bags `feature` #22 + `auditor` #20); moved `#1678`/`#975` → context-management. Cancelled 8 duplicate/superseded tasks: `#2055` (exact dup of `#1934`); 5 duplicate `[schedule:]` recurring jobs (`#1863/#1864/#1847/#1853/#2015` — kept the recently-active originals `#1430-1434`); 2 stale `[release] Cut weekly release` triggers (`#1647/#2344` — release now driven by `/tn-release`).
+**Recommendation (AC#3 — flagged, NOT executed):** retire empty milestones `feature` (#22) + `auditor` (#20, work folded into #17); re-evaluate the still-broad `platform` (#25) next grooming pass.
+**Implications:** `shared/backlog-roadmap.md` (2026-05-31) is **SUPERSEDED** for milestone structure — this taxonomy is authoritative. New tasks file by the 4-kind rule; `/tn-tasks-next` milestone ordering reflects the renamed milestones.
+
 ## 2026-06-12 — #2330/#2332 story-based context system + activity-rail-mandatory (design lock)
 **Scope:** shared (universal Lead methodology)
 **Decision (operator-locked after 2 pushback rounds + versioning round):**
