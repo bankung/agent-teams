@@ -8,10 +8,12 @@ import dynamic from "next/dynamic";
 import { ListView } from "@/components/ListView";
 
 import {
+  getMilestone,
   listDoneLanePage,
   listMilestones,
   patchTask,
   reorderTask,
+  type MilestoneDetail,
   type MilestoneRead,
   type ProgressStatsResponse,
   type ProjectRead,
@@ -274,6 +276,10 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
   // the dropdown; loaded once on mount (failure degrades to a no-op filter).
   const [milestoneFilter, setMilestoneFilter] = useState<"all" | "none" | number>("all");
   const [milestones, setMilestones] = useState<MilestoneRead[]>([]);
+  // Kanban #2347 — when a numeric milestone filter is active, fetch its server
+  // rollup DONE count so the DONE-lane header shows the true total (not just
+  // what's loaded client-side). undefined = still loading or no rollup available.
+  const [milestoneDoneRollup, setMilestoneDoneRollup] = useState<number | undefined>(undefined);
 
   // Kanban #2112 — DONE-lane server pagination state.
   // doneHasMore: server has more DONE rows beyond what's loaded (init from SSR prop).
@@ -324,6 +330,29 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
       cancelled = true;
     };
   }, [project.id]);
+
+  // Kanban #2347 — fetch milestone rollup DONE count when a specific milestone
+  // is selected. Clears immediately on filter change so stale count never leaks
+  // across milestones. Uses a cancelled-flag guard to discard out-of-order
+  // responses (race condition when milestoneFilter changes quickly).
+  useEffect(() => {
+    if (typeof milestoneFilter !== "number") {
+      setMilestoneDoneRollup(undefined);
+      return;
+    }
+    let cancelled = false;
+    getMilestone(project.id, milestoneFilter)
+      .then((detail: MilestoneDetail) => {
+        if (!cancelled) setMilestoneDoneRollup(detail.rollup.by_process_status["5"] ?? 0);
+      })
+      .catch(() => {
+        // On error fall back to loaded count (milestoneDoneRollup stays undefined).
+        if (!cancelled) setMilestoneDoneRollup(undefined);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [milestoneFilter, project.id]);
 
   // #1001 follow-up (2026-05-20) — `?task=<id>` deep-link handler.
   //
@@ -543,16 +572,16 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
 
   const grouped = useMemo(() => groupByStatus(visibleTasks), [visibleTasks]);
 
-  // Kanban #2346 — true DONE total for the column header badge.
+  // Kanban #2346/#2347 — true DONE total for the column header badge.
   // "all": projectStats[0]?.counts["5"] is the server total (SSR-fetched).
-  // "none" (milestone_id IS NULL) and numeric milestone ids: no server rollup
-  // available client-side — return undefined so BoardColumn falls back to the
-  // loaded count (accurate for the filtered subset).
+  // numeric id: use the milestone rollup fetched by the useEffect above (undefined
+  //   while loading → BoardColumn falls back to loaded count; no flicker/overstate).
+  // "none" (milestone_id IS NULL): no server rollup → loaded count fallback.
   // NOTE: client-only toggles (audit/operator-gate) may make "all" approximate.
-  const doneTotalCount = useMemo<number | undefined>(
-    () => computeDoneTotalCount(milestoneFilter, projectStats, project.id),
-    [milestoneFilter, projectStats, project.id],
-  );
+  const doneTotalCount = useMemo<number | undefined>(() => {
+    if (typeof milestoneFilter === "number") return milestoneDoneRollup;
+    return computeDoneTotalCount(milestoneFilter, projectStats, project.id);
+  }, [milestoneFilter, milestoneDoneRollup, projectStats, project.id]);
 
   // Reset the client-side DONE display window (visibleDoneCount) ONLY when the
   // filter inputs change. Keyed on the filter state directly — NOT on the DONE
