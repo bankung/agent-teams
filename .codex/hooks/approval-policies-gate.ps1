@@ -253,6 +253,7 @@ foreach ($rule in $rules) {
                 Emit-Decision -Decision 'deny' -Reason "approval-policies-gate: $ruleName — $ruleReason"
                 exit 0
             }
+            # require_attention is canonical; requires_attention is the accepted alias (UI-emitted).
             'requires_attention' {
                 Emit-Decision -Decision 'ask' -Reason "approval-policies-gate: $ruleName — $ruleReason"
                 exit 0

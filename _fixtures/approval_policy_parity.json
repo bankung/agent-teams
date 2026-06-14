@@ -1,0 +1,153 @@
+[
+  {
+    "name": "task_type predicate — feature matches",
+    "policies": {
+      "rules": [
+        {
+          "name": "feature-gate",
+          "match": { "task_type": "feature" },
+          "action": "auto_approve"
+        }
+      ]
+    },
+    "question_payload": { "question": "Approve?" },
+    "task_context": { "task_type": "feature" },
+    "expected_action": "auto_approve"
+  },
+  {
+    "name": "task_type predicate — chore misses feature rule",
+    "policies": {
+      "rules": [
+        {
+          "name": "feature-gate",
+          "match": { "task_type": "feature" },
+          "action": "auto_approve"
+        }
+      ]
+    },
+    "question_payload": { "question": "Approve?" },
+    "task_context": { "task_type": "chore" },
+    "expected_action": "require_attention"
+  },
+  {
+    "name": "_not MATCHES: task_type_not chore, field=feature",
+    "policies": {
+      "rules": [
+        {
+          "name": "not-chore",
+          "match": { "task_type_not": "chore" },
+          "action": "auto_approve"
+        }
+      ]
+    },
+    "question_payload": { "question": "Approve?" },
+    "task_context": { "task_type": "feature" },
+    "expected_action": "auto_approve"
+  },
+  {
+    "name": "_not FAILS CLOSED: task_type_not chore, field absent (empty context)",
+    "policies": {
+      "rules": [
+        {
+          "name": "not-chore",
+          "match": { "task_type_not": "chore" },
+          "action": "auto_approve"
+        }
+      ]
+    },
+    "question_payload": { "question": "Approve?" },
+    "task_context": {},
+    "expected_action": "require_attention"
+  },
+  {
+    "name": "_not FAILS CLOSED: task_type_not chore, task_context None/null",
+    "policies": {
+      "rules": [
+        {
+          "name": "not-chore",
+          "match": { "task_type_not": "chore" },
+          "action": "auto_approve"
+        }
+      ]
+    },
+    "question_payload": { "question": "Approve?" },
+    "task_context": null,
+    "expected_action": "require_attention"
+  },
+  {
+    "name": "match_any OR-group — second group matches",
+    "policies": {
+      "rules": [
+        {
+          "name": "bug-or-urgent",
+          "match_any": [{ "task_type": "bug" }, { "priority_gt": 3 }],
+          "action": "requires_attention"
+        }
+      ]
+    },
+    "question_payload": { "question": "Approve?" },
+    "task_context": { "task_type": "feature", "priority": 4 },
+    "expected_action": "require_attention"
+  },
+  {
+    "name": "enabled:false rule is skipped",
+    "policies": {
+      "rules": [
+        {
+          "name": "disabled",
+          "enabled": false,
+          "match": { "task_type": "feature" },
+          "action": "auto_approve"
+        }
+      ]
+    },
+    "question_payload": { "question": "Approve?" },
+    "task_context": { "task_type": "feature" },
+    "expected_action": "require_attention"
+  },
+  {
+    "name": "requires_attention alias — normalises to require_attention",
+    "policies": {
+      "rules": [
+        {
+          "name": "alias-rule",
+          "match": { "text_contains": "payment" },
+          "action": "requires_attention"
+        }
+      ]
+    },
+    "question_payload": { "question": "Confirm $2 payment?" },
+    "task_context": null,
+    "expected_action": "require_attention"
+  },
+  {
+    "name": "acceptance_criteria_count_gt — 3 ACs matches gt:2",
+    "policies": {
+      "rules": [
+        {
+          "name": "many-ac",
+          "match": { "acceptance_criteria_count_gt": 2 },
+          "action": "auto_approve"
+        }
+      ]
+    },
+    "question_payload": { "question": "Approve?" },
+    "task_context": { "acceptance_criteria": [{}, {}, {}] },
+    "expected_action": "auto_approve"
+  },
+  {
+    "name": "age_hours_lt — task ~1h old, threshold 24h",
+    "policies": {
+      "rules": [
+        {
+          "name": "fresh-task",
+          "match": { "age_hours_lt": 24 },
+          "action": "auto_approve"
+        }
+      ]
+    },
+    "question_payload": { "question": "Approve?" },
+    "task_context": { "created_at": "__NOW_MINUS_1H__" },
+    "expected_action": "auto_approve"
+  }
+]
