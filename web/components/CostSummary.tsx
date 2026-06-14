@@ -216,11 +216,11 @@ export function CostSummary({
             className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
           >
             {expanded ? <ChevronDownIcon /> : <ChevronRightIcon />}
-            Usage
+            Usage & Spend
           </button>
         ) : (
           <h2 className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-            Usage
+            Usage & Spend
           </h2>
         )}
         {/* Compact inline summary shown only when collapsible + collapsed */}
