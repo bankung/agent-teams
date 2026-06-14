@@ -15,7 +15,6 @@ import Link from "next/link";
 
 import { getAgents, type AgentSummary } from "@/lib/api";
 import { AgentGallery } from "@/components/AgentGallery";
-import { ThemePicker } from "@/components/ThemePicker";
 
 export const dynamic = "force-dynamic";
 
@@ -62,9 +61,6 @@ export default async function AgentsPage() {
             {invalidCount} invalid
           </span>
         ) : null}
-        <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
-          <ThemePicker />
-        </span>
       </header>
 
       <div className="mx-auto w-full max-w-6xl">

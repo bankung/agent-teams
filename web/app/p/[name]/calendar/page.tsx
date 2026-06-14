@@ -26,7 +26,6 @@ import {
 } from "@/lib/api";
 import { currentYearMonth, parseMonthParam } from "@/lib/calendarDates";
 import { CalendarView } from "@/components/CalendarView";
-import { ThemePicker } from "@/components/ThemePicker";
 import { ViewSwitcher } from "@/components/ViewSwitcher";
 
 type Props = {
@@ -90,7 +89,6 @@ export default async function ProjectCalendarPage({
             four items navigate (no onSelect). */}
         <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
           <ViewSwitcher projectName={project.name} active="calendar" />
-          <ThemePicker />
         </span>
       </header>
 

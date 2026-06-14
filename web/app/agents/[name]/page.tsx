@@ -10,7 +10,6 @@ import Link from "next/link";
 
 import { getAgentDetail, HttpError } from "@/lib/api";
 import { AgentDetail } from "@/components/AgentDetail";
-import { ThemePicker } from "@/components/ThemePicker";
 
 export const dynamic = "force-dynamic";
 
@@ -43,9 +42,6 @@ export default async function AgentDetailPage({ params }: Props) {
         </span>
         <span className="truncate text-base font-semibold text-zinc-900 dark:text-zinc-100">
           {agent.name}
-        </span>
-        <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
-          <ThemePicker />
         </span>
       </header>
 

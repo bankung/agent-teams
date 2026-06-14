@@ -15,7 +15,6 @@ import { ConnectionStateBadge } from "./ConnectionStateBadge";
 import { FlagBellBadge } from "./FlagBellBadge";
 import { MassActionBar } from "./MassActionBar";
 import { ProjectFlagCard } from "./ProjectFlagCard";
-import { ThemePicker } from "./ThemePicker";
 import {
   TerminateFlagModal,
   type TerminateTarget,
@@ -214,7 +213,6 @@ export function ReviewClient({ initialFlags }: Props) {
             lastEventAt={lastEventAt}
           />
           <FlagBellBadge />
-          <ThemePicker />
         </span>
       </header>
 

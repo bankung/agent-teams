@@ -30,7 +30,6 @@ import Link from "next/link";
 import { listProjects, listTasks, type ProjectRead, type TaskRead } from "@/lib/api";
 import { TaskStatus } from "@/lib/constants";
 import { formatRelative } from "@/lib/time";
-import { ThemePicker } from "@/components/ThemePicker";
 
 export const dynamic = "force-dynamic";
 
@@ -122,9 +121,6 @@ export default async function InboxPage() {
         </span>
         <span className="ml-1.5 text-[11px] font-normal text-zinc-500 dark:text-zinc-400 tabular-nums">
           ({entries.length})
-        </span>
-        <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
-          <ThemePicker />
         </span>
       </header>
 

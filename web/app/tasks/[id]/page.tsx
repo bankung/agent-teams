@@ -26,7 +26,6 @@ import {
   type TaskRead,
 } from "@/lib/api";
 import { TaskFocusView } from "@/components/TaskFocusView";
-import { ThemePicker } from "@/components/ThemePicker";
 
 export const dynamic = "force-dynamic";
 
@@ -108,9 +107,6 @@ export default async function TaskFocusPage({ params, searchParams }: Props) {
         </span>
         <span className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
           Task #{located.task.id}
-        </span>
-        <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
-          <ThemePicker />
         </span>
       </header>
 

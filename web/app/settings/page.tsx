@@ -1,13 +1,17 @@
-// Settings — Kanban #955.C. New top-level surface for operator preferences.
-// Server Component; mounts the PushNotificationsPanel client child.
+// Settings — Kanban #955.C / #2375 (R5 consolidation). Top-level surface for
+// operator preferences.
+//
+// Server Component; mounts the client children (ThemePicker, IntegrationsPanel,
+// PushNotificationsPanel).
 //
 // Layout mirrors the dashboard header pattern (compact header + main panel
-// body). For now this page holds only the Push panel; future operator
-// settings (theme persistence, language, notification routing) can slot in
-// as sibling <section>s.
+// body). Body holds labelled <section>s: Theme (relocated out of the header —
+// #2375 R5), Integrations (relocated from the former PlatformSettingsModal),
+// and Push notifications.
 
 import Link from "next/link";
 
+import { IntegrationsPanel } from "@/components/IntegrationsPanel";
 import { PushNotificationsPanel } from "@/components/PushNotificationsPanel";
 import { ThemePicker } from "@/components/ThemePicker";
 
@@ -29,12 +33,37 @@ export default function SettingsPage() {
         <span className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
           Settings
         </span>
-        <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
-          <ThemePicker />
-        </span>
       </header>
 
-      <div className="mx-auto w-full max-w-2xl">
+      <div className="mx-auto flex w-full max-w-2xl flex-col gap-8">
+        {/* Theme — #2375 R5: ThemePicker relocated from every route header into
+            this labelled body section. ThemeProvider/useTheme unchanged. */}
+        <section
+          data-settings-theme
+          aria-labelledby="settings-theme-heading"
+          className="flex flex-col gap-3"
+        >
+          <header className="flex flex-col gap-1">
+            <h2
+              id="settings-theme-heading"
+              className="text-base font-semibold text-zinc-900 dark:text-zinc-100"
+            >
+              Theme
+            </h2>
+            <p className="text-[12px] text-zinc-500 dark:text-zinc-400 leading-5">
+              Light, dark, or follow the system preference. Applies to this
+              browser.
+            </p>
+          </header>
+          <div className="rounded-md border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
+            <ThemePicker />
+          </div>
+        </section>
+
+        {/* Integrations — #2375 R5: relocated from PlatformSettingsModal. */}
+        <IntegrationsPanel />
+
+        {/* Push notifications — original #955.C panel. */}
         <PushNotificationsPanel />
       </div>
     </main>

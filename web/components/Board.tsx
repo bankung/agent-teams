@@ -39,13 +39,11 @@ import { NewTaskDropdown } from "@/components/NewTaskDropdown";
 import { PausedBanner } from "@/components/PausedBanner";
 import { PauseProjectModal } from "@/components/PauseProjectModal";
 import { ProjectConsentGrantModal } from "@/components/ProjectConsentGrantModal";
-import { PlatformSettingsModal } from "@/components/PlatformSettingsModal";
 import { ResourcesPanel } from "@/components/ResourcesPanel";
 import { ProductTourBoardResume } from "@/components/ProductTourBoardResume";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { SourcesBadge } from "@/components/SourcesBadge";
 import { TaskDetail } from "@/components/TaskDetail";
-import { ThemePicker } from "@/components/ThemePicker";
 import { ToastStack, type ToastMessage } from "@/components/Toast";
 import { ViewSwitcher } from "@/components/ViewSwitcher";
 
@@ -686,13 +684,13 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
                 notification) removed from the board nav. /review remains
                 reachable from the dashboard + ReviewClient's own header. */}
 
-            {/* ── PlatformSettingsModal — #1655 / #1781 Integrations (plug
-                icon, platform-wide; distinct from the per-project Settings
-                nav link) ─────────────────────────────────────────────────── */}
-            <PlatformSettingsModal />
-
-            {/* ── ThemePicker — user preference ─────────────────────────── */}
-            <ThemePicker />
+            {/* #2375 (R5) — global Settings entry. Replaces the removed
+                PlatformSettingsModal plug icon AND the per-header ThemePicker:
+                both theme + platform integrations now live on /settings, which
+                otherwise has no nav link. Uses the agent-config glyph (no
+                dedicated gear in the sprite); the per-project Settings link
+                above carries the same glyph but a distinct href + label. */}
+            <HeaderIconLink href="/settings" icon="agent-config" label="Settings" />
           </span>
         </div>
         {/* #2371 (R1) — Cost/PnL/Audit panels moved to project settings page.

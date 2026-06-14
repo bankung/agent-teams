@@ -21,7 +21,6 @@ import {
   HttpError,
 } from "@/lib/api";
 import { ProjectSettingsPanel } from "@/components/ProjectSettingsPanel";
-import { ThemePicker } from "@/components/ThemePicker";
 import { CostSummary } from "@/components/CostSummary";
 import { PnlSummaryCard } from "@/components/PnlSummaryCard";
 import { AuditHistorySection } from "@/components/AuditHistorySection";
@@ -72,9 +71,6 @@ export default async function ProjectSettingsPage({ params }: Props) {
         </span>
         <span className="text-xs text-zinc-500 dark:text-zinc-400 font-mono">
           ({project.name})
-        </span>
-        <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
-          <ThemePicker />
         </span>
       </header>
 

@@ -22,7 +22,6 @@ import {
   type MilestoneDetail,
 } from "@/lib/api";
 import { GanttView } from "@/components/GanttView";
-import { ThemePicker } from "@/components/ThemePicker";
 import { ViewSwitcher } from "@/components/ViewSwitcher";
 
 type Props = { params: { name: string } };
@@ -95,7 +94,6 @@ export default async function ProjectGanttPage({ params }: Props) {
             four items navigate (no onSelect). */}
         <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
           <ViewSwitcher projectName={project.name} active="gantt" />
-          <ThemePicker />
         </span>
       </header>
 

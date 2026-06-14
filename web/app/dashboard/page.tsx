@@ -25,7 +25,6 @@ import { NewProjectModal } from "@/components/NewProjectModal";
 import nextDynamic from "next/dynamic";
 import { ReviewSummaryWidget } from "@/components/ReviewSummaryWidget";
 import { FINANCE_PANELS_ENABLED } from "@/lib/featureFlags";
-import { ThemePicker } from "@/components/ThemePicker";
 
 // Kanban #2111 Part 3b — code-split PnlDashboardSection behind finance flag.
 // next/dynamic ensures the component (and its dependencies) are only loaded
@@ -448,7 +447,17 @@ export default async function DashboardPage() {
           >
             Agents
           </Link>
-          <ThemePicker />
+          {/* #2375 (R5) — Settings nav entry. /settings has no other nav link;
+              this is its sole discoverable entry. Replaces the per-header
+              ThemePicker (theme now lives on /settings). Matches the Agents
+              link styling. */}
+          <Link
+            href="/settings"
+            data-nav-settings
+            className="text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+          >
+            Settings
+          </Link>
         </span>
       </header>
 
