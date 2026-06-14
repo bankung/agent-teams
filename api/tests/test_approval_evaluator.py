@@ -553,3 +553,111 @@ def test_pattern5_keys_unknown_to_worker_fall_to_require_attention() -> None:
     assert action == "require_attention"
     assert default_answer is None
     assert rule_name is None  # no rule matched (all predicates unknown to worker)
+
+
+# ---------------------------------------------------------------------------
+# Kanban #1014 UI-authored predicates — task context + enabled + OR groups.
+# ---------------------------------------------------------------------------
+
+
+def test_ui_task_field_predicates_match_task_context() -> None:
+    policies = {"rules": [
+        {
+            "name": "feature with several ACs",
+            "match": {
+                "task_type": "feature",
+                "priority": 1,
+                "acceptance_criteria_count_gt": 2,
+            },
+            "action": "auto_approve",
+        }
+    ]}
+    task_context = {
+        "task_type": "feature",
+        "priority": 1,
+        "acceptance_criteria": [{}, {}, {}],
+    }
+    action, _, rule_name = evaluate_policy(
+        {"question": "Approve implementation plan?"}, policies, task_context
+    )
+    assert action == "auto_approve"
+    assert rule_name == "feature with several ACs"
+
+
+def test_ui_disabled_rule_is_skipped_even_when_it_matches() -> None:
+    policies = {"rules": [
+        {
+            "name": "disabled exact match",
+            "enabled": False,
+            "match": {"task_type": "feature"},
+            "action": "auto_approve",
+        }
+    ]}
+    action, _, rule_name = evaluate_policy(
+        {"question": "Approve?"}, policies, {"task_type": "feature"}
+    )
+    assert action == "require_attention"
+    assert rule_name is None
+
+
+def test_ui_match_any_supports_or_condition_groups() -> None:
+    policies = {"rules": [
+        {
+            "name": "bug or urgent",
+            "match_any": [{"task_type": "bug"}, {"priority_gt": 3}],
+            "action": "requires_attention",
+        }
+    ]}
+    action, _, rule_name = evaluate_policy(
+        {"question": "Approve?"}, policies, {"task_type": "feature", "priority": 4}
+    )
+    assert action == "require_attention"
+    assert rule_name == "bug or urgent"
+
+
+# ---------------------------------------------------------------------------
+# Security regression: _not predicates must fail-CLOSED on absent context.
+# Kanban #1014. The bug: "" != "chore" -> True -> over-approval on absent field.
+# ---------------------------------------------------------------------------
+
+_NOT_RULE = {
+    "rules": [
+        {
+            "name": "not-chore auto-approve",
+            "match": {"task_type_not": "chore"},
+            "action": "auto_approve",
+        }
+    ]
+}
+_PAYLOAD = {"question": "Approve?"}
+
+
+def test_not_predicate_matches_when_field_present_and_differs() -> None:
+    """_not MATCHES: field present and differs from predicate value."""
+    action, _, rule_name = evaluate_policy(
+        _PAYLOAD, _NOT_RULE, {"task_type": "feature"}
+    )
+    assert action == "auto_approve"
+    assert rule_name == "not-chore auto-approve"
+
+
+def test_not_predicate_fails_closed_when_field_absent() -> None:
+    """_not FAILS CLOSED: task_context provided but field key missing."""
+    action, _, rule_name = evaluate_policy(
+        _PAYLOAD, _NOT_RULE, {}  # no task_type key
+    )
+    assert action == "require_attention"
+    assert rule_name is None
+
+
+def test_not_predicate_fails_closed_when_task_context_none() -> None:
+    """_not FAILS CLOSED: task_context is None entirely (THE security regression).
+
+    Previously: _task_text(None, 'task_type') == '' and '' != 'chore' -> True
+    -> auto_approve on zero context. Must be require_attention post-fix.
+    """
+    action, _, rule_name = evaluate_policy(
+        _PAYLOAD, _NOT_RULE, None
+    )
+    assert action == "require_attention"
+    assert rule_name is None

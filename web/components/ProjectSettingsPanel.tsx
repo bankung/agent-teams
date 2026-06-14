@@ -24,6 +24,7 @@ import {
   type ProjectUpdateBody,
 } from "@/lib/api";
 import { extractErrorMessage } from "@/lib/errors";
+import { ApprovalPoliciesEditor } from "./ApprovalPoliciesEditor";
 
 // Effort mode select options. null encodes "use global default (= off)".
 type EffortValue = "off" | "low" | "medium" | "high" | "extra" | "auto" | null;
@@ -236,6 +237,8 @@ export function ProjectSettingsPanel({ project }: Props) {
         </div>
       </form>
     </section>
+
+    <ApprovalPoliciesEditor project={project} />
 
     {/* Kanban #2300 — Thinking effort per-project override */}
     <section

@@ -507,6 +507,9 @@ export type ProjectUpdateBody = {
   // Kanban #2300 (2026-06-11) — per-project thinking effort for headless engine.
   // NULL = global default (= off). Values: off|low|medium|high|extra|auto.
   effort_mode?: "off" | "low" | "medium" | "high" | "extra" | "auto" | null;
+  // Kanban #1014 — form-authored approval policies over the #957 evaluator.
+  // Explicit null clears; object replaces the full JSONB document.
+  approval_policies?: Record<string, unknown> | null;
 };
 
 export async function updateProject(
@@ -677,6 +680,7 @@ export async function listProjectAuditTasks(
 
 type ListTasksOpts = {
   pending?: boolean;
+  process_status?: TaskStatusValue;
   parent_task_id?: number;
   top_level_only?: boolean;
   limit?: number;
@@ -697,6 +701,8 @@ export async function listTasks(
 ): Promise<TaskRead[]> {
   const qs = new URLSearchParams();
   if (opts.pending) qs.set("pending", "true");
+  if (opts.process_status !== undefined)
+    qs.set("process_status", String(opts.process_status));
   if (opts.top_level_only) qs.set("top_level_only", "true");
   else if (opts.parent_task_id !== undefined)
     qs.set("parent_task_id", String(opts.parent_task_id));
@@ -716,8 +722,8 @@ export async function listTasks(
 // milestone filters appear incomplete. listAllTasks paginates at PAGE=500
 // until a page shorter than PAGE is returned (= last page), then merges.
 // Only the opts fields that are safe to combine with offset are forwarded
-// (pending / top_level_only / parent_task_id / milestone_id / due_from /
-// due_to). `opts.limit` is intentionally ignored — the caller wants ALL rows.
+// (pending / process_status / top_level_only / parent_task_id / milestone_id /
+// due_from / due_to). `opts.limit` is intentionally ignored — the caller wants ALL rows.
 const _PAGE = 500;
 export async function listAllTasks(
   projectId: number,
@@ -728,6 +734,8 @@ export async function listAllTasks(
   while (true) {
     const qs = new URLSearchParams();
     if (opts.pending) qs.set("pending", "true");
+    if (opts.process_status !== undefined)
+      qs.set("process_status", String(opts.process_status));
     if (opts.top_level_only) qs.set("top_level_only", "true");
     else if (opts.parent_task_id !== undefined)
       qs.set("parent_task_id", String(opts.parent_task_id));

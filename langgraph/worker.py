@@ -897,7 +897,7 @@ async def _poll_once(
             client, cfg, headers, _effective_project_id
         )
         action, default_answer, rule_name = evaluate_policy(
-            body["question_payload"], policies
+            body["question_payload"], policies, task
         )
         if action == "auto_approve":
             logger.info(

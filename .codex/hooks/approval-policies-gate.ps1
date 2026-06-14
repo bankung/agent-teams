@@ -50,8 +50,7 @@
 #   - Bash with curl command         → extracts URL from the curl command string
 #
 # Lead promotes from _scratch/ to .codex/hooks/approval-policies-gate.ps1
-# (operator-only zone). Settings.json wiring is a separate operator step —
-# see _scratch/draft-settings-additions.md.
+# (operator-only zone). hooks.json wiring is a separate operator step.
 
 $ErrorActionPreference = 'Stop'
 
@@ -237,6 +236,9 @@ function Test-Rule {
 }
 
 foreach ($rule in $rules) {
+    if ($rule.PSObject.Properties.Name -contains 'enabled' -and $rule.enabled -eq $false) {
+        continue
+    }
     if (Test-Rule -Rule $rule -ToolName $toolName -Url $targetUrl -Content $serializedContent) {
         $action = [string]$rule.action
         $ruleName = if ($rule.name) { [string]$rule.name } else { '(unnamed rule)' }
@@ -252,6 +254,10 @@ foreach ($rule in $rules) {
                 exit 0
             }
             'requires_attention' {
+                Emit-Decision -Decision 'ask' -Reason "approval-policies-gate: $ruleName — $ruleReason"
+                exit 0
+            }
+            'require_attention' {
                 Emit-Decision -Decision 'ask' -Reason "approval-policies-gate: $ruleName — $ruleReason"
                 exit 0
             }
