@@ -299,9 +299,9 @@ export function CrossProjectActiveTasksList({
     <section
       data-active-tasks-list
       aria-label="Cross-project active tasks"
-      className="mb-5 rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900"
+      className="mb-5 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900"
     >
-      <div className="mb-3 flex flex-wrap items-baseline gap-2">
+      <div className="flex flex-wrap items-baseline gap-2" style={{ marginBottom: expanded ? "0.75rem" : 0 }}>
         {collapsible ? (
           <button
             type="button"

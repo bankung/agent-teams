@@ -14,7 +14,6 @@ import {
 } from "@/lib/api";
 import { formatRelative } from "@/lib/time";
 import { AuditorActivityPanel } from "@/components/AuditorActivityPanel";
-import { AuditorVisibilityToggle } from "@/components/AuditorVisibilityToggle";
 import { CrossProjectActiveTasksList } from "@/components/CrossProjectActiveTasksList";
 import { DashboardWelcomeBanner } from "@/components/DashboardWelcomeBanner";
 import { BudgetBar, pickBudgetDisplay } from "@/components/BudgetBar";
@@ -425,23 +424,16 @@ export default async function DashboardPage() {
         <span className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
           Dashboard
         </span>
-        <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
-          ·
-        </span>
-        <span className="text-zinc-500 dark:text-zinc-400 tabular-nums">
-          {stats.length} project{stats.length === 1 ? "" : "s"}
-        </span>
+        <DashboardRefresher />
         <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
           {/* #1017 — agent gallery entry. Moved to front of right cluster (#2378). */}
           <Link
             href="/agents"
             data-nav-agents
-            className="text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+            className="inline-flex items-center rounded border border-zinc-300 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-400 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
           >
             Agents
           </Link>
-          <DashboardRefresher />
-          <AuditorVisibilityToggle />
           <NewProjectModal />
           <InboxBadge />
           <FlagBellBadge />
@@ -507,8 +499,7 @@ export default async function DashboardPage() {
           />
 
           {/* Auditor activity (Kanban #1082 + #1291). Cross-project 7-day verdict
-              rollup; hidden entirely when the API returns [] OR when the user
-              toggles the panel off (AuditorVisibilityToggle in the header).
+              rollup; hidden entirely when the API returns [].
               Client visibility managed by AuditorActivityPanel (localStorage). */}
           <AuditorActivityPanel
             rollup={auditRollup}

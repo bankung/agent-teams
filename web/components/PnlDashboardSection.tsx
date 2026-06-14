@@ -176,9 +176,9 @@ export function PnlDashboardSection({
     <section
       data-pnl-cross-project
       aria-label="Cross-project P&L"
-      className="mb-5 rounded-lg border border-emerald-200/60 bg-emerald-50/40 p-5 dark:border-emerald-900/40 dark:bg-emerald-950/10"
+      className="mb-5 rounded-lg border border-emerald-200/60 bg-emerald-50/40 p-3 dark:border-emerald-900/40 dark:bg-emerald-950/10"
     >
-      <div className="mb-3 flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2" style={{ marginBottom: expanded ? "0.75rem" : 0 }}>
         {collapsible ? (
           <button
             type="button"
