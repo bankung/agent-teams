@@ -464,11 +464,11 @@ function MiniChartCard({
       className={`group flex flex-col gap-1 rounded-md border border-zinc-200 bg-white/70 text-left transition hover:border-zinc-300 hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:border-zinc-800 dark:bg-zinc-950/40 dark:hover:border-zinc-700 ${compact ? "p-2" : "p-3"}`}
       aria-label={`${title} — latest ${latest} ${latestLabel}; click to expand`}
     >
-      <span className="flex items-baseline justify-between">
-        <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+      <span className={compact ? "flex flex-col gap-0.5" : "flex items-baseline justify-between"}>
+        <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400 truncate min-w-0">
           {title}
         </span>
-        <span className="text-xs tabular-nums text-zinc-600 dark:text-zinc-300">
+        <span className="text-xs tabular-nums text-zinc-600 dark:text-zinc-300 whitespace-nowrap">
           <span className="font-semibold">{latest}</span>{" "}
           <span className="text-zinc-400 dark:text-zinc-500">{latestLabel}</span>
         </span>
