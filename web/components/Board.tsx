@@ -32,11 +32,7 @@ import { sortDoneLane, sortLaneTasks } from "@/lib/sortLaneTasks";
 import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
 import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
 import { Icon } from "@/components/Icon";
-import { AuditHistorySection } from "@/components/AuditHistorySection";
-import { CostSummary } from "@/components/CostSummary";
-import { PnlSummaryCard } from "@/components/PnlSummaryCard";
 import { ProgressChartsPanel } from "@/components/ProgressChartsPanel";
-import { FINANCE_PANELS_ENABLED } from "@/lib/featureFlags";
 import { KilledBanner } from "@/components/KilledBanner";
 import { KillProjectModal } from "@/components/KillProjectModal";
 import { NewTaskDropdown } from "@/components/NewTaskDropdown";
@@ -529,16 +525,6 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
     [tasks],
   );
 
-  const auditTasks = useMemo(
-    () =>
-      [...tasks.filter((t) => t.task_type === "audit")].sort((a, b) => {
-        const aDone = a.completed_at ?? "";
-        const bDone = b.completed_at ?? "";
-        if (aDone === bDone) return b.id - a.id;
-        return aDone < bDone ? 1 : -1;
-      }),
-    [tasks],
-  );
   const visibleTasks = useMemo(() => {
     const base = showAudit ? tasks : tasks.filter((t) => t.task_type !== "audit");
     const noNoise = base.filter((t) => !isScheduledNoise(t));
@@ -709,39 +695,10 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
             <ThemePicker />
           </span>
         </div>
-        {/* #1781 — compact panels band: Usage / P&L / Progress in ONE row on
-            desktop. Usage + P&L are collapsed by default (short); Progress is
-            the new compact strip (small charts, tight padding). Grid is
-            3-col when finance is on, 2-col (Usage + Progress) when off.
-            Wave A (#7) — items-stretch + each panel `h-full` makes the three
-            equal height inside the row (gap via the band's gap-3, no per-panel
-            mb-5). */}
-        <div
-          className={`grid grid-cols-1 items-stretch gap-3 ${
-            FINANCE_PANELS_ENABLED ? "lg:grid-cols-3" : "lg:grid-cols-2"
-          }`}
-          data-board-panels-band
-        >
-          {/* Kanban #1289 — per-project usage panel. Collapsed by default. */}
-          <CostSummary
-            stats={projectStats}
-            ariaLabel={`Usage for ${project.name}`}
-            defaultCollapsed={true}
-            storageKey={`project.${project.id}.panels.usage.expanded`}
-            className="h-full"
-          />
-          {/* Kanban #1329 (M6 FE) — per-project P&L card (finance-gated). */}
-          {FINANCE_PANELS_ENABLED && (
-            <PnlSummaryCard
-              projectId={project.id}
-              projectName={project.name}
-              defaultCollapsed={true}
-              storageKey={`project.${project.id}.panels.pnl.expanded`}
-              className="h-full"
-            />
-          )}
-          {/* Kanban #1292 / #1781 — burndown + velocity in compact strip form,
-              folded into the same band. Click→full modal unchanged. */}
+        {/* #2371 (R1) — Cost/PnL/Audit panels moved to project settings page.
+            Only ProgressChartsPanel remains here (full-width). */}
+        <div data-board-panels-band>
+          {/* Kanban #1292 / #1781 — burndown + velocity in compact strip form. */}
           <ProgressChartsPanel
             data={progressStats}
             projectId={project.id}
@@ -883,18 +840,9 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
           projectId={project.id}
         />
       )}
-      {/* #1238 GOV3 — Audit History archive below the lanes. Self-collapses;
-          shows "No audit history yet." when the project has no audit_task rows.
-          Sources from the in-memory tasks snapshot (no extra fetch — every
-          audit task is already in `tasks` via the initial /api/tasks limit=500
-          fetch + SSE refresh). */}
-      <AuditHistorySection auditTasks={auditTasks} />
-      {/* #1315 — collapsible Resources footer (files + links). Below the lanes
-          + Audit History so it never competes with the kanban for vertical
-          space; default collapsed, persisted per-user per-project. */}
-      {/* #1315 — collapsible Resources footer (files + links). Below the lanes
-          + Audit History so it never competes with the kanban for vertical
-          space; default collapsed, persisted per-user per-project. */}
+      {/* #2371 (R1) — AuditHistorySection moved to project settings page. */}
+      {/* #1315 — collapsible Resources footer (files + links). Below the lanes,
+          default collapsed, persisted per-user per-project. */}
       <ResourcesPanel projectId={project.id} />
       {selectedTask && (
         <TaskDetail
