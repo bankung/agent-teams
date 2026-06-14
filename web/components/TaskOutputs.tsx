@@ -104,9 +104,9 @@ function formatBytes(n: number): string {
 function parseCsvNaive(raw: string): { headers: string[]; rows: string[][]; totalDataRows: number } {
   const lines = raw.trim().split(/\r?\n/).filter((l) => l.trim().length > 0);
   if (lines.length === 0) return { headers: [], rows: [], totalDataRows: 0 };
-  const headers = lines[0].split(",").map((c) => c.trim());
+  const headers = lines[0].split(",").map((c) => c.replace(/\r/g, "").trim());
   const dataLines = lines.slice(1);
-  const rows = dataLines.slice(0, 10).map((l) => l.split(",").map((c) => c.trim()));
+  const rows = dataLines.slice(0, 10).map((l) => l.split(",").map((c) => c.replace(/\r/g, "").trim()));
   return { headers, rows, totalDataRows: dataLines.length };
 }
 

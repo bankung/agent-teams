@@ -117,6 +117,9 @@ def is_safe_filename(filename: str) -> bool:
         return False
     if any(ord(c) < 0x20 for c in filename):
         return False
+    # DEL (0x7F) is excluded from RFC 7230 qdtext; reject it explicitly.
+    if any(ord(c) == 0x7F for c in filename):
+        return False
     return True
 
 

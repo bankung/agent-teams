@@ -174,7 +174,10 @@ describe("TaskOutputs — export kind (csv)", () => {
 
   it("renders CRLF-encoded CSV without stray \\r in cells (FE-M2)", async () => {
     // Windows CRLF CSV — each line ends with \r\n.
-    const crlfCsv = "a,b\r\n1,2\r\n";
+    // "\r" is embedded MID-TOKEN in the header ("hea\rder") and mid-value
+    // ("val\rue") so that a cell .trim() backstop cannot mask the failure —
+    // only explicit \r stripping in the parser produces the expected text.
+    const crlfCsv = "hea\rder,b\r\nval\rue,2\r\n";
     mockGetTaskOutputs.mockResolvedValue([
       entry({ filename: "crlf.csv", kind: "export", mime: "text/csv" }),
     ]);
@@ -182,13 +185,16 @@ describe("TaskOutputs — export kind (csv)", () => {
 
     render(<TaskOutputs projectId={1} taskId={1305} />);
 
-    // Header cells must be "a" and "b" — not "a\r" / "b\r".
-    await screen.findByText("a");
+    // Header cells must be "header" and "b" — stray \r must be stripped.
+    await screen.findByText("header");
     expect(screen.getByText("b")).toBeInTheDocument();
+    // Raw "hea\rder" must NOT appear as a cell text node.
+    expect(screen.queryByText("hea\rder")).not.toBeInTheDocument();
 
-    // Data cells must be "1" and "2" — not "1\r" / "2\r".
-    await screen.findByText("1");
+    // Data cells must be "value" and "2" — stray \r must be stripped.
+    await screen.findByText("value");
     expect(screen.getByText("2")).toBeInTheDocument();
+    expect(screen.queryByText("val\rue")).not.toBeInTheDocument();
   });
 
   it("renders CSV as a table with first 10 rows and row-count note", async () => {
