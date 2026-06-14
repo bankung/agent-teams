@@ -41,7 +41,6 @@ import { NewTaskDropdown } from "@/components/NewTaskDropdown";
 import { PausedBanner } from "@/components/PausedBanner";
 import { PauseProjectModal } from "@/components/PauseProjectModal";
 import { ProjectConsentGrantModal } from "@/components/ProjectConsentGrantModal";
-import { ResourcesPanel } from "@/components/ResourcesPanel";
 import { ProductTourBoardResume } from "@/components/ProductTourBoardResume";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { SourcesBadge } from "@/components/SourcesBadge";
@@ -872,9 +871,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
         />
       )}
       {/* #2371 (R1) — AuditHistorySection moved to project settings page. */}
-      {/* #1315 — collapsible Resources footer (files + links). Below the lanes,
-          default collapsed, persisted per-user per-project. */}
-      <ResourcesPanel projectId={project.id} />
+      {/* #2358 — ResourcesPanel moved to /settings?project=<name>. */}
       {selectedTask && (
         <TaskDetail
           task={selectedTask}

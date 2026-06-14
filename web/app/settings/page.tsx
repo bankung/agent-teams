@@ -26,6 +26,7 @@ import {
 } from "@/lib/api";
 import { AuditHistorySection } from "@/components/AuditHistorySection";
 import { IntegrationsPanel } from "@/components/IntegrationsPanel";
+import { ResourcesPanel } from "@/components/ResourcesPanel";
 import { ProjectSettingsPanel } from "@/components/ProjectSettingsPanel";
 import { PushNotificationsPanel } from "@/components/PushNotificationsPanel";
 import { ThemePicker } from "@/components/ThemePicker";
@@ -105,6 +106,8 @@ export default async function SettingsPage({ searchParams }: Props) {
             </header>
             <ProjectSettingsPanel project={project} />
             <AuditHistorySection auditTasks={auditTasks} />
+            {/* #2358 — ResourcesPanel moved here from Board.tsx. */}
+            <ResourcesPanel projectId={project.id} />
           </section>
         )}
 
