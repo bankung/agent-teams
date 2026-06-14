@@ -357,7 +357,7 @@ export function PnlSummaryCard({
                 POST a manual record via <code>/api/transactions</code> or configure
                 a Stripe / PayPal webhook in{" "}
                 <Link
-                  href={`/p/${projectName}/settings`}
+                  href={`/settings?project=${encodeURIComponent(projectName)}`}
                   className="text-emerald-700 underline hover:text-emerald-800 dark:text-emerald-300 dark:hover:text-emerald-200"
                 >
                   project settings

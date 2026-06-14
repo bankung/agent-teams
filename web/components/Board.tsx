@@ -31,7 +31,9 @@ import { extractErrorMessage } from "@/lib/errors";
 import { sortDoneLane, sortLaneTasks } from "@/lib/sortLaneTasks";
 import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
 import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
+import { CostSummary } from "@/components/CostSummary";
 import { Icon } from "@/components/Icon";
+import { PnlSummaryCard } from "@/components/PnlSummaryCard";
 import { ProgressChartsPanel } from "@/components/ProgressChartsPanel";
 import { KilledBanner } from "@/components/KilledBanner";
 import { KillProjectModal } from "@/components/KillProjectModal";
@@ -46,6 +48,7 @@ import { SourcesBadge } from "@/components/SourcesBadge";
 import { TaskDetail } from "@/components/TaskDetail";
 import { ToastStack, type ToastMessage } from "@/components/Toast";
 import { ViewSwitcher } from "@/components/ViewSwitcher";
+import { FINANCE_PANELS_ENABLED } from "@/lib/featureFlags";
 
 type Props = {
   initialTasks: TaskRead[];
@@ -630,16 +633,10 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
             className="ml-auto flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto"
             data-board-actions-cluster
           >
-            {/* Wave A.2a (#1) — Inbox + Settings icon links moved to the right
-                cluster so the left nav stays lean (Dashboard · Milestones).
-                Inbox = cross-project approval inbox; Settings = per-project
-                knobs (#1349). Distinct from platform Integrations (plug icon). */}
+            {/* Wave A.2a (#1) — Inbox icon link in the right cluster so the
+                left nav stays lean (Dashboard · Milestones). Inbox =
+                cross-project approval inbox. (Settings consolidated below.) */}
             <HeaderIconLink href="/inbox" icon="mail" label="Inbox" />
-            <HeaderIconLink
-              href={`/p/${encodeURIComponent(project.name)}/settings`}
-              icon="agent-config"
-              label="Settings"
-            />
             {/* Pause / Terminate — icon buttons. Hidden when killed (mutex with
                 the KilledBanner revive). Each opens the SAME modal via the
                 existing externalOpen state. */}
@@ -684,19 +681,53 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
                 notification) removed from the board nav. /review remains
                 reachable from the dashboard + ReviewClient's own header. */}
 
-            {/* #2375 (R5) — global Settings entry. Replaces the removed
-                Settings modal plug icon AND the per-header ThemePicker:
-                both theme + platform integrations now live on /settings, which
-                otherwise has no nav link. Uses the agent-config glyph (no
-                dedicated gear in the sprite); the per-project Settings link
-                above carries the same glyph but a distinct href + label. */}
-            <HeaderIconLink href="/settings" icon="agent-config" label="Settings" />
+            {/* #2380 (R-merge) — single consolidated Settings gear. Opens the
+                global /settings page WITH this project's section pre-rendered
+                via ?project= (theme + integrations + push live there too; the
+                per-project gear was merged in). The dashboard gear stays plain
+                /settings = global only. */}
+            <HeaderIconLink
+              href={`/settings?project=${encodeURIComponent(project.name)}`}
+              icon="agent-config"
+              label="Settings"
+            />
           </span>
         </div>
-        {/* #2371 (R1) — Cost/PnL/Audit panels moved to project settings page.
-            Only ProgressChartsPanel remains here (full-width). */}
-        <div data-board-panels-band>
-          {/* Kanban #1292 / #1781 — burndown + velocity in compact strip form. */}
+        {/* #2380 (R-merge) — 3-column panels band: Usage (40%) · P&L (40%) ·
+            Progress charts (20%). Usage + P&L moved back from the project
+            settings page; ProgressChartsPanel kept in the narrow 3rd column. */}
+        <div
+          className="grid grid-cols-1 gap-3 items-stretch lg:grid-cols-[2fr_2fr_1fr]"
+          data-board-panels-band
+        >
+          {/* Col 1 (40%) — Kanban #1289 per-project usage panel. */}
+          <CostSummary
+            stats={projectStats}
+            ariaLabel={`Usage for ${project.name}`}
+            defaultCollapsed={false}
+            storageKey={`project.${project.id}.panels.usage.expanded`}
+            className="h-full"
+          />
+          {/* Col 2 (40%) — Kanban #1329 per-project P&L card (finance-gated).
+              FINANCE_PANELS_ENABLED is a GLOBAL env flag; when off, every
+              project shows the placeholder (expected with current infra). */}
+          {FINANCE_PANELS_ENABLED ? (
+            <PnlSummaryCard
+              projectId={project.id}
+              projectName={project.name}
+              defaultCollapsed={false}
+              storageKey={`project.${project.id}.panels.pnl.expanded`}
+              className="h-full"
+            />
+          ) : (
+            <div
+              className="flex h-full items-center justify-center rounded-md border border-zinc-200 p-3 text-center text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400"
+              data-pnl-placeholder
+            >
+              P&amp;L not available for this project
+            </div>
+          )}
+          {/* Col 3 (20%) — Kanban #1292 / #1781 burndown + velocity. */}
           <ProgressChartsPanel
             data={progressStats}
             projectId={project.id}
