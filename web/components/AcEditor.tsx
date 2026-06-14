@@ -9,7 +9,7 @@
 //   onSave        — called with the mutated full array; caller does the PATCH
 //   disabled      — set while a parent save is in flight
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import type { AcceptanceCriterion } from "@/lib/api";
 
 // Badge config shared with the read-only renderer below
@@ -51,9 +51,10 @@ type Props = {
   isTerminal: boolean;
   onSave: (updated: AcceptanceCriterion[]) => Promise<void>;
   disabled?: boolean;
+  onToast?: (msg: string) => void;
 };
 
-export function AcEditor({ criteria, isTerminal, onSave, disabled = false }: Props) {
+export function AcEditor({ criteria, isTerminal, onSave, disabled = false, onToast }: Props) {
   const serverList = criteria ?? [];
   const total = serverList.length;
   const passed = serverList.filter((c) => c.status === "passed").length;
@@ -67,6 +68,77 @@ export function AcEditor({ criteria, isTerminal, onSave, disabled = false }: Pro
   const [saving, setSaving] = useState(false);
   // Per-item validation: indices with empty text
   const [emptyIndices, setEmptyIndices] = useState<Set<number>>(new Set());
+
+  // ── quick-edit state (mobile long-press) ─────────────────────────────────────
+  const [quickEditIdx, setQuickEditIdx] = useState<number | null>(null);
+  const [quickEditText, setQuickEditText] = useState("");
+  const [quickSaving, setQuickSaving] = useState(false);
+  const [quickSavedMsg, setQuickSavedMsg] = useState<string | null>(null);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const LONG_PRESS_MS = 500;
+
+  const enterQuickEdit = useCallback((idx: number) => {
+    setQuickEditIdx(idx);
+    setQuickEditText(serverList[idx]?.text ?? "");
+    setQuickSavedMsg(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverList]);
+
+  function clearLongPress() {
+    if (longPressTimer.current !== null) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  }
+
+  function makeTouchHandlers(idx: number) {
+    return {
+      onTouchStart: () => {
+        clearLongPress();
+        longPressTimer.current = setTimeout(() => {
+          enterQuickEdit(idx);
+        }, LONG_PRESS_MS);
+      },
+      onTouchEnd: clearLongPress,
+      onTouchMove: clearLongPress,
+      onTouchCancel: clearLongPress,
+    };
+  }
+
+  async function handleQuickBlur() {
+    if (quickEditIdx === null) return;
+    const original = serverList[quickEditIdx]?.text ?? "";
+    if (quickEditText === original) {
+      setQuickEditIdx(null);
+      return;
+    }
+    setQuickSaving(true);
+    try {
+      const updated = serverList.map((c, i) =>
+        i === quickEditIdx ? { ...c, text: quickEditText } : c
+      );
+      await onSave(updated);
+      setQuickEditIdx(null);
+      const msg = "AC updated";
+      if (onToast) {
+        onToast(msg);
+      } else {
+        setQuickSavedMsg(msg);
+        setTimeout(() => setQuickSavedMsg(null), 2000);
+      }
+    } catch {
+      // Keep textarea open so edit isn't lost; surface error
+      const errMsg = "Save failed — try again";
+      if (onToast) {
+        onToast(errMsg);
+      } else {
+        setQuickSavedMsg(errMsg);
+      }
+    } finally {
+      setQuickSaving(false);
+    }
+  }
 
   // SSE-refresh guard: only sync from server when NOT in edit mode
   useEffect(() => {
@@ -164,6 +236,7 @@ export function AcEditor({ criteria, isTerminal, onSave, disabled = false }: Pro
 
   // ── read-only render ─────────────────────────────────────────────────────────
   if (isTerminal || !editing) {
+    const canQuickEdit = !isTerminal && !disabled;
     return (
       <section className="flex flex-col gap-2" data-acceptance-criteria>
         <div className="flex items-center justify-between gap-2">
@@ -183,6 +256,11 @@ export function AcEditor({ criteria, isTerminal, onSave, disabled = false }: Pro
             </button>
           )}
         </div>
+        {quickSavedMsg && (
+          <p className="text-xs text-green-600 dark:text-green-400" role="status">
+            {quickSavedMsg}
+          </p>
+        )}
         <div>
           {total === 0 ? (
             <p className="text-sm italic text-zinc-500 dark:text-zinc-400">
@@ -192,12 +270,15 @@ export function AcEditor({ criteria, isTerminal, onSave, disabled = false }: Pro
             <ol className="flex flex-col gap-1">
               {serverList.map((c, idx) => {
                 const badge = AC_STATUS_BADGE[c.status];
+                const isQuickEditing = quickEditIdx === idx;
+                const touchHandlers = canQuickEdit ? makeTouchHandlers(idx) : {};
                 return (
                   <li
                     key={idx}
                     className="flex gap-2 py-1.5"
                     data-ac-item
                     data-ac-status={c.status}
+                    {...touchHandlers}
                   >
                     <span
                       aria-label={badge.label}
@@ -206,9 +287,27 @@ export function AcEditor({ criteria, isTerminal, onSave, disabled = false }: Pro
                       {badge.glyph}
                     </span>
                     <div className="flex-1">
-                      <p className="whitespace-pre-wrap text-sm text-zinc-900 dark:text-zinc-100">
-                        {c.text}
-                      </p>
+                      {isQuickEditing ? (
+                        <textarea
+                          autoFocus
+                          rows={2}
+                          value={quickEditText}
+                          onChange={(e) => setQuickEditText(e.target.value)}
+                          onBlur={handleQuickBlur}
+                          onKeyDown={(e) => {
+                            if (e.key === "Escape") {
+                              setQuickEditIdx(null);
+                            }
+                          }}
+                          disabled={quickSaving}
+                          data-ac-quickedit={idx}
+                          className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:outline-none disabled:opacity-50 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
+                        />
+                      ) : (
+                        <p className="whitespace-pre-wrap text-sm text-zinc-900 dark:text-zinc-100">
+                          {c.text}
+                        </p>
+                      )}
                       {c.verified_by && (
                         <p className="text-xs text-zinc-500 dark:text-zinc-400">
                           by {c.verified_by}
