@@ -1,6 +1,6 @@
 ---
 story: ux-simplification
-version: 1
+version: 2
 updated: 2026-06-14
 updated_by: Lead
 ---
@@ -21,8 +21,11 @@ Anchor plan: [`shared/ux-simplification-plan.md`](../ux-simplification-plan.md) 
 Test baseline grew 268 → 282 (FE vitest, all green). tsc + lint clean throughout.
 
 ## Open threads
-- **#1582 product tour** — in REVIEW; only AC7 (live incognito walk) pending. R7 (#2376) changed its replay UX → walk must verify: auto-fire on fresh load, persistence across reload, header "Tour" button HIDES after completion, replay reachable via /settings. Operator doing the walk.
-- Stale doc-comments referencing deleted `PlatformSettingsModal` in `web/components/ModalShell.tsx` + `web/lib/api.ts` (flagged by R5 agent; harmless, cleanup chip spawned).
+- none. (#1582 closed; stale-comment cleanup closed as #2377.)
+
+## Closed since v1
+- **#1582 product tour** — DONE 2026-06-14. Operator ran the live incognito walk: auto-fire on fresh load, 6-step walk, persistence across reload, R7 header-hide + /settings replay all confirmed. 7/7 ACs passed.
+- **#2377 stale-comment cleanup** — DONE (655de0f). Zero `PlatformSettingsModal` refs left in web/.
 
 ## Gotchas
 - `/settings` (global) had NO nav link before R5 — only reachable by typing the URL. Any future header declutter must preserve a Settings entry.
@@ -35,3 +38,4 @@ See `shared/decisions.md` (v0.7.0 entries) + the anchor plan `shared/ux-simplifi
 
 ## Changelog
 - v1 (2026-06-14, Lead): story opened at batch close; #2370–#2376 DONE, #1582 AC7 pending operator walk.
+- v2 (2026-06-14, Lead): #1582 closed (operator live walk passed 7/7) + #2377 closed; no open threads.
