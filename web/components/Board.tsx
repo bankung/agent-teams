@@ -87,13 +87,6 @@ const ALL_STATUSES: TaskStatusValue[] = [
   TaskStatus.DONE,
 ];
 
-// Nav-row separator — 7 identical occurrences in the header row.
-const Sep = () => (
-  <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
-    ·
-  </span>
-);
-
 // #1726 — recurrence noise: templates (is_template=true) and scheduled-fire
 // instances (title prefix "[schedule:") are excluded from the visible board.
 const isScheduledNoise = (t: TaskRead) =>
@@ -546,12 +539,6 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
       }),
     [tasks],
   );
-  // #1726 — scheduled/template task count (computed against full list so the
-  // chip shows the real number even when the board is otherwise filtered).
-  const scheduledTaskCount = useMemo(
-    () => tasks.filter(isScheduledNoise).length,
-    [tasks],
-  );
   const visibleTasks = useMemo(() => {
     const base = showAudit ? tasks : tasks.filter((t) => t.task_type !== "audit");
     const noNoise = base.filter((t) => !isScheduledNoise(t));
@@ -627,68 +614,19 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
           data-board-nav-row
         >
           <ProjectSwitcher current={project.name} />
-          <Sep />
           <Link
             href="/dashboard"
             className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
           >
             Dashboard
           </Link>
-          <Sep />
-          {/* Wave A.2c — the dedicated /milestones page was removed; milestone
-              management now lives in the Gantt view (reachable via the
-              ViewSwitcher below). The former "Milestones" nav link is gone. */}
-          <span className="text-zinc-600 dark:text-zinc-400">
-            team: <span className="text-zinc-900 dark:text-zinc-100">{project.team}</span>
-          </span>
           {project.sources.length > 0 && (
-            <>
-              <Sep />
-              <SourcesBadge sources={project.sources} />
-            </>
+            <SourcesBadge sources={project.sources} />
           )}
-          <Sep />
-          {/* Wave A (#5/#3a) — the "NNN tasks" count moved OUT of the nav row
-              into the toolbar row directly under the consent banner (alongside
-              +New). See data-board-toolbar-row below. */}
-          {/* #1868 v1.1 — milestone filter dropdown. Self-hides when the project
-              has no milestones (mirrors the audit-toggle's count>0 self-hide).
-              "All milestones" = no filter; "No milestone" = milestone_id null;
-              each option filters the board's task cards client-side. */}
-          {milestones.length > 0 && (
-            <label className="inline-flex items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
-              <span className="sr-only sm:not-sr-only">Milestone</span>
-              <select
-                value={
-                  milestoneFilter === "all" || milestoneFilter === "none"
-                    ? milestoneFilter
-                    : String(milestoneFilter)
-                }
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setMilestoneFilter(
-                    v === "all" || v === "none" ? v : Number(v),
-                  );
-                }}
-                className="rounded-md border border-zinc-200 bg-transparent px-2 py-1.5 text-xs text-zinc-600 focus:border-zinc-400 focus:outline-none min-h-[44px] sm:min-h-0 dark:border-zinc-700 dark:text-zinc-300 dark:focus:border-zinc-500"
-                data-milestone-filter
-              >
-                <option value="all">All milestones</option>
-                <option value="none">No milestone</option>
-                {milestones.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.title}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          <Sep />
           <ConnectionStateBadge
             state={connectionState}
             lastEventAt={lastEventAt}
           />
-          <Sep />
           {/* Wave A (#1) — unified Board · List · Calendar · Gantt switcher
               replaces the former Board|List toggle. On the board page List is
               the local `view` state (no navigation): clicking List/Board here
@@ -859,14 +797,34 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
             dataAttr="data-operator-gate-toggle"
           />
         )}
-        {/* Scheduled/template chip — display-only; hidden when count=0. */}
-        {scheduledTaskCount > 0 && (
-          <HeaderIconBtn
-            icon="clock"
-            label={`Scheduled / template tasks (${scheduledTaskCount})`}
-            count={scheduledTaskCount}
-            dataAttr="data-scheduled-task-badge"
-          />
+        {/* #1868 v1.1 — milestone filter; moved from nav row to toolbar (v0.7.0 UX). */}
+        {milestones.length > 0 && (
+          <label className="inline-flex items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+            <span className="sr-only sm:not-sr-only">Milestone</span>
+            <select
+              value={
+                milestoneFilter === "all" || milestoneFilter === "none"
+                  ? milestoneFilter
+                  : String(milestoneFilter)
+              }
+              onChange={(e) => {
+                const v = e.target.value;
+                setMilestoneFilter(
+                  v === "all" || v === "none" ? v : Number(v),
+                );
+              }}
+              className="rounded-md border border-zinc-200 bg-transparent px-2 py-1.5 text-xs text-zinc-600 focus:border-zinc-400 focus:outline-none min-h-[44px] sm:min-h-0 dark:border-zinc-700 dark:text-zinc-300 dark:focus:border-zinc-500"
+              data-milestone-filter
+            >
+              <option value="all">All milestones</option>
+              <option value="none">No milestone</option>
+              {milestones.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.title}
+                </option>
+              ))}
+            </select>
+          </label>
         )}
         {/* Inline headless control — replaces the standalone
             ProjectConsentBanner section. Shows consent date when granted;

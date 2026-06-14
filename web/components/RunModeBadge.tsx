@@ -4,17 +4,7 @@ import { Icon } from "./Icon";
 type Props = { mode: TaskRunModeValue };
 
 export function RunModeBadge({ mode }: Props) {
-  if (mode === "manual") {
-    return (
-      <span
-        aria-label="manual"
-        title="manual"
-        className="inline-flex items-center text-zinc-600 dark:text-zinc-400"
-      >
-        <Icon name="manual-run" size={14} />
-      </span>
-    );
-  }
+  if (mode === "manual") return null;
   const label = mode === "auto_pickup" ? "auto pickup" : "auto headless";
   const title =
     mode === "auto_pickup"

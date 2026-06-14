@@ -30,66 +30,6 @@ import { TaskOutputs } from "./TaskOutputs";
 import { TaskToolCalls } from "./TaskToolCalls";
 import { ModelTierSelect } from "./ModelTierSelect";
 
-// #1581 — "Tip: add AC" banner. Follows the same localStorage pattern as
-// DashboardWelcomeBanner: show=false on SSR, hydrate from localStorage in
-// useEffect, dismiss writes the key permanently (per browser).
-const AC_TIP_LS_KEY = "agent-teams.taskDrawer.acTipDismissed";
-
-function AcTipBanner() {
-  const [show, setShow] = useState(false);
-
-  useEffect(() => {
-    try {
-      const dismissed = localStorage.getItem(AC_TIP_LS_KEY) === "true";
-      if (!dismissed) setShow(true);
-    } catch {
-      // localStorage blocked (private browsing, etc.) — silently skip
-    }
-  }, []);
-
-  if (!show) return null;
-
-  function handleDismiss() {
-    try {
-      localStorage.setItem(AC_TIP_LS_KEY, "true");
-    } catch {
-      // silently ignore
-    }
-    setShow(false);
-  }
-
-  return (
-    <aside
-      role="note"
-      aria-label="Tip: Acceptance Criteria"
-      data-ac-tip-banner
-      className="flex items-start justify-between gap-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100"
-    >
-      <p className="leading-relaxed">
-        <span className="font-semibold">Tip:</span> Adding Acceptance Criteria
-        helps AI agents stay on target — they check each criterion before
-        marking a task done. Ask Lead to set them when creating a task.
-      </p>
-      <button
-        type="button"
-        aria-label="Dismiss tip"
-        onClick={handleDismiss}
-        className="shrink-0 rounded p-0.5 text-amber-600 hover:bg-amber-100 hover:text-amber-800 dark:text-amber-400 dark:hover:bg-amber-900/40 dark:hover:text-amber-200"
-      >
-        <svg
-          aria-hidden
-          xmlns="http://www.w3.org/2000/svg"
-          viewBox="0 0 16 16"
-          fill="currentColor"
-          className="h-3.5 w-3.5"
-        >
-          <path d="M2.22 2.22a.75.75 0 0 1 1.06 0L8 6.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L9.06 8l4.72 4.72a.75.75 0 1 1-1.06 1.06L8 9.06l-4.72 4.72a.75.75 0 0 1-1.06-1.06L6.94 8 2.22 3.28a.75.75 0 0 1 0-1.06Z" />
-        </svg>
-      </button>
-    </aside>
-  );
-}
-
 type Props = {
   task: TaskRead;
   allTasks: TaskRead[];
@@ -131,6 +71,8 @@ export function TaskDetail({
 }: Props) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // Q9 (v0.7.0) — lazy: don't fetch until the user expands the disclosure.
+  const [alsoBlocksOpen, setAlsoBlocksOpen] = useState(false);
   const [alsoBlocks, setAlsoBlocks] = useState<TaskRead[] | null>(null);
   // #854 — inline cancel; state: cancelOpen / cancelReason
   const [cancelOpen, setCancelOpen] = useState(false);
@@ -230,9 +172,16 @@ export function TaskDetail({
     return () => document.removeEventListener("keydown", onKey);
   }, [cancelOpen, pickerOpen, submitting, onClose]);
 
+  // Reset lazy state when task changes so a re-open starts fresh.
   useEffect(() => {
-    let cancelled = false;
+    setAlsoBlocksOpen(false);
     setAlsoBlocks(null);
+  }, [task.id]);
+
+  // Fetch only when the user expands the "Also blocks" disclosure.
+  useEffect(() => {
+    if (!alsoBlocksOpen || alsoBlocks !== null) return;
+    let cancelled = false;
     getTaskBlocks(projectId, task.id)
       .then((rows) => {
         if (!cancelled) setAlsoBlocks(rows);
@@ -243,7 +192,7 @@ export function TaskDetail({
     return () => {
       cancelled = true;
     };
-  }, [projectId, task.id]);
+  }, [alsoBlocksOpen, alsoBlocks, projectId, task.id]);
 
   const blockerTask = useMemo(() => {
     if (task.blocked_by == null) return null;
@@ -698,8 +647,6 @@ export function TaskDetail({
           )}
 
           {/* #827 — AC section always rendered (discipline gate) */}
-          {/* #1581 — first-time tip banner; dismisses to localStorage */}
-          <AcTipBanner />
           {/* #2181 — AcEditor replaces read-only AcceptanceCriteriaSection */}
           <AcEditor
             criteria={task.acceptance_criteria}
@@ -775,51 +722,66 @@ export function TaskDetail({
             )}
           </Section>
 
-          {/* Also blocks — optional reverse-lookup */}
+          {/* Also blocks — expand-on-demand to avoid per-open API call */}
           <Section label="Also blocks">
-            {alsoBlocks === null ? (
-              <span role="status" className="text-zinc-400 italic dark:text-zinc-500">…</span>
-            ) : alsoBlocks.length === 0 ? (
-              <span className="text-zinc-500 italic dark:text-zinc-400">
-                (none)
-              </span>
-            ) : (
-              <ul
-                className="flex flex-col gap-1"
-                data-also-blocks
-              >
-                {alsoBlocks.map((t) => (
-                  <li
-                    key={t.id}
-                    className="font-mono text-xs text-zinc-700 dark:text-zinc-300"
-                  >
-                    #{t.id} — {truncate(t.title, 60)}
-                  </li>
-                ))}
-              </ul>
-            )}
+            <details
+              onToggle={(e) => {
+                if ((e.currentTarget as HTMLDetailsElement).open) {
+                  setAlsoBlocksOpen(true);
+                }
+              }}
+            >
+              <summary className="cursor-pointer text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200">
+                Show
+              </summary>
+              <div className="mt-1">
+                {alsoBlocks === null ? (
+                  <span role="status" className="text-zinc-400 italic dark:text-zinc-500">…</span>
+                ) : alsoBlocks.length === 0 ? (
+                  <span className="text-zinc-500 italic dark:text-zinc-400">
+                    (none)
+                  </span>
+                ) : (
+                  <ul className="flex flex-col gap-1" data-also-blocks>
+                    {alsoBlocks.map((t) => (
+                      <li
+                        key={t.id}
+                        className="font-mono text-xs text-zinc-700 dark:text-zinc-300"
+                      >
+                        #{t.id} — {truncate(t.title, 60)}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </details>
           </Section>
 
-          {/* Timestamps */}
+          {/* Timestamps — collapsed by default */}
           <Section label="Timestamps">
-            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 font-mono text-xs text-zinc-600 dark:text-zinc-400">
-              <dt>created</dt>
-              <dd>{task.created_at}</dd>
-              <dt>updated</dt>
-              <dd>{task.updated_at}</dd>
-              {task.started_at && (
-                <>
-                  <dt>started</dt>
-                  <dd>{task.started_at}</dd>
-                </>
-              )}
-              {task.completed_at && (
-                <>
-                  <dt>completed</dt>
-                  <dd>{task.completed_at}</dd>
-                </>
-              )}
-            </dl>
+            <details>
+              <summary className="cursor-pointer text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200">
+                Show timestamps
+              </summary>
+              <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 font-mono text-xs text-zinc-600 dark:text-zinc-400">
+                <dt>created</dt>
+                <dd>{task.created_at}</dd>
+                <dt>updated</dt>
+                <dd>{task.updated_at}</dd>
+                {task.started_at && (
+                  <>
+                    <dt>started</dt>
+                    <dd>{task.started_at}</dd>
+                  </>
+                )}
+                {task.completed_at && (
+                  <>
+                    <dt>completed</dt>
+                    <dd>{task.completed_at}</dd>
+                  </>
+                )}
+              </dl>
+            </details>
           </Section>
 
           {/* #1305 — task output files section */}
