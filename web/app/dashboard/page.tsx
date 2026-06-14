@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { Icon } from "@/components/Icon";
+
 import {
   getAuditDailyRollup,
   getCrossProjectActiveTasks,
@@ -430,16 +432,7 @@ export default async function DashboardPage() {
           {stats.length} project{stats.length === 1 ? "" : "s"}
         </span>
         <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
-          <DashboardRefresher />
-          <AuditorVisibilityToggle />
-          <NewProjectModal />
-          <InboxBadge />
-          <FlagBellBadge />
-          {/* #1582 — first-visit product tour: auto-fires once for new users;
-              this button is the always-available "Take the tour" replay. */}
-          <ProductTour />
-          {/* #1017 — agent gallery entry. Minimal text link, matches the
-              header's other nav affordances. */}
+          {/* #1017 — agent gallery entry. Moved to front of right cluster (#2378). */}
           <Link
             href="/agents"
             data-nav-agents
@@ -447,17 +440,26 @@ export default async function DashboardPage() {
           >
             Agents
           </Link>
-          {/* #2375 (R5) — Settings nav entry. /settings has no other nav link;
-              this is its sole discoverable entry. Replaces the per-header
-              ThemePicker (theme now lives on /settings). Matches the Agents
-              link styling. */}
+          <DashboardRefresher />
+          <AuditorVisibilityToggle />
+          <NewProjectModal />
+          <InboxBadge />
+          <FlagBellBadge />
+          {/* #2375 (R5) — Settings nav. Now a gear icon immediately after the
+              bell (#2378). /settings has no other nav link; this is its sole
+              discoverable entry. */}
           <Link
             href="/settings"
             data-nav-settings
-            className="text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+            aria-label="Settings"
+            title="Settings"
+            className="inline-flex items-center text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
           >
-            Settings
+            <Icon name="agent-config" size={16} aria-hidden />
           </Link>
+          {/* #1582 — first-visit product tour: auto-fires once for new users;
+              this button is the always-available "Take the tour" replay. */}
+          <ProductTour />
         </span>
       </header>
 
