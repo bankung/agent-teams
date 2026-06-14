@@ -430,14 +430,6 @@ export function PnlSummaryCard({
                   </span>
                 </div>
               </div>
-              <div className="mt-4 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs text-zinc-600 dark:text-zinc-400">
-                <span>
-                  <span className="font-semibold text-zinc-900 dark:text-zinc-100 tabular-nums">
-                    {state.data.transaction_count}
-                  </span>{" "}
-                  transaction{state.data.transaction_count === 1 ? "" : "s"}
-                </span>
-              </div>
             </>
           )}
         </>

@@ -12,9 +12,9 @@
 // pattern as AuditorVisibilityToggle (#1291). When defaultCollapsed=false
 // (default), the panel is always-expanded (no toggle chrome).
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
-import { getDailyUsage, HttpError, type DailyUsageResponse, type ProjectStatsEntry } from "@/lib/api";
+import { type ProjectStatsEntry } from "@/lib/api";
 import { readExpanded, writeExpanded } from "@/lib/collapseState";
 
 // Token / cost formatters — duplicates kept intentional: this file is the
@@ -31,27 +31,6 @@ function formatUsd(n: number): string {
 
 function formatInt(n: number): string {
   return n.toLocaleString("en-US");
-}
-
-function fmt4dp(n: number): string {
-  return `$${n.toFixed(4)}`;
-}
-
-function parseUsdFlt(raw: string): number {
-  const n = Number.parseFloat(raw);
-  return Number.isFinite(n) ? n : 0;
-}
-
-function todayProviderTotals(
-  rows: DailyUsageResponse["rows"],
-  today: string,
-): Map<string, number> {
-  const map = new Map<string, number>();
-  for (const row of rows) {
-    if (row.date !== today) continue;
-    map.set(row.provider, (map.get(row.provider) ?? 0) + parseUsdFlt(row.cost_usd));
-  }
-  return map;
 }
 
 // Chevron icons — expand / collapse affordance
@@ -121,7 +100,6 @@ export function CostSummary({
   let totalInput = 0;
   let totalOutput = 0;
   let totalRuns = 0;
-  let totalWarnings = 0;
   let totalEstimatedCost = 0;
   let totalEstimatedInput = 0;
   let totalEstimatedOutput = 0;
@@ -131,7 +109,6 @@ export function CostSummary({
     totalInput += entry.cost_usage.total_input_tokens;
     totalOutput += entry.cost_usage.total_output_tokens;
     totalRuns += entry.cost_usage.session_run_count;
-    totalWarnings += entry.cost_usage.budget_warning_count;
     if (entry.estimated_cost != null) {
       hasEstimated = true;
       totalEstimatedCost += parseUsd(entry.estimated_cost.total_cost_usd);
@@ -147,15 +124,6 @@ export function CostSummary({
   // For collapsible panels the actual value is read from localStorage after
   // hydration (useEffect), mirroring AuditorVisibilityToggle's pattern.
   const [expanded, setExpanded] = useState(!defaultCollapsed);
-
-  // Provider breakdown — fetched once when the panel is first expanded.
-  type SpendState =
-    | { kind: "idle" }
-    | { kind: "loading" }
-    | { kind: "ok"; providerEntries: [string, number][]; todayUsd: number; monthUsd: number }
-    | { kind: "error" };
-  const [spendState, setSpendState] = useState<SpendState>({ kind: "idle" });
-  const spendFetchedRef = useRef(false);
 
   useEffect(() => {
     if (!collapsible || !storageKey) return;
@@ -177,29 +145,6 @@ export function CostSummary({
     setExpanded(next);
     writeExpanded(storageKey, next);
   }
-
-  // Fetch provider breakdown once on first expand.
-  useEffect(() => {
-    if (!expanded || spendFetchedRef.current) return;
-    spendFetchedRef.current = true;
-    setSpendState({ kind: "loading" });
-    getDailyUsage({ days: 31 })
-      .then((data) => {
-        const todayDate = data.today ?? new Date().toISOString().slice(0, 10);
-        const map = todayProviderTotals(data.rows, todayDate);
-        const providerEntries = [...map.entries()].filter(([, c]) => c > 0);
-        setSpendState({
-          kind: "ok",
-          providerEntries,
-          todayUsd: parseUsdFlt(data.total_today_usd),
-          monthUsd: parseUsdFlt(data.total_month_usd),
-        });
-      })
-      .catch((err: unknown) => {
-        void err;
-        setSpendState({ kind: "error" });
-      });
-  }, [expanded]);
 
   return (
     <section
@@ -237,14 +182,6 @@ export function CostSummary({
             <span>{totalRuns} run{totalRuns === 1 ? "" : "s"}</span>
           </span>
         )}
-        {totalWarnings > 0 ? (
-          <span
-            className="inline-flex items-center rounded bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
-            title={`${totalWarnings} session run${totalWarnings === 1 ? "" : "s"} flagged budget-warned`}
-          >
-            ⚠ {totalWarnings} run{totalWarnings === 1 ? "" : "s"} budget-warned
-          </span>
-        ) : null}
       </div>
 
       {expanded && (
@@ -319,43 +256,6 @@ export function CostSummary({
             </>
           )}
 
-          {/* Provider breakdown — folded in from LlmSpendSection (v0.7.0) */}
-          {spendState.kind === "ok" && (
-            <div className="mt-3 border-t border-amber-100 pt-3 dark:border-amber-900/30">
-              <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                Provider breakdown (today · this month)
-              </span>
-              <p className="mt-1 text-xs tabular-nums text-zinc-700 dark:text-zinc-300">
-                Today:{" "}
-                <span className="font-semibold text-zinc-900 dark:text-zinc-100">
-                  {fmt4dp(spendState.todayUsd)}
-                </span>
-                <span aria-hidden className="mx-2 text-zinc-300 dark:text-zinc-700">·</span>
-                This month:{" "}
-                <span className="font-semibold text-zinc-900 dark:text-zinc-100">
-                  {fmt4dp(spendState.monthUsd)}
-                </span>
-              </p>
-              {spendState.providerEntries.length > 0 && (
-                <ul
-                  className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] tabular-nums text-zinc-500 dark:text-zinc-400"
-                  aria-label="Today's spend by provider"
-                >
-                  {spendState.providerEntries.map(([provider, cost]) => (
-                    <li key={provider}>
-                      <span className="font-medium text-zinc-700 dark:text-zinc-300">{provider}</span>{" "}
-                      <span aria-label={`${provider} cost ${fmt4dp(cost)}`}>{fmt4dp(cost)}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
-          {spendState.kind === "error" && (
-            <p className="mt-3 text-[11px] text-zinc-400 dark:text-zinc-600 border-t border-amber-100 pt-3 dark:border-amber-900/30">
-              Provider breakdown unavailable
-            </p>
-          )}
         </>
       )}
     </section>

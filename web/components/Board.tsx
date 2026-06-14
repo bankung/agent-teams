@@ -706,7 +706,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
             ariaLabel={`Usage for ${project.name}`}
             defaultCollapsed={false}
             storageKey={`project.${project.id}.panels.usage.expanded`}
-            className="h-full"
+            className="h-full min-w-0"
           />
           {/* Col 2 (40%) — Kanban #1329 per-project P&L card (finance-gated).
               FINANCE_PANELS_ENABLED is a GLOBAL env flag; when off, every
@@ -717,22 +717,24 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
               projectName={project.name}
               defaultCollapsed={false}
               storageKey={`project.${project.id}.panels.pnl.expanded`}
-              className="h-full"
+              className="h-full min-w-0"
             />
           ) : (
             <div
-              className="flex h-full items-center justify-center rounded-md border border-zinc-200 p-3 text-center text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400"
+              className="flex h-full min-w-0 items-center justify-center rounded-md border border-zinc-200 p-3 text-center text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400"
               data-pnl-placeholder
             >
               P&amp;L not available for this project
             </div>
           )}
           {/* Col 3 (20%) — Kanban #1292 / #1781 burndown + velocity. */}
-          <ProgressChartsPanel
-            data={progressStats}
-            projectId={project.id}
-            compact
-          />
+          <div className="min-w-0 h-full">
+            <ProgressChartsPanel
+              data={progressStats}
+              projectId={project.id}
+              compact
+            />
+          </div>
         </div>
         {/* #1209 GOV1 D5 — red strip above the consent banner when killed.
             (Renders nothing when is_killed=false.) */}
