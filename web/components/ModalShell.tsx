@@ -56,13 +56,13 @@ type Props = {
   // aria-labelledby value — must match the id on the heading inside children.
   labelledBy: string;
   // Controls sm:max-w-* on the panel. Defaults to 'md' (matches existing
-  // migrated modals). Use 'lg' for denser forms (EditProjectModal,
-  // PlatformSettingsModal) and 'sm' for compact confirmations.
+  // migrated modals). Use 'lg' for denser forms (e.g. EditProjectModal,
+  // AiTaskModal) and 'sm' for compact confirmations.
   maxWidth?: "sm" | "md" | "lg";
   // Optional: appended to the panel className for one-off overrides.
   panelExtraClassName?: string;
   // When true, the desktop panel is capped at 85vh and scrolls vertically.
-  // Use for modals with long content lists (e.g. PlatformSettingsModal).
+  // Use for modals with long content lists (e.g. AiTaskModal).
   // Default false keeps the pre-existing sm:h-auto + sm:overflow-visible
   // behaviour so dropdown-bearing modals are unaffected.
   scrollable?: boolean;

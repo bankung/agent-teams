@@ -685,7 +685,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
                 reachable from the dashboard + ReviewClient's own header. */}
 
             {/* #2375 (R5) — global Settings entry. Replaces the removed
-                PlatformSettingsModal plug icon AND the per-header ThemePicker:
+                Settings modal plug icon AND the per-header ThemePicker:
                 both theme + platform integrations now live on /settings, which
                 otherwise has no nav link. Uses the agent-config glyph (no
                 dedicated gear in the sprite); the per-project Settings link

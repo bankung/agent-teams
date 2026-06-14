@@ -3,7 +3,7 @@
 // IntegrationsPanel — Kanban #2375 (R5 /settings consolidation).
 //
 // Read-only "Integrations" status list, extracted verbatim from the body of
-// the former PlatformSettingsModal (#1655 / #1781) so it can render as a normal
+// the former platform settings modal (#1655 / #1781) so it can render as a normal
 // page panel on /settings — NO ModalShell, NO trigger button, NO modal chrome.
 //
 // READ-ONLY: no toggle, no PATCH. Status badge is driven by `configured` (all

@@ -1742,7 +1742,7 @@ export const handoffTemplates = {
 };
 
 // ============================================================================
-// Kanban #1655 — Platform Integrations settings (PlatformSettingsModal).
+// Kanban #1655 — Platform Integrations settings (IntegrationsPanel on /settings).
 //
 // Global, operator-level surface (NO X-Project-Id header — integrations are
 // platform-wide, not per-project). Status is READ-ONLY — no toggle. Keys live
