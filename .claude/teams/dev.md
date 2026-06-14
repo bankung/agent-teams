@@ -118,37 +118,11 @@ The active project may carry `config.enabled_roles: int[]` — a whitelist of ro
 
 ## Subagent model logging (Kanban #887, 2026-05-13)
 
-Dev team tracks subagent tier in `tasks.subagent_models` per universal Lead rules. Every state-transition PATCH Lead sends to the tasks API **must include the full `subagent_models` list** accumulated for that task so far. Bundle it into the same PATCH body as `process_status`, `acceptance_criteria`, `completed_at`, etc.
+Dev team tracks subagent tier in `tasks.subagent_models`. Every state-transition PATCH **must include the full accumulated list** (REPLACE semantics — Lead appends on its side), bundled with `process_status` / `completed_at` / `acceptance_criteria` / etc. in the same PATCH body.
 
-**What counts as a spawn (include in list):**
-- Any `Agent({subagent_type: "<name>", ...})` call that returns real work output — dev-backend, dev-tester, dev-reviewer, etc.
-
-**What does NOT count (do not include):**
-- Lead's own Read / Grep / Glob / Bash exploration
-- Skill invocations
-
-**Element shape** (REPLACE semantics — Lead sends full accumulated list each PATCH; append is on Lead's side):
-```json
-{"agent": "dev-backend", "model": "opus", "at": "2026-05-13T09:00:00Z"}
-```
-- `agent`: the agent's frontmatter `name` (e.g., `dev-backend`, `dev-sr-backend`)
-- `model`: one of `"opus"`, `"sonnet"`, `"haiku"` — mirrors the `model:` field in agent frontmatter (no frontmatter `model:` line → Opus default)
-- `at`: UTC ISO-8601 timestamp when Lead initiated the spawn
-
-**Example DONE-flip PATCH:**
-```json
-{
-  "process_status": 5,
-  "completed_at": "2026-05-13T10:00:00Z",
-  "acceptance_criteria": [...],
-  "subagent_models": [
-    {"agent": "dev-backend", "model": "opus", "at": "2026-05-13T09:00:00Z"},
-    {"agent": "dev-tester", "model": "sonnet", "at": "2026-05-13T09:30:00Z"}
-  ]
-}
-```
-
-If a task loops back (DONE → rework → DONE again), keep accumulating — the field records all spawns across the full task lifetime.
+- **Counts:** any `Agent({subagent_type, ...})` call that returns real work output. **Not:** Lead's own Read/Grep/Glob/Bash, or Skill invocations.
+- **Element shape:** `{"agent": "<frontmatter name>", "model": "opus"|"sonnet"|"haiku", "at": "<UTC ISO-8601 spawn time>"}` — no frontmatter `model:` line → opus default.
+- Task loops back (DONE → rework → DONE) → keep accumulating across the full task lifetime.
 
 ## Lifecycle (per task)
 
