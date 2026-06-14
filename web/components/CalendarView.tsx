@@ -525,6 +525,7 @@ export function CalendarView({
             boardHref={boardHref}
             milestonesHref={milestonesHref}
             onContextMenu={openMenu}
+            onNewTask={(key) => setCreateForDay(key)}
           />
         ) : (
           <WeekStrip
@@ -535,6 +536,7 @@ export function CalendarView({
             boardHref={boardHref}
             milestonesHref={milestonesHref}
             onContextMenu={openMenu}
+            onNewTask={(key) => setCreateForDay(key)}
           />
         )}
 
@@ -762,6 +764,7 @@ function DroppableDay({
   className,
   children,
   onContextMenu,
+  onNewTask,
 }: {
   dayKey: string;
   isToday: boolean;
@@ -769,6 +772,7 @@ function DroppableDay({
   className: string;
   children: React.ReactNode;
   onContextMenu: (key: string, x: number, y: number) => void;
+  onNewTask: (key: string) => void;
 }) {
   const { isOver, setNodeRef } = useDroppable({ id: `day-${dayKey}` });
   const dropHighlight = isOver
@@ -786,9 +790,23 @@ function DroppableDay({
         e.preventDefault();
         onContextMenu(dayKey, e.clientX, e.clientY);
       }}
-      className={`${className}${dropHighlight}`}
+      className={`relative group ${className}${dropHighlight}`}
     >
       {children}
+      {inMonth && (
+        <button
+          type="button"
+          data-calendar-new-task={dayKey}
+          aria-label={`New task on ${dayKey}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onNewTask(dayKey);
+          }}
+          className="absolute top-1 right-1 flex h-5 w-5 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 sm:h-5 sm:w-5 items-center justify-center rounded text-zinc-400 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 dark:text-zinc-500 transition-opacity"
+        >
+          <span aria-hidden className="text-sm leading-none">+</span>
+        </button>
+      )}
     </div>
   );
 }
@@ -802,6 +820,7 @@ function MonthGrid({
   boardHref,
   milestonesHref,
   onContextMenu,
+  onNewTask,
 }: {
   ym: YearMonth;
   today: string;
@@ -810,6 +829,7 @@ function MonthGrid({
   boardHref: string;
   milestonesHref: string;
   onContextMenu: (key: string, x: number, y: number) => void;
+  onNewTask: (key: string) => void;
 }) {
   const grid = useMemo(() => buildMonthGrid(ym), [ym]);
 
@@ -852,6 +872,7 @@ function MonthGrid({
               isToday={isToday}
               inMonth={cell.inMonth}
               onContextMenu={onContextMenu}
+              onNewTask={onNewTask}
               className={`flex min-h-[92px] flex-col gap-1 p-1.5 ${
                 cell.inMonth
                   ? "bg-white dark:bg-zinc-950"
@@ -913,6 +934,7 @@ function WeekStrip({
   boardHref,
   milestonesHref,
   onContextMenu,
+  onNewTask,
 }: {
   anchor: string;
   today: string;
@@ -921,6 +943,7 @@ function WeekStrip({
   boardHref: string;
   milestonesHref: string;
   onContextMenu: (key: string, x: number, y: number) => void;
+  onNewTask: (key: string) => void;
 }) {
   const days = useMemo(() => buildWeekDays(anchor), [anchor]);
 
@@ -943,6 +966,7 @@ function WeekStrip({
             isToday={isToday}
             inMonth
             onContextMenu={onContextMenu}
+            onNewTask={onNewTask}
             className={`flex min-h-[7rem] flex-col gap-1 bg-white p-2 sm:min-h-[20rem] dark:bg-zinc-950 ${
               isToday ? "ring-2 ring-inset ring-sky-500 dark:ring-sky-400" : ""
             }`}

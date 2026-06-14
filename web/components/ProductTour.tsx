@@ -270,7 +270,11 @@ export function ProductTour() {
     void startTour(false);
   }, [startTour]);
 
-  // SSR + first paint: render the static replay button only (no storage read).
+  // Hide the replay button once the tour is completed (post-mount, so storage
+  // is readable). First server paint + pre-mount: always render so there's no
+  // layout shift. After mount: hide if completed.
+  if (mounted && isTourCompleted()) return null;
+
   return (
     <button
       type="button"

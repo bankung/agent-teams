@@ -14,6 +14,7 @@ import Link from "next/link";
 import { IntegrationsPanel } from "@/components/IntegrationsPanel";
 import { PushNotificationsPanel } from "@/components/PushNotificationsPanel";
 import { ThemePicker } from "@/components/ThemePicker";
+import { TourReplayButton } from "@/components/TourReplayButton";
 
 export const dynamic = "force-dynamic";
 
@@ -65,6 +66,26 @@ export default function SettingsPage() {
 
         {/* Push notifications — original #955.C panel. */}
         <PushNotificationsPanel />
+
+        {/* Product tour — #2376 R7: replay from settings. */}
+        <section
+          data-settings-tour
+          aria-labelledby="settings-tour-heading"
+          className="flex flex-col gap-3"
+        >
+          <header className="flex flex-col gap-1">
+            <h2
+              id="settings-tour-heading"
+              className="text-base font-semibold text-zinc-900 dark:text-zinc-100"
+            >
+              Product tour
+            </h2>
+            <p className="text-[12px] text-zinc-500 dark:text-zinc-400 leading-5">
+              Walk through the key features of agent-teams again.
+            </p>
+          </header>
+          <TourReplayButton />
+        </section>
       </div>
     </main>
   );

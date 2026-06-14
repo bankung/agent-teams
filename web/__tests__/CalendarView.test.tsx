@@ -275,4 +275,23 @@ describe("CalendarView — smoke", () => {
     const section = document.querySelector("[data-calendar-view]");
     expect(section?.getAttribute("aria-label")).toBe("Calendar for my-project");
   });
+
+  it("day cells expose data-calendar-new-task buttons on in-month cells", () => {
+    render(
+      <CalendarView
+        projectName="my-project"
+        year={2026}
+        month0={5}
+        tasks={[]}
+        milestones={[]}
+      />,
+    );
+    // June 2026 has 30 days; all 30 in-month cells should have a "+" button.
+    const newTaskBtns = document.querySelectorAll("[data-calendar-new-task]");
+    expect(newTaskBtns.length).toBe(30);
+    // Spot-check one day
+    const btn = document.querySelector('[data-calendar-new-task="2026-06-01"]');
+    expect(btn).not.toBeNull();
+    expect(btn?.getAttribute("aria-label")).toBe("New task on 2026-06-01");
+  });
 });
