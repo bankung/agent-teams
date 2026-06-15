@@ -1,8 +1,8 @@
 ---
 story: mode-a-cost
-version: 3
+version: 4
 updated: 2026-06-15
-updated_by: lead @ #2356
+updated_by: lead @ #1304
 ---
 
 <!-- STORY DOC — mutable thread STATE ("what is true NOW"), single writer = Lead.
@@ -17,8 +17,11 @@ updated_by: lead @ #2356
 
 - **Read side LIVE — P3 #2356 (commit `3f75a7b`, on `dev`, not pushed).** `GET /api/usage/monthly`: billing-cycle rollup (cut-off day via `?cycle_day` > `COST_CYCLE_DAY` setting > 1, capped 1-28); per-cycle Mode A (`usage_events` by `occurred_at`) + Mode B (`session_runs` by `coalesce(finished_at,started_at)`), summed (DISJOINT paths, NOT double-counted), per-task drilldown (null=unattributed), zero-filled, most-recent first. `occurred_at` clamp `[now-30d, now+5min]` -> 422 on the ingest (AC2 carry-over; blocks backdating into closed cycles). Dashboard `MonthlySpendSection` card (prop-driven for RTL determinism; Mode A est blue + Mode B actual amber + total + drilldown), mounted after `CostSummary`. Operator-level/header-free -> inherits K1 no-auth gap; the per-task `task_title` cross-project disclosure is a NEW widening, registered in `decisions.md`. Reviews APPROVE-WITH-NOTES (0 blocker/major). Verified live (2 cycles A/B split, clamp 422); api usage tests 25, web 323.
 
+- **Pre-task cost FORECAST LIVE — #1304 (commit `28a996a`, on `dev`, not pushed).** `POST /api/tasks/{id}/cost-forecast` — Option A (create task → forecast → confirm modal if estimate > project threshold). `forecast_task_cost()` reuses `cost_tracker.compute_cost` + `_heuristic_tokens` + resource `est_cost_if_full`; model via `resolve_forecast_model` (task.model_override else env, default opus-4-8). Migration **0068** (applied live): `projects.cost_forecast_threshold_usd` NUMERIC(10,2) (default $1, null=no gate, CHECK ≥0) + `tasks.forecast_cost_usd` NUMERIC(10,4) (persists each forecast → prospective calibration). `_DEFAULT_ANTHROPIC_MODEL` sonnet→opus-4-8 (SHARED w/ #944 done-flip estimator — intentional). NewTaskModal $-language confirm modal (Run Full / Use Sample / Cancel). Reviews APPROVE-WITH-NOTES (0 blocker/major; SEC-1 token-clamp + M1 active-guard + M2 empty-desc applied). Live smoke A/B1/B2/C1/C2/E PASS; FE vitest 330 green. Deferred na: AC2 ±30% calibration + AC4 80%-saving → **#2408** (need prospective live-LLM data); follow-ups **#2409** CalendarView gate, **#2410** model_override tier pricing. Formal in-container pytest still GATED (operator `DOCKER_PYTEST_VERIFIED`).
+
 ## Open threads
 
+- **#2408 / #2409 / #2410** — #1304 forecast follow-ups (calibration ±30%+80%-saving; CalendarView gate; model_override tier→provider pricing). LOW, milestone 37.
 - **#2360** — verify PreCompact fires on AUTO-compaction (manual `/compact` does NOT, see Gotchas); then keep the hook or remove it as redundant vs SessionEnd. LOW, milestone 37.
 - **MEASURE GATE** (workstream checkpoint, no task id) — answer "is context-reading a *material* share of Mode A tokens?" BEFORE building any optimization (#1678, pickup-pack). Currently **UNANSWERED**: the ledger records session/task token TOTALS, not a context-read line-item — needs more accumulated sessions + finer attribution (or input/cache-read share analysis).
 - **#2362** — post-review nits: W2 error-path `$rawIn` in DROP-unparseable fallback; 422 test covers 1 of 4 token fields; hook `project_id` int-validate; parser mtime fallback. LOW, milestone 37.
@@ -33,12 +36,16 @@ updated_by: lead @ #2356
 
 - **The api container does NOT hot-reload a new route on a bind-mount source edit** (Windows Docker inotify gap, same class as web `WATCHPACK_POLLING` #2386) — `docker compose -p agent-teams restart api` to load a NEW endpoint before live-verifying. Bit #2356 (the `/monthly` route 404'd until restart). (#2356)
 
+- **ORM-ahead-of-migration = LIVE OUTAGE (#1304).** api runs `uvicorn --reload` + repo bind-mount, so a backend agent's model-column edit hot-reloads into the LIVE api immediately. If the matching migration isn't applied to the live DB yet, EVERY query on that model 500s (`column … does not exist`) → total API outage — while `/health` (no DB touch) still reports healthy. Mitigation: apply the migration to live in the SAME session as the model edit (or revert the ORM); never leave the ORM ahead of the live schema. Live `alembic upgrade` needs `MIGRATION_TARGET=live` (env.py guard).
+- **Forecast reflects the CONFIGURED runtime model (#1304).** `resolve_provider_model()` reads env; the operator's ollama-default stack → every forecast `$0.0000` (free local) → the confirm modal never fires in practice. The gate activates only when a paid provider (anthropic/google) is configured. model_override tier aliases {haiku,sonnet,opus} don't reroute to anthropic pricing on a non-anthropic stack yet → $0 (tracked #2410).
+
 ## Decisions pointer
 
 - Milestone **#37** (mode-a-cost design). `decisions.md` — grep `usage_events` / `mode-a-cost`.
 
 ## Changelog
 
+- v4 2026-06-15 #1304 — pre-task cost FORECAST LIVE (commit `28a996a`): `POST /api/tasks/{id}/cost-forecast` + migration 0068 (`cost_forecast_threshold_usd` $1-default + `forecast_cost_usd`) + NewTaskModal $-gate confirm modal; `_DEFAULT_ANTHROPIC_MODEL` sonnet→opus-4-8. dev-reviewer + dev-security-reviewer APPROVE-WITH-NOTES; SEC-1/M1/M2 folded; live smoke + FE vitest 330 green. Caused a mid-build live outage (ORM-ahead-of-migration via --reload) → recovered by applying 0068 live + restart api. Deferred na: AC2/AC4 measurements → #2408; follow-ups #2409 (CalendarView gate) + #2410 (model_override pricing).
 - v3 2026-06-15 #2356 — read side LIVE: `GET /api/usage/monthly` billing-cycle rollup + `occurred_at` clamp (AC2) + `MonthlySpendSection` dashboard card (commit `3f75a7b`). dev-reviewer + dev-security-reviewer APPROVE-WITH-NOTES (0 blocker/major); Lead folded M1/M2 comment fixes + SW-1 (`task_title` cross-project widening -> decisions.md K1 gap). Verified live (monthly 2 cycles A/B, clamp 422); api usage tests 25, web 323. P3 closes the mode-a-cost build arc (P1 ingest + P2 capture + P3 read all LIVE).
 - v2 2026-06-13 #2361 — pre-0.6.3 intense review + security test (0 blockers/0 majors): token overflow guard, W1 port→127.0.0.1, W2 hooks drop conversation content (8570c46); residual nits → #2362; README v0.6.3 section added.
 - v1 2026-06-13 #2355 — story opened at P2 close. Ledger + capture producer LIVE; AC2 (SubagentStop) + AC3 (SessionEnd) live-proven; PreCompact-on-/compact gap → follow-up #2360; MEASURE GATE still open.
