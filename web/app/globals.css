@@ -2,6 +2,27 @@
 @tailwind components;
 @tailwind utilities;
 
+/* #2411 — native <select> dark-mode legibility.
+   color-scheme:dark themes the CLOSED control + scrollbars (correct baseline for
+   all native controls). BUT Chrome on Windows IGNORES color-scheme for the
+   native <select> POPUP menu — it stays light, so dark-mode light option text
+   (dark:text-zinc-300) is unreadable on it (verified live in Chrome/Win, the
+   select computed color-scheme=dark yet the popup rendered white). Chrome DOES
+   honor explicit <option> background-color/color in the popup, so set those in
+   dark mode. Keep BOTH rules — do NOT drop the option block thinking
+   color-scheme covers it. */
+:root {
+  color-scheme: light;
+}
+:root.dark {
+  color-scheme: dark;
+}
+.dark select option,
+.dark select optgroup {
+  background-color: #27272a; /* zinc-800 */
+  color: #f4f4f5; /* zinc-100 */
+}
+
 /* Kanban #1001 follow-up (2026-05-20) — deep-link ring-pulse keyframe.
    Applied to a TaskCard / ListView row when the Board mounts with a
    `?task=<id>` query param that matches the row. Two-second violet ring
