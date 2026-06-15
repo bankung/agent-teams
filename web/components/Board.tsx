@@ -613,52 +613,56 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
   return (
     // #954 — mobile: page scrolls (h-auto, overflow-y-auto); desktop preserves the fixed-viewport board (h-screen, overflow-hidden)
     <main className="flex min-h-screen flex-col overflow-y-auto bg-white dark:bg-zinc-950 px-4 py-4 sm:px-6 sm:py-5 lg:h-screen lg:min-h-0 lg:overflow-hidden">
-      {/* #1781 — header is height-capped on desktop (lg:max-h-[40vh] +
-          overflow-y-auto) so the flex-1 board below is GUARANTEED >=60vh of
-          the lg:h-screen main. The single nav row + compact panels band keep
-          the header well under the cap; the cap is the hard structural floor. */}
+      {/* #1781 capped the header (lg:max-h-[40vh] + overflow-y-auto) to floor
+          the board at >=60vh. #2404 (operator decision 2026-06-15) — cap REMOVED
+          so the usage/P&L/Graph band never shows a scrollbar when expanded.
+          Panels stay VISIBLE (defaultCollapsed=false) + collapsible. Trade-off:
+          the header takes natural height; the board below gets the remaining
+          flex-1 space (no longer a guaranteed >=60vh floor). */}
       <header
-        className="mb-4 flex flex-col gap-2 lg:max-h-[40vh] lg:overflow-y-auto lg:pr-1"
+        className="mb-4 flex flex-col gap-2"
         data-board-header
         tabIndex={-1}
       >
         {/* #1781 — single nav row on desktop; flex-wrap still drops controls
-            to extra rows on mobile. */}
+            to extra rows on mobile. #2404 — 3-zone layout: left cluster (flex-1)
+            · centered ViewSwitcher (shrink-0) · right cluster (flex-1 + justify-end). */}
         <div
           className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm"
           data-board-nav-row
         >
-          <ProjectSwitcher current={project.name} />
-          <Link
-            href="/dashboard"
-            className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
-          >
-            Dashboard
-          </Link>
-          {project.sources.length > 0 && (
-            <SourcesBadge sources={project.sources} />
-          )}
-          <ConnectionStateBadge
-            state={connectionState}
-            lastEventAt={lastEventAt}
-          />
-          {/* Wave A (#1) — unified Board · List · Calendar · Gantt switcher
-              replaces the former Board|List toggle. On the board page List is
-              the local `view` state (no navigation): clicking List/Board here
-              updates the view in place via onSelect; Calendar/Gantt are real
-              route links handled inside ViewSwitcher. `active` reflects the live
-              board/list view. */}
-          <ViewSwitcher
-            projectName={project.name}
-            active={view}
-            onSelect={handleViewChange}
-          />
-          {/* #1781 — right cluster: +New moved to the toolbar row (#5/#3a);
-              this cluster now holds pause/terminate icon buttons, Integrations,
-              ThemePicker. (Bell/FlagBellBadge removed in Wave A #6.) ml-auto
-              pushes them right on desktop, full-width wrap on mobile. */}
+          {/* LEFT zone — Dashboard first, then ProjectSwitcher, then status dot, then SourcesBadge */}
+          <span className="flex flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+            <Link
+              href="/dashboard"
+              className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
+            >
+              Dashboard
+            </Link>
+            <ProjectSwitcher current={project.name} />
+            <ConnectionStateBadge
+              state={connectionState}
+              lastEventAt={lastEventAt}
+            />
+            {project.sources.length > 0 && (
+              <SourcesBadge sources={project.sources} />
+            )}
+          </span>
+          {/* CENTER zone — ViewSwitcher horizontally centered (#2404). Wave A (#1)
+              On the board page List is the local `view` state (no navigation):
+              clicking List/Board updates the view in place via onSelect;
+              Calendar/Gantt are real route links handled inside ViewSwitcher. */}
+          <span className="shrink-0">
+            <ViewSwitcher
+              projectName={project.name}
+              active={view}
+              onSelect={handleViewChange}
+            />
+          </span>
+          {/* RIGHT zone — #1781: pause/terminate icon buttons, Integrations, ThemePicker.
+              flex-1 + justify-end pins this cluster to the right edge. */}
           <span
-            className="ml-auto flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto"
+            className="flex flex-1 flex-wrap items-center justify-end gap-2"
             data-board-actions-cluster
           >
             {/* Wave A.2a (#1) — Inbox icon link in the right cluster so the
@@ -728,7 +732,9 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
           className="grid grid-cols-1 gap-3 items-stretch lg:grid-cols-[2fr_2fr_1fr]"
           data-board-panels-band
         >
-          {/* Col 1 (40%) — Kanban #1289 per-project usage panel. */}
+          {/* Col 1 (40%) — Kanban #1289 per-project usage panel.
+              #2404 — defaultCollapsed=false (operator: panels visible by default);
+              still collapsible, storageKey persists per-project preference. */}
           <CostSummary
             stats={projectStats}
             ariaLabel={`Usage for ${project.name}`}
@@ -738,7 +744,8 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
           />
           {/* Col 2 (40%) — Kanban #1329 per-project P&L card (finance-gated).
               FINANCE_PANELS_ENABLED is a GLOBAL env flag; when off, every
-              project shows the placeholder (expected with current infra). */}
+              project shows the placeholder (expected with current infra).
+              #2404 — defaultCollapsed=false to match Usage panel; storageKey persists per-project. */}
           {FINANCE_PANELS_ENABLED ? (
             <PnlSummaryCard
               projectId={project.id}
