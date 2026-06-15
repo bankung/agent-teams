@@ -917,7 +917,7 @@ export async function deleteTask(
     cache: "no-store",
     headers: { Accept: "application/json", "X-Project-Id": String(projectId) },
   });
-  if (!response.ok && response.status !== 204) {
+  if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as {
       detail?: unknown;
     };

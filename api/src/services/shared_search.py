@@ -592,7 +592,7 @@ def run_scroll(root: Path, file: str, *, line: int = 1, window: int = 40) -> dic
 def file_headings(text: str) -> list[dict]:
     """Heading tree for one file: [{level, text, line}] in document order."""
     out: list[dict] = []
-    for idx, line in enumerate(text.split("\n"), start=1):
+    for idx, line in enumerate(text.splitlines(), start=1):
         m = _HEADING_RE.match(line)
         if m:
             out.append({"level": len(m.group(1)), "text": m.group(2).strip(), "line": idx})

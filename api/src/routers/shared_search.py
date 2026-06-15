@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db import get_active_project_or_404, get_session
+from src.services.session_project import require_project_id_header
 from src.schemas.shared_search import (
     BrowseResponse,
     DiscoveryResponse,
@@ -54,7 +55,21 @@ def resolve_corpus_root(working_path: str | None, project_name: str, repo_root: 
     in-repo fallback branch.
     """
     if working_path and working_path.strip():
-        return Path(working_path.strip()) / "shared"
+        # security: working_path is operator-set (PATCH /api/projects). Cross-project
+        # corpus isolation on this branch is DB-granted operator-trust, NOT HTTP-enforced
+        # (the project_id==session check guards the HTTP surface, not the DB value).
+        wp = Path(working_path.strip())
+        if not wp.is_absolute():
+            raise ValueError("shared_search: working_path must be absolute")
+        return wp / "shared"
+    # Second-wall guard: project_name must be a single safe path component.
+    if (
+        project_name in ("", ".", "..")
+        or "/" in project_name
+        or "\\" in project_name
+        or Path(project_name).parts != (project_name,)
+    ):
+        raise ValueError("shared_search: unsafe project name")
     return Path(repo_root) / "context" / "projects" / project_name / "shared"
 
 
@@ -99,6 +114,7 @@ async def search_shared_corpus(
         description="scroll: number of lines in the window (default 40, max 1000).",
     ),
     session: AsyncSession = Depends(get_session),
+    session_project_id: int = Depends(require_project_id_header),
 ) -> DiscoveryResponse | ScrollResponse | BrowseResponse:
     """Search a project's shared/ corpus in one of three modes.
 
@@ -119,11 +135,24 @@ async def search_shared_corpus(
             detail=f"unknown mode {mode!r}; expected one of {', '.join(_VALID_MODES)}",
         )
 
+    # Session-project binding: url project_id must match X-Project-Id header (400).
+    # MUST run BEFORE the DB lookup to avoid a project-existence oracle: a 404 on
+    # an unknown id vs 400 on a known-but-mismatched id would let callers enumerate
+    # project ids by observing which status code they receive.
+    if project_id != session_project_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"project_id {project_id} does not match session project_id {session_project_id}",
+        )
+
     # Project must exist + be active (404).
     project = await get_active_project_or_404(session, project_id)
 
     settings = get_settings()
-    root = resolve_corpus_root(project.working_path, project.name, settings.repo_root)
+    try:
+        root = resolve_corpus_root(project.working_path, project.name, settings.repo_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not root.is_dir():
         raise HTTPException(
             status_code=404,
