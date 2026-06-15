@@ -652,6 +652,11 @@ async def create_project(
         # Kanban #2300 — per-project effort lever. Plain nullable TEXT, no DB
         # server_default, so passing None lands SQL NULL (= global default off).
         "effort_mode": payload.effort_mode,
+        # Kanban #1304 AC5 — plain nullable NUMERIC(10,2). ProjectCreate defaults to
+        # Decimal("1.00") so omitting the field from the request lands $1 (gates);
+        # an explicit null from the client opts out (no modal). Mirror effort_mode
+        # passthrough exactly.
+        "cost_forecast_threshold_usd": payload.cost_forecast_threshold_usd,
     }
     if payload.agent_overrides is not None:
         data["agent_overrides"] = payload.agent_overrides

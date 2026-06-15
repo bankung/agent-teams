@@ -346,6 +346,18 @@ class Task(Base):
         nullable=True,
     )
 
+    # Kanban #1304 (2026-06-15): per-task PRE-run cost forecast, persisted by
+    # POST /api/tasks/{id}/cost-forecast. Mirror of estimated_cost_usd's shape
+    # (Numeric(10,4), nullable, no CHECK). Distinct from estimated_cost_usd: that
+    # is the POST-HOC (#944 done-flip) actual; this is the BEFORE-spawn forecast.
+    # Storing both makes the ±30% calibration loop measurable. Read-only on the
+    # wire (TaskRead exposes; TaskCreate / TaskUpdate do NOT — server-computed
+    # only). Backfilled to NULL on existing rows by migration 0068's nullable=true.
+    forecast_cost_usd: Mapped[_Decimal | None] = mapped_column(
+        Numeric(10, 4),
+        nullable=True,
+    )
+
     # Kanban #952 (2026-05-16): in-graph auditor node outputs.
     # `audit_report` is the LATEST audit's structured outcome (verdict,
     # severity, evidence, action_taken, …). Audit history across retries lives

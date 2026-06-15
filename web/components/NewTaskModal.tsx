@@ -4,9 +4,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import {
+  costForecast,
   createTask,
+  deleteTask,
   listMilestones,
   listTaskTemplates,
+  patchTask,
   HttpError,
   type AcceptanceCriterion,
   type ActionTemplateRead,
@@ -48,6 +51,11 @@ import { TaskFormFields } from "./TaskFormFields";
 // hook on Board.tsx routes to router.refresh(). The successful POST also
 // triggers router.refresh() locally so the user sees the new card even on
 // SSE reconnect / cold-start.
+
+// #1304 — LOCKED sample directive appended to the task description when the
+// operator picks "Use Sample" on the cost-gate confirm modal. Generic, NOT a
+// per-file substitution: it caps the data the run reads, lowering the cost.
+const SAMPLE_DIRECTIVE = "\n\n[Cost-saver] Use first 100 rows of attached files only.";
 
 type LaneOption = { value: TaskStatusValue; label: string };
 
@@ -164,6 +172,16 @@ export function NewTaskModal({
   const [blockedBy, setBlockedBy] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // #1304 — cost-forecast gate. Non-null when the post-create forecast exceeded
+  // the project ceiling: holds the created task id (so the three confirm buttons
+  // can act on it) + the forecast USD (rendered in the modal copy). `gateBusy`
+  // disables the buttons while Use-Sample's PATCH / Cancel's DELETE is in flight.
+  const [forecastGate, setForecastGate] = useState<{
+    taskId: number;
+    estimatedUsd: number;
+  } | null>(null);
+  const [gateBusy, setGateBusy] = useState(false);
+  const [gateError, setGateError] = useState<string | null>(null);
   // #1238 GOV3 — per-task pause override (only meaningful when isProjectPaused).
   const [allowDuringPause, setAllowDuringPause] = useState(false);
   const [allowDuringPauseReason, setAllowDuringPauseReason] = useState("");
@@ -257,7 +275,21 @@ export function NewTaskModal({
   }, [open, project?.team]);
 
   function closeModal() {
-    if (submitting) return;
+    // #1304 — while the cost gate is open it owns the interaction; a background
+    // ESC / backdrop-click must not tear the create modal out from under it.
+    if (submitting || forecastGate !== null) return;
+    setInternalOpen(false);
+    onExternalClose?.();
+    resetFields();
+  }
+
+  // #1304 — shared close used by the create success path AND the three cost-gate
+  // buttons. `refresh=true` re-fetches the board so the new (or sample-directed)
+  // task card appears; the Cancel path passes false (the task was soft-deleted,
+  // so router.refresh on the SSE row_changed already covers the removal). Always
+  // resets the form + tears down the gate.
+  function finishAndClose(refresh: boolean) {
+    if (refresh) router.refresh();
     setInternalOpen(false);
     onExternalClose?.();
     resetFields();
@@ -288,6 +320,10 @@ export function NewTaskModal({
     // it, so a "New task on this date" flow keeps the target day on re-open.
     setDueDate(initialDueDate ?? "");
     setError(null);
+    // #1304 — clear any in-flight cost gate so a re-open starts clean.
+    setForecastGate(null);
+    setGateBusy(false);
+    setGateError(null);
   }
 
   // #1340 — when an action template is picked, seed local form fields from
@@ -458,11 +494,33 @@ export function NewTaskModal({
     };
 
     try {
-      await createTask(projectId, body);
-      router.refresh();
-      setInternalOpen(false);
-      onExternalClose?.();
-      resetFields();
+      // Option-A flow (#1304): create the task FIRST, then forecast its cost.
+      const created = await createTask(projectId, body);
+      // Gate ceiling comes from the project (null/undefined = NO gate). Coerce
+      // through Number() so a Decimal-as-string payload still compares numerically.
+      const threshold =
+        project?.cost_forecast_threshold_usd == null
+          ? null
+          : Number(project.cost_forecast_threshold_usd);
+      if (threshold !== null) {
+        try {
+          const forecast = await costForecast(projectId, created.id);
+          const estUsd = Number(forecast.estimated_usd);
+          if (Number.isFinite(estUsd) && estUsd > threshold) {
+            // Over the ceiling: hold the modal open + raise the confirm sub-modal.
+            // The task already exists; the three buttons decide its fate.
+            setForecastGate({ taskId: created.id, estimatedUsd: estUsd });
+            setGateError(null);
+            return; // finally{} resets `submitting`; main modal stays mounted.
+          }
+        } catch {
+          // Forecast failed AFTER the task was created. Do NOT lose the task or
+          // trap the operator — fall through to the today's path (refresh +
+          // close). Ungated is the safe degraded behaviour (mirrors the
+          // template/milestone fetch-failure handling elsewhere in this modal).
+        }
+      }
+      finishAndClose(true);
     } catch (err: unknown) {
       if (err instanceof HttpError) {
         // #1238 GOV3 — 423 = paused-project gate. Render a toast with the
@@ -485,6 +543,54 @@ export function NewTaskModal({
       }
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  // #1304 — cost-gate "Run Full": keep the task exactly as created. Refresh +
+  // close (no extra network call).
+  function onGateRunFull() {
+    finishAndClose(true);
+  }
+
+  // #1304 — cost-gate "Use Sample": append the LOCKED sample directive to the
+  // task description (PATCH), then refresh + close. The base is the description
+  // the operator just submitted (local state), so the directive lands on top of
+  // exactly what was sent. A trailing-trim mirrors the create-body normalisation.
+  async function onGateUseSample() {
+    if (forecastGate === null || gateBusy) return;
+    setGateBusy(true);
+    setGateError(null);
+    try {
+      const base = description.trim();
+      const newDescription = base ? `${base}${SAMPLE_DIRECTIVE}` : SAMPLE_DIRECTIVE.trimStart();
+      await patchTask(projectId, forecastGate.taskId, {
+        description: newDescription,
+      });
+      finishAndClose(true);
+    } catch (err: unknown) {
+      // Leave the gate open so the operator can retry / pick another action; the
+      // task still exists (unmodified) — no data loss.
+      setGateError(extractErrorMessage(err, "Could not apply the sample directive"));
+    } finally {
+      setGateBusy(false);
+    }
+  }
+
+  // #1304 — cost-gate "Cancel": the task was already created in this flow, so
+  // soft-delete it (DELETE) before closing so the abandoned task doesn't linger
+  // on the board. No refresh arg (the DELETE emits a row_changed SSE that the
+  // Board's useRowChangedEvents hook already routes to router.refresh()).
+  async function onGateCancel() {
+    if (forecastGate === null || gateBusy) return;
+    setGateBusy(true);
+    setGateError(null);
+    try {
+      await deleteTask(projectId, forecastGate.taskId);
+      finishAndClose(false);
+    } catch (err: unknown) {
+      setGateError(extractErrorMessage(err, "Could not cancel the task"));
+    } finally {
+      setGateBusy(false);
     }
   }
 
@@ -764,6 +870,79 @@ export function NewTaskModal({
               </button>
             </div>
           </form>
+      </ModalShell>
+
+      {/* #1304 — cost-forecast confirm gate. A SECOND ModalShell layered on top
+          of the (still-mounted) create modal; appears only when the post-create
+          forecast exceeded project.cost_forecast_threshold_usd. Light-tech copy
+          in $ (never "tokens"). The task already exists — the three buttons
+          decide its fate (keep / sample-cap / cancel-delete). */}
+      <ModalShell
+        open={forecastGate !== null}
+        onClose={() => { if (!gateBusy) onGateCancel(); }}
+        labelledBy="cost-gate-title"
+        maxWidth="sm"
+        backdropProps={{ "data-cost-gate-modal": true }}
+      >
+        {forecastGate !== null && (
+          <div data-cost-gate>
+            <h2
+              id="cost-gate-title"
+              className="text-sm font-semibold uppercase tracking-wide text-zinc-900 dark:text-zinc-100"
+              data-cost-gate-heading
+            >
+              Estimated cost ${forecastGate.estimatedUsd.toFixed(2)}
+            </h2>
+            <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-300">
+              This task may cost about{" "}
+              <span className="font-semibold">
+                ${forecastGate.estimatedUsd.toFixed(2)}
+              </span>{" "}
+              to run. Run it in full, run a smaller sample to keep the cost down,
+              or cancel.
+            </p>
+
+            {gateError !== null && (
+              <p
+                role="alert"
+                className="mt-3 text-xs text-red-700 dark:text-red-300"
+                data-cost-gate-error
+              >
+                {gateError}
+              </p>
+            )}
+
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+              <button
+                type="button"
+                onClick={onGateCancel}
+                disabled={gateBusy}
+                className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+                data-cost-gate-cancel
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={onGateUseSample}
+                disabled={gateBusy}
+                className="rounded border border-amber-500 bg-amber-500 px-3 py-2 text-xs font-medium uppercase tracking-wide text-white hover:bg-amber-600 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-amber-400 dark:bg-amber-400 dark:text-zinc-900 dark:hover:bg-amber-300"
+                data-cost-gate-sample
+              >
+                Use Sample
+              </button>
+              <button
+                type="button"
+                onClick={onGateRunFull}
+                disabled={gateBusy}
+                className="rounded border border-emerald-600 bg-emerald-600 px-3 py-2 text-xs font-medium uppercase tracking-wide text-white hover:bg-emerald-700 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-emerald-500 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                data-cost-gate-runfull
+              >
+                Run Full
+              </button>
+            </div>
+          </div>
+        )}
       </ModalShell>
     </>
   );

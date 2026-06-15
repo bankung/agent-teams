@@ -92,6 +92,12 @@ export type ProjectRead = {
   // Kanban #2300 (2026-06-11) — per-project thinking effort for headless engine.
   // NULL = use global default (= off). Values: off|low|medium|high|extra|auto.
   effort_mode?: string | null;
+  // Kanban #1304 (2026-06-15) — per-project pre-task cost-forecast gate ceiling
+  // (USD). NULL = NO gate (the NewTaskModal never shows the confirm modal). A
+  // number = the USD ceiling above which the post-create forecast triggers the
+  // confirm modal. Serialized as a JSON number (BE Decimal, 2dp). Optional on
+  // the FE type for defensive resilience against pre-#1304 serialized payloads.
+  cost_forecast_threshold_usd?: number | null;
 };
 
 // AcceptanceCriterion — one entry in TaskRead.acceptance_criteria (#797).
@@ -854,6 +860,71 @@ export async function createTask(
     },
     body: JSON.stringify(body),
   });
+}
+
+// ============================================================================
+// Kanban #1304 (2026-06-15) — POST /api/tasks/{id}/cost-forecast.
+//
+// PRE-run cost forecast for an already-created task (Option-A flow: create the
+// task first, THEN forecast). NO request body — the BE reads the task's text
+// fields + attached resources. X-Project-Id scoped (404 on missing / wrong-
+// project task). Mirror of api/src/schemas/task.py:CostForecastRead.
+//
+// `breakdown.{prompt,role_brief,attached_resources}` sum to estimated_tokens
+// (the INPUT total); `completion` is the priced output proxy. `estimated_usd`
+// is a JSON number (BE Decimal, 4dp). `confidence` reflects resource-tag
+// completeness + model-known state.
+// ============================================================================
+
+export type CostForecastBreakdown = {
+  prompt: number;
+  role_brief: number;
+  attached_resources: number;
+  completion: number;
+};
+
+export type CostForecastResult = {
+  estimated_usd: number;
+  estimated_tokens: number;
+  breakdown: CostForecastBreakdown;
+  confidence: "low" | "med" | "high";
+};
+
+export async function costForecast(
+  projectId: number,
+  taskId: number,
+): Promise<CostForecastResult> {
+  return jsonFetch<CostForecastResult>(`/api/tasks/${taskId}/cost-forecast`, {
+    method: "POST",
+    headers: { "X-Project-Id": String(projectId) },
+  });
+}
+
+// deleteTask — DELETE /api/tasks/{id} (soft-delete; flips status=0). Returns
+// 204 (no body) on success; idempotent on already-deleted rows. X-Project-Id
+// scoped (404 on cross-project / missing; 409 when active subtasks reference
+// the task). Used by the #1304 cost-gate "Cancel" path to remove a task that
+// was created in the Option-A flow but the operator declined to run.
+export async function deleteTask(
+  projectId: number,
+  taskId: number,
+): Promise<void> {
+  // DELETE returns 204 (no body) — jsonFetch would explode parsing JSON on an
+  // empty body; call fetch directly (mirrors deleteMilestone / push.unsubscribe).
+  const url = `${apiBaseUrl()}/api/tasks/${taskId}`;
+  const response = await fetch(url, {
+    method: "DELETE",
+    cache: "no-store",
+    headers: { Accept: "application/json", "X-Project-Id": String(projectId) },
+  });
+  if (!response.ok && response.status !== 204) {
+    const body = (await response.json().catch(() => ({}))) as {
+      detail?: unknown;
+    };
+    const message =
+      formatDetail(body.detail) ?? `${response.status} ${response.statusText}`;
+    throw new HttpError(response.status, body.detail, message);
+  }
 }
 
 // parseTaskText — POST /api/tasks/ai-parse (Kanban #857 FE / #856 BE).

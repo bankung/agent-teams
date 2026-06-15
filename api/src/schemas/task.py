@@ -1428,6 +1428,12 @@ class TaskRead(BaseModel):
     estimated_input_tokens: int | None
     estimated_output_tokens: int | None
     estimated_cost_usd: Decimal | None
+    # Kanban #1304 (2026-06-15) — PRE-run cost forecast persisted by
+    # POST /api/tasks/{id}/cost-forecast. NULL until the operator first runs the
+    # forecast. Distinct from estimated_cost_usd (the post-hoc #944 actual).
+    # Read-only — TaskCreate / TaskUpdate do NOT accept it (server-computed).
+    # Backfilled to NULL on existing rows by migration 0068's nullable=true.
+    forecast_cost_usd: Decimal | None = None
     # Kanban #952 (2026-05-16) — in-graph auditor node outputs (Auditor agent).
     # `audit_report` is a JSONB blob holding the LATEST audit's structured
     # outcome (verdict / severity / evidence / action_taken / etc.). Element
@@ -1567,6 +1573,40 @@ class TaskCostEstimateBackfill(BaseModel):
     estimated_output_tokens: int = Field(ge=0)
     provider: str = "anthropic"
     model: str = "claude-opus-4-8"
+
+
+class CostForecastBreakdown(BaseModel):
+    """Token breakdown for a pre-task cost forecast (Kanban #1304).
+
+    Four token buckets summing the forecast inputs + the output proxy:
+    `prompt + role_brief + attached_resources` = the total INPUT tokens
+    (== CostForecastRead.estimated_tokens); `completion` is the output proxy
+    (input * OUTPUT_TOKEN_RATIO) priced separately at the output rate.
+    """
+
+    prompt: int
+    role_brief: int
+    attached_resources: int
+    completion: int
+
+
+class CostForecastRead(BaseModel):
+    """Response body for POST /api/tasks/{id}/cost-forecast (Kanban #1304).
+
+    The pre-spawn cost estimate. `estimated_usd` is the forecast USD (4dp,
+    Decimal serialized as a JSON number); `estimated_tokens` is the total INPUT
+    tokens. `confidence` reflects resource-tag completeness + model-known state
+    (see services/task_cost_estimator.forecast_task_cost). Provider/model are
+    computed server-side but intentionally NOT surfaced here — the wire contract
+    is the four operator-facing fields only.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    estimated_usd: Decimal
+    estimated_tokens: int
+    breakdown: CostForecastBreakdown
+    confidence: Literal["low", "med", "high"]
 
 
 class SnoozeRequest(BaseModel):

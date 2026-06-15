@@ -31,6 +31,7 @@ from src.db import get_or_404, get_session
 from src.models.handoff_template import HandoffTemplate
 from src.models.milestone import Milestone
 from src.models.project import Project
+from src.models.project_resource import ProjectResource
 from src.models.session import SessionRun
 from src.models.task import Task
 from src.models.task_comment import TaskComment
@@ -40,6 +41,7 @@ from src.schemas.project import ResolveFlagRequest, ResolveFlagResponse
 from src.schemas.task_comment import TaskCommentCreate, TaskCommentRead
 from src.schemas.task import (
     AcceptanceCriterion,
+    CostForecastRead,
     DecisionRequest,
     HitlResolveRequest,
     HitlResolveResponse,
@@ -67,7 +69,11 @@ from src.services.budget_enforcer import check_budget
 from src.services.budget_gate import check_budget as check_spawn_budget
 from src.services.run_mode import assert_consent_for_run_mode
 from src.services.cost_tracker import compute_cost, resolve_pricing_key
-from src.services.task_cost_estimator import estimate_task_cost, resolve_provider_model
+from src.services.task_cost_estimator import (
+    estimate_task_cost,
+    forecast_task_cost,
+    resolve_provider_model,
+)
 from src.services.task_interaction import (
     _validate_answer,
     append_answer,
@@ -3175,6 +3181,63 @@ async def set_task_cost_estimate(
     await session.commit()
     await session.refresh(task)
     return task
+
+
+@router.post(
+    "/{task_id}/cost-forecast",
+    response_model=CostForecastRead,
+    status_code=http_status.HTTP_200_OK,
+)
+async def forecast_task_cost_endpoint(
+    task_id: int,
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+) -> CostForecastRead:
+    """Kanban #1304: PRE-run cost forecast for a task (before it is spawned).
+
+    Estimates USD cost + token breakdown from the task's text fields, a flat
+    role-brief proxy, and the sum of `est_cost_if_full.approx_tokens` over the
+    task's pinned resources (services/task_cost_estimator.forecast_task_cost).
+    Persists the result to `tasks.forecast_cost_usd` so the ±30% calibration
+    loop is measurable, then returns the operator-facing breakdown.
+
+    No request body in V1 — the model comes from `tasks.model_override` (or the
+    env default), not the wire. Same 404 guard as the cost-estimate handler.
+    """
+    task = await get_or_404(
+        session, Task, detail=f"Task id={task_id} not found", id=task_id
+    )
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+    if task.status != RecordStatus.ACTIVE:
+        raise HTTPException(status_code=400, detail="Task is not active")
+
+    # Pinned, non-deleted resources for this task. Pre-fetch here so
+    # forecast_task_cost stays a pure compute (same posture as estimate_task_cost
+    # taking a pre-fetched `runs` list).
+    resources = (
+        await session.scalars(
+            select(ProjectResource).where(
+                ProjectResource.task_id == task_id,
+                ProjectResource.status == RecordStatus.ACTIVE,
+            )
+        )
+    ).all()
+
+    result = forecast_task_cost(task, list(resources))
+
+    task.forecast_cost_usd = result["estimated_usd"]
+    task.updated_at = func.now()
+    await session.commit()
+    await session.refresh(task)
+
+    # response_model = CostForecastRead — return only the operator-facing fields
+    # (provider/model are computed but not surfaced).
+    return CostForecastRead(
+        estimated_usd=result["estimated_usd"],
+        estimated_tokens=result["estimated_tokens"],
+        breakdown=result["breakdown"],
+        confidence=result["confidence"],
+    )
 
 
 @router.delete("/{task_id}", status_code=http_status.HTTP_204_NO_CONTENT)

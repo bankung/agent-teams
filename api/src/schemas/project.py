@@ -370,6 +370,17 @@ class ProjectCreate(BaseModel):
     budget_monthly_usd: Decimal | None = Field(default=None, ge=0, decimal_places=2)
     budget_total_usd: Decimal | None = Field(default=None, ge=0, decimal_places=2)
 
+    # Kanban #1304: per-project pre-task cost-forecast gate threshold (USD).
+    # DEFAULT $1.00 (AC5) — new projects opt INTO the gate at $1 unless overridden;
+    # an explicit `null` opts out (no gate). `ge=0` is the Pydantic 422 boundary;
+    # DB CHECK `ck_projects_cost_forecast_threshold_nonneg` is defense-in-depth.
+    # decimal_places=2 mirrors NUMERIC(10,2). NOTE: for this default to land in
+    # the DB the create_project router must pass the field through (see #1304
+    # report — the router currently omits budget_* so they go NULL).
+    cost_forecast_threshold_usd: Decimal | None = Field(
+        default=Decimal("1.00"), ge=0, decimal_places=2
+    )
+
     # Kanban #979: per-project specialist-tool permission gate config. None
     # (the default) → router OMITS the column from INSERT so the DB
     # server_default fires (locked Q2 Option B default — see migration 0027).
@@ -496,6 +507,14 @@ class ProjectUpdate(BaseModel):
     budget_daily_usd: Decimal | None = Field(default=None, ge=0, decimal_places=2)
     budget_monthly_usd: Decimal | None = Field(default=None, ge=0, decimal_places=2)
     budget_total_usd: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+
+    # Kanban #1304: per-project cost-forecast gate threshold. PATCH semantics
+    # mirror the budget caps — key-absent leaves the column unchanged
+    # (exclude_unset); explicit `null` CLEARS to no-gate; explicit Decimal sets
+    # the ceiling. `ge=0` rejects negatives at 422; DB CHECK is defense-in-depth.
+    cost_forecast_threshold_usd: Decimal | None = Field(
+        default=None, ge=0, decimal_places=2
+    )
 
     # Kanban #979: per-project specialist-tool permission gate config. PATCH
     # semantics — key-absent leaves the column unchanged (exclude_unset);
@@ -706,6 +725,12 @@ class ProjectRead(BaseModel):
     budget_daily_usd: Decimal | None = None
     budget_monthly_usd: Decimal | None = None
     budget_total_usd: Decimal | None = None
+
+    # Kanban #1304: per-project cost-forecast gate threshold surfaced on read.
+    # NULL = no gate (FE never shows the confirm modal). The FE compares the
+    # forecast endpoint's estimated_usd against this value to decide whether to
+    # gate the spawn.
+    cost_forecast_threshold_usd: Decimal | None = None
 
     # Kanban #979: specialist-tool permission gate config. NULL semantics on
     # the wire = "no config yet / kill switch on" — but in practice every

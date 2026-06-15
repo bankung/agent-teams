@@ -167,6 +167,20 @@ class Project(Base):
         nullable=True,
     )
 
+    # Kanban #1304 (2026-06-15): per-project pre-task cost-forecast gate. NULL =
+    # no gate (the FE never shows the run/sample/cancel confirm modal). A non-null
+    # value is the USD ceiling above which the forecast triggers the modal.
+    # NUMERIC(10,2) — user-typed dollars, 2 places (mirrors the budget caps).
+    # nullable, no DB server_default → existing rows read NULL (no gate) until
+    # opted in; the API CREATE schema seeds new projects at $1.00. Pydantic
+    # `ge=0` validates at the boundary; DB CHECK
+    # `ck_projects_cost_forecast_threshold_nonneg` is defense-in-depth. See
+    # migration 0068.
+    cost_forecast_threshold_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+    )
+
     # Kanban #979 (2026-05-16): per-project specialist-tool permission gate
     # config. Drives `langgraph/tools/permission_gate.check_permission()`.
     # Locked default (Q2 Option B, design lock #949) lives in migration
@@ -418,6 +432,13 @@ class Project(Base):
             "(budget_monthly_usd IS NULL OR budget_monthly_usd >= 0) AND "
             "(budget_total_usd IS NULL OR budget_total_usd >= 0)",
             name="ck_projects_budget_caps_nonneg",
+        ),
+        # Kanban #1304 — cost-forecast gate threshold must be >= 0 (NULL = no
+        # gate). Mirror of migration 0068's named CHECK so ORM autogen stays in
+        # lockstep (same posture as ck_projects_budget_caps_nonneg above).
+        CheckConstraint(
+            "cost_forecast_threshold_usd IS NULL OR cost_forecast_threshold_usd >= 0",
+            name="ck_projects_cost_forecast_threshold_nonneg",
         ),
         # Kanban #989 — HITL timeout must be >= 1 hour when set (NULL =
         # indefinite pause, current behavior). Mirror of migration 0029's
