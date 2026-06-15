@@ -593,16 +593,12 @@ function matchPredicate(key: string, value: unknown, task: TaskRead, now: Date):
     }
     case "run_mode":
       return task.run_mode === textValue;
-    case "run_mode_not": {
-      const a = task.run_mode ?? "";
-      return a !== "" && a !== textValue;
-    }
+    case "run_mode_not":
+      return task.run_mode !== textValue;
     case "task_kind":
       return task.task_kind === textValue;
-    case "task_kind_not": {
-      const a = task.task_kind ?? "";
-      return a !== "" && a !== textValue;
-    }
+    case "task_kind_not":
+      return task.task_kind !== textValue;
     case "assigned_role":
       return task.assigned_role === numberValue;
     default:
