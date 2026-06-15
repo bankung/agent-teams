@@ -2360,6 +2360,56 @@ export async function getDailyUsage(opts?: {
 }
 
 // ============================================================================
+// Kanban #2356 — GET /api/usage/monthly  (billing-cycle spend surface)
+// ============================================================================
+
+// UsageMonthlyTaskRow — per-task cost contribution inside one billing cycle.
+// cost fields are 4-dp decimal strings (same Decimal-as-string convention).
+// task_id/task_title are null for the "unattributed" bucket.
+export type UsageMonthlyTaskRow = {
+  task_id: number | null;
+  task_title: string | null;
+  mode_a_cost_usd: string;   // e.g. "10.3678"
+  mode_b_cost_usd: string;
+  total_cost_usd: string;
+};
+
+// UsageMonthlyCycle — one billing cycle window in MonthlyUsageResponse.cycles.
+export type UsageMonthlyCycle = {
+  cycle_start: string;          // "YYYY-MM-DD"
+  cycle_end: string;            // "YYYY-MM-DD"
+  mode_a_cost_usd: string;
+  mode_a_input_tokens: number;
+  mode_a_output_tokens: number;
+  mode_b_cost_usd: string;
+  mode_b_input_tokens: number;
+  mode_b_output_tokens: number;
+  total_cost_usd: string;
+  tasks: UsageMonthlyTaskRow[];
+};
+
+export type MonthlyUsageResponse = {
+  months: number;
+  cycle_day: number;
+  cycles: UsageMonthlyCycle[];   // most-recent first; zero-filled per window
+  total_cost_usd: string;        // 4-dp decimal string
+};
+
+// getMonthlyUsage — GET /api/usage/monthly?months=N&cycle_day=D[&project_id=P].
+// No X-Project-Id header — operator-level endpoint (same as /api/usage/daily).
+export async function getMonthlyUsage(opts?: {
+  months?: number;
+  cycle_day?: number;
+  project_id?: number;
+}): Promise<MonthlyUsageResponse> {
+  const qs = new URLSearchParams();
+  if (opts?.months != null) qs.set("months", String(opts.months));
+  if (opts?.cycle_day != null) qs.set("cycle_day", String(opts.cycle_day));
+  if (opts?.project_id != null) qs.set("project_id", String(opts.project_id));
+  return jsonFetch<MonthlyUsageResponse>(buildPath("/api/usage/monthly", qs));
+}
+
+// ============================================================================
 // Kanban #1305 — Task output files (listing + raw bytes).
 // ============================================================================
 

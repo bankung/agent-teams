@@ -101,6 +101,19 @@ class Settings(BaseSettings):
         alias="AUDIT_ARCHIVE_DAYS",
     )
 
+    # Kanban #2356 (2026-06-15): default billing-cycle cut-off day for the
+    # monthly usage rollup (GET /api/usage/monthly). A cycle covers
+    # [day D of month M, day D of month M+1). Capped at 28 (deliberate): every
+    # month has a day <= 28, so cycle boundaries never hit the Feb/30/31 edge.
+    # Overridable per-request via ?cycle_day=; the resolved value is echoed in
+    # the response.
+    cost_cycle_day: int = Field(
+        default=1,
+        ge=1,
+        le=28,
+        alias="COST_CYCLE_DAY",
+    )
+
     @field_validator("cors_allow_origins", mode="before")
     @classmethod
     def _split_csv_origins(cls, v: object) -> object:

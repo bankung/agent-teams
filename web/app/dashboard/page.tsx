@@ -5,10 +5,12 @@ import { Icon } from "@/components/Icon";
 import {
   getAuditDailyRollup,
   getCrossProjectActiveTasks,
+  getMonthlyUsage,
   getProjectsStats,
   listAuditFlags,
   listProjects,
   type DashboardActiveTasks,
+  type MonthlyUsageResponse,
   type ProjectRead,
   type ProjectStatsEntry,
 } from "@/lib/api";
@@ -18,6 +20,7 @@ import { CrossProjectActiveTasksList } from "@/components/CrossProjectActiveTask
 import { DashboardWelcomeBanner } from "@/components/DashboardWelcomeBanner";
 import { BudgetBar, pickBudgetDisplay } from "@/components/BudgetBar";
 import { CostSummary } from "@/components/CostSummary";
+import { MonthlySpendSection } from "@/components/MonthlySpendSection";
 import { DashboardRefresher } from "@/components/DashboardRefresher";
 import { EditProjectModal } from "@/components/EditProjectModal";
 import { FlagBellBadge } from "@/components/FlagBellBadge";
@@ -399,15 +402,19 @@ export default async function DashboardPage() {
   // (DashboardRefresher) refreshes this section automatically when any task
   // row changes. Failure degrades to a zero-row placeholder so a single API
   // hiccup doesn't blank the rest of the dashboard.
-  const [stats, projects, auditRollup, openFlags, activeTasks] = await Promise.all([
-    getProjectsStats(),
-    listProjects({ status: 1 }),
-    getAuditDailyRollup(),
-    listAuditFlags().catch(() => []),
-    getCrossProjectActiveTasks().catch(
-      (): DashboardActiveTasks => ({ rows: [], total_count: 0 }),
-    ),
-  ]);
+  // Kanban #2356 — monthly billing-cycle spend. Portfolio-wide (no project_id);
+  // degrades to null on API hiccup so a single failure doesn't blank the page.
+  const [stats, projects, auditRollup, openFlags, activeTasks, monthly] =
+    await Promise.all([
+      getProjectsStats(),
+      listProjects({ status: 1 }),
+      getAuditDailyRollup(),
+      listAuditFlags().catch(() => []),
+      getCrossProjectActiveTasks().catch(
+        (): DashboardActiveTasks => ({ rows: [], total_count: 0 }),
+      ),
+      getMonthlyUsage().catch((): MonthlyUsageResponse | null => null),
+    ]);
   const projectsById = new Map<number, ProjectRead>();
   for (const p of projects) projectsById.set(p.id, p);
 
@@ -474,6 +481,16 @@ export default async function DashboardPage() {
             stats={stats}
             ariaLabel="Portfolio-wide token and cost usage"
           />
+
+          {/* Kanban #2356 — monthly billing-cycle spend. Sibling to CostSummary
+              (cost views grouped). Degrades gracefully when monthly=null. */}
+          {monthly != null && (
+            <MonthlySpendSection
+              data={monthly}
+              defaultCollapsed={false}
+              storageKey="dashboard.panels.monthly.expanded"
+            />
+          )}
 
           {/* Kanban #1329 (M6 FE) — cross-project P&L rollup. Operator-level
               view of revenue / expenses / net per project in the chosen

@@ -14,10 +14,10 @@ mismatch class entirely for this endpoint.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class UsageEventCreate(BaseModel):
@@ -65,6 +65,26 @@ class UsageEventCreate(BaseModel):
     )
     is_estimate: bool = Field(True)
     source: str = Field("mode_a", min_length=1, max_length=32)
+
+    @field_validator("occurred_at")
+    @classmethod
+    def _clamp_occurred_at(cls, v: datetime | None) -> datetime | None:
+        """Bound occurred_at to [now-30d, now+5min] (Kanban #2356, AC2).
+
+        Rejects backdating into closed billing cycles and bounds clock skew.
+        None passes through (server applies now() default). A tz-naive value is
+        treated as UTC before comparison — never crash on naive input.
+        """
+        if v is None:
+            return v
+        # Treat naive datetimes as UTC; never compare naive vs aware.
+        cmp = v if v.tzinfo is not None else v.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        if cmp < now - timedelta(days=30) or cmp > now + timedelta(minutes=5):
+            raise ValueError(
+                "occurred_at outside the accepted window [now-30d, now+5min]"
+            )
+        return v
 
 
 class UsageEventRead(BaseModel):
