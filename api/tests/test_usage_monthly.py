@@ -577,3 +577,75 @@ def test_cycle_starts_january_before_cutoff_crosses_year() -> None:
     assert all(d.year == 2025 for d in result)
     # NEGATIVE: no invalid month (guards against a month=0 or month=13 edge).
     assert all(1 <= d.month <= 12 for d in result)
+
+
+# =============================================================================
+# 9. Pure-unit: _next_month helper + December newest-cycle exclusive-end
+#    Mirrors the _prev_month regression above; locks the extracted helper and
+#    the December→January year-rollover on the newest-cycle boundary.
+# =============================================================================
+
+
+def test_next_month_basic_cases() -> None:
+    """_next_month(y,m) → (y,m+1) for non-December; (y+1,1) for December.
+
+    POSITIVE: both the normal advance and the year-rollover branch produce the
+    expected (year, month) tuples.
+    NEGATIVE: December does NOT yield month=13.
+    """
+    from src.routers.usage import _next_month
+
+    # Normal advance — mid-year.
+    assert _next_month(2026, 6) == (2026, 7)
+    # Normal advance — November → December (within same year).
+    assert _next_month(2026, 11) == (2026, 12)
+    # December year-rollover branch.
+    assert _next_month(2026, 12) == (2027, 1)
+    # NEGATIVE: December must not produce month 13.
+    assert _next_month(2026, 12)[1] != 13
+
+
+def test_newest_cycle_exclusive_end_december_rollover() -> None:
+    """December newest-cycle boundary rolls the exclusive end into January next year.
+
+    With now = Dec 20 2026 and cycle_day=1:
+      - newest start  = Dec 1 2026
+      - exclusive end = Jan 1 2027 (i.e. _next_month(2026,12) = (2027,1))
+      - display end   = Dec 31 2026 (exclusive_end minus 1 day)
+
+    This pins the _next_month extraction path that replaced the inline ternary
+    (see Kanban #2356 M1).
+
+    POSITIVE: cycle_start = "2026-12-01", cycle_end = "2026-12-31".
+    NEGATIVE: cycle_end is NOT "2026-12-32" or "2027-01-00" (invalid date guards).
+    """
+    from src.routers.usage import _cycle_starts
+    from datetime import time
+
+    utc = timezone.utc
+    now = datetime(2026, 12, 20, 14, 0, 0, tzinfo=utc)
+    cycle_day = 1
+
+    starts = _cycle_starts(now, cycle_day=cycle_day, months=1)
+    assert len(starts) == 1
+    newest_start = starts[0]
+    assert newest_start == date(2026, 12, 1)
+
+    # Replicate the router's exclusive-end computation using _next_month.
+    from src.routers.usage import _next_month
+
+    ny, nm = _next_month(newest_start.year, newest_start.month)
+    newest_end_excl = datetime(ny, nm, cycle_day, 0, 0, 0, tzinfo=utc)
+
+    # POSITIVE: exclusive end is Jan 1 2027.
+    assert newest_end_excl == datetime(2027, 1, 1, 0, 0, 0, tzinfo=utc)
+
+    # Display end = exclusive_end.date() - 1 day (mirrors router logic).
+    from datetime import timedelta as _td
+
+    display_end = (newest_end_excl - _td(days=1)).date()
+    # POSITIVE: last display day of the December cycle is Dec 31 2026.
+    assert display_end == date(2026, 12, 31)
+    # NEGATIVE: not a nonsense date.
+    assert display_end.month == 12
+    assert display_end.day == 31

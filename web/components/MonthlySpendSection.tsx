@@ -28,12 +28,13 @@ function formatUsd4(n: number): string {
 }
 
 function fmtDate(iso: string): string {
-  // "2026-06-01" → "Jun 1, 2026"
-  const d = new Date(`${iso}T00:00:00`);
+  // "2026-06-01" → "Jun 1, 2026" (UTC billing boundary — append Z to avoid local-tz shift)
+  const d = new Date(`${iso}T00:00:00Z`);
   return d.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
+    timeZone: "UTC",
   });
 }
 
@@ -142,7 +143,7 @@ function CycleRow({ cycle }: { cycle: UsageMonthlyCycle }) {
             const label = t.task_title ?? "Unattributed";
             return (
               <li
-                key={t.task_id ?? `unattributed-${i}`}
+                key={t.task_id ?? "unattributed"}
                 className="flex flex-wrap items-center gap-x-3 gap-y-0.5 px-3 py-1.5"
                 data-task-row
               >

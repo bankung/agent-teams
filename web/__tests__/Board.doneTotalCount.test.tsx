@@ -444,7 +444,7 @@ describe("Board — milestone-filter DONE rollup (#2347)", () => {
     expect(canvas.dataset.doneTotalCount).toBe("123");
 
     // Locate the milestone select element and change to milestone id=7
-    const select = screen.getByRole("combobox", { name: /milestone/i });
+    const select = await screen.findByRole("combobox", { name: /milestone/i });
     await act(async () => {
       await user.selectOptions(select, "7");
     });
@@ -475,7 +475,7 @@ describe("Board — milestone-filter DONE rollup (#2347)", () => {
     );
 
     await screen.findByTestId("stub-board-dnd-canvas");
-    const select = screen.getByRole("combobox", { name: /milestone/i });
+    const select = await screen.findByRole("combobox", { name: /milestone/i });
 
     // Select milestone 7
     await act(async () => { await user.selectOptions(select, "7"); });
@@ -507,7 +507,7 @@ describe("Board — milestone-filter DONE rollup (#2347)", () => {
     );
 
     await screen.findByTestId("stub-board-dnd-canvas");
-    const select = screen.getByRole("combobox", { name: /milestone/i });
+    const select = await screen.findByRole("combobox", { name: /milestone/i });
 
     await act(async () => { await user.selectOptions(select, "7"); });
 

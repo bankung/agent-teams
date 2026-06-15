@@ -64,6 +64,13 @@ def _prev_month(year: int, month: int) -> tuple[int, int]:
     return (year, month - 1)
 
 
+def _next_month(year: int, month: int) -> tuple[int, int]:
+    """Return (year, month) for the month after the given one (Dec → Jan)."""
+    if month == 12:
+        return (year + 1, 1)
+    return (year, month + 1)
+
+
 @router.get("/daily", response_model=UsageDailyResponse)
 @limiter.limit("30/minute")
 async def usage_daily(
@@ -256,11 +263,7 @@ async def usage_monthly(
         return datetime.combine(d, time.min, tzinfo=timezone.utc)
 
     newest_start = starts[0]
-    ny, nm = (
-        (newest_start.year + 1, 1)
-        if newest_start.month == 12
-        else (newest_start.year, newest_start.month + 1)
-    )
+    ny, nm = _next_month(newest_start.year, newest_start.month)
     newest_end_exclusive = _start_ts(date(ny, nm, resolved_cycle_day))
     oldest_start_ts = _start_ts(starts[-1])
 
