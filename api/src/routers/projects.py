@@ -675,6 +675,19 @@ async def create_project(
     if payload.tools_config is not None:
         data["tools_config"] = payload.tools_config.model_dump()
 
+    # Kanban #1840 — full-auto decision-policy override. OMIT when None so the
+    # DB column lands NULL (= "no policy"; the full-auto Lead uses the hardcoded
+    # top-5 matrix). An explicit AutoDecisionPolicy is model_dump()'d to a plain
+    # dict for JSONB persistence — exclude_none so partial policies don't store
+    # null-valued keys (an unset reviewer_nit etc. stays absent, NOT JSON null).
+    # The typed boundary validator (extra="forbid" + per-field Literals) already
+    # fired by this point. Unlike approval_policies, the POST path DOES persist
+    # this — required for the #1840 POST→GET round-trip AC.
+    if payload.auto_decision_policy is not None:
+        data["auto_decision_policy"] = payload.auto_decision_policy.model_dump(
+            exclude_none=True
+        )
+
     # Kanban #1224 — push-notification targets. OMIT when None so the DB
     # column lands NULL (= "no default configured"; router falls back to
     # local-file write). model_dump() each NotificationTarget to a plain
@@ -840,6 +853,22 @@ async def update_project(
     # is dropped by exclude_unset, leaving the column unchanged. An explicit list
     # REPLACES the prior value (no merge). The strict `_BINARY_NAME_RE` validator
     # already fired at the Pydantic boundary.
+
+    # Kanban #1840: PATCH explicit-null on auto_decision_policy CLEARS to NULL
+    # (= "no policy"; full-auto Lead falls back to the hardcoded matrix). The DB
+    # column IS nullable — null-stays-null, like notification_targets, NOT
+    # coerced to {}. When present + non-null, `model_dump(exclude_unset=True)`
+    # has already serialized the nested AutoDecisionPolicy to a plain dict, but
+    # it does NOT apply exclude_none to that nested model — so unset Literal
+    # knobs would persist as JSON `null`. Strip them for POST/PATCH parity
+    # (mirrors the `sources` None-key strip above) so a partial PATCH stores
+    # only the keys the operator set.
+    if updates.get("auto_decision_policy") is not None:
+        updates["auto_decision_policy"] = {
+            k: v
+            for k, v in updates["auto_decision_policy"].items()
+            if v is not None
+        }
 
     # M10: cannot reactivate a soft-deleted project via PATCH — restore is a
     # separate (not-yet-built) admin path. Other fields ARE editable on a

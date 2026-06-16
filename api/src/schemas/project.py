@@ -322,6 +322,69 @@ class _Standards(BaseModel):
     db: list[str] = Field(default_factory=list)
 
 
+class ReviewerWarnPolicy(BaseModel):
+    """Kanban #1840 — `auto_decision_policy.reviewer_warn` sub-shape.
+
+    Codifies matrix rule 1: a reviewer WARN folds into the current task (silent
+    fix) when the fix is small AND touches no public surface; otherwise it is
+    filed as a follow-up. `extra="forbid"` keeps the knob set tight — a typo'd
+    field (e.g. `fold_max_lines`) 422s instead of silently no-op'ing.
+
+    - fold_max_loc: the LOC ceiling at/below which a WARN may fold (matrix
+      default 10). `ge=0` — a 0 means "never fold by size".
+    - fold_requires_no_contract_change: when true (matrix default), folding is
+      ALSO gated on the fix not changing a public API / wire contract / shared
+      doc. The full-auto Lead ANDs this with the LOC check.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    fold_max_loc: int = Field(default=10, ge=0)
+    fold_requires_no_contract_change: bool = True
+
+
+class AutoDecisionPolicy(BaseModel):
+    """Kanban #1840 — typed shape for `projects.auto_decision_policy`.
+
+    Declarative, per-project override for the full-auto Lead's hardcoded top-5
+    decision matrix (context/teams/dev/full-auto.md). EVERY field is optional —
+    a partial policy overrides only the rules it names; an absent field keeps
+    the hardcoded-matrix default. A wholly-NULL column = no policy at all (the
+    Lead uses the matrix verbatim).
+
+    `extra="forbid"` is a DELIBERATE divergence from `approval_policies` (which
+    is intentionally permissive `dict[str, Any]` so operators can stage rules
+    ahead of evaluator updates). Here the knob set is small + closed, so an
+    unknown key is almost certainly a typo — 422 at the boundary is the right
+    posture (parity with `SourceEntry` / `ToolsConfig` strict-on-write).
+
+    Field → matrix rule:
+      - reviewer_warn          → rule 1 (WARN: FOLD-if-small-and-no-contract /
+                                 else FILE FOLLOW-UP). Sub-shape carries the
+                                 LOC ceiling + the contract-change gate.
+      - reviewer_nit           → rule 2 ('defer' = matrix default batch-into-
+                                 follow-up; 'fold' = silently apply inline).
+      - tester_standards_proposal → rule 3 ('log_only' = matrix default; the
+                                 humans-only context/standards/ invariant means
+                                 'log_only' and 'halt' are the only safe
+                                 auto-actions — there is intentionally NO
+                                 'auto_write' value).
+      - validator_ambiguity    → rule 4 ('halt' on an Option A/B semantics
+                                 ambiguity). Single-valued today; a future
+                                 'pick_a'/'pick_b' would land here.
+      - scope_creep            → rule 5 ('halt' on cross-task scope creep).
+                                 Single-valued today.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reviewer_warn: ReviewerWarnPolicy | None = None
+    reviewer_nit: Literal["defer", "fold"] | None = None
+    tester_standards_proposal: Literal["log_only", "halt"] | None = None
+    validator_ambiguity: Literal["halt"] | None = None
+    scope_creep: Literal["halt"] | None = None
+
+
 class ProjectCreate(BaseModel):
     """Request body for POST /api/projects.
 
@@ -387,6 +450,15 @@ class ProjectCreate(BaseModel):
     # An explicit dict here REPLACES the default; the disjoint-tiers
     # validator on `ToolsConfig` fires before the row reaches the DB.
     tools_config: ToolsConfig | None = Field(default=None)
+
+    # Kanban #1840 (2026-06-16): per-project full-auto decision-policy override.
+    # None (the default) → no policy; the full-auto Lead uses the hardcoded
+    # top-5 matrix verbatim. An explicit AutoDecisionPolicy (extra="forbid",
+    # all fields optional → partial policies allowed) overrides only the rules
+    # it names. UNLIKE approval_policies (PATCH-only — absent from this create
+    # body historically), the create_project router DOES pass this field through
+    # to the INSERT so the POST→GET round-trip persists it. DB column nullable.
+    auto_decision_policy: AutoDecisionPolicy | None = Field(default=None)
 
     # Kanban #1224 (2026-05-19): per-project default push-notification targets.
     # None = no default (router falls back to local-file write per AC4).
@@ -583,6 +655,14 @@ class ProjectUpdate(BaseModel):
         ),
     )
 
+    # Kanban #1840 (2026-06-16): per-project full-auto decision-policy override.
+    # Typed AutoDecisionPolicy (extra="forbid", all fields optional). None =
+    # no policy (the full-auto Lead uses the hardcoded top-5 matrix verbatim).
+    # The router passes this through to the INSERT (see create_project) so the
+    # POST→GET round-trip persists — unlike approval_policies, which the POST
+    # path historically omits (PATCH-only). DB column is nullable.
+    auto_decision_policy: AutoDecisionPolicy | None = Field(default=None)
+
     # Kanban #953 (2026-05-17): per-project financial-separation columns.
     # All four PATCH-able. Semantics mirror description / halt_reason:
     # key-absent → leave unchanged; explicit null → CLEAR to NULL (legacy
@@ -762,6 +842,13 @@ class ProjectRead(BaseModel):
     # land via the PATCH path; the worker's evaluator validates shape on
     # consumption and falls back to REQUIRE_ATTENTION on malformed values.
     approval_policies: dict[str, Any] | None = None
+
+    # Kanban #1840 (2026-06-16): per-project full-auto decision-policy override.
+    # NULL = no policy (full-auto Lead uses the hardcoded top-5 matrix). Value-
+    # tolerant on read (dict[str, Any]) for legacy / hand-edited resilience —
+    # mirrors `approval_policies` / `tools_config` precedent. Writes go through
+    # the strict typed `AutoDecisionPolicy` validator on POST/PATCH.
+    auto_decision_policy: dict[str, Any] | None = None
 
     # Kanban #953 (2026-05-17): per-project financial-separation columns.
     # All four NULLABLE on the wire — legacy rows pre-migration carry NULL;

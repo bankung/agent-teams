@@ -250,6 +250,21 @@ class Project(Base):
         nullable=True,
     )
 
+    # Kanban #1840 (2026-06-16): per-project full-auto decision-policy DSL.
+    # Declarative override for the full-auto Lead's hardcoded top-5 decision
+    # matrix (context/teams/dev/full-auto.md). JSONB object shape validated at
+    # the API boundary by the typed `AutoDecisionPolicy` Pydantic model — see
+    # migration 0070 for the field contract + schemas/project.py for the
+    # per-field Literal/range constraints. NULL = no policy; the full-auto Lead
+    # falls back to the hardcoded matrix (preserves current behavior for every
+    # existing project). No DB CHECK on shape (mirrors approval_policies /
+    # tools_config / health_thresholds precedent — JSONB element-shape
+    # validation lives at the API layer; partial policies are allowed).
+    auto_decision_policy: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
     # Kanban #1224 (2026-05-19): push-notification routing targets (Hermes
     # DeliveryTarget DSL borrowed shape). Element shape (validated at API
     # boundary by Pydantic NotificationTarget): {kind, chat_id, priority,
