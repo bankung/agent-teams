@@ -302,16 +302,22 @@ async def test_resume_tasks_returns_halted_task_with_done_blocker(
 
 
 # ---------------------------------------------------------------------------
-# (e2) #2422 — resume_tasks returns halted task whose blocker is CANCELLED (ps=6)
+# (e2) pre-push review revert — resume_tasks must NOT include halted task
+#      whose blocker is CANCELLED (ps=6); DONE-only resume (#2422 over-broad)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_resume_tasks_returns_halted_task_with_cancelled_blocker(
+async def test_resume_tasks_excludes_halted_task_with_cancelled_blocker(
     client, scaffold_cleanup
 ) -> None:
-    """#2422: resume_tasks includes halted tasks whose blocker is CANCELLED(6).
-    CANCELLED is terminal — the halted dependent must be surfaced for resume.
+    """resume_tasks is intentionally DONE-only.  A CANCELLED blocker provides no
+    answer, so a HITL-halted task whose blocker was cancelled must NOT be auto-resumed
+    — it is left halted for manual attention.
+
+    #2422 correctly broadened next-autorun readiness and blocked-count to treat
+    CANCELLED as terminal; the pre-push review found that applying the same broadening
+    to resume_stmt was incorrect.  This test locks the correct (reverted) behaviour.
     """
     pid = await _make_fresh_project(client, scaffold_cleanup, "k2422-e2")
 
@@ -332,8 +338,8 @@ async def test_resume_tasks_returns_halted_task_with_cancelled_blocker(
 
     body = await _get_next_autorun(client, pid)
     resume_ids = [t["id"] for t in body["resume_tasks"]]
-    assert halted["id"] in resume_ids, (
-        f"halted task {halted['id']} with CANCELLED blocker must be in resume_tasks: {body['resume_tasks']}"
+    assert halted["id"] not in resume_ids, (
+        f"halted task {halted['id']} with CANCELLED blocker must NOT be in resume_tasks: {body['resume_tasks']}"
     )
 
 

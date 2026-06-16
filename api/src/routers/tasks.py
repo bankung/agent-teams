@@ -710,7 +710,17 @@ async def get_next_autorun(
             )
 
     # --- resume_tasks --------------------------------------------------------
-    # HALTED tasks (halt_reason IS NOT NULL) whose blocker is terminal (DONE or CANCELLED, #2422).
+    # HALTED tasks (halt_reason IS NOT NULL) whose blocker is DONE (ps=5) — intentionally
+    # DONE-only, not _TERMINAL_BLOCKER_STATUSES.  A halted task resumes only when its
+    # blocker actually completed and provided an answer; a CANCELLED blocker provides
+    # nothing, so auto-resuming a HITL-halted task against a cancelled question would
+    # re-run it with no input.  When a blocker is cancelled the halted task is left
+    # halted for manual attention.
+    # Context: #2422 broadened next-autorun readiness (~:658) and blocked-count (~:762)
+    # to treat CANCELLED as terminal (correct — a cancelled blocker no longer HOLDS a
+    # TODO task from running).  The pre-push review found that applying the same
+    # broadening to resume_stmt was incorrect; this predicate is intentionally reverted
+    # to == DONE while the other two sites retain _TERMINAL_BLOCKER_STATUSES.
     # Tasks halted without a blocker (old-style "Option A/B" halts) are excluded —
     # they have no resolved answer and require manual unhalt by the user.
     resume_stmt = (
@@ -721,7 +731,7 @@ async def get_next_autorun(
             Task.status == RecordStatus.ACTIVE,
             Task.halt_reason.is_not(None),
             Task.blocked_by.is_not(None),
-            blocker.process_status.in_(_TERMINAL_BLOCKER_STATUSES),
+            blocker.process_status == TaskStatus.DONE,
         )
         .order_by(Task.priority.desc(), Task.created_at.asc())
     )
