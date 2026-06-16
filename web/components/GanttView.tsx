@@ -96,6 +96,7 @@ const STATUS_LABEL: Record<number, string> = {
   [TaskStatus.BLOCKED]: "blocked",
   [TaskStatus.DONE]: "done",
   [TaskStatus.CANCELLED]: "cancelled",
+  [TaskStatus.HALTED_PENDING_USER]: "halted",
 };
 
 // Stable sort for the Unassigned pool list: process_status then id.

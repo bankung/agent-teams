@@ -172,6 +172,10 @@ _BLOCKED_BY_MAX_CHAIN_DEPTH = 10
 # without resolving raises 422 defensively.
 _REORDER_BLOCKER_CHAIN_DEPTH = 10
 
+# #2422: a blocker in EITHER terminal state no longer blocks its dependent —
+# mirrors the FE chip semantics (#2412/#2419) and dashboard.py's _TERMINAL_STATUSES.
+_TERMINAL_BLOCKER_STATUSES: tuple[int, ...] = (TaskStatus.DONE, TaskStatus.CANCELLED)
+
 # Kanban #819: minimum gap between float sort_orders before re-densification
 # is triggered. Float-64 midpoint arithmetic exhausts after ~52 same-interval
 # halvings; when (a+b)/2 lands within this threshold of either anchor we
@@ -651,7 +655,7 @@ async def get_next_autorun(
             Task.process_status == TaskStatus.TODO,
             Task.run_mode.in_([TaskRunMode.AUTO_PICKUP, TaskRunMode.AUTO_HEADLESS]),
             Task.halt_reason.is_(None),
-            or_(Task.blocked_by.is_(None), blocker.process_status == TaskStatus.DONE),
+            or_(Task.blocked_by.is_(None), blocker.process_status.in_(_TERMINAL_BLOCKER_STATUSES)),
             or_(Task.scheduled_at.is_(None), Task.scheduled_at <= now),
         )
         .order_by(
@@ -706,7 +710,7 @@ async def get_next_autorun(
             )
 
     # --- resume_tasks --------------------------------------------------------
-    # HALTED tasks (halt_reason IS NOT NULL) whose blocker question/decision is DONE.
+    # HALTED tasks (halt_reason IS NOT NULL) whose blocker is terminal (DONE or CANCELLED, #2422).
     # Tasks halted without a blocker (old-style "Option A/B" halts) are excluded —
     # they have no resolved answer and require manual unhalt by the user.
     resume_stmt = (
@@ -717,7 +721,7 @@ async def get_next_autorun(
             Task.status == RecordStatus.ACTIVE,
             Task.halt_reason.is_not(None),
             Task.blocked_by.is_not(None),
-            blocker.process_status == TaskStatus.DONE,
+            blocker.process_status.in_(_TERMINAL_BLOCKER_STATUSES),
         )
         .order_by(Task.priority.desc(), Task.created_at.asc())
     )
@@ -745,7 +749,7 @@ async def get_next_autorun(
     question_rows = list((await session.execute(questions_stmt)).scalars().all())
 
     # --- blocked_count -------------------------------------------------------
-    # Count of active TODO/IN_PROGRESS tasks that have a non-DONE blocker.
+    # Count of active TODO/IN_PROGRESS tasks that have a non-terminal blocker (non-DONE, non-CANCELLED; #2422).
     blocked_stmt = (
         select(func.count())
         .select_from(Task)
@@ -755,7 +759,7 @@ async def get_next_autorun(
             Task.status == RecordStatus.ACTIVE,
             Task.process_status.in_([TaskStatus.TODO, TaskStatus.IN_PROGRESS]),
             Task.blocked_by.is_not(None),
-            blocker.process_status != TaskStatus.DONE,
+            blocker.process_status.notin_(_TERMINAL_BLOCKER_STATUSES),
         )
     )
     blocked_count = (await session.execute(blocked_stmt)).scalar_one()
@@ -772,7 +776,7 @@ async def get_next_autorun(
 async def list_task_summaries(
     session_project_id: int = Depends(require_project_id_header),
     process_status: int | None = Query(
-        default=None, ge=1, le=6, description="Filter by tasks.process_status (1..6, 6=CANCELLED)"
+        default=None, ge=1, le=8, description="Filter by tasks.process_status (1..8; 7 reserved/unused, 8=HALTED_PENDING_USER)"
     ),
     milestone_id: int | None = Query(
         default=None,

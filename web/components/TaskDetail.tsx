@@ -46,6 +46,7 @@ const STATUS_LABEL: Record<number, string> = {
   [TaskStatus.BLOCKED]: "blocked",
   [TaskStatus.DONE]: "done",
   [TaskStatus.CANCELLED]: "cancelled",
+  [TaskStatus.HALTED_PENDING_USER]: "halted",
 };
 
 function truncate(s: string, n: number): string {

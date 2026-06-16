@@ -61,6 +61,7 @@ const REJECT_NO_REASON_SUFFIX = "(no reason)";
 const TERMINAL_STATUSES: ReadonlyArray<number> = [
   TaskStatus.DONE,
   TaskStatus.CANCELLED,
+  // #2423: ps=8 (HALTED_PENDING_USER) intentionally excluded — it is an actionable pending-user state, not terminal.
 ];
 
 const STATUS_LABEL: Record<number, string> = {
@@ -70,6 +71,7 @@ const STATUS_LABEL: Record<number, string> = {
   [TaskStatus.BLOCKED]: "blocked",
   [TaskStatus.DONE]: "done",
   [TaskStatus.CANCELLED]: "cancelled",
+  [TaskStatus.HALTED_PENDING_USER]: "halted",
 };
 
 // `options` is typed as string[] on the wire (legacy free-form question
