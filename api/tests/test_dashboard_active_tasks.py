@@ -182,6 +182,7 @@ async def test_active_tasks_denormalizes_project_fields(
         "priority",
         "updated_at",
         "blocked_by",
+        "blocked_by_terminal",
     ):
         assert key in row, (key, row)
 
@@ -313,3 +314,127 @@ async def test_active_tasks_blocked_carries_blocked_by(
     # The upstream task itself is TODO (process_status=1) → NOT in the
     # response.
     assert all(r["task_id"] != upstream["id"] for r in our_rows), our_rows
+
+
+# ---- blocked_by_terminal tests (#2419 / #2412) ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_blocked_by_terminal_false_when_no_blocker(
+    client, scaffold_cleanup
+) -> None:
+    """A task with blocked_by=null must have blocked_by_terminal=False."""
+    project = await _make_project(client, scaffold_cleanup, slug="k2419-noblocker")
+    pid = project["id"]
+
+    t = await _make_task(client, pid, "k2419 in-progress no blocker")
+    await _patch_task(client, pid, t["id"], {"process_status": 2})
+
+    our_rows = await _rows_for_project(client, pid)
+    row = next(r for r in our_rows if r["task_id"] == t["id"])
+    assert row["blocked_by"] is None
+    assert row["blocked_by_terminal"] is False
+
+
+@pytest.mark.asyncio
+async def test_blocked_by_terminal_false_when_blocker_in_progress(
+    client, scaffold_cleanup
+) -> None:
+    """Case B: blocker still IN_PROGRESS (2) → blocked_by_terminal is False."""
+    project = await _make_project(client, scaffold_cleanup, slug="k2419-caseB")
+    pid = project["id"]
+
+    upstream = await _make_task(client, pid, "k2419 upstream in-progress")
+    await _patch_task(client, pid, upstream["id"], {"process_status": 2})
+    downstream = await _make_task(client, pid, "k2419 downstream blocked")
+    await _patch_task(client, pid, downstream["id"], {"blocked_by": upstream["id"]})
+    await _patch_task(client, pid, downstream["id"], {"process_status": 4})
+
+    our_rows = await _rows_for_project(client, pid)
+    row = next(r for r in our_rows if r["task_id"] == downstream["id"])
+    assert row["blocked_by"] == upstream["id"]
+    # Blocker is active + IN_PROGRESS → chip must remain visible.
+    assert row["blocked_by_terminal"] is False
+
+
+@pytest.mark.asyncio
+async def test_blocked_by_terminal_true_when_blocker_done(
+    client, scaffold_cleanup
+) -> None:
+    """Case A: blocker flipped to DONE (5) → blocked_by_terminal is True."""
+    project = await _make_project(client, scaffold_cleanup, slug="k2419-caseA")
+    pid = project["id"]
+
+    upstream = await _make_task(client, pid, "k2419 upstream for done case")
+    downstream = await _make_task(client, pid, "k2419 downstream blocked caseA")
+    await _patch_task(client, pid, downstream["id"], {"blocked_by": upstream["id"]})
+    await _patch_task(client, pid, downstream["id"], {"process_status": 4})
+    # Flip the blocker to DONE — it leaves the active-tasks list but the FK remains.
+    await _patch_task(client, pid, upstream["id"], {"process_status": 5})
+
+    our_rows = await _rows_for_project(client, pid)
+    # upstream is DONE → excluded from the cross-project list.
+    assert all(r["task_id"] != upstream["id"] for r in our_rows), our_rows
+    row = next(r for r in our_rows if r["task_id"] == downstream["id"])
+    assert row["blocked_by"] == upstream["id"]
+    assert row["blocked_by_terminal"] is True
+
+
+@pytest.mark.asyncio
+async def test_blocked_by_terminal_true_when_blocker_cancelled(
+    client, scaffold_cleanup
+) -> None:
+    """Case C: blocker CANCELLED (6) → blocked_by_terminal is True."""
+    project = await _make_project(client, scaffold_cleanup, slug="k2419-caseC")
+    pid = project["id"]
+
+    upstream = await _make_task(client, pid, "k2419 upstream for cancel case")
+    downstream = await _make_task(client, pid, "k2419 downstream blocked caseC")
+    await _patch_task(client, pid, downstream["id"], {"blocked_by": upstream["id"]})
+    await _patch_task(client, pid, downstream["id"], {"process_status": 4})
+    # Cancel the blocker.
+    await _patch_task(
+        client,
+        pid,
+        upstream["id"],
+        {"process_status": 6, "status_change_reason": "k2419 cancel test cleanup"},
+    )
+
+    our_rows = await _rows_for_project(client, pid)
+    assert all(r["task_id"] != upstream["id"] for r in our_rows), our_rows
+    row = next(r for r in our_rows if r["task_id"] == downstream["id"])
+    assert row["blocked_by"] == upstream["id"]
+    assert row["blocked_by_terminal"] is True
+
+
+@pytest.mark.asyncio
+async def test_blocked_by_terminal_true_when_blocker_soft_deleted(
+    client, scaffold_cleanup
+) -> None:
+    """Case D: blocker soft-deleted (DELETE /api/tasks/{id}) → blocked_by_terminal is True.
+
+    The LEFT OUTER JOIN only matches rows where Blocker.status=ACTIVE; a
+    soft-deleted blocker produces NULL for blocker_process_status which the
+    router treats as terminal-or-gone.
+    """
+    project = await _make_project(client, scaffold_cleanup, slug="k2419-caseD")
+    pid = project["id"]
+
+    upstream = await _make_task(client, pid, "k2419 upstream to delete")
+    downstream = await _make_task(client, pid, "k2419 downstream blocked caseD")
+    await _patch_task(client, pid, downstream["id"], {"blocked_by": upstream["id"]})
+    await _patch_task(client, pid, downstream["id"], {"process_status": 4})
+    # Soft-delete the blocker.
+    del_resp = await client.delete(
+        f"/api/tasks/{upstream['id']}",
+        headers={"X-Project-Id": str(pid)},
+    )
+    assert del_resp.status_code == 204, del_resp.text
+
+    our_rows = await _rows_for_project(client, pid)
+    # Soft-deleted blocker is gone from the list.
+    assert all(r["task_id"] != upstream["id"] for r in our_rows), our_rows
+    row = next(r for r in our_rows if r["task_id"] == downstream["id"])
+    assert row["blocked_by"] == upstream["id"]
+    # Blocker absent from active rows → JOIN yields NULL → terminal.
+    assert row["blocked_by_terminal"] is True

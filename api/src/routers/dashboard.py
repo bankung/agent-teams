@@ -18,6 +18,7 @@ import logging
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from src.constants import RecordStatus, TaskStatus
 from src.db import get_session
@@ -60,6 +61,10 @@ async def list_active_tasks_cross_project(
 
     Single SQL join (Task INNER JOIN Project) — no N+1.
     """
+    # #2419/#2412: LEFT OUTER JOIN the blocker task so we can compute
+    # blocked_by_terminal in a single query (no N+1).
+    Blocker = aliased(Task)
+
     stmt = (
         select(
             Task.id,
@@ -74,8 +79,13 @@ async def list_active_tasks_cross_project(
             Task.blocked_by,
             Project.name.label("project_name"),
             Project.team.label("team"),
+            Blocker.process_status.label("blocker_process_status"),
         )
         .join(Project, Project.id == Task.project_id)
+        .outerjoin(
+            Blocker,
+            (Blocker.id == Task.blocked_by) & (Blocker.status == RecordStatus.ACTIVE),
+        )
         .where(
             Project.status == RecordStatus.ACTIVE,
             Task.status == RecordStatus.ACTIVE,
@@ -87,6 +97,8 @@ async def list_active_tasks_cross_project(
         )
     )
     result = (await session.execute(stmt)).all()
+
+    _TERMINAL_STATUSES = (TaskStatus.DONE, TaskStatus.CANCELLED)
 
     rows = [
         DashboardActiveTaskRow(
@@ -102,6 +114,13 @@ async def list_active_tasks_cross_project(
             priority=r.priority,
             updated_at=r.updated_at,
             blocked_by=r.blocked_by,
+            blocked_by_terminal=(
+                r.blocked_by is not None
+                and (
+                    r.blocker_process_status is None
+                    or r.blocker_process_status in _TERMINAL_STATUSES
+                )
+            ),
         )
         for r in result
     ]

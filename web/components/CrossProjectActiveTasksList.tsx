@@ -246,7 +246,8 @@ function TaskRow({ row }: { row: DashboardActiveTaskRow }) {
       >
         {formatRelative(row.updated_at)}
       </span>
-      {row.blocked_by !== null ? (
+      {/* #2419: hide chip when blocker is terminal (server-computed) */}
+      {row.blocked_by !== null && !row.blocked_by_terminal ? (
         <BlockedByChip blockedBy={row.blocked_by} />
       ) : null}
     </li>

@@ -1686,6 +1686,7 @@ export type DashboardActiveTaskRow = {
   priority: TaskPriorityValue;
   updated_at: string; // ISO 8601
   blocked_by: number | null;
+  blocked_by_terminal: boolean; // #2419: true when blocker is DONE/CANCELLED — chip suppressed
 };
 
 export type DashboardActiveTasks = {
