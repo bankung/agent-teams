@@ -79,6 +79,8 @@ const STATUS_CHIP: Record<TaskStatusValue, string> = {
     "bg-emerald-50 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200",
   [TaskStatus.CANCELLED]:
     "bg-zinc-100 text-zinc-400 line-through dark:bg-zinc-800 dark:text-zinc-500",
+  [TaskStatus.HALTED_PENDING_USER]:
+    "bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
 };
 
 // #14 — completed-late chip: a DONE task whose completed_at (date) is later than
@@ -93,6 +95,7 @@ const STATUS_LABEL: Record<TaskStatusValue, string> = {
   [TaskStatus.BLOCKED]: "blocked",
   [TaskStatus.DONE]: "done",
   [TaskStatus.CANCELLED]: "cancelled",
+  [TaskStatus.HALTED_PENDING_USER]: "halted",
 };
 
 // Month mode: keep cells compact (≤2 chips + overflow). Week mode: a fuller

@@ -74,6 +74,7 @@ const COLUMNS: Column[] = [
   { statuses: [TaskStatus.IN_PROGRESS], label: "In progress", key: "2" },
   { statuses: [TaskStatus.REVIEW], label: "Review", key: "3" },
   { statuses: [TaskStatus.BLOCKED], label: "Blocked", key: "4" },
+  { statuses: [TaskStatus.HALTED_PENDING_USER], label: "Halted / Pending user", key: "8" },
   { statuses: [TaskStatus.DONE], label: "Done", key: "5" },
 ];
 
@@ -82,6 +83,7 @@ const ALL_STATUSES: TaskStatusValue[] = [
   TaskStatus.IN_PROGRESS,
   TaskStatus.REVIEW,
   TaskStatus.BLOCKED,
+  TaskStatus.HALTED_PENDING_USER,
   TaskStatus.DONE,
 ];
 
@@ -594,6 +596,18 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
     setVisibleDoneCount(DONE_PAGE);
   }, [milestoneFilter, showAudit, showOperatorGateOnly]);
 
+  // #2412 — blocker-badge suppression. Build the set of task ids that are
+  // still active (non-terminal). A blocker ABSENT from this set is necessarily
+  // terminal (DONE/CANCELLED or beyond the first-50 loaded DONE rows) and must
+  // NOT show the red chip. Terminal = DONE(5) or CANCELLED(6).
+  const blockingTaskIds = useMemo(() => {
+    const s = new Set<number>();
+    for (const t of tasks) {
+      if (t.process_status !== TaskStatus.DONE && t.process_status !== TaskStatus.CANCELLED) s.add(t.id);
+    }
+    return s;
+  }, [tasks]);
+
   const selectedTask = useMemo(
     () =>
       selectedTaskId === null
@@ -904,6 +918,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
           onCrossLaneDrop={onCrossLaneDrop}
           onSameLaneReorder={onSameLaneReorder}
           projectId={project.id}
+          blockingTaskIds={blockingTaskIds}
         />
       )}
       {/* #2371 (R1) — AuditHistorySection moved to project settings page. */}

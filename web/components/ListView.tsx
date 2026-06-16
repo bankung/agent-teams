@@ -23,6 +23,7 @@ const STATUS_LABEL: Record<number, string> = {
   [TaskStatus.REVIEW]: "Review",
   [TaskStatus.BLOCKED]: "Blocked",
   [TaskStatus.DONE]: "Done",
+  [TaskStatus.HALTED_PENDING_USER]: "Halted / Pending user",
 };
 
 const STATUS_CLASS: Record<number, string> = {
@@ -31,6 +32,7 @@ const STATUS_CLASS: Record<number, string> = {
   [TaskStatus.REVIEW]: "text-yellow-700 bg-yellow-50 dark:text-yellow-300 dark:bg-yellow-900/30",
   [TaskStatus.BLOCKED]: "text-red-700 bg-red-50 dark:text-red-300 dark:bg-red-900/30",
   [TaskStatus.DONE]: "text-green-700 bg-green-50 dark:text-green-300 dark:bg-green-900/30",
+  [TaskStatus.HALTED_PENDING_USER]: "text-amber-700 bg-amber-50 dark:text-amber-300 dark:bg-amber-900/30",
 };
 
 const PRIORITY_LABEL: Record<number, string> = {
@@ -82,6 +84,7 @@ const STATUS_OPTIONS = [
   { value: TaskStatus.IN_PROGRESS, label: "In progress" },
   { value: TaskStatus.REVIEW, label: "Review" },
   { value: TaskStatus.BLOCKED, label: "Blocked" },
+  { value: TaskStatus.HALTED_PENDING_USER, label: "Halted" },
   { value: TaskStatus.DONE, label: "Done" },
 ];
 

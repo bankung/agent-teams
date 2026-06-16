@@ -24,6 +24,20 @@ describe("buildColumnPs (#2122 N1)", () => {
     expect(map["5"]).toBe(TaskStatus.DONE);
   });
 
+  it("maps key '8' to TaskStatus.HALTED_PENDING_USER in the 6-column set (#2416)", () => {
+    const columns = [
+      { key: "1", statuses: [TaskStatus.TODO], label: "New tasks" },
+      { key: "2", statuses: [TaskStatus.IN_PROGRESS], label: "In progress" },
+      { key: "3", statuses: [TaskStatus.REVIEW], label: "Review" },
+      { key: "4", statuses: [TaskStatus.BLOCKED], label: "Blocked" },
+      { key: "8", statuses: [TaskStatus.HALTED_PENDING_USER], label: "Halted / Pending user" },
+      { key: "5", statuses: [TaskStatus.DONE], label: "Done" },
+    ];
+    const map = buildColumnPs(columns);
+    expect(map["8"]).toBe(TaskStatus.HALTED_PENDING_USER);
+    expect(map["8"]).toBe(8);
+  });
+
   it("produces exactly as many entries as columns with non-empty statuses", () => {
     const columns = [
       { key: "1", statuses: [TaskStatus.TODO], label: "New tasks" },

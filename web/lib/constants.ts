@@ -15,6 +15,7 @@ export const TaskStatus = {
   BLOCKED: 4,
   DONE: 5,
   CANCELLED: 6,
+  HALTED_PENDING_USER: 8,
 } as const;
 export type TaskStatusValue = typeof TaskStatus[keyof typeof TaskStatus];
 

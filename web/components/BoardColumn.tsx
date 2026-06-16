@@ -34,9 +34,11 @@ type Props = {
   loadMoreLoading?: boolean;
   // Kanban #2334 — passed through to TaskCard for the activity strip on IN_PROGRESS cards.
   projectId?: number;
+  // #2412 — non-terminal task ids; passed through to TaskCard for blocked-badge gating.
+  blockingTaskIds?: Set<number>;
 };
 
-export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, sortable = false, highlightedTaskId = null, totalCount, onLoadMore, loadMoreLoading = false, projectId }: Props) {
+export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, sortable = false, highlightedTaskId = null, totalCount, onLoadMore, loadMoreLoading = false, projectId, blockingTaskIds }: Props) {
   const { isOver, setNodeRef } = useDroppable({ id: columnId });
   const taskIds = tasks.map((t) => t.id);
   const dropHighlight = isOver ? " ring-2 ring-blue-400/50" : "";
@@ -77,6 +79,7 @@ export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, so
                 onOpenDetail={onOpenDetail}
                 highlighted={highlightedTaskId === task.id}
                 projectId={projectId}
+                blockingTaskIds={blockingTaskIds}
               />
             ))
           )}

@@ -52,6 +52,8 @@ type Props = {
   onSameLaneReorder: OnSameLaneReorder;
   // Kanban #2334 — passed through to BoardColumn/TaskCard for activity strip.
   projectId?: number;
+  // #2412 — non-terminal task ids; TaskCard gates the blocked chip against this set.
+  blockingTaskIds?: Set<number>;
 };
 
 // #2122 N1 — derive the column-key→process_status map from the columns prop
@@ -80,6 +82,7 @@ export function BoardDndCanvas({
   onCrossLaneDrop,
   onSameLaneReorder,
   projectId,
+  blockingTaskIds,
 }: Props) {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -126,7 +129,7 @@ export function BoardDndCanvas({
       {/* #954 — mobile: page scrolls (no overflow-hidden, no min-h-0); desktop restores the fixed-height bounded lanes at lg */}
       <div
         data-board="dnd"
-        className="grid flex-1 grid-cols-1 gap-3 md:grid-cols-3 lg:min-h-0 lg:grid-cols-5 lg:overflow-hidden"
+        className="grid flex-1 grid-cols-1 gap-3 md:grid-cols-3 lg:min-h-0 lg:grid-cols-6 lg:overflow-hidden"
       >
         {columns.map((col) => {
           const colTasks = col.statuses.flatMap((s) => grouped.get(s) ?? []);
@@ -152,6 +155,7 @@ export function BoardDndCanvas({
               sortable={col.statuses.includes(TaskStatus.TODO)}
               highlightedTaskId={highlightedTaskId}
               projectId={projectId}
+              blockingTaskIds={blockingTaskIds}
             />
           );
         })}

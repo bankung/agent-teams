@@ -26,6 +26,7 @@ const STATUS_LABEL: Record<TaskStatusValue, string> = {
   [TaskStatus.BLOCKED]: "blocked",
   [TaskStatus.DONE]: "done",
   [TaskStatus.CANCELLED]: "cancelled",
+  [TaskStatus.HALTED_PENDING_USER]: "halted",
 };
 
 type Props = {

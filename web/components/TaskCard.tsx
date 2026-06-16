@@ -23,6 +23,10 @@ type Props = {
   highlighted?: boolean;
   // Kanban #2334 — project id needed to fetch the activity rail for IN_PROGRESS cards.
   projectId?: number;
+  // #2412 — set of non-terminal task ids. Chip is suppressed when the blocker
+  // is absent (terminal) or explicitly DONE/CANCELLED. Optional for backwards
+  // compat (renders chip when not provided, preserving old behaviour).
+  blockingTaskIds?: Set<number>;
 };
 
 const PRIORITY_LABEL: Record<number, string> = {
@@ -57,7 +61,7 @@ const ROLE_CLASS: Record<number, string> = {
   [TaskRole.SECURITY_REVIEWER]: "text-rose-700 bg-rose-50 dark:text-rose-300 dark:bg-rose-900/30",
 };
 
-export function TaskCard({ task, onOpenDetail, highlighted = false, projectId }: Props) {
+export function TaskCard({ task, onOpenDetail, highlighted = false, projectId, blockingTaskIds }: Props) {
   const isAi = task.task_kind === "ai";
   const isPending = task.is_pending && task.process_status === TaskStatus.IN_PROGRESS;
   const inProgress = task.process_status === TaskStatus.IN_PROGRESS;
@@ -118,7 +122,9 @@ export function TaskCard({ task, onOpenDetail, highlighted = false, projectId }:
         <span className="font-mono text-[11px] text-zinc-400 dark:text-zinc-500">#{task.id}</span>
         <div className="flex flex-wrap items-center gap-1.5">
           {steps && <StepCounter done={steps.done} total={steps.total} />}
-          {task.blocked_by !== null && (
+          {/* #2412 — suppress chip when blocker is terminal (DONE/CANCELLED or absent
+              from the loaded set, which means it's beyond the first-50 DONE rows). */}
+          {task.blocked_by !== null && (blockingTaskIds === undefined || blockingTaskIds.has(task.blocked_by)) && (
             <span
               title={`Blocked by #${task.blocked_by}`}
               data-blocked-by-chip
