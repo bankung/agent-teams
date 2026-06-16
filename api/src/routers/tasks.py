@@ -620,10 +620,12 @@ async def get_next_autorun(
         )
         paused = (await session.execute(paused_q)).scalars().all()
         stamped_any = False
+        hitl_timeout_halted: list[tuple[int, str]] = []  # Kanban #1841: (task_id, title)
         for t in paused:
             if t.updated_at is not None and (now - t.updated_at) > threshold:
                 t.halt_reason = "hitl_timeout"
                 stamped_any = True
+                hitl_timeout_halted.append((t.id, t.title or ""))
                 logger.warning(
                     "task %d HITL timeout exceeded (project %d, elapsed_h=%.1f, "
                     "limit_h=%d) — halt_reason stamped 'hitl_timeout'",
@@ -634,6 +636,28 @@ async def get_next_autorun(
                 )
         if stamped_any:
             await session.commit()
+            # Kanban #1841 — fire task_halted push per newly-halted task.
+            # Defensive try/except: push failure must never break next-autorun.
+            from src.services.notification_router import deliver as _push_deliver_nar
+            for _htid, _httitle in hitl_timeout_halted:
+                try:
+                    await _push_deliver_nar(
+                        task_id=_htid,
+                        payload={
+                            "title": f"Task halted: {_httitle}",
+                            "body": "hitl_timeout",
+                            "url": f"/tasks/{_htid}",
+                        },
+                        kind="web_push",
+                        event_kind="task_halted",
+                        session=session,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "#1841 task_halted push failed for hitl_timeout task_id=%d; "
+                        "next-autorun stands",
+                        _htid,
+                    )
 
     # Alias for the blocker row so we can outerjoin Task → blocker Task.
     blocker = aliased(Task)
@@ -685,18 +709,42 @@ async def get_next_autorun(
         verdict = await check_budget(session, project_id)
         if verdict.hard_halt:
             halt_msg = f"budget_exceeded:{verdict.exceeded_cap}"
+            # Capture before commit expiry (Kanban #1841 push needs these after commit).
+            _budget_halt_task_id = next_task_row.id
+            _budget_halt_task_title = next_task_row.title or ""
             next_task_row.halt_reason = halt_msg
             await session.commit()
             logger.warning(
                 "budget_hard_halt: project=%d task=%d cap=%s "
                 "daily_pct=%s monthly_pct=%s total_pct=%s",
                 project_id,
-                next_task_row.id,
+                _budget_halt_task_id,
                 verdict.exceeded_cap,
                 verdict.daily_pct,
                 verdict.monthly_pct,
                 verdict.total_pct,
             )
+            # Kanban #1841 — push notification for budget-halted task.
+            # Defensive try/except: push failure must never break next-autorun.
+            try:
+                from src.services.notification_router import deliver as _push_deliver_budget
+                await _push_deliver_budget(
+                    task_id=_budget_halt_task_id,
+                    payload={
+                        "title": f"Task halted: {_budget_halt_task_title}",
+                        "body": halt_msg,
+                        "url": f"/tasks/{_budget_halt_task_id}",
+                    },
+                    kind="web_push",
+                    event_kind="task_halted",
+                    session=session,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "#1841 task_halted push failed for budget_halt task_id=%d; "
+                    "next-autorun stands",
+                    _budget_halt_task_id,
+                )
             next_task_row = None
         elif verdict.soft_warn:
             logger.warning(
@@ -1870,6 +1918,7 @@ async def update_task(
     # PATCH" check in the post-commit hooks is accurate.
     _pre_patch_process_status = task.process_status
     _pre_patch_interaction_kind = task.interaction_kind
+    _pre_patch_halt_reason = task.halt_reason  # Kanban #1841 — task_halted hook
 
     updates = payload.model_dump(exclude_unset=True)
 
@@ -2311,6 +2360,11 @@ async def update_task(
         if "question_payload" in updates
         else task.question_payload
     )
+    _notify_new_halt_reason = (  # Kanban #1841 — resolved post-PATCH halt_reason value
+        updates.get("halt_reason")
+        if "halt_reason" in updates
+        else task.halt_reason
+    )
 
     # Kanban #1007 (AC2): when a decision task is being flipped to DONE via PATCH,
     # enforce that chosen_id is set and matches an option id. This mirrors the
@@ -2642,6 +2696,29 @@ async def update_task(
                 },
                 kind="web_push",
                 event_kind="task_failed",
+                session=session,
+            )
+
+        # Kanban #1841 — task_halted hook: fires when halt_reason transitions
+        # NULL → non-NULL in this PATCH. Independent of done/failed branches
+        # (a halt PATCH sets halt_reason, not ps=5/6 — defensive `elif` is not
+        # used here so a pathological PATCH that simultaneously sets
+        # halt_reason AND ps=5/6 fires both; in practice that never happens
+        # through the normal Lead API usage pattern).
+        if (
+            "halt_reason" in updates
+            and _notify_new_halt_reason is not None
+            and _pre_patch_halt_reason is None
+        ):
+            await _push_deliver(
+                task_id=task_id,
+                payload={
+                    "title": f"Task halted: {_notify_task_title}",
+                    "body": str(_notify_new_halt_reason),
+                    "url": f"/tasks/{task_id}",
+                },
+                kind="web_push",
+                event_kind="task_halted",
                 session=session,
             )
     except Exception:  # noqa: BLE001 — defensive: push hook failure never crashes PATCH

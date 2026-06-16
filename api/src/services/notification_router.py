@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 # Valid event_kind values — mirrors PushSubscription.kinds_enabled keys.
 # session_waiting added Kanban #1937: fired by the Notification hook when the
 # Lead session is idle / blocked at a permission prompt.
-EventKind = Literal["hitl_needed", "task_done", "task_failed", "budget_warn", "session_waiting"]
+EventKind = Literal["hitl_needed", "task_done", "task_failed", "budget_warn", "session_waiting", "task_halted"]
 
 
 # Module constants — exposed for tests + monkeypatch.
