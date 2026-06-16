@@ -838,6 +838,10 @@ class TaskUpdate(BaseModel):
     assigned_role: int | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    # Kanban #1839: server-managed (stamped on →ps=8 by the router). Declared for
+    # parity with started_at/completed_at — a client-supplied value is respected
+    # by the router's setdefault stamp logic; absence means the router stamps it.
+    halted_at: datetime | None = None
     # Re-parenting is NOT allowed in V1 (Kanban #238 lock 2026-05-08).
     # The field is declared so we can REJECT it explicitly — `extra="ignore"` on
     # this schema would silently drop unknown keys, which is wrong for this one.
@@ -1302,6 +1306,8 @@ class TaskSummaryRead(BaseModel):
     updated_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+    # Kanban #1839 — stamped on →ps=8 ('halted-pending-user'); NULL otherwise.
+    halted_at: datetime | None = None
     is_active: bool = True
 
 
@@ -1322,6 +1328,10 @@ class TaskRead(BaseModel):
     updated_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+    # Kanban #1839 — read-out of the →ps=8 ('halted-pending-user') stamp.
+    # Backfilled to NULL on existing rows by migration 0069's nullable=true.
+    # Stamped once on the first halt; mirrors started_at/completed_at.
+    halted_at: datetime | None = None
     run_mode: TaskRunModeLiteral
     # V3+ T1 (Kanban #706) — new fields added 2026-05-10. Migration 0007's
     # server_defaults backfill existing rows: task_kind='human', is_template=false,

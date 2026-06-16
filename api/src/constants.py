@@ -36,8 +36,17 @@ def in_clause_text(column: str, values: tuple[str, ...]) -> str:
 
 
 class TaskStatus:
-    """tasks.process_status — 1=TODO..6=CANCELLED (#854).
-    Mirror of migration 0022 (intentionally duplicated — see standards/sqlalchemy/migrations.md).
+    """tasks.process_status — 1=TODO..6=CANCELLED (#854), 8='halted-pending-user' (#1839).
+    Mirror of migrations 0022 + 0069 (intentionally duplicated — see standards/sqlalchemy/migrations.md).
+
+    7 is intentionally SKIPPED/RESERVED for a possible future 'rejected' status
+    (see routers/user_actions.py + .claude/agents/project-auditor.md). The valid
+    set is therefore (1, 2, 3, 4, 5, 6, 8) — NOT contiguous.
+
+    NOTE: TaskStatus.ALL is the single source of truth — it feeds the Pydantic
+    process_status validator (schemas/task.py), the ORM CheckConstraint
+    (models/task.py), and the /stats counts dict (routers/projects.py). Editing
+    ALL auto-propagates accept-8/reject-7 to all three.
     """
 
     TODO = 1
@@ -46,8 +55,10 @@ class TaskStatus:
     BLOCKED = 4
     DONE = 5
     CANCELLED = 6
+    # 7 reserved (future 'rejected') — do NOT allocate without a migration.
+    HALTED_PENDING_USER = 8  # Kanban #1839: orthogonal to halt_reason (#785).
 
-    ALL = (TODO, IN_PROGRESS, REVIEW, BLOCKED, DONE, CANCELLED)
+    ALL = (TODO, IN_PROGRESS, REVIEW, BLOCKED, DONE, CANCELLED, HALTED_PENDING_USER)
 
 
 class RecordStatus:

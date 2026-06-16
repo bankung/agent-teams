@@ -338,10 +338,14 @@ def _fire_hitl_push(task_id: int, title: str, question_payload: dict | None) -> 
     except Exception:  # noqa: BLE001 — never crash the API response
         logger.exception("hitl_push: unexpected error on task=%d; push skipped", task_id)
 
-# Auto-stamp started_at / completed_at on ps=2 / ps=5 transitions
+# Auto-stamp started_at / completed_at / halted_at on ps=2 / ps=5 / ps=8
+# transitions. The transition block below stamps only when the field is
+# currently NULL and uses setdefault, so a client-supplied value is respected
+# and a re-halt never re-stamps (Kanban #1839, mirrors started_at/completed_at).
 _STATUS_TIMESTAMP_FIELDS: dict[int, str] = {
     TaskStatus.IN_PROGRESS: "started_at",
     TaskStatus.DONE: "completed_at",
+    TaskStatus.HALTED_PENDING_USER: "halted_at",
 }
 
 
@@ -640,6 +644,10 @@ async def get_next_autorun(
         .where(
             Task.project_id == project_id,
             Task.status == RecordStatus.ACTIVE,
+            # process_status=8 ('halted-pending-user', #1839) is structurally
+            # excluded from auto-pickup by this TODO-only filter (AC1) — no
+            # separate ps=8 clause needed, and the halt_reason filter below is
+            # untouched (ps=8 is orthogonal to the #785 halt_reason flag).
             Task.process_status == TaskStatus.TODO,
             Task.run_mode.in_([TaskRunMode.AUTO_PICKUP, TaskRunMode.AUTO_HEADLESS]),
             Task.halt_reason.is_(None),

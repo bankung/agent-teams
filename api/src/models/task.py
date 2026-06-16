@@ -202,6 +202,14 @@ class Task(Base):
     # (process_status -> 6). Independent of the value: any PATCH may set it.
     # NULL = unset. Audit-trigger snapshot captures the field automatically.
     status_change_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Kanban #1839: stamped once on the →process_status=8 ('halted-pending-user')
+    # transition by routers/tasks.py, mirroring started_at/completed_at (stamped
+    # only when currently NULL; persists; not auto-cleared; no re-stamp on re-halt).
+    # Orthogonal to halt_reason (#785) — the two are decoupled. CHECK derives from
+    # TaskStatus.ALL — do NOT hand-edit ck_tasks_process_status_valid.
+    halted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Kanban #830 (2026-05-12): interaction_kind discriminates agent-executed tasks
     # from user-interaction gates. DB DEFAULT 'work' covers existing rows + INSERT.
     interaction_kind: Mapped[str] = mapped_column(

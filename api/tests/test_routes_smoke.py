@@ -263,7 +263,7 @@ async def test_post_task_invalid_process_status_returns_422_with_validator_messa
     # FastAPI 422 envelope: {"detail": [{"loc": [...], "msg": "...", ...}, ...]}
     assert "detail" in body and isinstance(body["detail"], list)
     msgs = " | ".join(err["msg"] for err in body["detail"])
-    assert "process_status must be one of (1, 2, 3, 4, 5, 6), got 99" in msgs
+    assert "process_status must be one of (1, 2, 3, 4, 5, 6, 8), got 99" in msgs
     # N8 — pin the field path so renames break the test.
     assert any(err["loc"] == ["body", "process_status"] for err in body["detail"]), (
         f"expected loc=['body','process_status'] in detail; got "
