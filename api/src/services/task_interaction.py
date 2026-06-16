@@ -154,6 +154,19 @@ async def auto_unblock_dependents(
     This makes the parent task auto-resumable by the next auto-run loop tick
     (GET /api/tasks/next-autorun will surface it in resume_tasks once Lead
     clears the halt_reason, or it will appear in next_task if halt_reason is None).
+
+    Design note (#2427 — confirmed NOT a bug):
+      blocked_by is ALWAYS cleared for every dependent because the blocker
+      (the question/decision task) is now resolved.
+
+      halt_reason is cleared ONLY when it starts with "Question:" — the HITL
+      question halt convention (see test_tasks_question_interaction.py:240).
+      Independent halts (e.g. "budget_exceeded:monthly", "hitl_timeout",
+      or free-text manual halts set via #1001) MUST persist past the question's
+      resolution: the dependent task remains visibly halted on the board for
+      that independent reason and recovers only when that independent condition
+      clears (budget reset, manual unhalt, etc.). Silently clearing all halts
+      on question-DONE would mask legitimate independent stalls.
     """
     from src.models.task import Task  # local import to avoid circular
 

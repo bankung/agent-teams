@@ -408,3 +408,98 @@ async def test_snooze_endpoint_shifts_next_eligible_nudge(
     assert task_id not in nudged_after_snooze, (
         "NEGATIVE: snoozed task must NOT be nudged by an immediate scan"
     )
+
+
+# ---------------------------------------------------------------------------
+# (5) #2426 — BLOCKED HITL question task IS nudged (regression guard)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_blocked_hitl_task_gets_nudged(
+    client, no_scaffold, stub_deliver, db_session
+) -> None:
+    """A question task with process_status=BLOCKED(4) and blocked_by=NULL is
+    included in the scan_and_nudge sweep.
+
+    Context: langgraph worker-interrupt sets the HITL question task to BLOCKED
+    (langgraph/nodes.py). Before #2426 the filter only matched TODO/REVIEW, so
+    aging BLOCKED HITL tasks were silently skipped.
+
+    POSITIVE: a BLOCKED question task aged past threshold is nudged.
+    POSITIVE: a TODO aged control task is still nudged (confirms scan intact).
+    NEGATIVE: a fresh BLOCKED task (below threshold) is NOT nudged.
+
+    Static trace:
+      - proj created; 3 tasks created (all TODO, interaction_kind='question')
+      - blocked_aged_task  -> PATCH to process_status=4; created_at moved back 30h
+      - todo_aged_task     -> stays TODO; created_at moved back 30h
+      - blocked_fresh_task -> PATCH to process_status=4; created_at stays at now()
+      - project threshold set to 24h
+      - scan_and_nudge() runs
+      Expected deliver call set: {blocked_aged_id, todo_aged_id}
+      blocked_fresh_id NOT in call set (age 0h < threshold 24h)
+    """
+    from sqlalchemy import update
+
+    from src.db import SessionLocal
+    from src.models.task import Task
+    from src.services.hitl_nudge import scan_and_nudge
+
+    proj = await _create_project(client)
+    proj_id = proj["id"]
+
+    # Task 1: BLOCKED + aged -> should be nudged (#2426 fix target)
+    blocked_aged = await _create_hitl_task(client, proj_id, "Blocked aged HITL task")
+    blocked_aged_id = blocked_aged["id"]
+
+    # Task 2: TODO + aged -> should be nudged (control -- was always working)
+    todo_aged = await _create_hitl_task(client, proj_id, "TODO aged HITL task")
+    todo_aged_id = todo_aged["id"]
+
+    # Task 3: BLOCKED + fresh -> must NOT be nudged (below threshold)
+    blocked_fresh = await _create_hitl_task(client, proj_id, "Blocked fresh HITL task")
+    blocked_fresh_id = blocked_fresh["id"]
+
+    # Age tasks 1 and 2 + configure project threshold.
+    await _age_task_and_configure_project(
+        db_session, blocked_aged_id, proj_id, age_hours=30, threshold_hours=24
+    )
+    await _age_task_and_configure_project(
+        db_session, todo_aged_id, proj_id, age_hours=30, threshold_hours=24
+    )
+    # Task 3 stays at now() -- no aging needed; threshold already set by above calls.
+
+    # Flip tasks 1 and 3 to BLOCKED (process_status=4), blocked_by stays NULL
+    # (the question task itself has no FK blocker -- it IS the blocker for others).
+    await db_session.execute(
+        update(Task)
+        .where(Task.id.in_([blocked_aged_id, blocked_fresh_id]))
+        .values(process_status=4)
+    )
+    await db_session.commit()
+
+    async with SessionLocal() as session:
+        count = await scan_and_nudge(session)
+
+    nudged_ids = {c["task_id"] for c in stub_deliver}
+
+    # POSITIVE: BLOCKED + aged task must now be nudged (#2426 fix).
+    assert blocked_aged_id in nudged_ids, (
+        f"POSITIVE (#2426): BLOCKED aged question task (id={blocked_aged_id}) "
+        "must be nudged -- was silently skipped before fix"
+    )
+
+    # POSITIVE: TODO + aged control task still nudged.
+    assert todo_aged_id in nudged_ids, (
+        f"POSITIVE: TODO aged control task (id={todo_aged_id}) must still be nudged"
+    )
+
+    # NEGATIVE: BLOCKED + fresh task must NOT be nudged (age < threshold).
+    assert blocked_fresh_id not in nudged_ids, (
+        f"NEGATIVE: BLOCKED fresh task (id={blocked_fresh_id}) "
+        "is below threshold and must not be nudged"
+    )
+
+    # Sanity: count reflects at least the 2 aged tasks.
+    assert count >= 2, f"Expected at least 2 attempted nudges, got {count}"
