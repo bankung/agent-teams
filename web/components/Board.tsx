@@ -109,7 +109,13 @@ function groupByStatus(tasks: TaskRead[]) {
   for (const s of ALL_STATUSES) groups.set(s, []);
   for (const task of tasks) {
     const bucket = groups.get(task.process_status);
-    if (bucket) bucket.push(task);
+    if (bucket) {
+      bucket.push(task);
+    } else if (process.env.NODE_ENV !== "production") {
+      console.warn(
+        `Board.groupByStatus: task #${task.id} has process_status=${task.process_status} with no lane — dropped. Add it to ALL_STATUSES/COLUMNS.`,
+      );
+    }
   }
   // #772 #826 — lane sort: sortLaneTasks (TODO..REVIEW), sortDoneLane (DONE); details in shared/decisions.md
   for (const [ps, bucket] of groups.entries()) {

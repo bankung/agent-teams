@@ -7,7 +7,7 @@
 // 4. Board includes HALTED_PENDING_USER in ALL_STATUSES so ps=8 tasks aren't
 //    silently dropped by groupByStatus.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, configure } from "@testing-library/react";
 import type { TaskRead, ProjectRead, ProgressStatsResponse } from "@/lib/api";
 import { TaskStatus } from "@/lib/constants";
@@ -286,5 +286,64 @@ describe("Board — halted-pending-user lane (#2416)", () => {
 
   it("TaskStatus.HALTED_PENDING_USER equals 8", () => {
     expect(TaskStatus.HALTED_PENDING_USER).toBe(8);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Board — unmapped process_status dev-warn (#2429)
+// ---------------------------------------------------------------------------
+
+describe("Board — groupByStatus dev-warn for unmapped status (#2429)", () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockListDoneLanePage.mockReset();
+    mockListMilestones.mockResolvedValue([]);
+    nextId = 600;
+    vi.spyOn(Storage.prototype, "getItem").mockReturnValue(null);
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => undefined);
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it("emits a console.warn for task with unmapped process_status=99 and does NOT render it in any lane", async () => {
+    const unmappedTask = makeTask({
+      id: 699,
+      title: "unmapped-status-task",
+      // Cast: 99 is intentionally outside TaskStatusValue to exercise the drop path.
+      process_status: 99 as unknown as TaskRead["process_status"],
+    });
+    const todoTask = makeTask({ title: "normal-todo", process_status: TaskStatus.TODO });
+
+    render(
+      <Board
+        initialTasks={[unmappedTask, todoTask]}
+        initialDoneHasMore={false}
+        hasHeadlessTask={false}
+        project={makeProject()}
+        projectStats={[]}
+        progressStats={EMPTY_PROGRESS}
+      />,
+    );
+
+    // Wait for the board canvas to render.
+    await screen.findByTestId("stub-board-dnd-canvas");
+
+    // The warn should have fired mentioning the task id and the unmapped status.
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("task #699"),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("process_status=99"),
+    );
+
+    // The unmapped task must NOT appear in any lane (dropped).
+    expect(screen.queryByTestId("task-699")).toBeNull();
+
+    // The normal task IS rendered.
+    expect(screen.getByTestId(`task-${todoTask.id}`)).toBeInTheDocument();
   });
 });

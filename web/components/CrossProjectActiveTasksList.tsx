@@ -73,13 +73,13 @@ function ChevronRightIcon() {
 // Lifecycle code → chip label + color. Mirrors the per-project Board.tsx
 // COLUMNS array and the dashboard `LANES` accent palette for visual
 // consistency (in-progress=amber, review=violet, blocked=red).
-const STATUS_LABEL: Record<2 | 3 | 4, string> = {
+const STATUS_LABEL: Record<number, string> = {
   2: "in-progress",
   3: "review",
   4: "blocked",
 };
 
-const STATUS_CHIP_CLASS: Record<2 | 3 | 4, string> = {
+const STATUS_CHIP_CLASS: Record<number, string> = {
   2: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
   3: "bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-200",
   4: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200",
@@ -150,13 +150,15 @@ function groupByProject(
 
 // ----- Row sub-components ---------------------------------------------------
 
-function StatusChip({ status }: { status: 2 | 3 | 4 }) {
-  const cls = STATUS_CHIP_CLASS[status];
+function StatusChip({ status }: { status: number }) {
+  const cls =
+    STATUS_CHIP_CLASS[status] ??
+    "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300";
   return (
     <span
       className={`inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${cls}`}
     >
-      {STATUS_LABEL[status]}
+      {STATUS_LABEL[status] ?? `ps${status}`}
     </span>
   );
 }
