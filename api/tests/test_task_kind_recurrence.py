@@ -193,23 +193,13 @@ def test_task_create_template_complete_accepted() -> None:
     assert task.is_template is True
 
 
-def test_task_update_rejects_spawned_from_task_id_present() -> None:
-    """V1 forbids re-parenting lineage — explicit value or null both rejected."""
+@pytest.mark.parametrize("value", [42, None], ids=["present", "explicit_null"])
+def test_task_update_rejects_spawned_from_task_id(value) -> None:
+    """V1 forbids re-parenting lineage — explicit value or explicit null both rejected."""
     from src.schemas.task import TaskUpdate
 
     with pytest.raises(ValidationError) as ei:
-        TaskUpdate(spawned_from_task_id=42)
-    msg = " | ".join(e["msg"] for e in ei.value.errors())
-    assert "spawned_from_task_id" in msg
-
-
-def test_task_update_rejects_spawned_from_task_id_explicit_null() -> None:
-    """Explicit null is treated identically to a non-null value (mirror of
-    parent_task_id rejection)."""
-    from src.schemas.task import TaskUpdate
-
-    with pytest.raises(ValidationError) as ei:
-        TaskUpdate(spawned_from_task_id=None)
+        TaskUpdate(spawned_from_task_id=value)
     msg = " | ".join(e["msg"] for e in ei.value.errors())
     assert "spawned_from_task_id" in msg
 

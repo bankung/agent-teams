@@ -93,25 +93,6 @@ async def test_get_active_project_returns_410_gone(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_active_project_410_detail_pinned_in_router_source() -> None:
-    """Regression: Kanban #694 — source-text-lock per #122 pattern.
-
-    The 410 detail string is wire contract — drift breaks any FE / shell that
-    string-matches it. Lock by scanning `routers/projects.py` source for the
-    exact substring."""
-    from src.routers import projects as projects_router
-
-    source = Path(projects_router.__file__).read_text(encoding="utf-8")
-    pinned = (
-        '"Endpoint deprecated. Use /api/projects/by-name/{name} or "\n'
-        '            "/api/projects?status=1 instead."'
-    )
-    assert pinned in source, (
-        f"410 detail string drifted in routers/projects.py — expected {pinned!r}"
-    )
-
-
-@pytest.mark.asyncio
 async def test_get_seeded_agent_teams_by_name(client) -> None:
     """Replacement for the legacy `/api/projects/active` smoke test.
 

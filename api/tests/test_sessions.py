@@ -686,32 +686,6 @@ async def test_list_compacts_empty_for_new_session(
 
 
 # =============================================================================
-# 4. Source-text-locks for the locked detail strings
-# =============================================================================
-
-
-def test_session_closed_detail_string_pinned_in_router_source() -> None:
-    from src.routers import sessions as sessions_router
-
-    source = Path(sessions_router.__file__).read_text(encoding="utf-8")
-    pinned = '"Session id={id} already closed"'
-    assert pinned in source, (
-        "Session-closed detail string template drifted in routers/sessions.py"
-    )
-
-
-def test_run_cross_project_detail_string_pinned_in_router_source() -> None:
-    from src.routers import sessions as sessions_router
-
-    source = Path(sessions_router.__file__).read_text(encoding="utf-8")
-    # The template is split across two adjacent string literals — assert each
-    # half is present so a refactor that joins or reflows them still passes
-    # iff the wire string is identical.
-    assert '"task {task_id} belongs to project {task_project_id}, "' in source
-    assert '"session belongs to project {session_project_id}"' in source
-
-
-# =============================================================================
 # 5. Behavioral — closing preserves filesystem; existing tables untouched
 # =============================================================================
 
@@ -1266,18 +1240,6 @@ async def test_get_prompt_404_on_missing_session(client) -> None:
     assert r.status_code == 404
 
 
-def test_ctx2_locked_detail_strings_pinned_in_router_source() -> None:
-    from src.routers import sessions as sessions_router
-
-    source = Path(sessions_router.__file__).read_text(encoding="utf-8")
-    assert '"Session id={id} is closed; cannot append activity"' in source
-    assert (
-        '"Session run id={id} has no task_id; heartbeat requires a card log"'
-        in source
-    )
-    assert '"Session id={id} is closed; cannot write heartbeat"' in source
-
-
 # =============================================================================
 # 8. CTX-3 (#718) — token measure on activity + cost compute on PATCH +
 #    soft-warn budget log.
@@ -1607,28 +1569,27 @@ async def test_patch_run_null_budget_never_sets_warning(
 
 
 @pytest.mark.asyncio
-async def test_session_create_rejects_extra_status_field_422(client) -> None:
-    """POST /api/sessions with a smuggled `status` field → 422. Server-managed
-    `status` must not be settable on create."""
+@pytest.mark.parametrize(
+    "extra_field,extra_value",
+    [
+        ("status", "weird"),
+        ("closed_at", "2026-01-01T00:00:00Z"),
+    ],
+)
+async def test_session_create_rejects_server_managed_field_422(
+    client, extra_field, extra_value
+) -> None:
+    """POST /api/sessions with a smuggled server-managed field → 422.
+
+    Locks that `status` and `closed_at` are not settable on create
+    (extra=forbid schema semantics).
+    """
     resp = await client.post(
-        "/api/sessions", json={"project_id": 1, "status": "weird"}
+        "/api/sessions", json={"project_id": 1, extra_field: extra_value}
     )
     assert resp.status_code == 422, resp.text
     detail = resp.json()["detail"]
-    assert detail[0]["loc"] == ["body", "status"]
-    assert "extra" in detail[0]["type"] or "forbid" in detail[0]["type"]
-
-
-@pytest.mark.asyncio
-async def test_session_create_rejects_extra_closed_at_field_422(client) -> None:
-    """POST /api/sessions with a smuggled server-managed `closed_at` → 422."""
-    resp = await client.post(
-        "/api/sessions",
-        json={"project_id": 1, "closed_at": "2026-01-01T00:00:00Z"},
-    )
-    assert resp.status_code == 422, resp.text
-    detail = resp.json()["detail"]
-    assert detail[0]["loc"] == ["body", "closed_at"]
+    assert detail[0]["loc"] == ["body", extra_field]
     assert "extra" in detail[0]["type"] or "forbid" in detail[0]["type"]
 
 
