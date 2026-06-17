@@ -1,6 +1,11 @@
 ---
 name: tn-release
 description: Run the weekly agent-teams release flow (dev → main) end-to-end — Tier-2 gate, merge, version bump, annotated tag, push, MILESTONE FLIPS (released + activate next), and resume dev. Encodes shared/release-workflow.md (#1646) so the milestone-status step (the gap behind #2056) can never be skipped. Use for a normal weekly release or an explicit "release vX.Y.0".
+argument-hint: "[vX.Y.Z]"
+allowed-tools:
+  - Bash(git:*)
+  - Bash(curl:*)
+  - Bash(gh:*)
 metadata:
   version: 1.0.0
   category: platform

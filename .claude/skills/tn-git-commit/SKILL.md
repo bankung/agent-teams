@@ -1,3 +1,21 @@
+---
+name: tn-git-commit
+description: >-
+  Paved-path local commit — scoped staging + keyword scan + goal-driven verify; NEVER pushes.
+  Use when committing scoped task work locally: "commit this", "stage and commit", "commit #<id>",
+  "save the work", or any request to create a git commit for a specific task or file list.
+  NOT for pushing, releasing, or merging (use tn-release for those).
+argument-hint: "<task-id> [file1 file2 …] [-- \"<commit message>\"]"
+allowed-tools:
+  - Bash(git:*)
+  - Bash(grep:*)
+  - Bash(curl:*)
+metadata:
+  version: 1.0.0
+  category: platform
+  tags: [platform, git, commit, mutate]
+---
+
 # /tn-git-commit — paved-path commit (scoped staging + scan + verify; NEVER pushes)
 
 You are committing work on the agent-teams platform (or the bound project's repo). The
@@ -94,3 +112,9 @@ sentinel trips on tool_calls deltas) — held queue, not a backfill.
 ```
 
 (Free-form arguments are fine — the procedure above is the contract, not the arg syntax.)
+
+## Related skills
+
+- **tn-release** — the release/push flow that composes this skill's staging + scan + commit mechanics into its merge and version-bump steps; this skill never pushes, tn-release owns that gate.
+- **tn-report** — the activity-rail checkpoint that Step 6 posts to; rail entries created here become the immutable event record for the task.
+- **tn-task-done** — typically run immediately after the commit to close the task with AC verification; this skill commits, tn-task-done closes.
