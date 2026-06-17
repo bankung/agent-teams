@@ -40,14 +40,17 @@ class PushKeys(BaseModel):
 class KindsEnabled(BaseModel):
     """Per-subscription notification-kind toggles (D3 locked).
 
-    Four booleans, all default True so a freshly-subscribed browser receives
-    every event-type until the operator narrows it. `extra='forbid'` so a
-    typo from the FE (`task_dones`, `budgetWarn`) fails 422 instead of
-    silently persisting under a garbage key.
+    Five booleans. Four default True so a freshly-subscribed browser receives
+    every event-type until the operator narrows it. `task_halted` defaults
+    False (opt-in, Kanban #1841) — existing subscribers are not enrolled
+    automatically. `extra='forbid'` so a typo from the FE (`task_dones`,
+    `budgetWarn`) fails 422 instead of silently persisting under a garbage key.
 
     Kept in lockstep with the JSONB column default in
-    `models/push_subscription.py::_KINDS_ENABLED_DEFAULT` and the
-    `server_default` in migration `0046_push_subscriptions`.
+    `models/push_subscription.py::_KINDS_ENABLED_DEFAULT`. The DB
+    `server_default` in migration `0046_push_subscriptions` omits
+    `task_halted`; the resolver treats absent keys as False (correct opt-in
+    behaviour) so no new migration is required.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -56,6 +59,7 @@ class KindsEnabled(BaseModel):
     task_done: bool = True
     task_failed: bool = True
     budget_warn: bool = True
+    task_halted: bool = False  # Kanban #1841 — OPT-IN (default False), unlike the other four
 
 
 class PushSubscribeRequest(BaseModel):
