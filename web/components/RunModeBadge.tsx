@@ -14,7 +14,7 @@ export function RunModeBadge({ mode }: Props) {
     <span
       aria-label={label}
       title={title}
-      className="inline-flex items-center rounded px-1 py-0.5 text-emerald-700 bg-emerald-50 dark:text-emerald-300 dark:bg-emerald-900/30"
+      className="glass-pill inline-flex items-center rounded px-1 py-0.5 text-emerald-700 bg-emerald-50 dark:text-emerald-300 dark:bg-emerald-900/30"
     >
       <Icon name="auto-run" size={14} />
     </span>

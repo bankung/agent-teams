@@ -279,8 +279,8 @@ export function ListView({ tasks, onOpenDetail, highlightedTaskId = null }: Prop
         </span>
       </div>
 
-      {/* Table */}
-      <div className="overflow-x-auto overflow-y-auto flex-1 rounded border border-zinc-200 dark:border-zinc-800">
+      {/* Table — #2453: glass-surface frosts the table shell under html.glass. */}
+      <div className="glass-surface overflow-x-auto overflow-y-auto flex-1 rounded border border-zinc-200 dark:border-zinc-800">
         <table className="w-full text-sm border-collapse">
           <thead className="sticky top-0 bg-zinc-50 dark:bg-zinc-900 z-10">
             <tr>
@@ -343,7 +343,7 @@ export function ListView({ tasks, onOpenDetail, highlightedTaskId = null }: Prop
                 {/* Status */}
                 <td className="py-2 px-3 align-middle whitespace-nowrap">
                   <span
-                    className={`inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                    className={`glass-pill inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${
                       STATUS_CLASS[task.process_status] ?? "text-zinc-600 bg-zinc-100 dark:text-zinc-300 dark:bg-zinc-800"
                     }`}
                   >

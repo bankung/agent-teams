@@ -49,7 +49,7 @@ export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, so
       ref={setNodeRef}
       data-process-status={statuses.join("+")}
       data-lane-sortable={sortable}
-      className={`flex min-w-0 flex-col rounded-md bg-zinc-50/60 dark:bg-zinc-900/40 p-2.5 lg:min-h-0${dropHighlight}`}
+      className={`glass-surface flex min-w-0 flex-col rounded-md bg-zinc-50/60 dark:bg-zinc-900/40 p-2.5 lg:min-h-0${dropHighlight}`}
     >
       <header className="mb-2 flex items-center gap-1.5 border-b border-zinc-200 dark:border-zinc-800 pb-2 px-1">
         <span className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">

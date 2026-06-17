@@ -4,6 +4,7 @@ import "./globals.css";
 import { ClientProviders } from "@/components/ClientProviders";
 import { ServiceWorkerRegister } from "@/components/ServiceWorkerRegister";
 import { ThemeProvider } from "@/components/ThemeProvider";
+import { GlassProvider } from "@/components/GlassProvider";
 
 const inter = Inter({ subsets: ["latin"], display: "swap" });
 
@@ -32,7 +33,9 @@ export const viewport: Viewport = {
 // Synchronous FOUC mitigation: read localStorage + matchMedia and set the `dark`
 // class on <html> BEFORE React hydrates. Keep this string tiny and dependency-free
 // — it executes inline before any module loads.
-const themeBootstrap = `(function(){try{var t=localStorage.getItem('theme');var d=t==='dark'||(t!=='light'&&window.matchMedia('(prefers-color-scheme: dark)').matches);if(d)document.documentElement.classList.add('dark');}catch(e){}})();`;
+// #2453 — also sets the `glass` axis class pre-hydration so the glassmorphism
+// layer never flashes on/off on load (own localStorage key 'glass'; opt-in).
+const themeBootstrap = `(function(){try{var t=localStorage.getItem('theme');var d=t==='dark'||(t!=='light'&&window.matchMedia('(prefers-color-scheme: dark)').matches);if(d)document.documentElement.classList.add('dark');if(localStorage.getItem('glass')==='on')document.documentElement.classList.add('glass');}catch(e){}})();`;
 
 export default function RootLayout({
   children,
@@ -50,9 +53,11 @@ export default function RootLayout({
           so no document scroll is needed; dashboard typically fits one viewport. */}
       <body className="antialiased h-full">
         <ThemeProvider>
-          <ClientProviders>
-            {children}
-          </ClientProviders>
+          <GlassProvider>
+            <ClientProviders>
+              {children}
+            </ClientProviders>
+          </GlassProvider>
         </ThemeProvider>
         {/* #955.C — registers /sw.js on first hydration. No-op when the
             browser lacks serviceWorker; never opens a notification prompt

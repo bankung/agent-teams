@@ -632,7 +632,10 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
 
   return (
     // #954 — mobile: page scrolls (h-auto, overflow-y-auto); desktop preserves the fixed-viewport board (h-screen, overflow-hidden)
-    <main className="flex min-h-screen flex-col overflow-y-auto bg-white dark:bg-zinc-950 px-4 py-4 sm:px-6 sm:py-5 lg:h-screen lg:min-h-0 lg:overflow-hidden">
+    // #2453 — `glass-board` is the hook for the glass theme: under html.glass it
+    // anchors the single page-level blob backdrop (the ::before pseudo) and frosts
+    // the board surface. No-op when glass is off (flat theme renders unchanged).
+    <main className="glass-board relative flex min-h-screen flex-col overflow-y-auto bg-white dark:bg-zinc-950 px-4 py-4 sm:px-6 sm:py-5 lg:h-screen lg:min-h-0 lg:overflow-hidden">
       {/* #1781 capped the header (lg:max-h-[40vh] + overflow-y-auto) to floor
           the board at >=60vh. #2404 (operator decision 2026-06-15) — cap REMOVED
           so the usage/P&L/Graph band never shows a scrollbar when expanded.

@@ -164,3 +164,184 @@
   background-color: #059669; /* emerald-600 */
   border-color: #059669;
 }
+
+/* ════════════════════════════════════════════════════════════════════════
+   Kanban #2453 — GLASSMORPHISM theme (calm). SECOND axis, orthogonal to
+   light/dark. Everything here is scoped under `html.glass`; with the class
+   absent the board is byte-for-byte the flat theme (none of these rules apply).
+   Axis combos: html.glass (light+glass) and html.glass.dark (dark+glass).
+
+   Design rationale, contrast table, and the full decision log live in
+   context/projects/agent-teams/dev-sr-frontend/glassmorphism-2453.md.
+
+   BLUR-LAYER CAP = 2 tiers (documented): (1) the board/list surface shell
+   (.glass-surface) and (2) the card (.glass-card). Pills/badges (.glass-pill)
+   get a translucent FILL only — NO backdrop-filter — so the count of
+   simultaneously-blurred layers stacked at any pixel is capped at 2, never
+   "one blur behind every chip". The blob backdrop is ONE page-level layer
+   (the .glass-board::before pseudo), not one-per-card.
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* ── Token layer (CSS variables, scoped to the axis) ─────────────────────── */
+html.glass {
+  /* Light + glass */
+  --glass-surface-bg: rgba(240, 237, 247, 0.92); /* page surface ~#f0edf7 */
+  --glass-pane: rgba(255, 255, 255, 0.55);
+  --glass-pane-hover: rgba(255, 255, 255, 0.66);
+  --glass-border: rgba(255, 255, 255, 0.8);
+  --glass-shadow: 0 8px 28px -8px rgba(120, 110, 160, 0.22),
+    0 2px 8px -4px rgba(120, 110, 160, 0.16);
+  --glass-blur: 18px;
+  --glass-saturate: 120%;
+  /* Text scrim film painted UNDER content on a card so titles + secondary text
+     stay AA over the brightest blob. Light veil = 0.55: measured to put
+     secondary zinc-500 at 4.54:1 over the brightest blob center while the pane
+     stays visibly frosted (lum ~0.94, not opaque). See note file for the table. */
+  --glass-card-scrim: rgba(255, 255, 255, 0.55);
+  /* @supports fallback — SOLID low-opacity surface when backdrop-filter is
+     unavailable (NOT a faint invisible outline). */
+  --glass-pane-solid: rgba(247, 245, 251, 0.96);
+  --glass-surface-solid: rgba(243, 240, 249, 0.97);
+}
+html.glass.dark {
+  /* Dark + glass */
+  --glass-surface-bg: rgba(24, 21, 31, 0.92); /* page surface ~#18151f */
+  --glass-pane: rgba(255, 255, 255, 0.08);
+  --glass-pane-hover: rgba(255, 255, 255, 0.12);
+  --glass-border: rgba(255, 255, 255, 0.16);
+  --glass-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5),
+    0 2px 10px -6px rgba(0, 0, 0, 0.42);
+  --glass-blur: 20px;
+  --glass-saturate: 140%;
+  /* Dark scrim = 0.62 dark film so light ink keeps AA over a glow blob:
+     measured secondary zinc-400 at 5.27:1 over the brightest glow center. */
+  --glass-card-scrim: rgba(18, 16, 24, 0.62);
+  --glass-pane-solid: rgba(30, 27, 38, 0.96);
+  --glass-surface-solid: rgba(26, 23, 33, 0.97);
+}
+
+/* ── Page-level blob backdrop — ONE layer (the cap on blob layers) ───────── */
+html.glass .glass-board {
+  background-color: var(--glass-surface-bg);
+}
+html.glass .glass-board::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  /* Four soft pastel blobs (light). Painted with radial-gradients on a single
+     element — no per-blob DOM nodes. Heavy blur on this ONE layer only. */
+  background-image:
+    radial-gradient(38% 42% at 12% 18%, rgba(215, 198, 242, 0.85), transparent 70%),
+    radial-gradient(36% 40% at 88% 14%, rgba(247, 204, 224, 0.8), transparent 70%),
+    radial-gradient(42% 46% at 78% 84%, rgba(196, 236, 217, 0.8), transparent 72%),
+    radial-gradient(40% 44% at 20% 88%, rgba(252, 220, 196, 0.82), transparent 72%);
+  filter: blur(50px);
+}
+html.glass.dark .glass-board::before {
+  /* Dimmed glow blobs (dark) — lower opacity so they never raise the ink floor. */
+  background-image:
+    radial-gradient(38% 42% at 12% 18%, rgba(106, 79, 176, 0.55), transparent 70%),
+    radial-gradient(36% 40% at 88% 14%, rgba(168, 82, 115, 0.5), transparent 70%),
+    radial-gradient(42% 46% at 78% 84%, rgba(44, 122, 114, 0.5), transparent 72%),
+    radial-gradient(40% 44% at 20% 88%, rgba(74, 91, 168, 0.52), transparent 72%);
+  filter: blur(58px);
+}
+/* Lift all board chrome above the blob layer. */
+html.glass .glass-board > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Tier-1 blur: board/list surface shells ──────────────────────────────── */
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  html.glass .glass-surface {
+    background-color: var(--glass-pane) !important;
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-shadow);
+  }
+
+  /* ── Tier-2 blur: cards. Two-layer paint: a scrim film (::before) under the
+     content guarantees AA contrast; the frosted pane sits behind it. ────── */
+  html.glass .glass-card {
+    position: relative;
+    background-color: var(--glass-pane) !important;
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    /* Per-side (NOT shorthand) so the bug-task red `border-l-*` accent and the
+       pending amber border-color override below both survive. */
+    border-top-color: var(--glass-border) !important;
+    border-right-color: var(--glass-border) !important;
+    border-bottom-color: var(--glass-border) !important;
+    box-shadow: var(--glass-shadow);
+  }
+  html.glass .glass-card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    border-radius: inherit;
+    background-color: var(--glass-card-scrim);
+    pointer-events: none;
+  }
+  /* Keep card content above its own scrim film. */
+  html.glass .glass-card > * {
+    position: relative;
+    z-index: 1;
+  }
+  html.glass .glass-card:hover {
+    background-color: var(--glass-pane-hover) !important;
+  }
+}
+
+/* ── @supports FALLBACK: no backdrop-filter → SOLID low-opacity surfaces ──── */
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  html.glass .glass-surface {
+    background-color: var(--glass-surface-solid) !important;
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-shadow);
+  }
+  html.glass .glass-card {
+    background-color: var(--glass-pane-solid) !important;
+    border-top-color: var(--glass-border) !important;
+    border-right-color: var(--glass-border) !important;
+    border-bottom-color: var(--glass-border) !important;
+    box-shadow: var(--glass-shadow);
+  }
+  html.glass .glass-card:hover {
+    background-color: var(--glass-pane-solid) !important;
+  }
+}
+
+/* Pending (AI working) card distinction — amber BORDER + RING only, no colored
+   fill (a fill under text drags secondary zinc text under AA; border/ring sit
+   outside the text box). Outside @supports so it applies on both the frosted
+   and the solid-fallback paths. Per-side border so a bug+pending card keeps its
+   red left accent. The running-dot + PendingBadge also carry the state. */
+html.glass .glass-card[data-card-pending="true"] {
+  border-top-color: rgba(217, 119, 6, 0.6) !important; /* amber-600 */
+  border-right-color: rgba(217, 119, 6, 0.6) !important;
+  border-bottom-color: rgba(217, 119, 6, 0.6) !important;
+  box-shadow: var(--glass-shadow), 0 0 0 1px rgba(217, 119, 6, 0.4);
+}
+
+/* ── Pills/badges: NO blur, NO fill override (this is the blur-cap discipline).
+   Measured (see note file): every status/priority/role/badge pill keeps WCAG AA
+   on a frosted card unaided — light pills are opaque (bg-*-50 / bg-zinc-100),
+   dark pills (dark:bg-*-900/30) composite to ≥5.9:1 over the dark card base.
+   `.glass-pill` is therefore a deliberate NO-OP hook: it marks the
+   contrast-audited chips and reserves a join point without adding a blurred
+   layer per chip. Do NOT give it a backdrop-filter — that would break the
+   documented 2-tier blur cap. ───────────────────────────────────────────── */
+
+/* ── Reduced motion: the blobs are static (no animation), but disable the
+   card hover transition's transform feel by keeping color-only transitions.
+   No motion is introduced by glass, so this is a defensive no-op affordance. */
+@media (prefers-reduced-motion: reduce) {
+  html.glass .glass-card {
+    transition: none;
+  }
+}

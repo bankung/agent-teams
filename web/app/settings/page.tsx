@@ -30,6 +30,7 @@ import { ResourcesPanel } from "@/components/ResourcesPanel";
 import { ProjectSettingsPanel } from "@/components/ProjectSettingsPanel";
 import { PushNotificationsPanel } from "@/components/PushNotificationsPanel";
 import { ThemePicker } from "@/components/ThemePicker";
+import { GlassPicker } from "@/components/GlassPicker";
 import { TourReplayButton } from "@/components/TourReplayButton";
 
 type Props = { searchParams: { project?: string } };
@@ -130,8 +131,21 @@ export default async function SettingsPage({ searchParams }: Props) {
               browser.
             </p>
           </header>
-          <div className="rounded-md border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
-            <ThemePicker />
+          <div className="flex flex-col gap-3 rounded-md border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-[13px] text-zinc-700 dark:text-zinc-300">
+                Mode
+              </span>
+              <ThemePicker />
+            </div>
+            {/* #2453 — glass surface axis (orthogonal to light/dark). Flat =
+                current theme; glass = frosted cards on a soft blob backdrop. */}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-zinc-100 pt-3 dark:border-zinc-800">
+              <span className="text-[13px] text-zinc-700 dark:text-zinc-300">
+                Surface
+              </span>
+              <GlassPicker />
+            </div>
           </div>
         </section>
 
