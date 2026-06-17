@@ -58,7 +58,8 @@ def test_app_imports() -> None:
 
     assert app.title == "agent-teams API"
     # Confirm both routers mounted under /api.
-    paths = {r.path for r in app.routes}  # type: ignore[attr-defined]
+    # app.openapi()["paths"] is FastAPI's canonical full-prefixed path table.
+    paths = set(app.openapi()["paths"].keys())
     assert "/health" in paths
     assert any(p.startswith("/api/projects") for p in paths)
     assert any(p.startswith("/api/tasks") for p in paths)
@@ -84,7 +85,7 @@ def test_constants_align_with_general_md() -> None:
     """
     from src.constants import TaskPriority, TaskRole, TaskStatus
 
-    assert TaskStatus.ALL == (1, 2, 3, 4, 5, 6)
+    assert TaskStatus.ALL == (1, 2, 3, 4, 5, 6, 8)  # 7 reserved; 8=HALTED_PENDING_USER (#1839)
     assert TaskPriority.ALL == (1, 2, 3, 4)
     # Kanban #7 Section B (2026-05-16): SECURITY_REVIEWER=6 claimed from
     # the dev-reserved 6..10 partition.

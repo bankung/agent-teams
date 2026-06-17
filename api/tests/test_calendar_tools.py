@@ -680,7 +680,8 @@ def test_new_base_routes_registered():
     """The new calendar routes are registered on the app at /api/tools/calendar."""
     from src.main import app
 
-    paths = {r.path for r in app.routes}
+    # app.openapi()["paths"] is FastAPI's canonical full-prefixed path table.
+    paths = set(app.openapi()["paths"].keys())
     for p in (
         "/api/tools/calendar/{provider}/list-events",
         "/api/tools/calendar/{provider}/freebusy",

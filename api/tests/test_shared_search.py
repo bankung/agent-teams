@@ -407,9 +407,11 @@ async def _agent_teams_project_id(client) -> int:
 async def test_http_discovery_happy_path(client):
     """discovery over the live agent-teams corpus returns ranked results."""
     pid = await _agent_teams_project_id(client)
+    # X-Project-Id header required: router enforces project_id == session_project_id.
     resp = await client.get(
         f"/api/projects/{pid}/shared/search",
         params={"mode": "discovery", "q": "weekly release cadence", "limit": 5},
+        headers={"X-Project-Id": str(pid)},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -422,8 +424,11 @@ async def test_http_discovery_happy_path(client):
 @pytest.mark.asyncio
 async def test_http_discovery_missing_q_is_422(client):
     pid = await _agent_teams_project_id(client)
+    # X-Project-Id header required: router enforces project_id == session_project_id.
     resp = await client.get(
-        f"/api/projects/{pid}/shared/search", params={"mode": "discovery"}
+        f"/api/projects/{pid}/shared/search",
+        params={"mode": "discovery"},
+        headers={"X-Project-Id": str(pid)},
     )
     assert resp.status_code == 422, resp.text
 
@@ -431,8 +436,11 @@ async def test_http_discovery_missing_q_is_422(client):
 @pytest.mark.asyncio
 async def test_http_unknown_mode_is_422(client):
     pid = await _agent_teams_project_id(client)
+    # X-Project-Id header required: router enforces project_id == session_project_id.
     resp = await client.get(
-        f"/api/projects/{pid}/shared/search", params={"mode": "bogus", "q": "x"}
+        f"/api/projects/{pid}/shared/search",
+        params={"mode": "bogus", "q": "x"},
+        headers={"X-Project-Id": str(pid)},
     )
     assert resp.status_code == 422, resp.text
 
@@ -449,8 +457,11 @@ async def test_http_scroll_traversal_is_400(client):
 
 @pytest.mark.asyncio
 async def test_http_unknown_project_is_404(client):
+    # X-Project-Id must match the path project_id so the session-binding check
+    # passes before the router does the DB lookup (which then returns 404).
     resp = await client.get(
         "/api/projects/99999999/shared/search",
         params={"mode": "discovery", "q": "x"},
+        headers={"X-Project-Id": "99999999"},
     )
     assert resp.status_code == 404, resp.text

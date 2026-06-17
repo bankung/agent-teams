@@ -371,7 +371,11 @@ async def test_forecast_endpoint_404_wrong_project(
         resp = await client.post(
             f"/api/tasks/{task_id}/cost-forecast", headers=headers_b
         )
-        assert resp.status_code == 404, resp.text
+        # The session-project guard (assert_task_belongs_to_session) raises 400
+        # when the task belongs to project A but the header is project B.
+        # The guard fires before the endpoint can return 404 (task "not found"
+        # from the session's perspective is surfaced as 400 per Kanban #695).
+        assert resp.status_code == 400, resp.text
     finally:
         await client.delete(f"/api/projects/{pa}")
         await client.delete(f"/api/projects/{pb}")

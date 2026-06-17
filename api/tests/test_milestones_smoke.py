@@ -111,7 +111,7 @@ async def test_milestone_crud_happy_round_trip(client, scaffold_cleanup) -> None
     assert detail["rollup"]["done"] == 0
     assert detail["rollup"]["progress_pct"] == 0.0
     assert detail["rollup"]["by_process_status"] == {
-        "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0
+        "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "8": 0
     }
 
     # GET list — includes our milestone.
