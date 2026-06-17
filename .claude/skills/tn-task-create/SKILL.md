@@ -11,7 +11,7 @@ allowed-tools:
   - Read
   - Write
 metadata:
-  version: 1.0.0
+  version: 1.0.1
   category: kanban
   tags: [kanban, task, create, mutate]
 ---
@@ -116,7 +116,14 @@ Print: created task **id**, title, `task_type`, AC count, and the AC list. One l
 ## Usage
 
 ```
+# Simplest — natural-language request, AC drafted by the skill
 /tn-task-create add a rate-limit guard to the email endpoints, with tests
+
+# With explicit urgency signal (skill will set priority=HIGH)
+/tn-task-create fix the broken GET /api/tasks pagination — urgent, blocking QA
+
+# Common operator mistake to avoid: "add to milestone X" means open a task ONLY — do NOT implement
+/tn-task-create open a task for the milestone-46 skill-eval pass; assign to ms46
 ```
 
 The Lead can also invoke this via the Skill tool (skill name = `tn-task-create`).

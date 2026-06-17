@@ -11,7 +11,7 @@ allowed-tools:
   - Bash(grep:*)
   - Bash(curl:*)
 metadata:
-  version: 1.0.0
+  version: 1.0.1
   category: platform
   tags: [platform, git, commit, mutate]
 ---
@@ -108,7 +108,14 @@ sentinel trips on tool_calls deltas) — held queue, not a backfill.
 ## Usage
 
 ```
+# Simplest — task id + single file, message auto-derived from task title
+/tn-git-commit 2155 langgraph/worker.py
+
+# Multi-file explicit message
 /tn-git-commit 2155 langgraph/worker.py langgraph/tests/test_worker_hitl_usage.py -- "#2155: HITL-resume usage PATCH"
+
+# Non-task commit (chore / release prep) — no task id, explicit message required
+/tn-git-commit context/standards/skills/skill-authoring.md -- "chore: update skill-authoring E10 usage examples"
 ```
 
 (Free-form arguments are fine — the procedure above is the contract, not the arg syntax.)
