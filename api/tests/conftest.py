@@ -177,6 +177,9 @@ async def _live_db_row_count_invariant():
             "tool_calls",   # activity-rail rows written by live API during any session;
                             # pytest_runner is SELECT-only on agent_teams so test code
                             # cannot write here — same concurrent-API-noise rationale as tasks
+            "usage_events",  # live API writes usage-tracking rows during any run;
+                             # pytest_runner is SELECT-only on agent_teams so test code
+                             # cannot write here — same concurrent-API-noise rationale as tasks
         }
     )
 
