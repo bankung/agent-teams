@@ -10,6 +10,10 @@ allowed-tools:
   - Bash(curl:*)
   - Read
   - Write
+metadata:
+  version: 1.0.0
+  category: kanban
+  tags: [kanban, task, create, mutate]
 ---
 
 # /tn-task-create — paved-path Kanban task creation
@@ -134,3 +138,8 @@ Once this pattern is proven, expand the `tn-` family (each is its own flat skill
 - `/tn-milestone` — create/attach milestones.
 - `/tn-bind <project>` — project bootstrap (resolve by name → write `_runtime/lead_project_id.txt`).
 - `/tn-next` — pick up the next auto-run task.
+
+## Related skills
+- `tn-task-done` — close a task you just created, once its AC are verified
+- `tn-task-update` — mutate fields on an already-created task (status, priority, etc.)
+- `tn-milestone-create` — create a milestone to group the new task under

@@ -8,6 +8,10 @@ allowed-tools:
   - Bash(curl:*)
   - Read
   - Write
+metadata:
+  version: 1.0.0
+  category: kanban
+  tags: [kanban, milestone, create, mutate]
 ---
 
 # /tn-milestone-create — open a milestone the right way
@@ -49,3 +53,8 @@ curl --silent -X POST -H "X-Project-Id: <id>" -H "Content-Type: application/json
 ```
 /tn-milestone-create Q3 hardening sprint | stabilize the tn-* family + cost forecast
 ```
+
+## Related skills
+- `tn-milestone-done` — release the milestone you created here once all its tasks are done
+- `tn-milestones` — list existing milestones before creating a new one to avoid duplicates
+- `tn-task-attach` — attach tasks to the new milestone id returned by this skill

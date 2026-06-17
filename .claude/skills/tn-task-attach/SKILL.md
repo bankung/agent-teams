@@ -8,6 +8,10 @@ allowed-tools:
   - Bash(curl:*)
   - Read
   - Write
+metadata:
+  version: 1.0.0
+  category: kanban
+  tags: [kanban, task, milestone, attach, mutate]
 ---
 
 # /tn-task-attach — link a task to a milestone
@@ -38,3 +42,8 @@ GET-verify the task's `milestone_id` is now set (or null). Report task id + its 
 ## Footgun guards
 1. Task and milestone must be on the SAME project (the bound one) — checked in Step 2 + enforced server-side.
 2. Detach with `milestone_id: null`, never by inventing a 0/placeholder id.
+
+## Related skills
+- `tn-milestone-create` — create the milestone before attaching tasks to it
+- `tn-milestones` — list all milestones to find the right milestone id to attach to
+- `tn-task-create` — create the task before attaching it to a milestone

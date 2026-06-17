@@ -9,6 +9,10 @@ allowed-tools:
   - Bash(curl:*)
   - Read
   - Write
+metadata:
+  version: 1.0.0
+  category: platform
+  tags: [platform, bind, project, setup]
 ---
 
 # /tn-bind — resolve a project by name and persist the session binding
@@ -55,3 +59,8 @@ project switch never re-wrote it). `/tn-bind` makes re-binding a single delibera
 /tn-bind agent-teams
 /tn-bind secretary
 ```
+
+## Related skills
+
+- **tn-tasks-next** — the first skill to run after binding; surfaces the next actionable task for the bound project.
+- **tn-audit** — the health audit skill that also resolves from the bound project; run after bind to get a quick project status.

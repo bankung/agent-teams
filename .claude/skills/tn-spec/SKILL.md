@@ -9,6 +9,10 @@ allowed-tools:
   - Read
   - Grep
   - Glob
+metadata:
+  version: 1.0.0
+  category: kanban
+  tags: [kanban, spec, planning, refine]
 ---
 
 # /tn-spec — pushback + revise twice, then create
@@ -46,3 +50,8 @@ Present the hardened spec (title, description, task_type, draft AC). Then create
 ```
 /tn-spec add rate-limiting to the email endpoints
 ```
+
+## Related skills
+
+- **tn-task-create** — the skill tn-spec hands off to after hardening; creates the task with the refined spec and AC in one POST.
+- **tn-intense-review** — the post-implementation counterpart to tn-spec; where tn-spec hardens the plan, tn-intense-review hardens the finished change.

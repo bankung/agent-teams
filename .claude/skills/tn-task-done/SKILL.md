@@ -10,6 +10,10 @@ allowed-tools:
   - Bash(date:*)
   - Read
   - Write
+metadata:
+  version: 1.0.0
+  category: kanban
+  tags: [kanban, task, done, mutate, ac-verify]
 ---
 
 # /tn-task-done — verify acceptance criteria, then close
@@ -78,3 +82,7 @@ Print: task id, title, EACH criterion + its verdict + evidence, and the final st
 ```
 /tn-task-done 1842
 ```
+
+## Related skills
+- `tn-task-update` — make non-DONE status changes (in_progress, review, cancelled) without the AC gate
+- `tn-task-create` — create the task that will eventually be closed here

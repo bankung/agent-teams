@@ -7,6 +7,10 @@ argument-hint: "<task id>"
 allowed-tools:
   - Bash(curl:*)
   - Read
+metadata:
+  version: 1.0.0
+  category: kanban
+  tags: [kanban, task, read-only, inspect]
 ---
 
 # /tn-task — show a single task, formatted
@@ -31,3 +35,8 @@ Show: `#id` · title · status · priority · task_type/task_kind · milestone_i
 then the **acceptance_criteria** list (each: text + status) · then a trimmed description.
 
 Keep it compact and scannable.
+
+## Related skills
+- `tn-tasks-next` — show the prioritized queue of what to work next (vs. a single task by id)
+- `tn-task-update` — mutate a task's status, priority, or fields once you've reviewed it here
+- `tn-task-done` — verify AC and close a task after inspecting it with this skill

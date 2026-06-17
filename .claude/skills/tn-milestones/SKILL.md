@@ -7,6 +7,10 @@ argument-hint: "(no args)"
 allowed-tools:
   - Bash(curl:*)
   - Read
+metadata:
+  version: 1.0.0
+  category: kanban
+  tags: [kanban, milestone, read-only, overview]
 ---
 
 # /tn-milestones — milestone overview with rollup
@@ -31,3 +35,8 @@ curl --silent -H "X-Project-Id: <id>" http://localhost:8456/api/milestones/<mid>
 Order: active first, then planned (by sort_order NULLs-last, then id), then released/cancelled last.
 For each: `#id` · title · status · `sort_order` · **progress** `done/total (progress_pct%)` from the
 rollup. Keep it compact.
+
+## Related skills
+- `tn-milestone-create` — create a new milestone once you've reviewed the current ones here
+- `tn-milestone-done` — release a milestone when its progress is 100%
+- `tn-task-attach` — attach a task to a milestone id discovered via this skill

@@ -10,6 +10,10 @@ allowed-tools:
   - Grep
   - Glob
   - Bash
+metadata:
+  version: 1.0.0
+  category: review
+  tags: [review, adversarial, quality, hardening]
 ---
 
 # /tn-intense-review — 2-round adversarial review + determinism hardening
@@ -57,3 +61,8 @@ loop the fix→Round-2 once more or hand back to the operator.
 ```
 /tn-intense-review diff on dev since 31f115d (the tn-* skill batch)
 ```
+
+## Related skills
+
+- **tn-spec** — hardens the task spec before work starts; use tn-spec upstream and tn-intense-review after the change is ready.
+- **tn-task-done** — the skill that flips a task to DONE; tn-intense-review is the gate that must pass before invoking tn-task-done on a bulletproof change.
