@@ -57,3 +57,50 @@ Coverage-unique · auth / trust-boundary · input-validation (422/400) · edge +
 (404/410/409, empty, null) · data-loss / idempotency · concurrency / ordering · regression tests
 pinning a real past bug (`# Regression:`) · any source-lock with **no** behavioral twin (the lock
 *is* the coverage). The cost of missing a real bug exceeds the cost of one extra test.
+
+## (C) api.ts codegen decision — #2435 (2026-06-17, dev-frontend spike)
+
+**Decision: KEEP hand-written.** openapi-typescript / orval are net-negative for this file.
+
+Composition of `web/lib/api.ts` (2,635 LOC): ~785 comment/doc (30% — Kanban refs + wire-format
+gotchas + defensive-resilience notes), ~755 type-def code (29%), ~744 field/import/infra (28%),
+~163 fetch-helper logic (6%, 59 `async function`), ~189 blank. Exports: 94 `type` · 1 `class`
+(HttpError) · 59 `async function`.
+
+| Dimension | Adopt openapi-typescript | Keep hand-written |
+|---|---|---|
+| Net LOC | −450–500 (after enum-override layer); **785 doc lines lost** | 0 |
+| Drift | Partial: types auto-sync; fetch helpers stay manual; integer enums degrade to `number` | Manual; ~20-field additive gap |
+| Dep + toolchain | new devDep + codegen build step + per-schema commit churn | zero |
+| Docs preserved | no | yes (referenced by >40 components) |
+| Enum type safety (`TaskStatusValue=1\|2\|…`) | lost w/o +50–80 LOC override | preserved in `constants.ts` |
+
+orval rejected outright — adds a **runtime** dep to a deliberate 7-runtime-dep FE and imposes
+react-query (FE is RSC + direct-fetch). Net: ~450–500 LOC saved costs the WHY-annotated type
+docs + an enum-safety regression → negative for a solo-operator tool. **Reconsider if:** API
+grows >10 top-level schemas, more contributors join, or FastAPI ships enum-aware TS generation.
+
+**Drift surfaced (real, separate finding):** api.ts is a strict subset of the live OpenAPI (zero
+phantom FE fields) but lags the backend — TaskRead missing 11 (`halted_at`,
+`max_active_children`, `template_auto_run_confirmed_at`, `requires_human_review`,
+`subagent_models`, `effort_override`, `forecast_cost_usd`, `audit_retry_count`, `health_alert`,
+`notification_targets`, `is_active`); ProjectRead missing 9 (`agent_overrides`, `tools_config`,
+`auto_decision_policy`, `tax_jurisdiction`, `legal_entity`, `fiscal_year_start`,
+`currency_default`, `notification_targets`, `required_binaries`). FastAPI also emits
+`process_status`/`priority`/`assigned_role`/`run_mode`/`task_kind` as bare integer/string.
+**Fix lazily** — type a field when a component consumes it (blanket catch-up = YAGNI); no task opened.
+
+## (D) Oversized production files — backlog (top 10; NOT refactored — #2435 AC4)
+
+| # | File | LOC |
+|---|---|---:|
+| 1 | `api/src/routers/tasks.py` | 3,377 |
+| 2 | `web/lib/api.ts` | 2,635 |
+| 3 | `api/src/routers/tools_email.py` | 2,490 |
+| 4 | `langgraph/worker.py` | 2,118 |
+| 5 | `langgraph/nodes.py` | 1,836 |
+| 6 | `api/src/schemas/task.py` | 1,670 |
+| 7 | `langgraph/scenarios/capability_probe.py` | 1,430 |
+| 8 | `api/src/schemas/project.py` | 1,365 |
+| 9 | `web/components/TaskDetail.tsx` | 1,238 |
+| 10 | `api/src/routers/projects.py` | 1,210 |
