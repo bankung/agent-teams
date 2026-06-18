@@ -6,10 +6,11 @@
 
 import { redirect } from "next/navigation";
 
-type Props = { params: { name: string } };
+type Props = { params: Promise<{ name: string }> };
 
 export const dynamic = "force-dynamic";
 
-export default function ProjectSettingsRedirect({ params }: Props) {
+export default async function ProjectSettingsRedirect(props: Props) {
+  const params = await props.params;
   redirect(`/settings?project=${encodeURIComponent(params.name)}`);
 }

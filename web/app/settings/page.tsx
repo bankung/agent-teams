@@ -34,11 +34,12 @@ import { ThemePicker } from "@/components/ThemePicker";
 import { GlassPicker } from "@/components/GlassPicker";
 import { TourReplayButton } from "@/components/TourReplayButton";
 
-type Props = { searchParams: { project?: string } };
+type Props = { searchParams: Promise<{ project?: string }> };
 
 export const dynamic = "force-dynamic";
 
-export default async function SettingsPage({ searchParams }: Props) {
+export default async function SettingsPage(props: Props) {
+  const searchParams = await props.searchParams;
   // #2380 — project-scoped block when ?project= is present. On 404 (or any
   // resolution failure) the project section is skipped; the global sections
   // still render (never crash the whole page).

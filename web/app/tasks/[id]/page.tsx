@@ -30,8 +30,8 @@ import { TaskFocusView } from "@/components/TaskFocusView";
 export const dynamic = "force-dynamic";
 
 type Props = {
-  params: { id: string };
-  searchParams?: { action_hint?: string };
+  params: Promise<{ id: string }>;
+  searchParams?: Promise<{ action_hint?: string }>;
 };
 
 // Locate the task across the bound user's active projects. The X-Project-Id
@@ -58,7 +58,9 @@ async function locateTask(
   return null;
 }
 
-export default async function TaskFocusPage({ params, searchParams }: Props) {
+export default async function TaskFocusPage(props: Props) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   const parsedId = Number.parseInt(params.id, 10);
   if (!Number.isFinite(parsedId) || parsedId < 1) {
     notFound();

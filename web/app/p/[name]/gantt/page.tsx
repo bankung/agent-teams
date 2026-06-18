@@ -24,11 +24,12 @@ import {
 import { GanttView } from "@/components/GanttView";
 import { ViewSwitcher } from "@/components/ViewSwitcher";
 
-type Props = { params: { name: string } };
+type Props = { params: Promise<{ name: string }> };
 
 export const dynamic = "force-dynamic";
 
-export default async function ProjectGanttPage({ params }: Props) {
+export default async function ProjectGanttPage(props: Props) {
+  const params = await props.params;
   let project;
   try {
     project = await getProjectByName(params.name);

@@ -29,16 +29,15 @@ import { CalendarView } from "@/components/CalendarView";
 import { ViewSwitcher } from "@/components/ViewSwitcher";
 
 type Props = {
-  params: { name: string };
-  searchParams: { month?: string };
+  params: Promise<{ name: string }>;
+  searchParams: Promise<{ month?: string }>;
 };
 
 export const dynamic = "force-dynamic";
 
-export default async function ProjectCalendarPage({
-  params,
-  searchParams,
-}: Props) {
+export default async function ProjectCalendarPage(props: Props) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   let project;
   try {
     project = await getProjectByName(params.name);

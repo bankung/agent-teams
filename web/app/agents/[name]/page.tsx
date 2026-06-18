@@ -14,9 +14,10 @@ import { AgentDetailActions } from "@/components/AgentDetailActions";
 
 export const dynamic = "force-dynamic";
 
-type Props = { params: { name: string } };
+type Props = { params: Promise<{ name: string }> };
 
-export default async function AgentDetailPage({ params }: Props) {
+export default async function AgentDetailPage(props: Props) {
+  const params = await props.params;
   const name = decodeURIComponent(params.name);
   let agent;
   try {
