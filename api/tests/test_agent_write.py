@@ -175,7 +175,7 @@ async def test_post_happy_writes_valid_file_that_roundtrips(client, agents_dir):
     assert summary["tool_count"] == 3
     assert summary["valid"] is True
     # The description with a mid-value colon survived serialization.
-    assert summary["full_description"] == "Fresh agent. Note: keeps the colon."
+    assert summary["description"] == "Fresh agent. Note: keeps the colon."
     # NEGATIVE lock — an explicit tools list, not the all-tools placeholder.
     assert summary["tools_summary"] == "3 tools"
     assert summary["tools_summary"] != "All tools"
