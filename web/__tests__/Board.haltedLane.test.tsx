@@ -17,33 +17,27 @@ configure({ asyncUtilTimeout: 5000 });
 
 // ---------------------------------------------------------------------------
 // buildColumnPs — pure unit test (no React, no mocks needed).
+// #2477: ps=8 merged into Blocked (key "4"); no standalone key "8" column.
 // ---------------------------------------------------------------------------
-describe("buildColumnPs — halted lane key (#2416)", () => {
-  it("maps key '8' to TaskStatus.HALTED_PENDING_USER (8)", () => {
+describe("buildColumnPs — merged Blocked lane (#2477)", () => {
+  it("5-column set (ps=8 merged into key '4') produces 5 entries", () => {
     const columns = [
       { key: "1", statuses: [TaskStatus.TODO], label: "New tasks" },
       { key: "2", statuses: [TaskStatus.IN_PROGRESS], label: "In progress" },
       { key: "3", statuses: [TaskStatus.REVIEW], label: "Review" },
-      { key: "4", statuses: [TaskStatus.BLOCKED], label: "Blocked" },
-      { key: "8", statuses: [TaskStatus.HALTED_PENDING_USER], label: "Halted / Pending user" },
+      { key: "4", statuses: [TaskStatus.BLOCKED, TaskStatus.HALTED_PENDING_USER], label: "Blocked" },
       { key: "5", statuses: [TaskStatus.DONE], label: "Done" },
     ];
     const map = buildColumnPs(columns);
-    expect(map["8"]).toBe(TaskStatus.HALTED_PENDING_USER);
-    expect(map["8"]).toBe(8);
+    expect(Object.keys(map)).toHaveLength(5);
+    // statuses[0] for key "4" is BLOCKED — drops onto Blocked ps=4.
+    expect(map["4"]).toBe(TaskStatus.BLOCKED);
+    // No standalone "8" key.
+    expect("8" in map).toBe(false);
   });
 
-  it("full 6-column set produces 6 entries", () => {
-    const columns = [
-      { key: "1", statuses: [TaskStatus.TODO], label: "New tasks" },
-      { key: "2", statuses: [TaskStatus.IN_PROGRESS], label: "In progress" },
-      { key: "3", statuses: [TaskStatus.REVIEW], label: "Review" },
-      { key: "4", statuses: [TaskStatus.BLOCKED], label: "Blocked" },
-      { key: "8", statuses: [TaskStatus.HALTED_PENDING_USER], label: "Halted / Pending user" },
-      { key: "5", statuses: [TaskStatus.DONE], label: "Done" },
-    ];
-    const map = buildColumnPs(columns);
-    expect(Object.keys(map)).toHaveLength(6);
+  it("TaskStatus.HALTED_PENDING_USER is still 8 (constant unchanged)", () => {
+    expect(TaskStatus.HALTED_PENDING_USER).toBe(8);
   });
 });
 
@@ -222,7 +216,9 @@ const EMPTY_PROGRESS: ProgressStatsResponse = { burndown: [], velocity: [] };
 
 import { Board } from "@/components/Board";
 
-describe("Board — halted-pending-user lane (#2416)", () => {
+// #2477: ps=8 is merged into Blocked column; groupByStatus still buckets it
+// (ALL_STATUSES unchanged) so tasks are NOT dropped.
+describe("Board — ps=8 grouped under Blocked lane (#2477)", () => {
   beforeEach(() => {
     mockListDoneLanePage.mockReset();
     mockListMilestones.mockResolvedValue([]);

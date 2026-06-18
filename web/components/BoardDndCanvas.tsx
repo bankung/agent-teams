@@ -129,7 +129,7 @@ export function BoardDndCanvas({
       {/* #954 — mobile: page scrolls (no overflow-hidden, no min-h-0); desktop restores the fixed-height bounded lanes at lg */}
       <div
         data-board="dnd"
-        className="grid flex-1 grid-cols-1 gap-3 md:grid-cols-3 lg:min-h-0 lg:grid-cols-6 lg:overflow-hidden"
+        className="grid flex-1 grid-cols-1 gap-3 md:grid-cols-3 lg:min-h-0 lg:grid-cols-5 lg:overflow-hidden"
       >
         {columns.map((col) => {
           const colTasks = col.statuses.flatMap((s) => grouped.get(s) ?? []);

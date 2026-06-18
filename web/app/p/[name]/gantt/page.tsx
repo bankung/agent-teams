@@ -73,7 +73,7 @@ export default async function ProjectGanttPage({ params }: Props) {
   const boardHref = `/p/${encodeURIComponent(project.name)}`;
 
   return (
-    <main className="flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950">
+    <main className="glass-board flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950">
       {/* #2404 — 3-zone header: left (flex-1) · centered ViewSwitcher (shrink-0) · right placeholder (flex-1). */}
       <header className="mb-4 flex flex-wrap items-center gap-2 text-sm">
         {/* LEFT zone */}

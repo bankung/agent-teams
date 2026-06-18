@@ -357,7 +357,7 @@ export function GanttView({ projectId, projectName, milestones }: Props) {
             <button
               type="button"
               onClick={() => setCreateOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded border border-emerald-600 bg-emerald-600 px-3 py-2 text-xs font-medium uppercase tracking-wide text-white hover:bg-emerald-700 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-emerald-500 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+              className="glass-glow inline-flex items-center gap-1.5 rounded border border-emerald-600 bg-emerald-600 px-3 py-2 text-xs font-medium uppercase tracking-wide text-white hover:bg-emerald-700 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-emerald-500 dark:bg-emerald-500 dark:hover:bg-emerald-600"
               data-new-milestone-trigger
             >
               New milestone
@@ -402,7 +402,7 @@ export function GanttView({ projectId, projectName, milestones }: Props) {
             it on the timeline.
           </p>
         ) : (
-          <div className="flex overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
+          <div className="glass-surface flex overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
             {/* ── Left rail — one row per milestone (drop target). ─────────── */}
             <div className="w-64 shrink-0 border-r border-zinc-200 dark:border-zinc-800">
               {/* Rail header aligns with the timeline axis row. */}

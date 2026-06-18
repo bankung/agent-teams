@@ -28,7 +28,7 @@ export function AgentCard({ agent }: { agent: AgentSummary }) {
       data-agent-domain={agent.domain}
       data-agent-valid={agent.valid ? "true" : "false"}
       title={errText ?? agent.name}
-      className={`flex flex-col gap-2 rounded-md border bg-white p-3 transition-colors dark:bg-zinc-900 ${
+      className={`glass-card flex flex-col gap-2 rounded-md border bg-white p-3 transition-colors dark:bg-zinc-900 ${
         invalid
           ? "border-red-300 hover:border-red-400 dark:border-red-800/70 dark:hover:border-red-700"
           : "border-zinc-200 hover:border-zinc-300 dark:border-zinc-800 dark:hover:border-zinc-700"

@@ -71,7 +71,7 @@ export function TaskActionButtons({
         autoFocus={actionHint === "approve"}
         title={approveDisabled ? approveDisabledReason : undefined}
         data-task-action="approve"
-        className="flex-1 rounded border border-emerald-600 bg-emerald-600 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px] sm:flex-none sm:min-h-0 sm:px-3 sm:py-1.5 dark:border-emerald-500 dark:bg-emerald-600 dark:hover:bg-emerald-700"
+        className="glass-glow flex-1 rounded border border-emerald-600 bg-emerald-600 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px] sm:flex-none sm:min-h-0 sm:px-3 sm:py-1.5 dark:border-emerald-500 dark:bg-emerald-600 dark:hover:bg-emerald-700"
       >
         {submitting ? "…" : approveLabel}
       </button>
@@ -100,7 +100,7 @@ export function TaskActionButtons({
       <Link
         href={openFullHref}
         data-task-action="open-full"
-        className="flex flex-1 items-center justify-center rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 min-h-[44px] sm:flex-none sm:min-h-0 sm:px-3 sm:py-1.5 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+        className="glass-glow flex flex-1 items-center justify-center rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 min-h-[44px] sm:flex-none sm:min-h-0 sm:px-3 sm:py-1.5 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
       >
         Open full
       </Link>

@@ -155,15 +155,15 @@ describe("TaskActivityStrip — running/idle indicator", () => {
     });
   });
 
-  it("shows data-activity-state=idle initially (SSR default) before first fetch resolves", async () => {
-    // Never resolves in this test — we just check initial render.
+  it("renders nothing initially (SSR default) before first fetch resolves — #2476 hide-when-empty", async () => {
+    // Never resolves in this test — strip is hidden while rows=null (no data yet).
     mockGetTaskToolCalls.mockReturnValue(new Promise(() => undefined));
 
     const { container } = render(<TaskActivityStrip projectId={1} taskId={99} />);
 
-    const el = container.querySelector("[data-activity-state]");
-    expect(el).not.toBeNull();
-    expect(el?.getAttribute("data-activity-state")).toBe("idle");
+    // #2476: strip returns null when rows are null/empty — no markup at all.
+    expect(container.querySelector("[data-activity-strip]")).toBeNull();
+    expect(container.querySelector("[data-activity-state]")).toBeNull();
   });
 
   it("shows aria-label=running when running", async () => {
@@ -191,30 +191,34 @@ describe("TaskActivityStrip — running/idle indicator", () => {
   });
 });
 
-// ---- AC2: zero rows → no strip rows ----------------------------------------
+// ---- AC2: zero rows → strip returns null (#2476 hide-when-empty) -----------
 
-describe("TaskActivityStrip — zero rows", () => {
-  it("renders no activity rows when fetch returns empty array", async () => {
+describe("TaskActivityStrip — zero rows (#2476)", () => {
+  it("renders null (no markup) when fetch returns empty array", async () => {
     mockGetTaskToolCalls.mockResolvedValue([]);
 
-    render(<TaskActivityStrip projectId={1} taskId={99} />);
+    const { container } = render(<TaskActivityStrip projectId={1} taskId={99} />);
 
-    // Dot is always present; rows list must be absent.
+    // Wait for the fetch to settle, then confirm strip is fully absent.
     await waitFor(() => {
-      expect(document.querySelector("[data-activity-state]")).not.toBeNull();
+      // fetch was called
+      expect(mockGetTaskToolCalls).toHaveBeenCalledTimes(1);
     });
-    expect(document.querySelector("[data-activity-rows]")).toBeNull();
+    expect(container.querySelector("[data-activity-strip]")).toBeNull();
+    expect(container.querySelector("[data-activity-state]")).toBeNull();
+    expect(container.querySelector("[data-activity-rows]")).toBeNull();
   });
 
-  it("railless card still shows idle dot", async () => {
+  it("strip is absent (null) on zero-row card — idle dot trade-off per #2476", async () => {
     mockGetTaskToolCalls.mockResolvedValue([]);
 
-    render(<TaskActivityStrip projectId={1} taskId={99} />);
+    const { container } = render(<TaskActivityStrip projectId={1} taskId={99} />);
 
     await waitFor(() => {
-      const el = document.querySelector("[data-activity-state]");
-      expect(el?.getAttribute("data-activity-state")).toBe("idle");
+      expect(mockGetTaskToolCalls).toHaveBeenCalledTimes(1);
     });
+    // #2476 intentional: idle dot NOT shown when no rows; entire strip hidden.
+    expect(container.querySelector("[data-activity-state]")).toBeNull();
   });
 });
 
@@ -371,5 +375,67 @@ describe("TaskActivityStrip — rows rendered", () => {
     await waitFor(() => {
       expect(mockGetTaskToolCalls).toHaveBeenCalledWith(1, 99, 3);
     });
+  });
+});
+
+// ---- #2477 — Halted badge on TaskCard ---------------------------------------
+
+describe("TaskCard — halted badge (#2477)", () => {
+  it("renders 'Pending user' badge for ps=8 question task", () => {
+    const task = makeTask({
+      process_status: TaskStatus.HALTED_PENDING_USER,
+      interaction_kind: "question",
+      halt_reason: null,
+    });
+    const { container } = render(<TaskCard task={task} />);
+    const badge = container.querySelector("[data-halted-badge]");
+    expect(badge).not.toBeNull();
+    expect(badge?.getAttribute("data-halted-badge")).toBe("pending-user");
+    expect(badge?.textContent).toBe("Pending user");
+  });
+
+  it("renders 'Pending user' badge for ps=8 decision task", () => {
+    const task = makeTask({
+      process_status: TaskStatus.HALTED_PENDING_USER,
+      interaction_kind: "decision",
+      halt_reason: null,
+    });
+    const { container } = render(<TaskCard task={task} />);
+    const badge = container.querySelector("[data-halted-badge]");
+    expect(badge?.getAttribute("data-halted-badge")).toBe("pending-user");
+    expect(badge?.textContent).toBe("Pending user");
+  });
+
+  it("renders 'Halted' badge for ps=8 work task with halt_reason in title attr", () => {
+    const task = makeTask({
+      process_status: TaskStatus.HALTED_PENDING_USER,
+      interaction_kind: "work",
+      halt_reason: "waiting for vendor API",
+    });
+    const { container } = render(<TaskCard task={task} />);
+    const badge = container.querySelector("[data-halted-badge]");
+    expect(badge).not.toBeNull();
+    expect(badge?.getAttribute("data-halted-badge")).toBe("halted");
+    expect(badge?.textContent).toBe("Halted");
+    expect(badge?.getAttribute("title")).toBe("waiting for vendor API");
+  });
+
+  it("renders 'Halted' badge (no title) for ps=8 work task with null halt_reason", () => {
+    const task = makeTask({
+      process_status: TaskStatus.HALTED_PENDING_USER,
+      interaction_kind: "work",
+      halt_reason: null,
+    });
+    const { container } = render(<TaskCard task={task} />);
+    const badge = container.querySelector("[data-halted-badge]");
+    expect(badge?.getAttribute("data-halted-badge")).toBe("halted");
+    // null halt_reason → no title attribute.
+    expect(badge?.getAttribute("title")).toBeNull();
+  });
+
+  it("does NOT render halted badge for non-ps=8 task", () => {
+    const task = makeTask({ process_status: TaskStatus.BLOCKED, interaction_kind: "work" });
+    const { container } = render(<TaskCard task={task} />);
+    expect(container.querySelector("[data-halted-badge]")).toBeNull();
   });
 });

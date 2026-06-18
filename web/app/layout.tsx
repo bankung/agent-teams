@@ -35,7 +35,11 @@ export const viewport: Viewport = {
 // — it executes inline before any module loads.
 // #2453 — also sets the `glass` axis class pre-hydration so the glassmorphism
 // layer never flashes on/off on load (own localStorage key 'glass'; opt-in).
-const themeBootstrap = `(function(){try{var t=localStorage.getItem('theme');var d=t==='dark'||(t!=='light'&&window.matchMedia('(prefers-color-scheme: dark)').matches);if(d)document.documentElement.classList.add('dark');if(localStorage.getItem('glass')==='on')document.documentElement.classList.add('glass');}catch(e){}})();`;
+// #2475 default flip: glass is now ON by default. Bootstrap adds .glass UNLESS
+// the user has explicitly stored "off". Mirrors the dark-mode opt-out idiom
+// (dark adds unless 'light'; glass adds unless 'off'). SSR renders without .glass;
+// <html suppressHydrationWarning> absorbs the class divergence until hydration.
+const themeBootstrap = `(function(){try{var t=localStorage.getItem('theme');var d=t==='dark'||(t!=='light'&&window.matchMedia('(prefers-color-scheme: dark)').matches);if(d)document.documentElement.classList.add('dark');if(localStorage.getItem('glass')!=='off')document.documentElement.classList.add('glass');}catch(e){}})();`;
 
 export default function RootLayout({
   children,

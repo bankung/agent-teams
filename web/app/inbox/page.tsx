@@ -104,7 +104,7 @@ export default async function InboxPage() {
   return (
     <main
       data-inbox-page
-      className="flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950"
+      className="glass-board flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950"
     >
       <header className="mb-4 flex flex-wrap items-center gap-2 text-sm">
         <Link
@@ -128,7 +128,7 @@ export default async function InboxPage() {
         {entries.length === 0 ? (
           <p
             data-inbox-empty
-            className="rounded border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400"
+            className="glass-surface rounded border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400"
           >
             Nothing waiting. Pending question / decision tasks land here when
             they need a human response.
@@ -140,7 +140,7 @@ export default async function InboxPage() {
                 key={group.project.id}
                 data-inbox-group
                 data-project-id={group.project.id}
-                className="flex flex-col rounded border border-zinc-200 dark:border-zinc-800"
+                className="glass-surface flex flex-col rounded border border-zinc-200 dark:border-zinc-800"
               >
                 {/* Project header — name links to its board; count on the right. */}
                 <header className="flex items-center gap-2 border-b border-zinc-200 bg-zinc-50/60 px-3 py-1.5 dark:border-zinc-800 dark:bg-zinc-950/40">

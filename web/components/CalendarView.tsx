@@ -466,7 +466,7 @@ export function CalendarView({
             <button
               type="button"
               onClick={onPrev}
-              className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2.5 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+              className="glass-glow rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2.5 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
               aria-label={mode === "month" ? "Previous month" : "Previous week"}
               data-calendar-prev
             >
@@ -475,7 +475,7 @@ export function CalendarView({
             <button
               type="button"
               onClick={onToday}
-              className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2.5 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+              className="glass-glow rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2.5 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
               data-calendar-today
             >
               Today
@@ -483,7 +483,7 @@ export function CalendarView({
             <button
               type="button"
               onClick={onNext}
-              className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2.5 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+              className="glass-glow rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2.5 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
               aria-label={mode === "month" ? "Next month" : "Next week"}
               data-calendar-next
             >
@@ -838,7 +838,7 @@ function MonthGrid({
 
   return (
     <>
-      <div className="grid grid-cols-7 gap-px overflow-hidden rounded-t-lg border border-b-0 border-zinc-200 bg-zinc-200 text-center text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:bg-zinc-800 dark:text-zinc-400">
+      <div className="glass-surface grid grid-cols-7 gap-px overflow-hidden rounded-t-lg border border-b-0 border-zinc-200 bg-zinc-200 text-center text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:bg-zinc-800 dark:text-zinc-400">
         {WEEKDAY_LABELS.map((d) => (
           <div key={d} className="bg-zinc-50 py-1.5 dark:bg-zinc-900">
             {d}
@@ -847,7 +847,7 @@ function MonthGrid({
       </div>
 
       <div
-        className="grid grid-cols-7 gap-px overflow-hidden rounded-b-lg border border-zinc-200 bg-zinc-200 dark:border-zinc-800 dark:bg-zinc-800"
+        className="glass-surface grid grid-cols-7 gap-px overflow-hidden rounded-b-lg border border-zinc-200 bg-zinc-200 dark:border-zinc-800 dark:bg-zinc-800"
         data-calendar-grid
       >
         {grid.flat().map((cell) => {
@@ -952,7 +952,7 @@ function WeekStrip({
 
   return (
     <div
-      className="grid grid-cols-1 gap-px overflow-hidden rounded-lg border border-zinc-200 bg-zinc-200 sm:grid-cols-7 dark:border-zinc-800 dark:bg-zinc-800"
+      className="glass-surface grid grid-cols-1 gap-px overflow-hidden rounded-lg border border-zinc-200 bg-zinc-200 sm:grid-cols-7 dark:border-zinc-800 dark:bg-zinc-800"
       data-calendar-week-grid
     >
       {days.map((d, i) => {

@@ -166,6 +166,22 @@ export function TaskCard({ task, onOpenDetail, highlighted = false, projectId, b
               </span>
             );
           })()}
+          {/* #2477 — HALTED_PENDING_USER badge (ps=8 tasks merged into Blocked lane). */}
+          {task.process_status === TaskStatus.HALTED_PENDING_USER && (() => {
+            const isPendingUser =
+              task.interaction_kind === "question" ||
+              task.interaction_kind === "decision";
+            const label = isPendingUser ? "Pending user" : "Halted";
+            return (
+              <span
+                data-halted-badge={isPendingUser ? "pending-user" : "halted"}
+                title={isPendingUser ? undefined : (task.halt_reason ?? undefined)}
+                className="glass-pill inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium text-amber-700 bg-amber-50 dark:text-amber-300 dark:bg-amber-900/30"
+              >
+                {label}
+              </span>
+            );
+          })()}
           <RunModeBadge mode={task.run_mode} />
           <TaskKindBadge kind={task.task_kind} />
           <PendingBadge task={task} />

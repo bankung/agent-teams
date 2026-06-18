@@ -147,7 +147,7 @@ function AggregateSummary({ stats }: { stats: ProjectStatsEntry[] }) {
     <section
       data-aggregate-summary
       aria-label="Aggregate summary across all active projects"
-      className="mb-5 rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900"
+      className="glass-surface mb-5 rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900"
     >
       <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
         Across all projects
@@ -251,7 +251,7 @@ function CompactProjectCard({
     <article
       data-project-card
       data-project-name={entry.name}
-      className="flex flex-col gap-2 rounded-md border border-zinc-200 bg-white p-3 transition-colors hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
+      className="glass-card flex flex-col gap-2 rounded-md border border-zinc-200 bg-white p-3 transition-colors hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
     >
       <header className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 flex-col gap-0.5">
@@ -419,7 +419,7 @@ export default async function DashboardPage() {
   for (const p of projects) projectsById.set(p.id, p);
 
   return (
-    <main className="flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950">
+    <main className="glass-board flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950">
       {/* T3 (#1362) — welcome banner; self-controls visibility (client-side
           localStorage flag + own-project check). Pass the already-fetched
           project list so the banner can detect whether the user has any own
@@ -437,7 +437,7 @@ export default async function DashboardPage() {
           <Link
             href="/agents"
             data-nav-agents
-            className="inline-flex items-center rounded border border-zinc-300 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-400 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
+            className="glass-glow inline-flex items-center rounded border border-zinc-300 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-400 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
           >
             Agents
           </Link>
@@ -473,55 +473,12 @@ export default async function DashboardPage() {
 
           <AggregateSummary stats={stats} />
 
-          {/* Cost/token strip (Kanban #871). Sibling section BETWEEN the
-              lifecycle aggregate and the per-project grid — separate concern
-              (usage) from the lifecycle counts above and the navigation
-              index below. */}
+          {/* Cost/token strip (Kanban #871). Sibling section ABOVE the
+              per-project grid — separate concern (usage) from the lifecycle
+              counts above and the navigation index below. */}
           <CostSummary
             stats={stats}
             ariaLabel="Portfolio-wide token and cost usage"
-          />
-
-          {/* Kanban #2356 — monthly billing-cycle spend. Sibling to CostSummary
-              (cost views grouped). Degrades gracefully when monthly=null. */}
-          {monthly != null && (
-            <MonthlySpendSection
-              data={monthly}
-              defaultCollapsed={false}
-              storageKey="dashboard.panels.monthly.expanded"
-            />
-          )}
-
-          {/* Kanban #1329 (M6 FE) — cross-project P&L rollup. Operator-level
-              view of revenue / expenses / net per project in the chosen
-              window. Sits BELOW CostSummary (cost side first, P&L side after)
-              and ABOVE the per-project navigation grid.
-              Gated by NEXT_PUBLIC_FINANCE_PANELS_ENABLED (Kanban #1392). */}
-          {FINANCE_PANELS_ENABLED && (
-            <PnlDashboardSection
-              defaultCollapsed={false}
-              storageKey="dashboard.panels.pnl.expanded"
-            />
-          )}
-
-          {/* Kanban #945 — cross-project active-tasks list. Operator-level
-              view of tasks in {in-progress, review, blocked} across every
-              active project. Refreshes via DashboardRefresher's SSE-driven
-              router.refresh() (server-component fetch above). Sits BELOW
-              PnlDashboardSection and ABOVE the per-project nav grid. */}
-          <CrossProjectActiveTasksList
-            data={activeTasks}
-            defaultCollapsed={false}
-            storageKey="dashboard.panels.active-tasks.expanded"
-          />
-
-          {/* Auditor activity (Kanban #1082 + #1291). Cross-project 7-day verdict
-              rollup; hidden entirely when the API returns [].
-              Client visibility managed by AuditorActivityPanel (localStorage). */}
-          <AuditorActivityPanel
-            rollup={auditRollup}
-            defaultCollapsed={false}
-            storageKey="dashboard.panels.auditor.expanded"
           />
 
           {/* Per-project compact grid (SECONDARY). The aggregate section above
@@ -546,6 +503,49 @@ export default async function DashboardPage() {
               ))}
             </div>
           </section>
+
+          {/* Kanban #2356 — monthly billing-cycle spend. Sits BELOW the
+              per-project grid (cross-project detail sections). Degrades
+              gracefully when monthly=null. */}
+          {monthly != null && (
+            <MonthlySpendSection
+              data={monthly}
+              defaultCollapsed={false}
+              storageKey="dashboard.panels.monthly.expanded"
+            />
+          )}
+
+          {/* Kanban #1329 (M6 FE) — cross-project P&L rollup. Operator-level
+              view of revenue / expenses / net per project in the chosen
+              window. Sits BELOW the per-project grid (cross-project detail
+              sections). Gated by NEXT_PUBLIC_FINANCE_PANELS_ENABLED (#1392). */}
+          {FINANCE_PANELS_ENABLED && (
+            <PnlDashboardSection
+              defaultCollapsed={false}
+              storageKey="dashboard.panels.pnl.expanded"
+            />
+          )}
+
+          {/* Kanban #945 — cross-project active-tasks list. Operator-level
+              view of tasks in {in-progress, review, blocked} across every
+              active project. Refreshes via DashboardRefresher's SSE-driven
+              router.refresh() (server-component fetch above). Sits BELOW
+              the per-project nav grid. */}
+          <CrossProjectActiveTasksList
+            data={activeTasks}
+            defaultCollapsed={false}
+            storageKey="dashboard.panels.active-tasks.expanded"
+          />
+
+          {/* Auditor activity (Kanban #1082 + #1291). Cross-project 7-day verdict
+              rollup; hidden entirely when the API returns [].
+              Client visibility managed by AuditorActivityPanel (localStorage).
+              Sits BELOW the per-project nav grid. */}
+          <AuditorActivityPanel
+            rollup={auditRollup}
+            defaultCollapsed={false}
+            storageKey="dashboard.panels.auditor.expanded"
+          />
         </>
       )}
     </main>

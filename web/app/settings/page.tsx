@@ -67,7 +67,7 @@ export default async function SettingsPage({ searchParams }: Props) {
   }
 
   return (
-    <main className="flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950">
+    <main className="glass-board flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950">
       <header className="mb-4 flex flex-wrap items-center gap-2 text-sm">
         <Link
           href={project ? `/p/${encodeURIComponent(project.name)}` : "/dashboard"}
@@ -90,7 +90,7 @@ export default async function SettingsPage({ searchParams }: Props) {
           <section
             data-settings-project
             aria-labelledby="settings-project-heading"
-            className="flex flex-col gap-3 rounded-md border border-zinc-200 bg-zinc-50/60 p-4 dark:border-zinc-800 dark:bg-zinc-900/40"
+            className="glass-surface flex flex-col gap-3 rounded-md border border-zinc-200 bg-zinc-50/60 p-4 dark:border-zinc-800 dark:bg-zinc-900/40"
           >
             <header className="flex flex-col gap-1">
               <h2
@@ -131,7 +131,7 @@ export default async function SettingsPage({ searchParams }: Props) {
               browser.
             </p>
           </header>
-          <div className="flex flex-col gap-3 rounded-md border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="glass-surface flex flex-col gap-3 rounded-md border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-[13px] text-zinc-700 dark:text-zinc-300">
                 Mode

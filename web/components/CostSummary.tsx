@@ -193,7 +193,7 @@ export function CostSummary({
           ) : (
             <>
               {/* Mode A + Mode B side-by-side compact cards */}
-              <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {/* Mode A · Estimated */}
                 {hasEstimated && (
                   <div className="rounded-md border border-blue-100 bg-blue-50/40 px-3 py-3 dark:border-blue-900/30 dark:bg-blue-950/10">

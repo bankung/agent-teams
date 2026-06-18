@@ -223,6 +223,7 @@ html.glass.dark {
 /* ── Page-level blob backdrop — ONE layer (the cap on blob layers) ───────── */
 html.glass .glass-board {
   background-color: var(--glass-surface-bg);
+  position: relative;
 }
 html.glass .glass-board::before {
   content: "";
@@ -342,6 +343,54 @@ html.glass .glass-card[data-card-pending="true"] {
    No motion is introduced by glass, so this is a defensive no-op affordance. */
 @media (prefers-reduced-motion: reduce) {
   html.glass .glass-card {
+    transition: none;
+  }
+}
+
+/* ── Kanban #2474 (C) — Hover backlight-glow ─────────────────────────────
+   Soft outer box-shadow glow on cards + primary actionable elements when
+   glass is ON. Box-shadow is NOT a backdrop-filter, so it does NOT count
+   against the 2-tier blur cap. Calm/pastel tuned per light/dark mode.
+   Glow is glass-only (flat theme unaffected — hard constraint 1).
+   Reduced-motion: glow appears instantly (no CSS transition on it).       */
+
+/* Glow tokens (scoped to the axis, sibling to the main token block). */
+html.glass {
+  --glass-glow-light: 0 0 0 1px rgba(180, 160, 220, 0.18),
+    0 4px 18px -4px rgba(160, 130, 210, 0.28);
+  --glass-glow-dark: 0 0 0 1px rgba(120, 100, 180, 0.28),
+    0 4px 20px -4px rgba(100, 80, 170, 0.45);
+}
+
+/* Extend the existing glass-card hover: compose the glow with the existing
+   pane-hover bg change (both apply on hover). */
+html.glass .glass-card:hover {
+  box-shadow: var(--glass-shadow), var(--glass-glow-light);
+}
+html.glass.dark .glass-card:hover {
+  box-shadow: var(--glass-shadow), var(--glass-glow-dark);
+}
+
+/* .glass-glow — applied to primary actionable buttons/surfaces. Hover-only
+   outer glow (box-shadow — NOT backdrop-filter, so it does NOT count against
+   the 2-tier blur cap). Base state: glass-border on the button edge so it
+   visually coheres with the frosted surface theme. No backdrop-filter on
+   .glass-glow itself — buttons are small overlays, not frosted panels. */
+html.glass .glass-glow {
+  border-color: var(--glass-border) !important;
+}
+html.glass .glass-glow:hover {
+  box-shadow: var(--glass-glow-light);
+}
+html.glass.dark .glass-glow:hover {
+  box-shadow: var(--glass-glow-dark);
+}
+
+/* Reduced-motion: instant glow (no transition). The hover bg already has
+   `transition: none` above; glow rides the same rule. */
+@media (prefers-reduced-motion: reduce) {
+  html.glass .glass-card:hover,
+  html.glass .glass-glow:hover {
     transition: none;
   }
 }

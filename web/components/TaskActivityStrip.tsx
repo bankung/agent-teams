@@ -85,6 +85,13 @@ export function TaskActivityStrip({ projectId, taskId }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchRows closes over current props; [projectId, taskId] effect dep is the real guard. #2334
   }, [projectId, taskId]);
 
+  // #2476 — hide the entire strip when there are no rows.
+  // Trade-off (intended): the idle dot no longer appears on activity-less
+  // IN_PROGRESS cards (matches plain TODO card visual weight — zero footprint).
+  // The dot + rows still render together once rows exist.
+  const hasRows = rows !== null && rows.length > 0;
+  if (!hasRows) return null;
+
   const isRunning = activityState === "running";
 
   // Dot classes: animate-pulse when running; static muted when idle.
@@ -93,12 +100,9 @@ export function TaskActivityStrip({ projectId, taskId }: Props) {
     ? "h-2 w-2 rounded-full bg-emerald-500 animate-pulse motion-reduce:animate-none dark:bg-emerald-400"
     : "h-2 w-2 rounded-full bg-zinc-300 dark:bg-zinc-600";
 
-  // Only show strip rows when we have data and it's non-empty.
-  const hasRows = rows !== null && rows.length > 0;
-
   return (
-    <div data-activity-strip className="mt-2">
-      {/* Running/idle dot — always rendered from first paint (idle default). */}
+    <div data-activity-strip className="mt-1.5">
+      {/* Running/idle dot — present only when rows exist (see #2476). */}
       <span
         data-activity-state={activityState}
         aria-label={activityState}
@@ -108,14 +112,12 @@ export function TaskActivityStrip({ projectId, taskId }: Props) {
         <span className={dotClass} aria-hidden />
       </span>
 
-      {/* Activity rows — only when non-empty. */}
-      {hasRows && (
-        <ol className="mt-1 flex flex-col gap-0.5" data-activity-rows>
-          {rows!.map((row) => (
-            <ActivityRow key={row.id} row={row} />
-          ))}
-        </ol>
-      )}
+      {/* Activity rows — always non-empty at this point. */}
+      <ol className="mt-1 flex flex-col gap-0.5" data-activity-rows>
+        {rows.map((row) => (
+          <ActivityRow key={row.id} row={row} />
+        ))}
+      </ol>
     </div>
   );
 }

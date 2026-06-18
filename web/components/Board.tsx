@@ -69,12 +69,15 @@ type Props = {
 
 type Column = { statuses: TaskStatusValue[]; label: string; key: string };
 
+// #2477 — merged ps=8 (HALTED_PENDING_USER) into Blocked lane (5→5 columns).
+// The separate "Halted / Pending user" lane is dropped; ps=8 tasks render under
+// Blocked with a badge in TaskCard. ALL_STATUSES keeps ps=8 so groupByStatus
+// still buckets it — both 4 and 8 buckets are flatMapped by BoardDndCanvas.
 const COLUMNS: Column[] = [
   { statuses: [TaskStatus.TODO], label: "New tasks", key: "1" },
   { statuses: [TaskStatus.IN_PROGRESS], label: "In progress", key: "2" },
   { statuses: [TaskStatus.REVIEW], label: "Review", key: "3" },
-  { statuses: [TaskStatus.BLOCKED], label: "Blocked", key: "4" },
-  { statuses: [TaskStatus.HALTED_PENDING_USER], label: "Halted / Pending user", key: "8" },
+  { statuses: [TaskStatus.BLOCKED, TaskStatus.HALTED_PENDING_USER], label: "Blocked", key: "4" },
   { statuses: [TaskStatus.DONE], label: "Done", key: "5" },
 ];
 

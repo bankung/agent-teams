@@ -49,7 +49,10 @@ export function GlassProvider({ children }: { children: ReactNode }) {
     } catch {
       stored = null;
     }
-    const initial: GlassMode = isGlassMode(stored) ? stored : "off";
+    // #2475 default flip: unset → "on" (glass is now the default surface).
+    // Explicit stored "off" wins via isGlassMode catch. SSR state stays "off"
+    // to mirror the pre-hydration class set by the bootstrap script below.
+    const initial: GlassMode = isGlassMode(stored) ? stored : "on";
     setGlassState(initial);
     applyGlassClass(initial === "on");
   }, []);

@@ -93,7 +93,7 @@ export default async function TaskFocusPage({ params, searchParams }: Props) {
     <main
       data-task-focus-page
       data-task-id={located.task.id}
-      className="flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950"
+      className="glass-board flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950"
     >
       <header className="mb-4 flex flex-wrap items-center gap-2 text-sm">
         <Link

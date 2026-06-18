@@ -92,7 +92,7 @@ export function AgentGallery({ agents }: { agents: AgentSummary[] }) {
       {/* Controls: filter chips. */}
       <div
         data-agent-controls
-        className="flex flex-col gap-2 rounded-md border border-zinc-200 bg-zinc-50/60 p-3 dark:border-zinc-800 dark:bg-zinc-950/40"
+        className="glass-surface flex flex-col gap-2 rounded-md border border-zinc-200 bg-zinc-50/60 p-3 dark:border-zinc-800 dark:bg-zinc-950/40"
       >
         <div className="flex flex-wrap items-center gap-2">
           <span
@@ -201,7 +201,7 @@ export function AgentGallery({ agents }: { agents: AgentSummary[] }) {
       {visible.length === 0 ? (
         <p
           data-agent-grid-empty
-          className="rounded border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400"
+          className="glass-surface rounded border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400"
         >
           No agents match the active filters.
         </p>
