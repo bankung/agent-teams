@@ -6,11 +6,11 @@
 // and assert whether the confirm sub-modal ([data-cost-gate]) appears and which
 // follow-up API the three buttons call.
 //
-// Determinism: every query is SCOPED to the render() container (no
-// document.querySelector — avoids cross-test DOM pollution), and every
-// post-await assertion goes through findBy/waitFor (never a sync querySelector
-// after a click) per the repo's RTL flake rule (#1310). asyncUtilTimeout is
-// raised to 5 s so waitFor survives full-suite CPU load.
+// Determinism: every post-await assertion goes through findBy/waitFor (never a
+// sync querySelector after a click) per the repo's RTL flake rule (#1310).
+// asyncUtilTimeout is raised to 5 s so waitFor survives full-suite CPU load.
+// Queries use document.body (not the render container) because ModalShell
+// portals to document.body.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, waitFor, within, configure } from "@testing-library/react";
@@ -126,11 +126,11 @@ function makeForecast(estimatedUsd: number): CostForecastResult {
 // ---------- helper ----------
 
 // Render the modal open + wait for the title field (shared TaskFormFields)
-// to mount, then return the container for scoped queries.
+// to mount, then return onClose for call assertions.
 async function renderOpen(project: ProjectRead) {
   const { NewTaskModal } = await import("@/components/NewTaskModal");
   const onClose = vi.fn();
-  const { container } = render(
+  render(
     <NewTaskModal
       projectId={project.id}
       project={project}
@@ -139,31 +139,30 @@ async function renderOpen(project: ProjectRead) {
     />,
   );
   await waitFor(() => {
-    if (!container.querySelector("[data-new-task-title]")) {
+    if (!document.body.querySelector("[data-new-task-title]")) {
       throw new Error("title field not rendered yet");
     }
   });
-  return { container, onClose };
+  return { onClose };
 }
 
 // Fill the required title then click Create. Description optional (used by the
 // Use-Sample assertion to verify the directive appends to operator text).
 async function fillAndSubmit(
-  container: HTMLElement,
   user: ReturnType<typeof userEvent.setup>,
   opts: { title?: string; description?: string } = {},
 ) {
-  const title = container.querySelector(
+  const title = document.body.querySelector(
     "[data-new-task-title]",
   ) as HTMLInputElement;
   await user.type(title, opts.title ?? "Forecast me");
   if (opts.description !== undefined) {
-    const desc = container.querySelector(
+    const desc = document.body.querySelector(
       "[data-new-task-description]",
     ) as HTMLTextAreaElement | null;
     if (desc) await user.type(desc, opts.description);
   }
-  const submit = container.querySelector(
+  const submit = document.body.querySelector(
     "[data-new-task-submit]",
   ) as HTMLButtonElement;
   await user.click(submit);
@@ -185,9 +184,9 @@ describe("NewTaskModal — cost-forecast gate (#1304)", () => {
   it("shows the confirm modal when the forecast exceeds the threshold", async () => {
     const user = userEvent.setup();
     mockCostForecast.mockResolvedValue(makeForecast(3.5)); // > 1.00
-    const { container } = await renderOpen(makeProject(1.0));
+    await renderOpen(makeProject(1.0));
 
-    await fillAndSubmit(container, user);
+    await fillAndSubmit(user);
 
     // Forecast was requested for the freshly-created task id.
     await waitFor(() => {
@@ -195,7 +194,7 @@ describe("NewTaskModal — cost-forecast gate (#1304)", () => {
     });
     // The gate sub-modal renders with the $ heading (light-tech, no "tokens").
     const gate = await waitFor(() => {
-      const el = container.querySelector("[data-cost-gate]");
+      const el = document.body.querySelector("[data-cost-gate]");
       if (!el) throw new Error("cost gate not rendered yet");
       return el as HTMLElement;
     });
@@ -204,9 +203,9 @@ describe("NewTaskModal — cost-forecast gate (#1304)", () => {
     // No tokens leak into operator-facing copy.
     expect(gate.textContent ?? "").not.toMatch(/token/i);
     // All three actions present.
-    expect(container.querySelector("[data-cost-gate-runfull]")).not.toBeNull();
-    expect(container.querySelector("[data-cost-gate-sample]")).not.toBeNull();
-    expect(container.querySelector("[data-cost-gate-cancel]")).not.toBeNull();
+    expect(document.body.querySelector("[data-cost-gate-runfull]")).not.toBeNull();
+    expect(document.body.querySelector("[data-cost-gate-sample]")).not.toBeNull();
+    expect(document.body.querySelector("[data-cost-gate-cancel]")).not.toBeNull();
     // Gate is reached only AFTER create succeeded — no follow-up writes yet.
     expect(mockPatchTask).not.toHaveBeenCalled();
     expect(mockDeleteTask).not.toHaveBeenCalled();
@@ -216,9 +215,9 @@ describe("NewTaskModal — cost-forecast gate (#1304)", () => {
   it("does NOT show the modal (and never forecasts) when the threshold is null", async () => {
     const user = userEvent.setup();
     mockCostForecast.mockResolvedValue(makeForecast(99));
-    const { container, onClose } = await renderOpen(makeProject(null));
+    const { onClose } = await renderOpen(makeProject(null));
 
-    await fillAndSubmit(container, user);
+    await fillAndSubmit(user);
 
     // Create fired; the modal closed via onExternalClose.
     await waitFor(() => {
@@ -226,7 +225,7 @@ describe("NewTaskModal — cost-forecast gate (#1304)", () => {
       expect(onClose).toHaveBeenCalled();
     });
     // No gate, and the forecast endpoint is never even called when ungated.
-    expect(container.querySelector("[data-cost-gate]")).toBeNull();
+    expect(document.body.querySelector("[data-cost-gate]")).toBeNull();
     expect(mockCostForecast).not.toHaveBeenCalled();
   });
 
@@ -234,28 +233,28 @@ describe("NewTaskModal — cost-forecast gate (#1304)", () => {
   it("does NOT show the modal when the forecast is at/below the threshold", async () => {
     const user = userEvent.setup();
     mockCostForecast.mockResolvedValue(makeForecast(1.0)); // == 1.00 (not >)
-    const { container, onClose } = await renderOpen(makeProject(1.0));
+    const { onClose } = await renderOpen(makeProject(1.0));
 
-    await fillAndSubmit(container, user);
+    await fillAndSubmit(user);
 
     // Forecast ran, but the equal-to-ceiling case does NOT gate.
     await waitFor(() => {
       expect(mockCostForecast).toHaveBeenCalledWith(42, 999);
       expect(onClose).toHaveBeenCalled();
     });
-    expect(container.querySelector("[data-cost-gate]")).toBeNull();
+    expect(document.body.querySelector("[data-cost-gate]")).toBeNull();
   });
 
   // (d) Use Sample -> PATCH called with the appended directive.
   it("Use Sample PATCHes the task description with the sample directive", async () => {
     const user = userEvent.setup();
     mockCostForecast.mockResolvedValue(makeForecast(5));
-    const { container } = await renderOpen(makeProject(1.0));
+    await renderOpen(makeProject(1.0));
 
-    await fillAndSubmit(container, user, { description: "Crunch the dataset" });
+    await fillAndSubmit(user, { description: "Crunch the dataset" });
 
     const sampleBtn = await waitFor(() => {
-      const el = container.querySelector("[data-cost-gate-sample]");
+      const el = document.body.querySelector("[data-cost-gate-sample]");
       if (!el) throw new Error("sample button not rendered yet");
       return el as HTMLButtonElement;
     });
@@ -278,12 +277,12 @@ describe("NewTaskModal — cost-forecast gate (#1304)", () => {
   it("Cancel soft-deletes the just-created task", async () => {
     const user = userEvent.setup();
     mockCostForecast.mockResolvedValue(makeForecast(5));
-    const { container } = await renderOpen(makeProject(1.0));
+    await renderOpen(makeProject(1.0));
 
-    await fillAndSubmit(container, user);
+    await fillAndSubmit(user);
 
     const cancelBtn = await waitFor(() => {
-      const el = container.querySelector("[data-cost-gate-cancel]");
+      const el = document.body.querySelector("[data-cost-gate-cancel]");
       if (!el) throw new Error("cancel button not rendered yet");
       return el as HTMLButtonElement;
     });
@@ -300,13 +299,13 @@ describe("NewTaskModal — cost-forecast gate (#1304)", () => {
   it("Use Sample sends the directive without a leading newline when description is empty", async () => {
     const user = userEvent.setup();
     mockCostForecast.mockResolvedValue(makeForecast(5));
-    const { container } = await renderOpen(makeProject(1.0));
+    await renderOpen(makeProject(1.0));
 
     // Submit with no description typed (title only).
-    await fillAndSubmit(container, user);
+    await fillAndSubmit(user);
 
     const sampleBtn = await waitFor(() => {
-      const el = container.querySelector("[data-cost-gate-sample]");
+      const el = document.body.querySelector("[data-cost-gate-sample]");
       if (!el) throw new Error("sample button not rendered yet");
       return el as HTMLButtonElement;
     });
@@ -327,14 +326,14 @@ describe("NewTaskModal — cost-forecast gate (#1304)", () => {
   it("falls through to a normal close when the forecast call throws", async () => {
     const user = userEvent.setup();
     mockCostForecast.mockRejectedValue(new Error("boom"));
-    const { container, onClose } = await renderOpen(makeProject(1.0));
+    const { onClose } = await renderOpen(makeProject(1.0));
 
-    await fillAndSubmit(container, user);
+    await fillAndSubmit(user);
 
     await waitFor(() => {
       expect(mockCreateTask).toHaveBeenCalledTimes(1);
       expect(onClose).toHaveBeenCalled();
     });
-    expect(container.querySelector("[data-cost-gate]")).toBeNull();
+    expect(document.body.querySelector("[data-cost-gate]")).toBeNull();
   });
 });

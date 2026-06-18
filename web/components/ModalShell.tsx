@@ -19,6 +19,7 @@
 // content directly inside. The panel itself is a <div>; callers that need a
 // <form> wrap their own <form> inside `children`.
 
+import { createPortal } from "react-dom";
 import { useCallback, useEffect, useRef } from "react";
 
 // Tailwind max-width tokens for the sm:max-w-* panel constraint.
@@ -102,10 +103,11 @@ export function ModalShell({
   }, [open, handleEsc]);
 
   if (!open) return null;
+  if (typeof document === "undefined") return null;
 
   const panelMaxW = MAX_WIDTH_CLASS[maxWidth] ?? MAX_WIDTH_CLASS.md;
 
-  return (
+  return createPortal(
     // Backdrop — no role/aria-modal here (a11y fix: those go on the panel below)
     <div
       className="fixed inset-0 z-50 flex items-stretch justify-center bg-zinc-900/40 dark:bg-zinc-950/70 sm:items-center sm:px-4"
@@ -123,6 +125,7 @@ export function ModalShell({
       >
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

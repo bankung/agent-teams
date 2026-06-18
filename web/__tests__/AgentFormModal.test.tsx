@@ -9,9 +9,8 @@
 //
 // Determinism (#1310): every post-await assertion goes through findBy*/waitFor
 // (never a sync querySelector after a click); asyncUtilTimeout is raised so
-// waitFor survives full-suite CPU load. Queries are scoped to the render
-// container where practical; the modal renders into a portal-less ModalShell so
-// container-scoped queries reach it.
+// waitFor survives full-suite CPU load. Queries use document.body (not the
+// render container) because ModalShell portals to document.body.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, waitFor, within, fireEvent, configure } from "@testing-library/react";
@@ -83,18 +82,18 @@ beforeEach(() => {
 describe("AgentFormModal — validation", () => {
   it("disables submit until name (regex) + description are valid", async () => {
     const user = userEvent.setup();
-    const { container } = render(
+    render(
       <AgentFormModal mode="create" open onClose={() => {}} />,
     );
-    const scope = within(container);
+    const scope = within(document.body);
 
-    const submitBtn = container.querySelector(
+    const submitBtn = document.body.querySelector(
       "[data-agent-form-submit]",
     ) as HTMLButtonElement;
     expect(submitBtn.disabled).toBe(true);
 
     // Invalid name (capital + underscore) → name error + still disabled.
-    const nameInput = container.querySelector(
+    const nameInput = document.body.querySelector(
       "[data-agent-form-name]",
     ) as HTMLInputElement;
     await user.type(nameInput, "Bad_Name");
@@ -109,7 +108,7 @@ describe("AgentFormModal — validation", () => {
     await waitFor(() => expect(submitBtn.disabled).toBe(true));
 
     // Add description → enabled.
-    const desc = container.querySelector(
+    const desc = document.body.querySelector(
       "[data-agent-form-description]",
     ) as HTMLTextAreaElement;
     await user.type(desc, "A valid description.");
@@ -117,25 +116,25 @@ describe("AgentFormModal — validation", () => {
   });
 
   it("renders the restart caveat prominently", () => {
-    const { container } = render(
+    render(
       <AgentFormModal mode="create" open onClose={() => {}} />,
     );
-    const note = container.querySelector("[data-agent-form-restart-note]");
+    const note = document.body.querySelector("[data-agent-form-restart-note]");
     expect(note).not.toBeNull();
     expect(note?.textContent).toMatch(/not invokable until Claude Code restarts/i);
   });
 
   it("blocks submit when the hooks JSON does not parse", async () => {
     const user = userEvent.setup();
-    const { container } = render(
+    render(
       <AgentFormModal mode="create" open onClose={() => {}} />,
     );
     await user.type(
-      container.querySelector("[data-agent-form-name]") as HTMLInputElement,
+      document.body.querySelector("[data-agent-form-name]") as HTMLInputElement,
       "good-name",
     );
     await user.type(
-      container.querySelector(
+      document.body.querySelector(
         "[data-agent-form-description]",
       ) as HTMLTextAreaElement,
       "desc",
@@ -143,13 +142,13 @@ describe("AgentFormModal — validation", () => {
     // userEvent.type treats { and } as special key syntax → escape the literal
     // brace as {{ so we type a real "{ not json".
     await user.type(
-      container.querySelector("[data-agent-form-hooks]") as HTMLTextAreaElement,
+      document.body.querySelector("[data-agent-form-hooks]") as HTMLTextAreaElement,
       "{{ not json",
     );
     expect(
-      await within(container).findByText(/Hooks JSON is invalid/i),
+      await within(document.body).findByText(/Hooks JSON is invalid/i),
     ).toBeInTheDocument();
-    const submitBtn = container.querySelector(
+    const submitBtn = document.body.querySelector(
       "[data-agent-form-submit]",
     ) as HTMLButtonElement;
     await waitFor(() => expect(submitBtn.disabled).toBe(true));
@@ -163,37 +162,37 @@ describe("AgentFormModal — create", () => {
     const user = userEvent.setup();
     mockCreateAgent.mockResolvedValueOnce(summary());
     const onClose = vi.fn();
-    const { container } = render(
+    render(
       <AgentFormModal mode="create" open onClose={onClose} />,
     );
 
     await user.type(
-      container.querySelector("[data-agent-form-name]") as HTMLInputElement,
+      document.body.querySelector("[data-agent-form-name]") as HTMLInputElement,
       "dev-helper",
     );
     await user.type(
-      container.querySelector(
+      document.body.querySelector(
         "[data-agent-form-description]",
       ) as HTMLTextAreaElement,
       "A helper agent.",
     );
     await user.selectOptions(
-      container.querySelector("[data-agent-form-model]") as HTMLSelectElement,
+      document.body.querySelector("[data-agent-form-model]") as HTMLSelectElement,
       "sonnet",
     );
     await user.type(
-      container.querySelector("[data-agent-form-body]") as HTMLTextAreaElement,
+      document.body.querySelector("[data-agent-form-body]") as HTMLTextAreaElement,
       "You are a helper.",
     );
     await user.type(
-      container.querySelector(
+      document.body.querySelector(
         "[data-agent-form-operator-token]",
       ) as HTMLInputElement,
       "secret-key",
     );
 
     await user.click(
-      container.querySelector("[data-agent-form-submit]") as HTMLButtonElement,
+      document.body.querySelector("[data-agent-form-submit]") as HTMLButtonElement,
     );
 
     await waitFor(() => expect(mockCreateAgent).toHaveBeenCalledTimes(1));
@@ -217,41 +216,41 @@ describe("AgentFormModal — create", () => {
   it("sends tools as an explicit list when list mode + rows are filled", async () => {
     const user = userEvent.setup();
     mockCreateAgent.mockResolvedValueOnce(summary());
-    const { container } = render(
+    render(
       <AgentFormModal mode="create" open onClose={() => {}} />,
     );
     await user.type(
-      container.querySelector("[data-agent-form-name]") as HTMLInputElement,
+      document.body.querySelector("[data-agent-form-name]") as HTMLInputElement,
       "dev-helper",
     );
     await user.type(
-      container.querySelector(
+      document.body.querySelector(
         "[data-agent-form-description]",
       ) as HTMLTextAreaElement,
       "desc",
     );
     // Switch tools to explicit list and add two rows.
     await user.click(
-      container.querySelector(
+      document.body.querySelector(
         '[data-agent-form-tools-mode="list"]',
       ) as HTMLInputElement,
     );
     await user.click(
-      container.querySelector("[data-agent-form-tool-add]") as HTMLButtonElement,
+      document.body.querySelector("[data-agent-form-tool-add]") as HTMLButtonElement,
     );
     await user.type(
-      container.querySelector("[data-agent-form-tool-row='0']") as HTMLInputElement,
+      document.body.querySelector("[data-agent-form-tool-row='0']") as HTMLInputElement,
       "Read",
     );
     await user.click(
-      container.querySelector("[data-agent-form-tool-add]") as HTMLButtonElement,
+      document.body.querySelector("[data-agent-form-tool-add]") as HTMLButtonElement,
     );
     await user.type(
-      container.querySelector("[data-agent-form-tool-row='1']") as HTMLInputElement,
+      document.body.querySelector("[data-agent-form-tool-row='1']") as HTMLInputElement,
       "Grep",
     );
     await user.click(
-      container.querySelector("[data-agent-form-submit]") as HTMLButtonElement,
+      document.body.querySelector("[data-agent-form-submit]") as HTMLButtonElement,
     );
     await waitFor(() => expect(mockCreateAgent).toHaveBeenCalledTimes(1));
     expect(mockCreateAgent.mock.calls[0][0].tools).toEqual(["Read", "Grep"]);
@@ -265,7 +264,7 @@ describe("AgentFormModal — edit", () => {
     const user = userEvent.setup();
     mockUpdateAgent.mockResolvedValueOnce(summary());
     const onClose = vi.fn();
-    const { container } = render(
+    render(
       <AgentFormModal
         mode="edit"
         agent={detail()}
@@ -274,7 +273,7 @@ describe("AgentFormModal — edit", () => {
       />,
     );
 
-    const nameInput = container.querySelector(
+    const nameInput = document.body.querySelector(
       "[data-agent-form-name]",
     ) as HTMLInputElement;
     // Name pre-filled from the detail + disabled (identity / filename).
@@ -282,12 +281,12 @@ describe("AgentFormModal — edit", () => {
     expect(nameInput.disabled).toBe(true);
 
     // Description pre-filled from full_description.
-    const desc = container.querySelector(
+    const desc = document.body.querySelector(
       "[data-agent-form-description]",
     ) as HTMLTextAreaElement;
     expect(desc.value).toBe("Full description for the helper agent.");
 
-    const tokenInput = container.querySelector(
+    const tokenInput = document.body.querySelector(
       "[data-agent-form-operator-token]",
     ) as HTMLInputElement;
     // fireEvent.change sets the value + fires React's onChange directly (no
@@ -295,7 +294,7 @@ describe("AgentFormModal — edit", () => {
     fireEvent.change(tokenInput, { target: { value: "edit-key" } });
     await waitFor(() => expect(tokenInput.value).toBe("edit-key"));
     await user.click(
-      container.querySelector("[data-agent-form-submit]") as HTMLButtonElement,
+      document.body.querySelector("[data-agent-form-submit]") as HTMLButtonElement,
     );
 
     await waitFor(() => expect(mockUpdateAgent).toHaveBeenCalledTimes(1));
@@ -307,7 +306,7 @@ describe("AgentFormModal — edit", () => {
   });
 
   it("pre-fills tools list + body when agent.tools is string[] + agent.body is set", async () => {
-    const { container } = render(
+    render(
       <AgentFormModal
         mode="edit"
         agent={detail({ tools: ["Read", "Grep"], body: "hello" })}
@@ -317,17 +316,17 @@ describe("AgentFormModal — edit", () => {
     );
     // List mode radio selected.
     await waitFor(() => {
-      const listRadio = container.querySelector(
+      const listRadio = document.body.querySelector(
         '[data-agent-form-tools-mode="list"]',
       ) as HTMLInputElement;
       expect(listRadio.checked).toBe(true);
     });
     // Two pre-filled tool rows.
     await waitFor(() => {
-      const row0 = container.querySelector(
+      const row0 = document.body.querySelector(
         "[data-agent-form-tool-row='0']",
       ) as HTMLInputElement;
-      const row1 = container.querySelector(
+      const row1 = document.body.querySelector(
         "[data-agent-form-tool-row='1']",
       ) as HTMLInputElement;
       expect(row0.value).toBe("Read");
@@ -335,7 +334,7 @@ describe("AgentFormModal — edit", () => {
     });
     // Body pre-filled.
     await waitFor(() => {
-      const bodyArea = container.querySelector(
+      const bodyArea = document.body.querySelector(
         "[data-agent-form-body]",
       ) as HTMLTextAreaElement;
       expect(bodyArea.value).toBe("hello");
@@ -343,7 +342,7 @@ describe("AgentFormModal — edit", () => {
   });
 
   it("shows inherit mode when agent.tools is null", async () => {
-    const { container } = render(
+    render(
       <AgentFormModal
         mode="edit"
         agent={detail({ tools: null })}
@@ -352,7 +351,7 @@ describe("AgentFormModal — edit", () => {
       />,
     );
     await waitFor(() => {
-      const inheritRadio = container.querySelector(
+      const inheritRadio = document.body.querySelector(
         '[data-agent-form-tools-mode="inherit"]',
       ) as HTMLInputElement;
       expect(inheritRadio.checked).toBe(true);
@@ -360,7 +359,7 @@ describe("AgentFormModal — edit", () => {
   });
 
   it("shows All-tools mode when agent.tools is 'All tools'", async () => {
-    const { container } = render(
+    render(
       <AgentFormModal
         mode="edit"
         agent={detail({ tools: "All tools" })}
@@ -369,7 +368,7 @@ describe("AgentFormModal — edit", () => {
       />,
     );
     await waitFor(() => {
-      const allRadio = container.querySelector(
+      const allRadio = document.body.querySelector(
         '[data-agent-form-tools-mode="all"]',
       ) as HTMLInputElement;
       expect(allRadio.checked).toBe(true);
@@ -385,28 +384,28 @@ describe("AgentFormModal — error rendering", () => {
     mockCreateAgent.mockRejectedValueOnce(
       new HttpError(403, "operator_proof_required: …", "403 Forbidden"),
     );
-    const { container } = render(
+    render(
       <AgentFormModal mode="create" open onClose={() => {}} />,
     );
     await user.type(
-      container.querySelector("[data-agent-form-name]") as HTMLInputElement,
+      document.body.querySelector("[data-agent-form-name]") as HTMLInputElement,
       "dev-helper",
     );
     await user.type(
-      container.querySelector(
+      document.body.querySelector(
         "[data-agent-form-description]",
       ) as HTMLTextAreaElement,
       "desc",
     );
     await user.click(
-      container.querySelector("[data-agent-form-submit]") as HTMLButtonElement,
+      document.body.querySelector("[data-agent-form-submit]") as HTMLButtonElement,
     );
-    const err = await within(container).findByText(
+    const err = await within(document.body).findByText(
       /paste your OPERATOR_ACTION_KEY/i,
     );
     expect(err).toBeInTheDocument();
     expect(
-      container.querySelector('[data-agent-form-error-kind="operator"]'),
+      document.body.querySelector('[data-agent-form-error-kind="operator"]'),
     ).not.toBeNull();
   });
 
@@ -437,30 +436,30 @@ describe("AgentFormModal — error rendering", () => {
         "422 Unprocessable Entity",
       ),
     );
-    const { container } = render(
+    render(
       <AgentFormModal mode="create" open onClose={() => {}} />,
     );
     await user.type(
-      container.querySelector("[data-agent-form-name]") as HTMLInputElement,
+      document.body.querySelector("[data-agent-form-name]") as HTMLInputElement,
       "dev-helper",
     );
     await user.type(
-      container.querySelector(
+      document.body.querySelector(
         "[data-agent-form-description]",
       ) as HTMLTextAreaElement,
       "desc",
     );
     await user.click(
-      container.querySelector("[data-agent-form-submit]") as HTMLButtonElement,
+      document.body.querySelector("[data-agent-form-submit]") as HTMLButtonElement,
     );
 
-    await within(container).findByText(/agent frontmatter is invalid/i);
-    const diags = container.querySelectorAll("[data-agent-form-diagnostic]");
+    await within(document.body).findByText(/agent frontmatter is invalid/i);
+    const diags = document.body.querySelectorAll("[data-agent-form-diagnostic]");
     expect(diags.length).toBe(2);
     expect(
-      container.querySelector('[data-agent-form-diagnostic][data-severity="error"]'),
+      document.body.querySelector('[data-agent-form-diagnostic][data-severity="error"]'),
     ).not.toBeNull();
-    expect(container.textContent).toContain("unknown model 'opux'");
+    expect(document.body.textContent).toContain("unknown model 'opux'");
   });
 
   it("renders the conflict message on a 409", async () => {
@@ -468,24 +467,24 @@ describe("AgentFormModal — error rendering", () => {
     mockCreateAgent.mockRejectedValueOnce(
       new HttpError(409, "agent 'x' already exists", "409 Conflict"),
     );
-    const { container } = render(
+    render(
       <AgentFormModal mode="create" open onClose={() => {}} />,
     );
     await user.type(
-      container.querySelector("[data-agent-form-name]") as HTMLInputElement,
+      document.body.querySelector("[data-agent-form-name]") as HTMLInputElement,
       "dev-helper",
     );
     await user.type(
-      container.querySelector(
+      document.body.querySelector(
         "[data-agent-form-description]",
       ) as HTMLTextAreaElement,
       "desc",
     );
     await user.click(
-      container.querySelector("[data-agent-form-submit]") as HTMLButtonElement,
+      document.body.querySelector("[data-agent-form-submit]") as HTMLButtonElement,
     );
     expect(
-      await within(container).findByText(/already exists/i),
+      await within(document.body).findByText(/already exists/i),
     ).toBeInTheDocument();
   });
 });

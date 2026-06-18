@@ -133,7 +133,7 @@ beforeEach(() => {
 describe("TaskFormFields — NewTaskModal (data-new-task-*)", () => {
   async function renderNew() {
     const { NewTaskModal } = await import("@/components/NewTaskModal");
-    const { container } = render(
+    render(
       <NewTaskModal
         projectId={42}
         project={MOCK_PROJECT}
@@ -142,10 +142,11 @@ describe("TaskFormFields — NewTaskModal (data-new-task-*)", () => {
       />,
     );
     // Wait for the title field (shared component) to render.
+    // ModalShell portals to document.body so we query there.
     await waitFor(() => {
-      expect(container.querySelector("[data-new-task-title]")).not.toBeNull();
+      expect(document.body.querySelector("[data-new-task-title]")).not.toBeNull();
     });
-    return container;
+    return document.body;
   }
 
   it("renders the common fields under the new-task prefix", async () => {
@@ -207,9 +208,10 @@ describe("TaskFormFields — NewTaskModal (data-new-task-*)", () => {
 
 describe("TaskFormFields — AiTaskModal (data-ai-task-*)", () => {
   // The shared fields live in the PREVIEW phase — parse first to reach it.
+  // ModalShell portals to document.body so all queries use document.body.
   async function renderAiPreview() {
     const { AiTaskModal } = await import("@/components/AiTaskModal");
-    const { container } = render(
+    render(
       <AiTaskModal
         projectId={42}
         project={MOCK_PROJECT}
@@ -220,20 +222,20 @@ describe("TaskFormFields — AiTaskModal (data-ai-task-*)", () => {
     const user = userEvent.setup();
 
     // Phase 1 — type a prompt + parse.
-    const textArea = container.querySelector(
+    const textArea = document.body.querySelector(
       "[data-ai-task-text]",
     ) as HTMLTextAreaElement;
     await user.type(textArea, "make a backend bug task");
-    const parseBtn = container.querySelector(
+    const parseBtn = document.body.querySelector(
       "[data-ai-task-parse]",
     ) as HTMLButtonElement;
     await user.click(parseBtn);
 
     // Phase 2 — preview renders the shared fields.
     await waitFor(() => {
-      expect(container.querySelector("[data-ai-task-title]")).not.toBeNull();
+      expect(document.body.querySelector("[data-ai-task-title]")).not.toBeNull();
     });
-    return { container, user };
+    return { container: document.body, user };
   }
 
   it("renders the common fields under the ai-task prefix", async () => {

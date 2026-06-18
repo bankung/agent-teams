@@ -4,8 +4,8 @@
 // with team="dev"), mock @/lib/api (listTaskTemplates + createTask +
 // listMilestones), stub ActionTemplatePicker + HandoffTemplatePicker.
 //
-// All queries use the container returned by render() so they stay scoped to
-// the current test's DOM — avoids cross-test pollution through document.querySelector.
+// Queries use document.body (not the render container) because ModalShell
+// portals to document.body.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, waitFor, within, fireEvent, configure } from "@testing-library/react";
@@ -223,7 +223,7 @@ async function renderOpenModal(
 
   const { NewTaskModal } = await import("@/components/NewTaskModal");
   const onClose = vi.fn();
-  const { container } = render(
+  render(
     <NewTaskModal
       projectId={project.id}
       project={project}
@@ -235,7 +235,7 @@ async function renderOpenModal(
   if (expectEmpty) {
     // Wait for the empty-state note (listTaskTemplates returned []).
     await waitFor(() => {
-      if (!container.querySelector("[data-new-task-template-empty]")) {
+      if (!document.body.querySelector("[data-new-task-template-empty]")) {
         throw new Error("Empty-state note not yet rendered");
       }
     });
@@ -244,29 +244,29 @@ async function renderOpenModal(
     // This eliminates the race where the empty-state renders first and the
     // helper returns before the select exists (AC1 intermittent failure).
     await waitFor(() => {
-      if (!container.querySelector("[data-new-task-template]")) {
+      if (!document.body.querySelector("[data-new-task-template]")) {
         throw new Error("Template <select> not yet rendered");
       }
     });
   }
 
-  return { container, onClose };
+  return { container: document.body, onClose };
 }
 
-// Typed shorthand — scoped querySelector on container.
-function q(container: Element, selector: string) {
-  return container.querySelector(selector);
+// Typed shorthand — queries document.body (portal target).
+function q(_container: Element, selector: string) {
+  return document.body.querySelector(selector);
 }
-function qAll(container: Element, selector: string) {
-  return container.querySelectorAll(selector);
+function qAll(_container: Element, selector: string) {
+  return document.body.querySelectorAll(selector);
 }
 
 // Waits for the template <select> to appear in the DOM (listTaskTemplates async
 // fetch + React re-render) before returning it.  Use this before every
 // user.selectOptions() call to eliminate the null-select race under load.
-async function getTemplateSelect(container: HTMLElement): Promise<HTMLSelectElement> {
+async function getTemplateSelect(_container: HTMLElement): Promise<HTMLSelectElement> {
   return waitFor(() => {
-    const el = container.querySelector("[data-new-task-template]") as HTMLSelectElement | null;
+    const el = document.body.querySelector("[data-new-task-template]") as HTMLSelectElement | null;
     if (!el) throw new Error("template <select> not rendered yet (templates still loading)");
     return el;
   });
