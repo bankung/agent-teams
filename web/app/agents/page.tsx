@@ -15,6 +15,7 @@ import Link from "next/link";
 
 import { getAgents, type AgentSummary } from "@/lib/api";
 import { AgentGallery } from "@/components/AgentGallery";
+import { NewAgentButton } from "@/components/NewAgentButton";
 
 export const dynamic = "force-dynamic";
 
@@ -61,6 +62,10 @@ export default async function AgentsPage() {
             {invalidCount} invalid
           </span>
         ) : null}
+        {/* #2481 — create entry point (client island; opens the gated form). */}
+        <div className="ml-auto">
+          <NewAgentButton />
+        </div>
       </header>
 
       <div className="mx-auto w-full max-w-6xl">

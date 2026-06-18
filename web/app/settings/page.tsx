@@ -5,15 +5,14 @@
 // PushNotificationsPanel).
 //
 // #2380 (R-merge) — per-project settings consolidated here. When `?project=`
-// is present, the page resolves that project and renders a project-scoped block
-// FIRST (ProjectSettingsPanel + AuditHistorySection), then the global sections
-// below. Unknown/missing project → skip the project block (never 500). When the
-// param is absent the page is global-only (original behavior).
+// is present, the page resolves that project and renders a project-scoped block.
+// Unknown/missing project → skip the project block (never 500). When the param
+// is absent the page is global-only (original behavior).
 //
 // Layout mirrors the dashboard header pattern (compact header + main panel
-// body). Body holds labelled <section>s: Theme (relocated out of the header —
-// #2375 R5), Integrations (relocated from the former PlatformSettingsModal),
-// and Push notifications.
+// body). Body holds labelled <section>s in easy→hard order: Theme, Push
+// notifications, Tour, This project (project-scoped, when ?project= present),
+// Integrations.
 
 import Link from "next/link";
 
@@ -28,6 +27,8 @@ import { AuditHistorySection } from "@/components/AuditHistorySection";
 import { IntegrationsPanel } from "@/components/IntegrationsPanel";
 import { ResourcesPanel } from "@/components/ResourcesPanel";
 import { ProjectSettingsPanel } from "@/components/ProjectSettingsPanel";
+import { ApprovalPoliciesEditor } from "@/components/ApprovalPoliciesEditor";
+import { AdvancedSettingsDisclosure } from "@/components/AdvancedSettingsDisclosure";
 import { PushNotificationsPanel } from "@/components/PushNotificationsPanel";
 import { ThemePicker } from "@/components/ThemePicker";
 import { GlassPicker } from "@/components/GlassPicker";
@@ -84,33 +85,15 @@ export default async function SettingsPage({ searchParams }: Props) {
       </header>
 
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-8">
-        {/* #2380 — project-scoped block (first), clearly labelled vs the global
-            sections below. Rendered only when ?project= resolves. */}
-        {project && (
-          <section
-            data-settings-project
-            aria-labelledby="settings-project-heading"
-            className="glass-surface flex flex-col gap-3 rounded-md border border-zinc-200 bg-zinc-50/60 p-4 dark:border-zinc-800 dark:bg-zinc-900/40"
+        {/* How-to link — hugs the top-right corner of the first settings box. */}
+        <div className="flex justify-end">
+          <Link
+            href="/help"
+            className="text-[12px] text-zinc-400 hover:text-zinc-700 dark:text-zinc-500 dark:hover:text-zinc-300"
           >
-            <header className="flex flex-col gap-1">
-              <h2
-                id="settings-project-heading"
-                className="text-base font-semibold text-zinc-900 dark:text-zinc-100"
-              >
-                This project ·{" "}
-                <span className="font-mono">{project.name}</span>
-              </h2>
-              <p className="text-[12px] text-zinc-500 dark:text-zinc-400 leading-5">
-                Settings that apply only to this project. Global preferences are
-                below.
-              </p>
-            </header>
-            <ProjectSettingsPanel project={project} />
-            <AuditHistorySection auditTasks={auditTasks} />
-            {/* #2358 — ResourcesPanel moved here from Board.tsx. */}
-            <ResourcesPanel projectId={project.id} />
-          </section>
-        )}
+            How to ↗
+          </Link>
+        </div>
 
         {/* Theme — #2375 R5: ThemePicker relocated from every route header into
             this labelled body section. ThemeProvider/useTheme unchanged. */}
@@ -149,9 +132,6 @@ export default async function SettingsPage({ searchParams }: Props) {
           </div>
         </section>
 
-        {/* Integrations — #2375 R5: relocated from PlatformSettingsModal. */}
-        <IntegrationsPanel />
-
         {/* Push notifications — original #955.C panel. */}
         <PushNotificationsPanel />
 
@@ -174,6 +154,39 @@ export default async function SettingsPage({ searchParams }: Props) {
           </header>
           <TourReplayButton />
         </section>
+
+        {/* #2380 — project-scoped block. Rendered only when ?project= resolves. */}
+        {project && (
+          <section
+            data-settings-project
+            aria-labelledby="settings-project-heading"
+            className="glass-surface flex flex-col gap-3 rounded-md border border-zinc-200 bg-zinc-50/60 p-4 dark:border-zinc-800 dark:bg-zinc-900/40"
+          >
+            <header className="flex flex-col gap-1">
+              <h2
+                id="settings-project-heading"
+                className="text-base font-semibold text-zinc-900 dark:text-zinc-100"
+              >
+                This project ·{" "}
+                <span className="font-mono">{project.name}</span>
+              </h2>
+              <p className="text-[12px] text-zinc-500 dark:text-zinc-400 leading-5">
+                Settings that apply only to this project.
+              </p>
+            </header>
+            <ProjectSettingsPanel project={project} hideApprovalPolicies />
+            {/* #2358 — ResourcesPanel moved here from Board.tsx. */}
+            <ResourcesPanel projectId={project.id} />
+            {/* #2482 — Advanced: Approval policies + Audit history collapsed by default. */}
+            <AdvancedSettingsDisclosure>
+              <ApprovalPoliciesEditor project={project} />
+              <AuditHistorySection auditTasks={auditTasks} />
+            </AdvancedSettingsDisclosure>
+          </section>
+        )}
+
+        {/* Integrations — #2375 R5: relocated from PlatformSettingsModal. */}
+        <IntegrationsPanel />
       </div>
     </main>
   );

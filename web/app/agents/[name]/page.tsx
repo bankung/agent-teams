@@ -10,6 +10,7 @@ import Link from "next/link";
 
 import { getAgentDetail, HttpError } from "@/lib/api";
 import { AgentDetail } from "@/components/AgentDetail";
+import { AgentDetailActions } from "@/components/AgentDetailActions";
 
 export const dynamic = "force-dynamic";
 
@@ -43,6 +44,10 @@ export default async function AgentDetailPage({ params }: Props) {
         <span className="truncate text-base font-semibold text-zinc-900 dark:text-zinc-100">
           {agent.name}
         </span>
+        {/* #2481 — edit entry point (client island; pre-fills from this detail). */}
+        <div className="ml-auto">
+          <AgentDetailActions agent={agent} />
+        </div>
       </header>
 
       <div className="mx-auto w-full max-w-3xl">

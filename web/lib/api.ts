@@ -2614,11 +2614,18 @@ export type AgentSpawn = {
 };
 
 // AgentDetail — GET /api/agents/{name}. Everything in AgentSummary plus the
-// raw frontmatter block, the full (untruncated) description, and recent spawns.
+// raw frontmatter block, the full (untruncated) description, recent spawns,
+// and — Kanban #2481 finish — the structured tools list + raw markdown body
+// for edit pre-fill.
+//   tools: string[] = explicit tool list; "All tools" = the literal sentinel;
+//          null = no `tools:` key (inherit / all).
+//   body:  raw markdown after the frontmatter fence; "" when absent.
 export type AgentDetail = AgentSummary & {
   raw_frontmatter: string;
   full_description: string;
   spawns: AgentSpawn[];
+  tools: string[] | "All tools" | null;
+  body: string;
 };
 
 // getAgents — GET /api/agents. Platform-level (no X-Project-Id). Returns the
@@ -2632,4 +2639,123 @@ export async function getAgents(): Promise<AgentSummary[]> {
 // the detail page discriminates on .status === 404 → notFound().
 export async function getAgentDetail(name: string): Promise<AgentDetail> {
   return jsonFetch<AgentDetail>(`/api/agents/${encodeURIComponent(name)}`);
+}
+
+// ============================================================================
+// Kanban #2481 — gated agent WRITE endpoints (create + edit). Platform-level
+// (NO X-Project-Id; mirrors the gallery reads). Both write paths are guarded
+// server-side by the operator-proof header (X-Operator-Token = the operator's
+// OPERATOR_ACTION_KEY):
+//   POST /api/agents          → 201 AgentSummary  (create; 409 if name exists)
+//   PUT  /api/agents/{name}   → 200 AgentSummary  (edit; 404 if absent; body
+//                               name MUST equal the path name)
+//
+// SECURITY: the operator token is NEVER persisted (no localStorage / cookie /
+// NEXT_PUBLIC_*). The caller holds it in component state and passes it per-call;
+// this helper only stamps the header when a non-empty token is supplied. When
+// the server-side gate is dormant (OPERATOR_ACTION_KEY unset), a token-less call
+// still succeeds — the server is the authority, so the client never hard-requires it.
+// ============================================================================
+
+// AgentWrite — request body for POST /api/agents + PUT /api/agents/{name}.
+// Mirror of api/src/schemas/agent_metadata.py:AgentWrite (extra="forbid"
+// server-side, so callers must NOT add off-schema keys).
+//   - name        required; must match ^[a-z0-9]+(-[a-z0-9]+)*$. For PUT it must
+//                 equal the path name (the path is authoritative).
+//   - description required; non-empty after strip.
+//   - model       optional tier; omit (or null) = inherit the session default.
+//   - tools       optional; a string[] of tool names OR the literal "All tools";
+//                 omit = inherit all tools.
+//   - hooks       optional nested object (presence + mapping-type only).
+//   - scope       optional string.
+//   - body        the markdown body after the frontmatter fence; may be "".
+export type AgentWrite = {
+  name: string;
+  description: string;
+  model?: AgentModelTier | null;
+  tools?: string[] | "All tools" | null;
+  hooks?: Record<string, unknown> | null;
+  scope?: string | null;
+  body: string;
+};
+
+// AgentWriteDiagnostics — the SHAPE the file-validator 422 detail carries:
+// `{ message, diagnostics: AgentValidationError[] }`. NOTE: jsonFetch's
+// formatDetail() can only stringify a string detail or a Pydantic `msg[]`
+// array; this object detail collapses to a generic "422 …" HttpError.message.
+// So callers must read HttpError.detail (NOT .message) to surface the
+// per-field diagnostics — use extractAgentWriteDiagnostics() below.
+export type AgentWriteDiagnostics = {
+  message: string;
+  diagnostics: AgentValidationError[];
+};
+
+// extractAgentWriteDiagnostics — narrow an HttpError.detail to the validator's
+// `{message, diagnostics[]}` object, or null when the detail is a plain-string
+// Pydantic error (bad name / name-mismatch) or anything else. Lets the form
+// branch: object detail → render the diagnostics list; else → render .message.
+export function extractAgentWriteDiagnostics(
+  detail: unknown,
+): AgentWriteDiagnostics | null {
+  if (
+    detail &&
+    typeof detail === "object" &&
+    !Array.isArray(detail) &&
+    "diagnostics" in detail &&
+    Array.isArray((detail as { diagnostics: unknown }).diagnostics)
+  ) {
+    const d = detail as { message?: unknown; diagnostics: unknown[] };
+    const diagnostics = d.diagnostics.filter(
+      (x): x is AgentValidationError =>
+        !!x &&
+        typeof x === "object" &&
+        "message" in x &&
+        "severity" in x,
+    );
+    return {
+      message:
+        typeof d.message === "string"
+          ? d.message
+          : "Agent frontmatter is invalid; nothing was written.",
+      diagnostics,
+    };
+  }
+  return null;
+}
+
+// agentWriteHeaders — JSON content-type + the operator-proof header (only when
+// a non-empty token is supplied). The token is stamped per-request and never
+// stored anywhere by this module.
+function agentWriteHeaders(operatorToken?: string): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const token = operatorToken?.trim();
+  if (token) headers["X-Operator-Token"] = token;
+  return headers;
+}
+
+// createAgent — POST /api/agents. 201 AgentSummary. 403 (operator proof),
+// 409 (name exists), 422 (Pydantic field error OR validator diagnostics).
+export async function createAgent(
+  body: AgentWrite,
+  operatorToken?: string,
+): Promise<AgentSummary> {
+  return jsonFetch<AgentSummary>(`/api/agents`, {
+    method: "POST",
+    headers: agentWriteHeaders(operatorToken),
+    body: JSON.stringify(body),
+  });
+}
+
+// updateAgent — PUT /api/agents/{name}. 200 AgentSummary. The body.name MUST
+// equal `name` (the path is authoritative server-side). 403 / 404 / 422.
+export async function updateAgent(
+  name: string,
+  body: AgentWrite,
+  operatorToken?: string,
+): Promise<AgentSummary> {
+  return jsonFetch<AgentSummary>(`/api/agents/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: agentWriteHeaders(operatorToken),
+    body: JSON.stringify(body),
+  });
 }
