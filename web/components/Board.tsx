@@ -365,6 +365,19 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
     };
   }, [milestoneFilter, project.id]);
 
+  // Toast helpers — declared before the deep-link effect that consumes
+  // pushToast (react-hooks/immutability: a useCallback must not be referenced
+  // before its declaration). Both close over only the stable toastIdRef +
+  // setToasts setter, so the memoization is preserved across renders.
+  const pushToast = useCallback((text: string) => {
+    const id = toastIdRef.current++;
+    setToasts((prev) => [...prev, { id, text }]);
+  }, []);
+
+  const dismissToast = useCallback((id: number) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
   // #1001 follow-up (2026-05-20) — `?task=<id>` deep-link handler.
   //
   // On mount (or first ready `tasks` snapshot), read the URL search param.
@@ -447,15 +460,6 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
     onTaskChange: onRowChange,
     onProjectChange: onRowChange,
   });
-
-  const pushToast = useCallback((text: string) => {
-    const id = toastIdRef.current++;
-    setToasts((prev) => [...prev, { id, text }]);
-  }, []);
-
-  const dismissToast = useCallback((id: number) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  }, []);
 
   // Kanban #2111 Part 3c — callbacks passed to BoardDndCanvas (owns dnd-kit).
   // Cross-lane: optimistic setTasks + PATCH; revert on error (mirrors original onDragEnd).

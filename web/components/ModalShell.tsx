@@ -84,7 +84,12 @@ export function ModalShell({
   // Keep a stable ref so the ESC listener always calls the freshest onClose
   // without needing to re-register every render.
   const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  // Sync after commit (react-hooks/refs: no ref writes during render). A
+  // post-commit update is correct here — the only reader is the ESC event
+  // handler below, which fires asynchronously after the listener is attached.
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   const handleEsc = useCallback((e: KeyboardEvent) => {
     if (e.key === "Escape") onCloseRef.current();

@@ -112,7 +112,7 @@ export function TaskDetail({
     if (!descEditing) {
       setDescDraft(task.description ?? "");
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [task.id, task.description, descEditing]);
 
   const handleDescSave = async () => {

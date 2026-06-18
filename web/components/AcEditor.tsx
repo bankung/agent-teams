@@ -82,7 +82,7 @@ export function AcEditor({ criteria, isTerminal, onSave, disabled = false, onToa
     setQuickEditIdx(idx);
     setQuickEditText(serverList[idx]?.text ?? "");
     setQuickSavedMsg(null);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, [serverList]);
 
   function clearLongPress() {

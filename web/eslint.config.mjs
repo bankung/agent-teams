@@ -13,13 +13,21 @@ export default defineConfig([
     rules: {
       "react-hooks/exhaustive-deps": "warn",
       // React-Compiler lint family introduced by eslint-config-next@16 (via
-      // eslint-plugin-react-hooks@7). Downgraded from "error" to "warn" per
-      // #2487 (Option A) so the Next 16 upgrade lands green. Genuine
-      // set-state-in-effect cleanup is tracked in follow-up task #2489.
+      // eslint-plugin-react-hooks@7); none existed in the Next-14 baseline.
+      //
+      // set-state-in-effect stays "warn" DELIBERATELY (#2489): its ~41 sites are
+      // idiomatic effects that sync with external systems — SSR-hydrate-from-
+      // localStorage, async data-fetch, prop-reset-on-open — which React's docs
+      // bless. A scoped remediation plan for these is tracked separately under
+      // #2489; do not blanket-promote without that pass.
       "react-hooks/set-state-in-effect": "warn",
-      "react-hooks/refs": "warn",
-      "react-hooks/immutability": "warn",
-      "react-hooks/preserve-manual-memoization": "warn",
+      // The remaining Compiler rules are "error": their few sites are genuinely
+      // actionable and have been fixed (#2489) — refs written during render
+      // moved into effects (AgentFormModal, ModalShell); a use-before-declare
+      // pushToast reordered in Board.
+      "react-hooks/refs": "error",
+      "react-hooks/immutability": "error",
+      "react-hooks/preserve-manual-memoization": "error",
     },
   },
 ]);

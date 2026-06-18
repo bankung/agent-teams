@@ -143,7 +143,7 @@ function _handleSnoozeAction(event, hours) {
   }).catch(function (err) {
     // SW console is visible via DevTools > Application > Service Workers
     // > Console (per browser). A failed snooze is non-fatal.
-    // eslint-disable-next-line no-console
+     
     console.warn("[sw] snooze POST failed:", err);
   });
 }

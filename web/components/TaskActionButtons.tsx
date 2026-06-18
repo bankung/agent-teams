@@ -67,7 +67,7 @@ export function TaskActionButtons({
         type="button"
         onClick={onApprove}
         disabled={submitting || approveDisabled}
-        // eslint-disable-next-line jsx-a11y/no-autofocus
+         
         autoFocus={actionHint === "approve"}
         title={approveDisabled ? approveDisabledReason : undefined}
         data-task-action="approve"
@@ -80,7 +80,7 @@ export function TaskActionButtons({
           type="button"
           onClick={onRejectClick}
           disabled={submitting}
-          // eslint-disable-next-line jsx-a11y/no-autofocus
+           
           autoFocus={actionHint === "reject"}
           data-task-action="reject"
           className="flex-1 rounded border border-red-500 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-wide text-red-700 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px] sm:flex-none sm:min-h-0 sm:px-3 sm:py-1.5 dark:border-red-700 dark:bg-zinc-900 dark:text-red-300 dark:hover:bg-red-950/40"

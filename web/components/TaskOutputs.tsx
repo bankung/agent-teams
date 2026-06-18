@@ -174,7 +174,7 @@ function OutputRow({
         blobUrlRef.current = null;
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- entry.* fields are the logical deps; fetch helper is module-stable. #1305
+     
   }, [projectId, taskId, entry.filename, entry.kind]);
 
   function renderContent() {

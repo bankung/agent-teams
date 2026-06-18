@@ -120,7 +120,13 @@ export function AgentFormModal(props: Props) {
   // stays put. Reads the latest `editAgent` snapshot without depending on its
   // object identity.
   const editAgentRef = useRef(editAgent);
-  editAgentRef.current = editAgent;
+  // Keep the ref in sync after each commit (react-hooks/refs: refs must not be
+  // written during render). The pre-fill effect below also depends on `open`/
+  // `editAgentName`, both of which commit alongside a fresh `editAgent`, so the
+  // ref is current by the time that effect reads it.
+  useEffect(() => {
+    editAgentRef.current = editAgent;
+  });
   useEffect(() => {
     if (!open) return;
     const a = editAgentRef.current;
@@ -162,7 +168,6 @@ export function AgentFormModal(props: Props) {
     requestAnimationFrame(() => firstFieldRef.current?.focus());
     // editAgentName (a string) is the stable edit identity; editAgentRef gives
     // the latest snapshot without re-running on object-identity churn.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, isEdit, editAgentName]);
 
   function resetForm() {
