@@ -3,13 +3,13 @@
 // MonthlySpendSection — portfolio-wide billing-cycle spend card.
 // Kanban #2356 (AC3). Prop-driven (no internal fetch) for RTL determinism.
 //
-// Collapse behaviour mirrors CostSummary / AuditorActivityPanel: localStorage
-// + same-tab StorageEvent, readExpanded / writeExpanded from @/lib/collapseState.
+// Collapse behaviour mirrors CostSummary / AuditorActivityPanel: persisted via
+// usePersistentState (localStorage + same-tab StorageEvent) — #2491.
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { type MonthlyUsageResponse, type UsageMonthlyCycle } from "@/lib/api";
-import { readExpanded, writeExpanded } from "@/lib/collapseState";
+import { usePersistentState } from "@/lib/usePersistentState";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -197,29 +197,18 @@ export function MonthlySpendSection({
 }: Props) {
   const collapsible = defaultCollapsed && storageKey != null;
 
-  // Mirror CostSummary: default expanded=true to avoid hydration mismatch;
-  // collapible panels correct from localStorage in useEffect after hydration.
-  const [expanded, setExpanded] = useState(!defaultCollapsed);
-
-  useEffect(() => {
-    if (!collapsible || !storageKey) return;
-    setExpanded(readExpanded(storageKey, defaultCollapsed));
-
-    function onStorage(e: StorageEvent) {
-      if (e.key !== storageKey) return;
-      setExpanded(
-        e.newValue !== null ? JSON.parse(e.newValue) !== false : !defaultCollapsed,
-      );
-    }
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, [collapsible, storageKey, defaultCollapsed]);
+  // Mirror CostSummary: persisted collapse state via usePersistentState. SSR
+  // snapshot = expanded default (no hydration mismatch); client reads localStorage.
+  const [storedExpanded, setStoredExpanded] = usePersistentState<boolean>(
+    storageKey ?? "monthly-spend:__noop",
+    !defaultCollapsed,
+    { deserialize: (raw) => JSON.parse(raw) !== false },
+  );
+  const expanded = collapsible ? storedExpanded : !defaultCollapsed;
 
   function toggle() {
-    if (!collapsible || !storageKey) return;
-    const next = !expanded;
-    setExpanded(next);
-    writeExpanded(storageKey, next);
+    if (!collapsible) return;
+    setStoredExpanded(!expanded);
   }
 
   const isEmpty = data.cycles.length === 0;

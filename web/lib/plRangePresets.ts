@@ -1,7 +1,8 @@
 // plRangePresets.ts — shared range-preset utilities for P&L components.
 //
-// Single source of truth for: RangeKey, STORAGE_KEY, RANGE_OPTIONS,
-// date-math helpers, buildRange, readStoredRange, writeStoredRange.
+// Single source of truth for: RangeKey, STORAGE_KEY, STORABLE_RANGE_KEYS,
+// RANGE_OPTIONS, date-math helpers, buildRange. (Range persistence itself is
+// done by the consumers via usePersistentState on STORAGE_KEY — #2491.)
 //
 // Used by: PnlSummaryCard (per-project) + PnlDashboardSection (cross-project).
 // Pure module — no React imports.
@@ -148,31 +149,13 @@ export const RANGE_OPTIONS: readonly RangeOption[] = [
 export const STORAGE_KEY = "pnl_period_default" as const;
 
 // Valid storable keys — "custom" is intentionally excluded (disabled stub).
-const STORABLE_KEYS = new Set<RangeKey>([
+// Both P&L components persist the range via usePersistentState (#2491) using
+// STORAGE_KEY + this set as the deserialize-time validation guard (replacing
+// the prior readStoredRange/writeStoredRange helpers, now removed).
+export const STORABLE_RANGE_KEYS = new Set<RangeKey>([
   "last_30d",
   "this_month",
   "last_month",
   "this_quarter",
   "all_time",
 ]);
-
-export function readStoredRange(): RangeKey | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    if (STORABLE_KEYS.has(raw as RangeKey)) return raw as RangeKey;
-  } catch {
-    /* localStorage blocked (e.g. private browsing) */
-  }
-  return null;
-}
-
-export function writeStoredRange(key: RangeKey): void {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(STORAGE_KEY, key);
-  } catch {
-    /* localStorage blocked */
-  }
-}

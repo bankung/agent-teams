@@ -12,10 +12,8 @@
 // pattern as AuditorVisibilityToggle (#1291). When defaultCollapsed=false
 // (default), the panel is always-expanded (no toggle chrome).
 
-import { useEffect, useState } from "react";
-
 import { type ProjectStatsEntry } from "@/lib/api";
-import { readExpanded, writeExpanded } from "@/lib/collapseState";
+import { usePersistentState } from "@/lib/usePersistentState";
 
 // Token / cost formatters — duplicates kept intentional: this file is the
 // canonical render home; dashboard/page.tsx private helpers remain for
@@ -120,30 +118,20 @@ export function CostSummary({
   const noUsage = totalRuns === 0;
   const collapsible = defaultCollapsed && storageKey != null;
 
-  // Default expanded=true so SSR + first paint avoid hydration mismatch.
-  // For collapsible panels the actual value is read from localStorage after
-  // hydration (useEffect), mirroring AuditorVisibilityToggle's pattern.
-  const [expanded, setExpanded] = useState(!defaultCollapsed);
-
-  useEffect(() => {
-    if (!collapsible || !storageKey) return;
-    setExpanded(readExpanded(storageKey, defaultCollapsed));
-
-    function onStorage(e: StorageEvent) {
-      if (e.key !== storageKey) return;
-      setExpanded(
-        e.newValue !== null ? JSON.parse(e.newValue) !== false : !defaultCollapsed,
-      );
-    }
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, [collapsible, storageKey, defaultCollapsed]);
+  // Collapse state persisted via usePersistentState (SSR snapshot = expanded
+  // default → no hydration mismatch; client snapshot reads localStorage). Stored
+  // value `false` means collapsed; absent → !defaultCollapsed (= expanded here).
+  const [storedExpanded, setStoredExpanded] = usePersistentState<boolean>(
+    storageKey ?? "cost-summary:__noop",
+    !defaultCollapsed,
+    { deserialize: (raw) => JSON.parse(raw) !== false },
+  );
+  // Non-collapsible panels are always expanded (no toggle chrome / no storage).
+  const expanded = collapsible ? storedExpanded : !defaultCollapsed;
 
   function toggle() {
-    if (!collapsible || !storageKey) return;
-    const next = !expanded;
-    setExpanded(next);
-    writeExpanded(storageKey, next);
+    if (!collapsible) return;
+    setStoredExpanded(!expanded);
   }
 
   return (

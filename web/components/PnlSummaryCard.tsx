@@ -25,7 +25,7 @@
 //   PLSummary.currency is the first observed currency. We compute the bucket
 //   currency cardinality client-side; >1 unique currency → render "(mixed)".
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
 import {
@@ -37,37 +37,15 @@ import {
 import { formatMoney, formatSignedPercent, parseMoney } from "@/lib/money";
 import {
   RANGE_OPTIONS,
-  readStoredRange,
-  writeStoredRange,
+  STORAGE_KEY as PNL_RANGE_KEY,
+  STORABLE_RANGE_KEYS,
   type RangeKey,
 } from "@/lib/plRangePresets";
+import { usePersistentState } from "@/lib/usePersistentState";
 
-// ----- Collapse helpers (mirrors CostSummary pattern) ------------------------
-
-function readPnlExpanded(key: string, defaultCollapsed: boolean): boolean {
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw === null) return !defaultCollapsed;
-    return JSON.parse(raw) !== false;
-  } catch {
-    return !defaultCollapsed;
-  }
-}
-
-function writePnlExpanded(key: string, next: boolean): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(next));
-    window.dispatchEvent(
-      new StorageEvent("storage", {
-        key,
-        newValue: JSON.stringify(next),
-        storageArea: localStorage,
-      }),
-    );
-  } catch {
-    // localStorage blocked — silently ignore.
-  }
-}
+// Collapse + range persistence now route through usePersistentState (#2491);
+// the prior local readPnlExpanded/writePnlExpanded dups (a copy of
+// collapseState.ts) and the readStoredRange/writeStoredRange calls are removed.
 
 // Chevron icons (local copies mirror CostSummary; no shared icon lib in scope)
 function ChevronDownIcon() {
@@ -138,10 +116,22 @@ export function PnlSummaryCard({
   storageKey,
   className = "mb-5",
 }: Props) {
-  // SSR / first-paint fallback is the brief's default "last_30d" so the
-  // initial render is stable. Hydration effect upgrades to the stored value
-  // (if any) — same pattern as CostSummary's expand-state persistence.
-  const [rangeKey, setRangeKey] = useState<RangeKey>("last_30d");
+  // Selected range, persisted to the shared pnl_period_default key via
+  // usePersistentState (replaces readStoredRange/writeStoredRange + the
+  // restore-on-mount effect). SSR snapshot = "last_30d"; client restores the
+  // stored default. "custom" is a disabled option (never selectable/persisted);
+  // the deserialize guard maps any non-storable raw back to "last_30d".
+  const [rangeKey, setRangeKey] = usePersistentState<RangeKey>(
+    PNL_RANGE_KEY,
+    "last_30d",
+    {
+      serialize: (v) => v,
+      deserialize: (raw) =>
+        STORABLE_RANGE_KEYS.has(raw as RangeKey)
+          ? (raw as RangeKey)
+          : "last_30d",
+    },
+  );
   const [state, setState] = useState<LoadState>({ kind: "idle" });
   // Pin "now" once per mount so range builds don't drift mid-render.
   const nowRef = useRef<Date>(new Date());
@@ -151,36 +141,21 @@ export function PnlSummaryCard({
   // responses if the user flips the dropdown faster than the BE responds.
   const reqIdRef = useRef(0);
 
-  // Collapse state — mirrors CostSummary pattern.
+  // Collapse state — persisted via usePersistentState (mirrors CostSummary).
+  // SSR snapshot = expanded default (no hydration mismatch); client reads
+  // localStorage. The same-tab StorageEvent is dispatched by the hook's writer.
   const collapsible = defaultCollapsed && storageKey != null;
-  // Default expanded=true so SSR + first paint avoid hydration mismatch.
-  const [expanded, setExpanded] = useState(!defaultCollapsed);
+  const [storedExpanded, setStoredExpanded] = usePersistentState<boolean>(
+    storageKey ?? "pnl-summary:__noop",
+    !defaultCollapsed,
+    { deserialize: (raw) => JSON.parse(raw) !== false },
+  );
+  const expanded = collapsible ? storedExpanded : !defaultCollapsed;
 
-  useEffect(() => {
-    if (!collapsible || !storageKey) return;
-    setExpanded(readPnlExpanded(storageKey, defaultCollapsed));
-    function onStorage(e: StorageEvent) {
-      if (e.key !== storageKey) return;
-      setExpanded(
-        e.newValue !== null ? JSON.parse(e.newValue) !== false : !defaultCollapsed,
-      );
-    }
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, [collapsible, storageKey, defaultCollapsed]);
-
-  const toggle = useCallback(() => {
-    if (!collapsible || !storageKey) return;
-    const next = !expanded;
-    setExpanded(next);
-    writePnlExpanded(storageKey, next);
-  }, [collapsible, storageKey, expanded]);
-
-  // Restore stored default on mount.
-  useEffect(() => {
-    const stored = readStoredRange();
-    if (stored) setRangeKey(stored);
-  }, []);
+  function toggle() {
+    if (!collapsible) return;
+    setStoredExpanded(!expanded);
+  }
 
   // Fetch on rangeKey change. Custom is a stub — no fetch fires.
   useEffect(() => {
@@ -215,8 +190,10 @@ export function PnlSummaryCard({
 
   function onChangeRange(e: React.ChangeEvent<HTMLSelectElement>) {
     const next = e.target.value as RangeKey;
-    setRangeKey(next);
-    if (next !== "custom") writeStoredRange(next);
+    // "custom" is a disabled option (never selectable); guard preserves the
+    // prior "never persist custom" contract. setRangeKey persists to the shared
+    // pnl_period_default key via usePersistentState (replaces writeStoredRange).
+    if (next !== "custom") setRangeKey(next);
   }
 
   // Compute derived render values from the summary.

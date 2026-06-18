@@ -24,15 +24,15 @@ import {
   HttpError,
   type PLCrossProject,
 } from "@/lib/api";
-import { readExpanded, writeExpanded } from "@/lib/collapseState";
 import { formatMoney, parseMoney } from "@/lib/money";
 import {
   RANGE_OPTIONS,
+  STORAGE_KEY as PNL_RANGE_KEY,
+  STORABLE_RANGE_KEYS,
   buildRange,
-  readStoredRange,
-  writeStoredRange,
   type RangeKey,
 } from "@/lib/plRangePresets";
+import { usePersistentState } from "@/lib/usePersistentState";
 
 // ----- Icons -----------------------------------------------------------------
 
@@ -89,43 +89,42 @@ export function PnlDashboardSection({
   defaultCollapsed = false,
   storageKey,
 }: Props) {
-  const [rangeKey, setRangeKey] = useState<RangeKey>("last_30d");
   const [state, setState] = useState<LoadState>({ kind: "idle" });
   const nowRef = useRef<Date>(new Date());
   const reqIdRef = useRef(0);
 
   const collapsible = storageKey != null;
 
-  // Default expanded=true so SSR + first paint avoid hydration mismatch.
-  // useEffect corrects from localStorage after hydration.
-  const [expanded, setExpanded] = useState(!defaultCollapsed);
-
-  useEffect(() => {
-    if (!collapsible || !storageKey) return;
-    setExpanded(readExpanded(storageKey, defaultCollapsed));
-
-    function onStorage(e: StorageEvent) {
-      if (e.key !== storageKey) return;
-      setExpanded(
-        e.newValue !== null ? JSON.parse(e.newValue) !== false : !defaultCollapsed,
-      );
-    }
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, [collapsible, storageKey, defaultCollapsed]);
+  // Persisted collapse state via usePersistentState. SSR snapshot = expanded
+  // default (no hydration mismatch); client reads localStorage after hydration.
+  const [storedExpanded, setStoredExpanded] = usePersistentState<boolean>(
+    storageKey ?? "pnl-cross:__noop",
+    !defaultCollapsed,
+    { deserialize: (raw) => JSON.parse(raw) !== false },
+  );
+  const expanded = collapsible ? storedExpanded : !defaultCollapsed;
 
   function toggle() {
-    if (!collapsible || !storageKey) return;
-    const next = !expanded;
-    setExpanded(next);
-    writeExpanded(storageKey, next);
+    if (!collapsible) return;
+    setStoredExpanded(!expanded);
   }
 
-  // Restore stored default on mount.
-  useEffect(() => {
-    const stored = readStoredRange();
-    if (stored) setRangeKey(stored);
-  }, []);
+  // Selected range, persisted to the shared pnl_period_default key (the same
+  // key + validation contract readStoredRange/writeStoredRange used). SSR
+  // snapshot = "last_30d"; client restores the stored default after hydration.
+  // "custom" is a disabled option so it can never be selected/persisted; the
+  // deserialize guard maps any non-storable raw back to "last_30d".
+  const [rangeKey, setRangeKey] = usePersistentState<RangeKey>(
+    PNL_RANGE_KEY,
+    "last_30d",
+    {
+      serialize: (v) => v,
+      deserialize: (raw) =>
+        STORABLE_RANGE_KEYS.has(raw as RangeKey)
+          ? (raw as RangeKey)
+          : "last_30d",
+    },
+  );
 
   // Fetch on rangeKey change.
   useEffect(() => {
@@ -156,8 +155,10 @@ export function PnlDashboardSection({
 
   function onChangeRange(e: React.ChangeEvent<HTMLSelectElement>) {
     const next = e.target.value as RangeKey;
-    setRangeKey(next);
-    if (next !== "custom") writeStoredRange(next);
+    // "custom" is a disabled option (never selectable); guard preserves the
+    // prior "never persist custom" contract. setRangeKey persists to the shared
+    // pnl_period_default key via usePersistentState (replaces writeStoredRange).
+    if (next !== "custom") setRangeKey(next);
   }
 
   // Sorted rows: net DESC so the most-profitable projects surface first.

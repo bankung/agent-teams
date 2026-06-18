@@ -21,14 +21,13 @@
 // per-task drawer. Tracked separately if/when needed.
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
 
 import {
   type DashboardActiveTaskRow,
   type DashboardActiveTasks,
 } from "@/lib/api";
 import { formatRelative } from "@/lib/time";
-import { readExpanded, writeExpanded } from "@/lib/collapseState";
+import { usePersistentState } from "@/lib/usePersistentState";
 
 // ----- Icons -----------------------------------------------------------------
 
@@ -273,29 +272,18 @@ export function CrossProjectActiveTasksList({
 
   const collapsible = storageKey != null;
 
-  // Default expanded=true so SSR + first paint avoid hydration mismatch.
-  // useEffect corrects from localStorage after hydration.
-  const [expanded, setExpanded] = useState(!defaultCollapsed);
-
-  useEffect(() => {
-    if (!collapsible || !storageKey) return;
-    setExpanded(readExpanded(storageKey, defaultCollapsed));
-
-    function onStorage(e: StorageEvent) {
-      if (e.key !== storageKey) return;
-      setExpanded(
-        e.newValue !== null ? JSON.parse(e.newValue) !== false : !defaultCollapsed,
-      );
-    }
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, [collapsible, storageKey, defaultCollapsed]);
+  // Persisted collapse state via usePersistentState. SSR snapshot = expanded
+  // default (no hydration mismatch); client reads localStorage after hydration.
+  const [storedExpanded, setStoredExpanded] = usePersistentState<boolean>(
+    storageKey ?? "active-tasks-list:__noop",
+    !defaultCollapsed,
+    { deserialize: (raw) => JSON.parse(raw) !== false },
+  );
+  const expanded = collapsible ? storedExpanded : !defaultCollapsed;
 
   function toggle() {
-    if (!collapsible || !storageKey) return;
-    const next = !expanded;
-    setExpanded(next);
-    writeExpanded(storageKey, next);
+    if (!collapsible) return;
+    setStoredExpanded(!expanded);
   }
 
   return (

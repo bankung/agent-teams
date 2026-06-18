@@ -21,7 +21,7 @@
 // localStorage only after mount. First server paint renders nothing tour-ish
 // except the static replay button (no storage access in render).
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 
 import {
@@ -33,6 +33,7 @@ import {
   overlayColorForTheme,
   setTourPhase,
 } from "@/lib/tour";
+import { useIsHydrated } from "@/lib/usePersistentState";
 
 // Open/close the New Project modal by clicking its real trigger / backdrop —
 // the modal owns its own open state, so we drive it the way a user would.
@@ -56,17 +57,15 @@ function closeNewProjectModal() {
 
 export function ProductTour() {
   const router = useRouter();
-  const [mounted, setMounted] = useState(false);
+  // Client-mount gate (was useState(false)+useEffect(setMounted(true))). SSR +
+  // first hydration render = false; client = true. No setState-in-effect.
+  const mounted = useIsHydrated();
   // Guard against double-fire under React Strict mode / fast refresh.
   const startedRef = useRef(false);
   // M-3 — hold the live driver so a replay (or any re-start) can tear down the
   // previous instance before building a new one. Without this a second drive()
   // orphans the first driver's overlay/popover in the DOM.
   const driverRef = useRef<import("driver.js").Driver | null>(null);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   // startTour — builds + drives the dashboard phase. `auto` distinguishes the
   // first-visit auto-fire from a manual replay (manual replay re-runs even if

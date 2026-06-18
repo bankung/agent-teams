@@ -7,8 +7,7 @@
 // Uses the same readExpanded/writeExpanded/storageKey pattern as CostSummary
 // and AuditorActivityPanel. Default: collapsed.
 
-import { useEffect, useState } from "react";
-import { readExpanded, writeExpanded } from "@/lib/collapseState";
+import { usePersistentState } from "@/lib/usePersistentState";
 
 const STORAGE_KEY = "settings.advanced.expanded";
 
@@ -53,27 +52,16 @@ type Props = {
 };
 
 export function AdvancedSettingsDisclosure({ children }: Props) {
-  // SSR-safe: default collapsed so SSR + first paint agree; hydrate from
-  // localStorage in effect (same pattern as CostSummary).
-  const [expanded, setExpanded] = useState(false);
-
-  useEffect(() => {
-    setExpanded(readExpanded(STORAGE_KEY, /* defaultCollapsed= */ true));
-
-    function onStorage(e: StorageEvent) {
-      if (e.key !== STORAGE_KEY) return;
-      setExpanded(
-        e.newValue !== null ? JSON.parse(e.newValue) !== false : false,
-      );
-    }
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
+  // SSR-safe: server snapshot = collapsed (false) so SSR + first paint agree;
+  // client snapshot reads localStorage. defaultCollapsed=true → default false.
+  const [expanded, setExpanded] = usePersistentState<boolean>(
+    STORAGE_KEY,
+    false,
+    { deserialize: (raw) => JSON.parse(raw) !== false },
+  );
 
   function toggle() {
-    const next = !expanded;
-    setExpanded(next);
-    writeExpanded(STORAGE_KEY, next);
+    setExpanded(!expanded);
   }
 
   return (

@@ -4,9 +4,10 @@ import {
   createContext,
   useContext,
   useEffect,
-  useState,
   type ReactNode,
 } from "react";
+
+import { usePersistentState } from "@/lib/usePersistentState";
 
 // Kanban #2453 — glass is a SECOND theme axis, orthogonal to light/dark.
 // `.glass` on <html> turns the glassmorphism layer on; absence = current flat
@@ -36,36 +37,22 @@ function applyGlassClass(on: boolean) {
 }
 
 export function GlassProvider({ children }: { children: ReactNode }) {
-  // SSR: default 'off' (flat theme). Client reconciles from localStorage in effect.
-  // The inline bootstrap script in layout.tsx sets the class pre-hydration so
-  // there is no flash; this state only mirrors it for the picker UI.
-  const [glass, setGlassState] = useState<GlassMode>("off");
+  // #2475 default flip: glass is the default surface, so the effective default
+  // (used for SSR + empty client storage) is "on". The layout.tsx bootstrap
+  // script likewise adds .glass UNLESS the user explicitly stored "off", and
+  // <html suppressHydrationWarning> absorbs any class divergence — so SSR
+  // rendering "on" here matches the bootstrapped class. Explicit stored "off"
+  // wins via the isGlassMode guard. Stored raw (not JSON).
+  const [glass, setGlass] = usePersistentState<GlassMode>(STORAGE_KEY, "on", {
+    serialize: (v) => v,
+    deserialize: (raw) => (isGlassMode(raw) ? raw : "on"),
+  });
 
-  // Hydrate from localStorage; try/catch for Safari private mode.
+  // DOM-sync side-effect: toggle the .glass class whenever the resolved value
+  // changes (external-system sync, not a setState-in-effect → stays an effect).
   useEffect(() => {
-    let stored: string | null = null;
-    try {
-      stored = window.localStorage.getItem(STORAGE_KEY);
-    } catch {
-      stored = null;
-    }
-    // #2475 default flip: unset → "on" (glass is now the default surface).
-    // Explicit stored "off" wins via isGlassMode catch. SSR state stays "off"
-    // to mirror the pre-hydration class set by the bootstrap script below.
-    const initial: GlassMode = isGlassMode(stored) ? stored : "on";
-    setGlassState(initial);
-    applyGlassClass(initial === "on");
-  }, []);
-
-  const setGlass = (next: GlassMode) => {
-    setGlassState(next);
-    try {
-      window.localStorage.setItem(STORAGE_KEY, next);
-    } catch {
-      // Private-mode / quota: applies in-memory; persistence skipped.
-    }
-    applyGlassClass(next === "on");
-  };
+    applyGlassClass(glass === "on");
+  }, [glass]);
 
   return (
     <GlassContext.Provider value={{ glass, setGlass }}>

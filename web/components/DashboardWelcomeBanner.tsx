@@ -19,10 +19,10 @@
 // false; the effect hydrates the real value on first mount. First paint skips
 // the banner (same pattern as InstallPwaNudge).
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
 
 import type { ProjectRead } from "@/lib/api";
+import { usePersistentState, useIsHydrated } from "@/lib/usePersistentState";
 
 const LS_KEY = "agent-teams.dashboard.welcomeDismissed";
 
@@ -35,23 +35,24 @@ type Props = {
 };
 
 export function DashboardWelcomeBanner({ projects }: Props) {
-  const [show, setShow] = useState(false);
+  // Persisted dismissed flag (stored raw as "true"/"false" to match the prior
+  // `=== "true"` contract; absent → not dismissed). Server snapshot = false.
+  const [dismissed, setDismissed] = usePersistentState<boolean>(LS_KEY, false, {
+    serialize: (v) => (v ? "true" : "false"),
+    deserialize: (raw) => raw === "true",
+  });
 
-  useEffect(() => {
-    const dismissed = localStorage.getItem(LS_KEY) === "true";
-    if (dismissed) return;
+  const hasOwnProject = projects.some((p) => !BUILTIN_NAMES.has(p.name));
 
-    const hasOwnProject = projects.some((p) => !BUILTIN_NAMES.has(p.name));
-    if (!hasOwnProject) {
-      setShow(true);
-    }
-  }, [projects]);
+  // Derive visibility during render (no setState-in-effect). useIsHydrated keeps
+  // the banner hidden on the server + first hydration render — exactly the prior
+  // "first paint omits the banner" behavior — then reveals it post-hydration.
+  const show = useIsHydrated() && !dismissed && !hasOwnProject;
 
   if (!show) return null;
 
   function handleDismiss() {
-    localStorage.setItem(LS_KEY, "true");
-    setShow(false);
+    setDismissed(true);
   }
 
   return (
