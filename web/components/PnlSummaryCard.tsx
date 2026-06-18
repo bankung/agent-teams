@@ -25,7 +25,7 @@
 //   PLSummary.currency is the first observed currency. We compute the bucket
 //   currency cardinality client-side; >1 unique currency → render "(mixed)".
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef } from "react";
 import Link from "next/link";
 
 import {
@@ -41,6 +41,7 @@ import {
   STORABLE_RANGE_KEYS,
   type RangeKey,
 } from "@/lib/plRangePresets";
+import { useAsyncData } from "@/lib/useAsyncData";
 import { usePersistentState } from "@/lib/usePersistentState";
 
 // Collapse + range persistence now route through usePersistentState (#2491);
@@ -102,12 +103,6 @@ type Props = {
   className?: string;
 };
 
-type LoadState =
-  | { kind: "idle" }
-  | { kind: "loading" }
-  | { kind: "ok"; data: PLSummary }
-  | { kind: "error"; message: string };
-
 export function PnlSummaryCard({
   projectId,
   projectName,
@@ -132,14 +127,10 @@ export function PnlSummaryCard({
           : "last_30d",
     },
   );
-  const [state, setState] = useState<LoadState>({ kind: "idle" });
   // Pin "now" once per mount so range builds don't drift mid-render.
   const nowRef = useRef<Date>(new Date());
   // RANGE_OPTIONS is a stable readonly array; memoize the reference only.
   const options = useMemo(() => RANGE_OPTIONS, []);
-  // Promotes "last fetched in-flight" → renderable; lets us ignore stale
-  // responses if the user flips the dropdown faster than the BE responds.
-  const reqIdRef = useRef(0);
 
   // Collapse state — persisted via usePersistentState (mirrors CostSummary).
   // SSR snapshot = expanded default (no hydration mismatch); client reads
@@ -157,33 +148,48 @@ export function PnlSummaryCard({
     setStoredExpanded(!expanded);
   }
 
-  // Fetch on rangeKey change. Custom is a stub — no fetch fires.
-  useEffect(() => {
-    const opt = options.find((o) => o.key === rangeKey);
-    if (!opt || opt.disabled) return;
-    const { period, since, until } = opt.build(nowRef.current);
-    const myReq = ++reqIdRef.current;
-    setState({ kind: "loading" });
-    getProjectPl(projectId, {
-      period,
-      since: since ?? undefined,
-      until: until ?? undefined,
-    })
-      .then((data) => {
-        if (myReq !== reqIdRef.current) return;
-        setState({ kind: "ok", data });
-      })
-      .catch((err: unknown) => {
-        if (myReq !== reqIdRef.current) return;
-        const message =
-          err instanceof HttpError
-            ? `${err.status}: ${err.message}`
-            : err instanceof Error
-              ? err.message
-              : "Unknown error";
-        setState({ kind: "error", message });
+  // #2492 — fetch on rangeKey change via useAsyncData (was a reqIdRef-guarded
+  // effect; the hook's cancel flag provides the same stale-response discard).
+  // "custom"/disabled options are stubs → the fetcher resolves null (no fetch).
+  // The HttpError "<status>: <message>" formatting is preserved by rethrowing a
+  // formatted Error so extractErrorMessage surfaces it verbatim.
+  const {
+    data: pl,
+    loading: plLoading,
+    error: plError,
+  } = useAsyncData<PLSummary | null>(
+    () => {
+      const opt = options.find((o) => o.key === rangeKey);
+      if (!opt || opt.disabled) return Promise.resolve(null);
+      const { period, since, until } = opt.build(nowRef.current);
+      return getProjectPl(projectId, {
+        period,
+        since: since ?? undefined,
+        until: until ?? undefined,
+      }).catch((err: unknown) => {
+        // Preserve the prior "<status>: <message>" formatting for HttpError.
+        if (err instanceof HttpError) throw new Error(`${err.status}: ${err.message}`);
+        throw err;
       });
-  }, [projectId, rangeKey, options]);
+    },
+    [projectId, rangeKey, options],
+    { errorFallback: "Unknown error" },
+  );
+  // Local discriminated view so the render's existing kind-checks keep working
+  // with minimal churn. idle/loading collapse to one "loading" branch (the
+  // render already treats them identically). Memoized so its identity is stable
+  // per fetch — several useMemos below depend on it (exhaustive-deps).
+  const state = useMemo<
+    { kind: "loading" } | { kind: "ok"; data: PLSummary } | { kind: "error"; message: string }
+  >(
+    () =>
+      plError !== null
+        ? { kind: "error", message: plError }
+        : pl !== null
+          ? { kind: "ok", data: pl }
+          : { kind: "loading" },
+    [pl, plError],
+  );
 
   const currentLabel =
     options.find((o) => o.key === rangeKey)?.label ?? "Last 30 days";
@@ -321,7 +327,7 @@ export function PnlSummaryCard({
 
       {expanded && (
         <>
-          {state.kind === "loading" || state.kind === "idle" ? (
+          {state.kind === "loading" ? (
             <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading P&amp;L…</p>
           ) : state.kind === "error" ? (
             <p className="text-sm text-red-700 dark:text-red-300">

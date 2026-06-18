@@ -13,7 +13,7 @@
 // layering and reads like a detail panel. ESC + backdrop close. The preview is
 // fetched fresh each open (cheap; reads off stored tags, never re-reads files).
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 
 import {
   getResourcePreview,
@@ -21,7 +21,7 @@ import {
   type Resource,
   type ResourcePreview,
 } from "@/lib/api";
-import { extractErrorMessage } from "@/lib/errors";
+import { useAsyncData } from "@/lib/useAsyncData";
 
 type Props = {
   resource: Resource;
@@ -30,9 +30,6 @@ type Props = {
 
 export function ResourcePreviewDrawer({ resource, onClose }: Props) {
   const isLink = resource.kind === "link";
-  const [preview, setPreview] = useState<ResourcePreview | null>(null);
-  const [loading, setLoading] = useState(!isLink);
-  const [error, setError] = useState<string | null>(null);
 
   // ESC closes the drawer (mirror ModalShell's fresh-ref pattern minimally).
   useEffect(() => {
@@ -43,30 +40,26 @@ export function ResourcePreviewDrawer({ resource, onClose }: Props) {
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  useEffect(() => {
-    if (isLink) return;
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    getResourcePreview(resource.id)
-      .then((p) => {
-        if (!cancelled) setPreview(p);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
+  // #2492 — preview fetch + cancel-guard via useAsyncData. Links never call the
+  // preview endpoint (their metadata renders straight off the Resource), so the
+  // fetcher returns null for a link; the render's `isLink` branch ignores it.
+  // The 404 → custom-copy mapping is preserved by rethrowing a plain Error from
+  // the fetcher so extractErrorMessage surfaces it verbatim.
+  const { data: preview, loading, error } = useAsyncData<ResourcePreview | null>(
+    async () => {
+      if (isLink) return null;
+      try {
+        return await getResourcePreview(resource.id);
+      } catch (err: unknown) {
         if (err instanceof HttpError && err.status === 404) {
-          setError("Preview not available (resource not found).");
-        } else {
-          setError(extractErrorMessage(err, "Could not load preview"));
+          throw new Error("Preview not available (resource not found).");
         }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [resource.id, isLink]);
+        throw err;
+      }
+    },
+    [resource.id, isLink],
+    { errorFallback: "Could not load preview" },
+  );
 
   const title = resource.filename ?? resource.url ?? `Resource #${resource.id}`;
 

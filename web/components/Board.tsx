@@ -30,6 +30,7 @@ const BoardDndCanvas = dynamic(
 );
 import { TaskStatus, type TaskStatusValue } from "@/lib/constants";
 import { extractErrorMessage } from "@/lib/errors";
+import { useAsyncData } from "@/lib/useAsyncData";
 import { sortDoneLane, sortLaneTasks } from "@/lib/sortLaneTasks";
 import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
 import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
@@ -290,7 +291,23 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
   // Kanban #2347 — when a numeric milestone filter is active, fetch its server
   // rollup DONE count so the DONE-lane header shows the true total (not just
   // what's loaded client-side). undefined = still loading or no rollup available.
-  const [milestoneDoneRollup, setMilestoneDoneRollup] = useState<number | undefined>(undefined);
+  //
+  // #2492 — fetch + cancel-guard via useAsyncData (was a hand-rolled
+  // cancelled-flag effect). The fetcher resolves null for a non-numeric filter
+  // (so the rollup clears immediately on filter change, no stale leak); on a
+  // fetch error it degrades to null → the render falls back to the loaded
+  // count. `data` (number | null) maps back to the prior `undefined` contract.
+  const { data: rollupData } = useAsyncData<number | null>(
+    () => {
+      if (typeof milestoneFilter !== "number") return Promise.resolve(null);
+      return getMilestone(project.id, milestoneFilter).then(
+        (detail: MilestoneDetail) => detail.rollup.by_process_status["5"] ?? 0,
+      );
+    },
+    [milestoneFilter, project.id],
+    { resetDataOnReload: true },
+  );
+  const milestoneDoneRollup = rollupData ?? undefined;
 
   // Kanban #2112 — DONE-lane server pagination state.
   // doneHasMore: server has more DONE rows beyond what's loaded (init from SSR prop).
@@ -341,29 +358,6 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
       cancelled = true;
     };
   }, [project.id]);
-
-  // Kanban #2347 — fetch milestone rollup DONE count when a specific milestone
-  // is selected. Clears immediately on filter change so stale count never leaks
-  // across milestones. Uses a cancelled-flag guard to discard out-of-order
-  // responses (race condition when milestoneFilter changes quickly).
-  useEffect(() => {
-    if (typeof milestoneFilter !== "number") {
-      setMilestoneDoneRollup(undefined);
-      return;
-    }
-    let cancelled = false;
-    getMilestone(project.id, milestoneFilter)
-      .then((detail: MilestoneDetail) => {
-        if (!cancelled) setMilestoneDoneRollup(detail.rollup.by_process_status["5"] ?? 0);
-      })
-      .catch(() => {
-        // On error fall back to loaded count (milestoneDoneRollup stays undefined).
-        if (!cancelled) setMilestoneDoneRollup(undefined);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [milestoneFilter, project.id]);
 
   // Toast helpers — declared before the deep-link effect that consumes
   // pushToast (react-hooks/immutability: a useCallback must not be referenced

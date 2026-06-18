@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { listTasks, type TaskRead } from "@/lib/api";
 import { TaskStatus, type TaskStatusValue } from "@/lib/constants";
-import { extractErrorMessage } from "@/lib/errors";
+import { useAsyncData } from "@/lib/useAsyncData";
 import { normalizeDateOnly } from "@/lib/calendarDates";
 import { ModalShell } from "./ModalShell";
 
@@ -43,36 +43,23 @@ export function CalendarTaskPicker({
   onClose,
 }: Props) {
   const [query, setQuery] = useState("");
-  const [tasks, setTasks] = useState<TaskRead[] | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [activeIdx, setActiveIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLUListElement | null>(null);
 
   // Fetch the project's tasks once on open. CANCELLED rows are excluded by the
   // BE default; we keep DONE rows (operator may want to re-date a finished task).
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    listTasks(projectId, { limit: 500 })
-      .then((rows) => {
-        if (cancelled) return;
-        setTasks(rows);
-        setError(null);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setTasks([]);
-        setError(extractErrorMessage(err, "Failed to load tasks"));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId]);
+  // #2492 — fetch + cancel-guard via useAsyncData (initial loading=true here is
+  // the hook's first-render state).
+  const {
+    data: tasks,
+    loading,
+    error,
+  } = useAsyncData<TaskRead[]>(
+    () => listTasks(projectId, { limit: 500 }),
+    [projectId],
+    { errorFallback: "Failed to load tasks" },
+  );
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -147,7 +134,7 @@ export function CalendarTaskPicker({
         />
 
         <div className="mt-3 max-h-72 overflow-y-auto rounded border border-zinc-100 dark:border-zinc-800">
-          {loading ? (
+          {loading || tasks === null ? (
             <p
               className="px-3 py-4 text-xs italic text-zinc-400 dark:text-zinc-500"
               role="status"

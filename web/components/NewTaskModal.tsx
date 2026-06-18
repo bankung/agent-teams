@@ -30,6 +30,7 @@ import {
 } from "@/lib/constants";
 import { filterRoleOptions } from "@/lib/enabledRoles";
 import { extractErrorMessage } from "@/lib/errors";
+import { useAsyncData } from "@/lib/useAsyncData";
 import { ActionTemplatePicker } from "./ActionTemplatePicker";
 import { TaskTemplatePicker } from "./TaskTemplatePicker";
 import { PauseOverrideBlock } from "./PauseOverrideBlock";
@@ -207,7 +208,8 @@ export function NewTaskModal({
   // GLOBAL /api/task-templates surface; `selectedTemplateId` tracks the chosen
   // row; `placeholderValues` holds the live {{key}} inputs; `acceptanceCriteria`
   // is the editable AC list seeded from the template (also sent on submit).
-  const [templates, setTemplates] = useState<TaskTemplateRead[]>([]);
+  // #2492 — the fetch (was a manual fetch-in-effect) now routes through
+  // useAsyncData; see the useAsyncData call below `titleInputRef`.
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(
     null,
   );
@@ -252,27 +254,21 @@ export function NewTaskModal({
 
   // #1310 — load the team's task templates when the modal opens. GLOBAL
   // endpoint (no X-Project-Id). Failure degrades to [] (manual entry only) —
-  // a template-list outage must NOT block task creation. When the project /
-  // team is unknown, skip the fetch and show manual-entry only.
-  useEffect(() => {
-    if (!open) return;
-    const team = project?.team;
-    if (!team) {
-      setTemplates([]);
-      return;
-    }
-    let cancelled = false;
-    listTaskTemplates(team, { limit: 200 })
-      .then((rows) => {
-        if (!cancelled) setTemplates(rows);
-      })
-      .catch(() => {
-        if (!cancelled) setTemplates([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, project?.team]);
+  // a template-list outage must NOT block task creation. When the modal is
+  // closed or the project / team is unknown, the fetcher returns [] so the
+  // picker shows manual-entry only.
+  // #2492 — fetch + cancel-guard via useAsyncData. On error `data` stays null →
+  // `templates` falls back to [] (the same silent degrade the old .catch did);
+  // refetches on open / team change because both are in the deps.
+  const { data: templatesData } = useAsyncData<TaskTemplateRead[]>(
+    () => {
+      const team = project?.team;
+      if (!open || !team) return Promise.resolve<TaskTemplateRead[]>([]);
+      return listTaskTemplates(team, { limit: 200 });
+    },
+    [open, project?.team],
+  );
+  const templates = templatesData ?? [];
 
   function closeModal() {
     // #1304 — while the cost gate is open it owns the interaction; a background

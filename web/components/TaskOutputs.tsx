@@ -6,7 +6,7 @@
 // renderer and a Download button. Empty → shows a muted empty-state message.
 // Chart (png/svg) and html files support click-to-expand via ModalShell.
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 
@@ -15,7 +15,7 @@ import {
   getTaskOutputs,
   type TaskOutputEntry,
 } from "@/lib/api";
-import { extractErrorMessage } from "@/lib/errors";
+import { useAsyncData } from "@/lib/useAsyncData";
 import { ModalShell } from "./ModalShell";
 
 type Props = {
@@ -120,62 +120,53 @@ function OutputRow({
   projectId: number;
   taskId: number;
 }) {
-  // Loaded state: blobUrl for img/download, text for text-based renderers.
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  const [text, setText] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
-
   const modalTitleId = useId();
-  // Track the blob URL for cleanup (revoke on unmount to avoid memory leaks).
-  const blobUrlRef = useRef<string | null>(null);
 
   // v1 limitation: every listed row fetches its bytes eagerly on mount with no
   // concurrency cap or lazy-load. Fan-out is bounded because the BE caps the
   // listing at 50 entries (MAX_OUTPUT_FILES), so at most 50 parallel fetches.
+  //
+  // #2492 — the fetch + cancel-guard now live in useAsyncData. The text-decode
+  // is pushed INTO the fetcher (returns { blob, text }) so the hook owns one
+  // resolved value; the object URL is derived from that blob via useMemo and
+  // revoked in a dedicated cleanup effect below (resource lifecycle — NOT a
+  // setState-in-effect).
+  const needsText =
+    entry.kind === "doc" ||
+    entry.kind === "text" ||
+    entry.kind === "export" ||
+    (entry.kind === "chart" && entry.filename.toLowerCase().endsWith(".html"));
+  const {
+    data: bytes,
+    loading,
+    error: fetchError,
+  } = useAsyncData<{ blob: Blob; text: string | null }>(
+    async () => {
+      const blob = await fetchTaskOutputBytes(projectId, taskId, entry.filename);
+      const text = needsText ? await blob.text() : null;
+      return { blob, text };
+    },
+    [projectId, taskId, entry.filename, entry.kind],
+    { errorFallback: "Failed to load", resetDataOnReload: true },
+  );
+  const text = bytes?.text ?? null;
+
+  // Derive the object URL from the fetched blob (stable per fetch result) and
+  // revoke it on change/unmount — the canonical leak-free blob-URL lifecycle.
+  // Keyed on `bytes` (not `bytes?.blob`) so the React-Compiler inferred dep
+  // matches the source dep (preserve-manual-memoization); `bytes` is a fresh
+  // object only when the fetch re-resolves, so the URL is recreated exactly
+  // when the blob changes.
+  const blobUrl = useMemo(
+    () => (bytes ? URL.createObjectURL(bytes.blob) : null),
+    [bytes],
+  );
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setFetchError(null);
-    setBlobUrl(null);
-    setText(null);
-
-    fetchTaskOutputBytes(projectId, taskId, entry.filename)
-      .then(async (blob) => {
-        if (cancelled) return;
-        // Create download blob URL (used by both download button and img/iframe).
-        const url = URL.createObjectURL(blob);
-        blobUrlRef.current = url;
-        setBlobUrl(url);
-
-        // For text-based kinds, also decode as text for the content renderer.
-        if (
-          entry.kind === "doc" ||
-          entry.kind === "text" ||
-          entry.kind === "export" ||
-          (entry.kind === "chart" && entry.filename.toLowerCase().endsWith(".html"))
-        ) {
-          const t = await blob.text();
-          if (!cancelled) setText(t);
-        }
-        if (!cancelled) setLoading(false);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setFetchError(extractErrorMessage(err, "Failed to load"));
-        setLoading(false);
-      });
-
     return () => {
-      cancelled = true;
-      if (blobUrlRef.current) {
-        URL.revokeObjectURL(blobUrlRef.current);
-        blobUrlRef.current = null;
-      }
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
-     
-  }, [projectId, taskId, entry.filename, entry.kind]);
+  }, [blobUrl]);
 
   function renderContent() {
     if (loading) {
@@ -387,24 +378,13 @@ function OutputRow({
 
 // TaskOutputs — the section component mounted inside TaskDetail (#1305).
 export function TaskOutputs({ projectId, taskId }: Props) {
-  const [entries, setEntries] = useState<TaskOutputEntry[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setEntries(null);
-    setError(null);
-    getTaskOutputs(projectId, taskId)
-      .then((data) => {
-        if (!cancelled) setEntries(data);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(extractErrorMessage(err, "Failed to load outputs"));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId, taskId]);
+  // #2492 — fetch + cancel-guard via useAsyncData. resetDataOnReload keeps the
+  // prior "entries=null while a new task's outputs load" placeholder behavior.
+  const { data: entries, error } = useAsyncData<TaskOutputEntry[]>(
+    () => getTaskOutputs(projectId, taskId),
+    [projectId, taskId],
+    { errorFallback: "Failed to load outputs", resetDataOnReload: true },
+  );
 
   return (
     <section className="flex flex-col gap-2" data-outputs-section>

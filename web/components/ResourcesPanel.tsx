@@ -102,7 +102,18 @@ export function ResourcesPanel({ projectId, defaultCollapsed = true }: Props) {
 
   // Lazy fetch: only when expanded AND not yet loaded. Avoids a fetch while
   // the panel sits collapsed at the bottom of every board.
+  //
+  // #2492 — deliberately NOT migrated to useAsyncData. This is a LAZY,
+  // fetch-once-then-latch machine (the `loaded` flag stops a re-expand from
+  // refetching) with local list mutations (onCreated prepend, onDelete filter)
+  // and its own cancelledRef. useAsyncData(fetcher, deps) fetches eagerly on
+  // mount + on every dep change, which would (a) fetch while the panel is
+  // collapsed and (b) re-fetch on every expand/collapse — both behavior
+  // regressions. `refresh` already guards stale responses via cancelledRef, so
+  // the warning is a false-positive here; disabled with rationale rather than
+  // contorting the lazy-latch design to fit the hook.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (expanded && !loaded && !loading) void refresh();
   }, [expanded, loaded, loading, refresh]);
 

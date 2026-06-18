@@ -17,14 +17,14 @@
 // value, so this component never touches a secret. All data-* attrs (esp.
 // data-integration-status) are preserved from the modal version.
 
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 
 import {
   getIntegrations,
   type Integration,
-  type PlatformSecurity,
+  type IntegrationsResponse,
 } from "@/lib/api";
-import { extractErrorMessage } from "@/lib/errors";
+import { useAsyncData } from "@/lib/useAsyncData";
 
 // ---------------------------------------------------------------------------
 // StatusBadge — Configured (emerald/Ready) vs Not configured (amber).
@@ -200,32 +200,29 @@ function IntegrationCard({ integration }: { integration: Integration }) {
 // ---------------------------------------------------------------------------
 // IntegrationsPanel — page panel form (no modal). Fetches on mount.
 // ---------------------------------------------------------------------------
-type LoadState = "idle" | "loading" | "ready" | "error";
-
 export function IntegrationsPanel() {
-  const [loadState, setLoadState] = useState<LoadState>("idle");
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [integrations, setIntegrations] = useState<Integration[]>([]);
-  const [platformSecurity, setPlatformSecurity] = useState<PlatformSecurity | null>(null);
-
-  const load = useCallback(async () => {
-    setLoadState("loading");
-    setLoadError(null);
-    try {
-      const { integrations: rows, platform_security } = await getIntegrations();
-      setIntegrations(rows);
-      setPlatformSecurity(platform_security);
-      setLoadState("ready");
-    } catch (err: unknown) {
-      setLoadError(extractErrorMessage(err, "Failed to load integrations"));
-      setLoadState("error");
-    }
-  }, []);
-
-  // Fetch on mount.
-  useEffect(() => {
-    void load();
-  }, [load]);
+  // #2492 — fetch + cancel-guard via useAsyncData. The single call returns both
+  // the integration list and platform-security presence; loadState (idle/
+  // loading/ready/error) is derived from the hook so the render's gating is
+  // unchanged. reload() drives the "Retry" button.
+  const {
+    data,
+    error: loadError,
+    reload: load,
+  } = useAsyncData<IntegrationsResponse>(
+    () => getIntegrations(),
+    [],
+    { errorFallback: "Failed to load integrations" },
+  );
+  const loadState: "loading" | "ready" | "error" =
+    loadError !== null ? "error" : data !== null ? "ready" : "loading";
+  // Memoize the derived list so its identity is stable per fetch — the `grouped`
+  // useMemo below depends on it (exhaustive-deps).
+  const integrations = useMemo<Integration[]>(
+    () => data?.integrations ?? [],
+    [data],
+  );
+  const platformSecurity = data?.platform_security ?? null;
 
   // Group integrations by category, preserving first-seen category order so
   // the BE controls section ordering. Within a category, list order is
@@ -327,7 +324,7 @@ export function IntegrationsPanel() {
             </p>
             <button
               type="button"
-              onClick={() => void load()}
+              onClick={load}
               className="self-start rounded border border-zinc-300 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-400 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
             >
               Retry

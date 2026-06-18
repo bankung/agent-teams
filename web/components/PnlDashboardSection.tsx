@@ -16,7 +16,7 @@
 //   every row shares the same currency. When null, the chip is hidden and
 //   the per-row table is the only source of truth.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef } from "react";
 import Link from "next/link";
 
 import {
@@ -32,6 +32,7 @@ import {
   buildRange,
   type RangeKey,
 } from "@/lib/plRangePresets";
+import { useAsyncData } from "@/lib/useAsyncData";
 import { usePersistentState } from "@/lib/usePersistentState";
 
 // ----- Icons -----------------------------------------------------------------
@@ -74,12 +75,6 @@ function ChevronRightIcon() {
 
 // ----- Component -------------------------------------------------------------
 
-type LoadState =
-  | { kind: "idle" }
-  | { kind: "loading" }
-  | { kind: "ok"; data: PLCrossProject }
-  | { kind: "error"; message: string };
-
 type Props = {
   defaultCollapsed?: boolean;
   storageKey?: string;
@@ -89,9 +84,7 @@ export function PnlDashboardSection({
   defaultCollapsed = false,
   storageKey,
 }: Props) {
-  const [state, setState] = useState<LoadState>({ kind: "idle" });
   const nowRef = useRef<Date>(new Date());
-  const reqIdRef = useRef(0);
 
   const collapsible = storageKey != null;
 
@@ -126,32 +119,44 @@ export function PnlDashboardSection({
     },
   );
 
-  // Fetch on rangeKey change.
-  useEffect(() => {
-    if (rangeKey === "custom") return;
-    const { period, since, until } = buildRange(rangeKey, nowRef.current);
-    const myReq = ++reqIdRef.current;
-    setState({ kind: "loading" });
-    getCrossProjectPl({
-      period,
-      since: since ?? undefined,
-      until: until ?? undefined,
-    })
-      .then((data) => {
-        if (myReq !== reqIdRef.current) return;
-        setState({ kind: "ok", data });
-      })
-      .catch((err: unknown) => {
-        if (myReq !== reqIdRef.current) return;
-        const message =
-          err instanceof HttpError
-            ? `${err.status}: ${err.message}`
-            : err instanceof Error
-              ? err.message
-              : "Unknown error";
-        setState({ kind: "error", message });
+  // #2492 — fetch on rangeKey change via useAsyncData (was a reqIdRef-guarded
+  // effect; the hook's cancel flag gives the same stale-response discard).
+  // "custom" is a disabled option → the fetcher resolves null (no fetch). The
+  // HttpError "<status>: <message>" formatting is preserved via a rethrow.
+  const {
+    data: pl,
+    error: plError,
+  } = useAsyncData<PLCrossProject | null>(
+    () => {
+      if (rangeKey === "custom") return Promise.resolve(null);
+      const { period, since, until } = buildRange(rangeKey, nowRef.current);
+      return getCrossProjectPl({
+        period,
+        since: since ?? undefined,
+        until: until ?? undefined,
+      }).catch((err: unknown) => {
+        if (err instanceof HttpError) throw new Error(`${err.status}: ${err.message}`);
+        throw err;
       });
-  }, [rangeKey]);
+    },
+    [rangeKey],
+    { errorFallback: "Unknown error" },
+  );
+  // Local discriminated view so the existing render kind-checks keep working
+  // (idle/loading collapse to "loading"; the render treats them identically).
+  // Memoized so its identity is stable per fetch — the sortedRows useMemo below
+  // depends on it (exhaustive-deps).
+  const state = useMemo<
+    { kind: "loading" } | { kind: "ok"; data: PLCrossProject } | { kind: "error"; message: string }
+  >(
+    () =>
+      plError !== null
+        ? { kind: "error", message: plError }
+        : pl !== null
+          ? { kind: "ok", data: pl }
+          : { kind: "loading" },
+    [pl, plError],
+  );
 
   function onChangeRange(e: React.ChangeEvent<HTMLSelectElement>) {
     const next = e.target.value as RangeKey;
@@ -237,7 +242,7 @@ export function PnlDashboardSection({
 
       {expanded && (
         <>
-          {state.kind === "loading" || state.kind === "idle" ? (
+          {state.kind === "loading" ? (
             <p className="text-sm text-zinc-500 dark:text-zinc-400">
               Loading cross-project P&amp;L…
             </p>
