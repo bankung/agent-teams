@@ -23,6 +23,7 @@ RUN apt-get update \
 # the tools/ subpackage visible at install time.
 COPY . /repo/langgraph/
 
+RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -e .
 
 EXPOSE 8000
