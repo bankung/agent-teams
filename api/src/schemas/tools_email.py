@@ -549,6 +549,8 @@ class OutlookSearchItem(BaseModel):
     subject: str | None = None
     date: str | None = None
     snippet: str | None = None
+    is_read: bool = False
+    parent_folder_id: str | None = None
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -594,6 +596,8 @@ class OutlookGetResponse(BaseModel):
     subject: str | None = None
     date: str | None = None
     body_text: str
+    is_read: bool = False
+    parent_folder_id: str | None = None
 
     model_config = ConfigDict(populate_by_name=True)
 

@@ -563,7 +563,7 @@ def search_messages(
     escaped_query = query.replace('"', '""')
     params: dict[str, Any] = {
         "$search": f'"{escaped_query}"',
-        "$select": "id,conversationId,from,subject,receivedDateTime,bodyPreview",
+        "$select": "id,conversationId,from,subject,receivedDateTime,bodyPreview,isRead,parentFolderId",
         "$top": max_results,
     }
     url = f"{_GRAPH_BASE}/me/messages"
@@ -585,6 +585,8 @@ def search_messages(
                 "subject": msg.get("subject"),
                 "date": msg.get("receivedDateTime"),
                 "snippet": msg.get("bodyPreview"),
+                "is_read": msg.get("isRead", False),
+                "parent_folder_id": msg.get("parentFolderId"),
             }
         )
     return results
@@ -620,7 +622,7 @@ def get_message(creds: dict[str, Any], message_id: str) -> dict:
         "Prefer": 'outlook.body-content-type="text"',
     }
     params: dict[str, Any] = {
-        "$select": "id,conversationId,from,toRecipients,subject,receivedDateTime,body",
+        "$select": "id,conversationId,from,toRecipients,subject,receivedDateTime,body,isRead,parentFolderId",
     }
     url = f"{_GRAPH_BASE}/me/messages/{message_id}"
     resp = _graph_request_with_retry("GET", url, headers=headers, params=params)
@@ -655,6 +657,8 @@ def get_message(creds: dict[str, Any], message_id: str) -> dict:
         "subject": data.get("subject"),
         "date": data.get("receivedDateTime"),
         "body_text": body_text,
+        "is_read": data.get("isRead", False),
+        "parent_folder_id": data.get("parentFolderId"),
     }
 
 
