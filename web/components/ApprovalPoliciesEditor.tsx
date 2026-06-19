@@ -100,7 +100,7 @@ export function ApprovalPoliciesEditor({ project }: Props) {
   const [statsByRule, setStatsByRule] = useState<Record<string, PolicyPreviewStats>>({});
 
   useEffect(() => {
-    setDoc(normalizePolicies(project.approval_policies));
+    setDoc(normalizePolicies(project.approval_policies)); // eslint-disable-line react-hooks/set-state-in-effect -- SSE-refresh sync: policy doc must be replaced when the server pushes an updated approval_policies object; no derive-during-render path exists across 6 independent state slices
     setDraft(blankDraft());
     setEditingId(null);
     setPreviewStats(null);

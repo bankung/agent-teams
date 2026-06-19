@@ -39,7 +39,7 @@ export function TaskHaltModal({
   }, [open]);
 
   useEffect(() => {
-    if (!open) setReason("");
+    if (!open) setReason(""); // eslint-disable-line react-hooks/set-state-in-effect -- close-reset: clears stale reason text on close so a second halt attempt starts blank; cannot key-remount without editing TaskFocusView (out of scope)
   }, [open]);
 
   const reasonValid = reason.trim().length >= 1;

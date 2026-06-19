@@ -140,14 +140,6 @@ export function AcEditor({ criteria, isTerminal, onSave, disabled = false, onToa
     }
   }
 
-  // SSE-refresh guard: only sync from server when NOT in edit mode
-  useEffect(() => {
-    if (!editing) {
-      setDraft(serverList.map((c) => ({ ...c })));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [criteria, editing]);
-
   function openEdit() {
     setDraft(serverList.map((c) => ({ ...c })));
     setEmptyIndices(new Set());

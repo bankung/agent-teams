@@ -68,7 +68,7 @@ export function MilestoneFormModal({
   useEffect(() => {
     if (!open) return;
     if (milestone) {
-      setTitle(milestone.title);
+      setTitle(milestone.title); // eslint-disable-line react-hooks/set-state-in-effect -- modal prefill: 6 form fields seeded from `milestone` prop on open; component is used both key-remounted (GanttView edit) and persistent (NewTaskDropdown create), so key alone does not cover both call sites
       setDescription(milestone.description ?? "");
       setMilestoneStatus(milestone.milestone_status);
       setStartDate(milestone.start_date ?? "");

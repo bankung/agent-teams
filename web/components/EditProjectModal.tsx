@@ -149,7 +149,7 @@ export function EditProjectModal({ project }: Props) {
   // inside the open=true branch keeps closed-state stable.
   useEffect(() => {
     if (!open) return;
-    setDescription(project.description ?? "");
+    setDescription(project.description ?? ""); // eslint-disable-line react-hooks/set-state-in-effect -- modal prefill: 10 independent form fields must be seeded from `project` on open; EditProjectModal owns its own open state so key-remount from the parent is not viable
     setStackWeb(project.stack_web ?? "");
     setStackApi(project.stack_api ?? "");
     setStackDb(project.stack_db ?? "");

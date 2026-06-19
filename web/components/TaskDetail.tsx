@@ -86,6 +86,7 @@ export function TaskDetail({
   // #1677 — keep local model-override in sync when the task prop changes
   // (e.g. drawer re-used for a different task after an onPatch update).
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- optimistic-patch sync: modelOverride is editable local state that must track the server value on task switch
     setModelOverride(task.model_override);
   }, [task.id, task.model_override]);
 
@@ -99,7 +100,7 @@ export function TaskDetail({
   const [dueDate, setDueDate] = useState<string>(task.due_date ?? "");
 
   useEffect(() => {
-    setMilestoneId(task.milestone_id ?? null);
+    setMilestoneId(task.milestone_id ?? null); // eslint-disable-line react-hooks/set-state-in-effect -- optimistic-patch sync: milestoneId/dueDate are editable local state that must track the server value on task switch
     setDueDate(task.due_date ?? "");
   }, [task.id, task.milestone_id, task.due_date]);
 
@@ -110,9 +111,8 @@ export function TaskDetail({
   // SSE-refresh guard: only sync description from server when NOT editing
   useEffect(() => {
     if (!descEditing) {
-      setDescDraft(task.description ?? "");
+      setDescDraft(task.description ?? ""); // eslint-disable-line react-hooks/set-state-in-effect -- SSE guard: descDraft is an in-place edit buffer that must not be overwritten while the user is typing
     }
-     
   }, [task.id, task.description, descEditing]);
 
   const handleDescSave = async () => {
@@ -175,7 +175,7 @@ export function TaskDetail({
 
   // Reset lazy state when task changes so a re-open starts fresh.
   useEffect(() => {
-    setAlsoBlocksOpen(false);
+    setAlsoBlocksOpen(false); // eslint-disable-line react-hooks/set-state-in-effect -- lazy-disclosure reset: alsoBlocks is derived from task.id fetch, must be cleared on task switch so stale data from a prior task doesn't show
     setAlsoBlocks(null);
   }, [task.id]);
 
