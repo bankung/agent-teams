@@ -21,6 +21,7 @@ export function ProjectConsentGrantModal({ project }: Props) {
   const [typed, setTyped] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [operatorToken, setOperatorToken] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   // Focus the input on open.
@@ -33,6 +34,7 @@ export function ProjectConsentGrantModal({ project }: Props) {
     if (submitting) return;
     setOpen(false);
     setTyped("");
+    setOperatorToken("");
     setError(null);
   };
 
@@ -42,11 +44,12 @@ export function ProjectConsentGrantModal({ project }: Props) {
     setError(null);
     setSubmitting(true);
     try {
-      await grantConsent(project.id, typed);
+      await grantConsent(project.id, typed, operatorToken);
       // Re-fetch the Server-rendered banner so it flips zinc → emerald.
       router.refresh();
       setOpen(false);
       setTyped("");
+      setOperatorToken("");
     } catch (err: unknown) {
       setError(extractErrorMessage(err, "Grant failed"));
     } finally {
@@ -101,6 +104,23 @@ export function ProjectConsentGrantModal({ project }: Props) {
               className="mt-3 w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
               data-consent-grant-input
             />
+            <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+              Operator token{" "}
+              <span className="font-normal text-zinc-500">(optional)</span>
+              <input
+                type="password"
+                value={operatorToken}
+                onChange={(e) => setOperatorToken(e.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+                disabled={submitting}
+                className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
+                data-consent-grant-operator-token
+              />
+              <span className="mt-0.5 block text-[10px] text-zinc-500 dark:text-zinc-500">
+                Required only if operator gating is enabled.
+              </span>
+            </label>
             {error !== null && (
               <p
                 role="alert"

@@ -362,6 +362,16 @@ function applyActor(
   if (actor && actor.trim().length > 0) headers["X-Actor"] = actor.trim();
 }
 
+// applyOperatorToken — stamp X-Operator-Token header when token is non-empty
+// after trim. Mirrors the agentWriteHeaders trim logic at line 2731-2732.
+function applyOperatorToken(
+  headers: Record<string, string>,
+  token?: string,
+): void {
+  const t = token?.trim();
+  if (t) headers["X-Operator-Token"] = t;
+}
+
 export async function getProjectByName(name: string): Promise<ProjectRead> {
   return jsonFetch<ProjectRead>(
     `/api/projects/by-name/${encodeURIComponent(name)}`,
@@ -535,10 +545,13 @@ export async function updateProject(
 export async function grantConsent(
   projectId: number,
   confirmName: string,
+  operatorToken?: string,
 ): Promise<ProjectRead> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  applyOperatorToken(headers, operatorToken);
   return jsonFetch<ProjectRead>(`/api/projects/${projectId}/grant-consent`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ confirm_name: confirmName }),
   });
 }
@@ -578,10 +591,12 @@ export async function killProject(
   body: KillProjectBody,
   force = false,
   actor?: string,
+  operatorToken?: string,
 ): Promise<KillReviveResponse> {
   const qs = force ? "?force=true" : "";
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   applyActor(headers, actor);
+  applyOperatorToken(headers, operatorToken);
   return jsonFetch<KillReviveResponse>(`/api/projects/${projectId}/kill${qs}`, {
     method: "POST",
     headers,
@@ -592,9 +607,11 @@ export async function killProject(
 export async function reviveProject(
   projectId: number,
   actor?: string,
+  operatorToken?: string,
 ): Promise<KillReviveResponse> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   applyActor(headers, actor);
+  applyOperatorToken(headers, operatorToken);
   return jsonFetch<KillReviveResponse>(`/api/projects/${projectId}/revive`, {
     method: "POST",
     headers,

@@ -63,6 +63,7 @@ from src.schemas.project import (
 )
 from src.services.budget_gate import reconcile_budget
 from src.services.kill_switch import kill_project, revive_project
+from src.services.operator_auth import OperatorDecision, require_operator_proof
 from src.services.pause_switch import pause_project, unpause_project
 from src.services.project_scaffold import scaffold_project_folder
 from src.services.session_project import require_project_id_header
@@ -75,6 +76,22 @@ from src.settings import get_settings
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
+
+# Source-text-locked 403 detail for the project kill/revive/consent gate.
+_OPERATOR_PROOF_REQUIRED_MSG = (
+    "operator_proof_required: project kill/revive/consent is an operator-only action"
+)
+
+
+def _require_operator(operator_proof: OperatorDecision) -> None:
+    """Raise 403 unless the request is operator-backed.
+
+    No-op when OPERATOR_ACTION_KEY is unset (`require_operator_proof` returns
+    OPERATOR for any request while the key is absent), so these routes stay
+    functional on deployments that have not activated the gate.
+    """
+    if operator_proof is not OperatorDecision.OPERATOR:
+        raise HTTPException(status_code=403, detail=_OPERATOR_PROOF_REQUIRED_MSG)
 
 
 # #793 — settings.json substitution after scaffold; see substitute_settings_json service
@@ -918,6 +935,7 @@ async def grant_project_consent(
     project_id: int,
     payload: ProjectGrantConsent,
     session: AsyncSession = Depends(get_session),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
 ) -> Project:
     """Grant per-project consent for Mode B (auto_headless) tasks (Kanban #481/#483).
 
@@ -929,7 +947,9 @@ async def grant_project_consent(
     404 on missing/soft-deleted project (active-only — `status=1`).
     400 on `confirm_name` mismatch — detail string pinned by source-text-lock
     test in test_routes_smoke.py.
+    403 on operator-proof gate active without a valid X-Operator-Token.
     """
+    _require_operator(operator_proof)
     project = await get_or_404(
         session,
         Project,
@@ -976,6 +996,7 @@ async def kill_project_endpoint(
     ),
     x_actor: str | None = Header(default=None, alias="X-Actor"),
     session: AsyncSession = Depends(get_session),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
 ) -> KillProjectResponse:
     """Hard-pause a project (Kanban #1209, GOV1).
 
@@ -996,7 +1017,9 @@ async def kill_project_endpoint(
     mode (v1 scope) friction-free. Truncated at 200 chars (P1-4 audit on
     #1209) to match the hook-layer precedent — an adversarial / runaway
     caller can otherwise stuff arbitrarily long strings into the audit row.
+    403 on operator-proof gate active without a valid X-Operator-Token.
     """
+    _require_operator(operator_proof)
     # P1-4: cap at 200 chars; `or "operator"` after the slice handles a
     # purely-whitespace header where .strip() returns empty.
     actor = (x_actor or "operator").strip()[:200] or "operator"
@@ -1019,6 +1042,7 @@ async def revive_project_endpoint(
     payload: ReviveProjectRequest,  # noqa: ARG001 — schema present for OpenAPI + forward-compat
     x_actor: str | None = Header(default=None, alias="X-Actor"),
     session: AsyncSession = Depends(get_session),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
 ) -> ReviveProjectResponse:
     """Inverse of /kill — restore a project to runnable state (Kanban #1209).
 
@@ -1035,7 +1059,9 @@ async def revive_project_endpoint(
 
     `X-Actor` truncated at 200 chars (P1-4 audit on #1209) for the same
     reason as the kill endpoint.
+    403 on operator-proof gate active without a valid X-Operator-Token.
     """
+    _require_operator(operator_proof)
     # P1-4: cap at 200 chars; `or "operator"` after the slice handles a
     # purely-whitespace header where .strip() returns empty.
     actor = (x_actor or "operator").strip()[:200] or "operator"

@@ -67,6 +67,7 @@ export function KillProjectModal({
   const [typedName, setTypedName] = useState("");
   const [reason, setReason] = useState("");
   const [forceMode, setForceMode] = useState(false);
+  const [operatorToken, setOperatorToken] = useState("");
   // Two-step force submit: 1st click flips this true (reveals notice +
   // relabels button); 2nd click actually submits. Reset on close / on
   // any force toggle change so the user can't bypass by toggling.
@@ -87,6 +88,7 @@ export function KillProjectModal({
     setReason("");
     setForceMode(false);
     setForceConfirmStage(false);
+    setOperatorToken("");
     setError(null);
   }
 
@@ -137,9 +139,9 @@ export function KillProjectModal({
     setSubmitting(true);
     try {
       if (mode === "kill") {
-        await killProject(project.id, { reason: reason.trim() }, forceMode);
+        await killProject(project.id, { reason: reason.trim() }, forceMode, undefined, operatorToken);
       } else {
-        await reviveProject(project.id);
+        await reviveProject(project.id, undefined, operatorToken);
       }
       router.refresh();
       // Close after successful refresh; reset state in closeModal() too
@@ -150,6 +152,7 @@ export function KillProjectModal({
       setReason("");
       setForceMode(false);
       setForceConfirmStage(false);
+      setOperatorToken("");
     } catch (err: unknown) {
       setError(extractErrorMessage(err, `${mode} failed`));
     } finally {
@@ -296,6 +299,24 @@ export function KillProjectModal({
                 )}
               </>
             )}
+
+            <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+              Operator token{" "}
+              <span className="font-normal text-zinc-500">(optional)</span>
+              <input
+                type="password"
+                value={operatorToken}
+                onChange={(e) => setOperatorToken(e.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+                disabled={submitting}
+                className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
+                data-kill-project-operator-token
+              />
+              <span className="mt-0.5 block text-[10px] text-zinc-500 dark:text-zinc-500">
+                Required only if operator gating is enabled.
+              </span>
+            </label>
 
             {error !== null && (
               <p
