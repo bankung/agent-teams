@@ -491,3 +491,83 @@ async def test_reserved_name_endpoint_404(client, _patch_agents_dir, tmp_path, m
     assert "files_scanned" in resp.json()
     # NEGATIVE lock: it is NOT a gallery detail shape (no "valid" key).
     assert "valid" not in resp.json()
+
+
+# =============================================================================
+# Kanban #2503 — Fix 2: AgentPathError detail is static, not internal string
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_agent_path_error_returns_static_detail_on_post(
+    client, _patch_agents_dir, monkeypatch
+) -> None:
+    """Fix 2: POST /api/agents with a name that triggers AgentPathError must
+    return 422 with the static detail 'invalid_agent_path', NOT the internal
+    resolved-path string (which includes the filesystem path).
+
+    We monkeypatch confine_agent_path (the function called inside
+    _build_validate_write) to raise AgentPathError carrying a message that
+    looks like an internal path string — and assert that string is absent from
+    the response.
+    """
+    from src.services.agent_validation import AgentPathError
+
+    _INTERNAL_MSG = "resolved target '/etc/passwd' is not directly inside '/safe/dir'"
+
+    monkeypatch.setattr(
+        "src.routers.agent_gallery.confine_agent_path",
+        lambda agents_dir, name: (_ for _ in ()).throw(AgentPathError(_INTERNAL_MSG)),
+    )
+
+    resp = await client.post(
+        "/api/agents",
+        json={
+            "name": "test-agent",
+            "description": "trigger path error",
+            "body": "",
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    # POSITIVE: static stable detail.
+    assert resp.json()["detail"] == "invalid_agent_path", resp.json()
+    # NEGATIVE (the lock): internal path string must NOT appear in the response.
+    assert _INTERNAL_MSG not in resp.text, (
+        f"internal error string leaked into response: {resp.text}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_path_error_returns_static_detail_on_put(
+    client, _patch_agents_dir, monkeypatch
+) -> None:
+    """Fix 2: PUT /api/agents/{name} with an AgentPathError returns the static detail."""
+    from src.services.agent_validation import AgentPathError
+
+    _INTERNAL_MSG = "resolved target '/traversal' is not directly inside '/safe/dir'"
+
+    # First make the "existing agent" lookup succeed (so we get past the 404 check).
+    monkeypatch.setattr(
+        "src.routers.agent_gallery.get_agent_summary",
+        lambda agents_dir, name: {"name": name, "valid": True},
+    )
+    monkeypatch.setattr(
+        "src.routers.agent_gallery.confine_agent_path",
+        lambda agents_dir, name: (_ for _ in ()).throw(AgentPathError(_INTERNAL_MSG)),
+    )
+
+    resp = await client.put(
+        "/api/agents/alpha-agent",
+        json={
+            "name": "alpha-agent",
+            "description": "trigger path error",
+            "body": "",
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    # POSITIVE: static detail.
+    assert resp.json()["detail"] == "invalid_agent_path", resp.json()
+    # NEGATIVE: internal string absent.
+    assert _INTERNAL_MSG not in resp.text, (
+        f"internal error string leaked into response: {resp.text}"
+    )

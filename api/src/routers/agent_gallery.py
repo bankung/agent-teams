@@ -26,6 +26,7 @@ discipline as ``routers/agent_validation.py`` / ``routers/task_outputs.py``).
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import anyio
@@ -55,6 +56,8 @@ from src.services.agent_validation import (
 )
 from src.services.operator_auth import OperatorDecision, require_operator_proof
 from src.settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 # Platform-level (no X-Project-Id) router. Mounted at /api/agents in main.py,
 # alongside the #1016 validator router. The two share the /agents prefix; route
@@ -251,7 +254,8 @@ async def create_agent_endpoint(
             lambda: _build_validate_write(agents_dir, name, payload)
         )
     except AgentPathError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        logger.warning("agent path error on POST name=%r: %s", name, exc)
+        raise HTTPException(status_code=422, detail="invalid_agent_path") from exc
     except _CandidateInvalid as exc:
         raise HTTPException(
             status_code=422,
@@ -321,7 +325,8 @@ async def update_agent_endpoint(
             lambda: _build_validate_write(agents_dir, name, payload)
         )
     except AgentPathError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        logger.warning("agent path error on PUT name=%r: %s", name, exc)
+        raise HTTPException(status_code=422, detail="invalid_agent_path") from exc
     except _CandidateInvalid as exc:
         raise HTTPException(
             status_code=422,
