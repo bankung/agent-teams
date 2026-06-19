@@ -442,9 +442,9 @@ export function TaskOutputs({ projectId, taskId }: Props) {
 
       {entries !== null && entries.length > 0 && (
         <div className="flex flex-col gap-2">
-          {entries.map((entry) => (
+          {entries.map((entry, idx) => (
             <OutputRow
-              key={entry.filename}
+              key={`${entry.filename}-${idx}`}
               entry={entry}
               projectId={projectId}
               taskId={taskId}

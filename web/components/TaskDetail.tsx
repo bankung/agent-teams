@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   cancelTask,
@@ -155,23 +155,35 @@ export function TaskDetail({
     };
   }, [projectId]);
 
+  // MED-2: stash the handler's deps in refs so the keydown listener subscribes
+  // ONCE ([] deps) rather than re-subscribing on every SSE tick that re-creates
+  // the inline onClose arrow in Board.
+  const cancelOpenRef = useRef(cancelOpen);
+  const pickerOpenRef = useRef(pickerOpen);
+  const submittingRef = useRef(submitting);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { cancelOpenRef.current = cancelOpen; }, [cancelOpen]);
+  useEffect(() => { pickerOpenRef.current = pickerOpen; }, [pickerOpen]);
+  useEffect(() => { submittingRef.current = submitting; }, [submitting]);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (submitting) return;
+      if (submittingRef.current) return;
       // Nested ESC precedence: inner UIs absorb ESC before drawer (#854)
-      if (cancelOpen) {
+      if (cancelOpenRef.current) {
         setCancelOpen(false);
         setCancelReason("");
-      } else if (pickerOpen) {
+      } else if (pickerOpenRef.current) {
         setPickerOpen(false);
       } else {
-        onClose();
+        onCloseRef.current();
       }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [cancelOpen, pickerOpen, submitting, onClose]);
+  }, []);
 
   // Reset lazy state when task changes so a re-open starts fresh.
   useEffect(() => {

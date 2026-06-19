@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -148,6 +148,12 @@ export function GanttView({ projectId, projectName, milestones }: Props) {
   const [activeTask, setActiveTask] = useState<TaskRead | null>(null);
   const [dndError, setDndError] = useState<string | null>(null);
 
+  // MED-1: guard setState calls in the in-flight loadUnassigned promise against
+  // unmount (loadUnassigned is on-demand, not an effect, so we use a ref + a
+  // one-time cleanup effect instead of a local cancelled flag).
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
   const keyStr = (k: ListKey) => String(k);
 
   // Lazy-load the Unassigned pool (milestone_id-null tasks). The BE has no
@@ -168,14 +174,14 @@ export function GanttView({ projectId, projectName, milestones }: Props) {
     listTasks(projectId, { limit: 500 })
       .then((rows) => rows.filter((t) => t.milestone_id == null))
       .then((rows) => {
-        setTaskLists((prev) => ({ ...prev, [UNASSIGNED]: sortTasks(rows) }));
+        if (mountedRef.current) setTaskLists((prev) => ({ ...prev, [UNASSIGNED]: sortTasks(rows) }));
       })
       .catch((err: unknown) => {
-        setErrorUnassigned(extractErrorMessage(err, "Failed to load tasks"));
-        setTaskLists((prev) => ({ ...prev, [UNASSIGNED]: [] }));
+        if (mountedRef.current) setErrorUnassigned(extractErrorMessage(err, "Failed to load tasks"));
+        if (mountedRef.current) setTaskLists((prev) => ({ ...prev, [UNASSIGNED]: [] }));
       })
       .finally(() => {
-        setLoadingUnassigned(false);
+        if (mountedRef.current) setLoadingUnassigned(false);
       });
   }, [projectId]);
 
