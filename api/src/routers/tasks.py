@@ -18,7 +18,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi import status as http_status
-from sqlalchemy import cast, or_, select
+from sqlalchemy import cast, or_, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -612,11 +612,23 @@ async def get_next_autorun(
     if session_project is not None and session_project.hitl_timeout_hours is not None:
         timeout_hours = session_project.hitl_timeout_hours
         threshold = timedelta(hours=timeout_hours)
-        paused_q = select(Task).where(
-            Task.project_id == project_id,
-            Task.status == RecordStatus.ACTIVE,
-            Task.halt_reason.in_(("question", "decision")),
-            Task.process_status == TaskStatus.BLOCKED,
+        # #2500: skip_locked so concurrent polls each lock a distinct subset of
+        # un-stamped rows; a second caller skips any row already locked by the
+        # first, eliminating the double-stamp + duplicate-push race.
+        # shortcut: SELECT-then-stamp rather than bulk-UPDATE-RETURNING; the
+        # existing `(now - updated_at) > threshold` guard makes concurrent
+        # re-entry idempotent even on the (unlikely) window after the lock
+        # releases. Upgrade path: replace with bulk UPDATE...RETURNING if
+        # HITL-timeout lanes grow large (>1k simultaneous BLOCKED tasks).
+        paused_q = (
+            select(Task)
+            .where(
+                Task.project_id == project_id,
+                Task.status == RecordStatus.ACTIVE,
+                Task.halt_reason.in_(("question", "decision")),
+                Task.process_status == TaskStatus.BLOCKED,
+            )
+            .with_for_update(skip_locked=True)
         )
         paused = (await session.execute(paused_q)).scalars().all()
         stamped_any = False
@@ -666,6 +678,10 @@ async def get_next_autorun(
     # Highest-priority runnable TODO task: auto_pickup or auto_headless,
     # not halted, not blocked by an in-progress/todo blocker,
     # and scheduled_at is either unset or already reached (Kanban #1972).
+    # #2500: skip_locked so at most one concurrent poll stamps halt_reason on
+    # the candidate row; a second caller skips a locked candidate and either
+    # gets None or its own distinct candidate (idempotent: if budget is
+    # exceeded, that row is also halted, which is correct behavior).
     next_task_stmt = (
         select(Task)
         .outerjoin(blocker, Task.blocked_by == blocker.id)
@@ -688,6 +704,10 @@ async def get_next_autorun(
             Task.created_at.asc(),
         )
         .limit(1)
+        # #2500: of=Task locks ONLY the tasks row, not the outer-joined
+        # (nullable) blocker alias — PG rejects FOR UPDATE on the nullable
+        # side of an outer join (asyncpg FeatureNotSupportedError) otherwise.
+        .with_for_update(skip_locked=True, of=Task)
     )
     next_task_row = (await session.execute(next_task_stmt)).scalars().first()
 
@@ -1101,16 +1121,45 @@ async def _enforce_blocker_order_constraint(
     if target_process_status != TaskStatus.TODO:
         return
 
+    # #2501 perf: pre-fetch up to N+1 blocker nodes in ONE round-trip using
+    # a recursive CTE, build an id→Task dict, then walk it in Python.
+    # Removes up to N sequential session.get() round-trips. Cycle-detection
+    # and depth-cap behavior are preserved exactly via the same for-else loop.
+    from sqlalchemy import text as _sa_text  # SELECT only — not DML
+
+    # Collect chain IDs via recursive CTE (depth-limited to N+1 rows).
+    # shortcut: text() for this SELECT-only recursive walk; the loop below
+    # is pure Python over the pre-fetched dict. Upgrade path: ORM
+    # recursive CTE (union_all on aliased Task) if column names change.
+    chain_id_rows = (
+        await session.execute(
+            _sa_text(
+                "WITH RECURSIVE bc(id, blocked_by, depth) AS ("
+                "  SELECT id, blocked_by, 1 FROM tasks WHERE id = :start_id"
+                "  UNION ALL"
+                "  SELECT t.id, t.blocked_by, bc.depth + 1"
+                "  FROM tasks t JOIN bc ON t.id = bc.blocked_by"
+                "  WHERE bc.depth <= :max_depth"
+                ") SELECT id FROM bc"
+            ),
+            {"start_id": target_blocked_by, "max_depth": _REORDER_BLOCKER_CHAIN_DEPTH + 1},
+        )
+    ).fetchall()
+    chain_ids = [r[0] for r in chain_id_rows]
+
+    # Batch-fetch all chain nodes in one ORM SELECT; build id→Task map.
+    task_map: dict[int, Task] = {}
+    if chain_ids:
+        chain_rows = (
+            await session.execute(select(Task).where(Task.id.in_(chain_ids)))
+        ).scalars().all()
+        task_map = {t.id: t for t in chain_rows}
+
     cursor: int | None = target_blocked_by
-    # Range is N+2 (not N+1) so a chain of EXACTLY N blockers terminates via
-    # the `cursor is None: break` path on iteration N+1 instead of falsely
-    # tripping the for-else. The constant N is the budget for "blockers
-    # walked"; the +1 sentinel iteration exists solely to break cleanly
-    # when the chain ends at the budget edge (WARN-3 fix).
     for depth in range(1, _REORDER_BLOCKER_CHAIN_DEPTH + 2):
         if cursor is None:
             break
-        blocker = await session.get(Task, cursor)
+        blocker = task_map.get(cursor)
         if blocker is None:
             break
         # Only check when the blocker shares the lane AND has a sort_order.
@@ -1143,30 +1192,53 @@ async def _materialize_null_sort_orders_in_lane(
     """#772 — first-reorder densifier. Fills NULL sort_orders in the lane with
     floor floats starting at (max non-null + 1.0). Existing non-null values are
     preserved. `exclude_task_id` skips a row about to be set by the caller.
+
+    #2501 perf: replaced full-lane ORM fetch + Python loop with a single
+    CTE-based UPDATE that computes floor + ROW_NUMBER() in SQL. Semantics
+    are identical: the ORDER BY (sort_order ASC NULLS LAST, created_at ASC)
+    and starting floor (max non-null + 1.0, default 1.0) are preserved.
     """
-    stmt = (
-        select(Task)
-        .where(
-            Task.project_id == project_id,
-            Task.process_status == process_status,
-            Task.status == RecordStatus.ACTIVE,
+    lane_where = [
+        Task.project_id == project_id,
+        Task.process_status == process_status,
+        Task.status == RecordStatus.ACTIVE,
+    ]
+    # Scalar subquery: max existing non-null sort_order in the lane, or 0.0.
+    floor_subq = (
+        select(func.coalesce(func.max(Task.sort_order), 0.0))
+        .where(*lane_where)
+        .scalar_subquery()
+    )
+    # CTE: rank only the NULL-sort_order rows (excluding exclude_task_id)
+    # using the same ordering the Python loop observed.
+    null_where = [*lane_where, Task.sort_order.is_(None)]
+    if exclude_task_id is not None:
+        null_where.append(Task.id != exclude_task_id)
+    from sqlalchemy.dialects.postgresql import DOUBLE_PRECISION as _DP
+
+    ranked_cte = (
+        select(
+            Task.id,
+            (
+                floor_subq
+                + func.cast(
+                    func.row_number().over(
+                        order_by=[Task.sort_order.asc().nulls_last(), Task.created_at.asc()]
+                    ),
+                    _DP(),
+                )
+            ).label("new_so"),
         )
-        .order_by(Task.sort_order.asc().nulls_last(), Task.created_at.asc())
+        .where(*null_where)
+        .cte("_mat_ranked")
     )
-    result = await session.execute(stmt)
-    rows = list(result.scalars().all())
-    # Determine the starting floor: max existing non-null sort_order in lane.
-    existing_max = max(
-        (r.sort_order for r in rows if r.sort_order is not None),
-        default=0.0,
+    upd = (
+        update(Task)
+        .where(Task.id == ranked_cte.c.id)
+        .values(sort_order=ranked_cte.c.new_so)
+        .execution_options(synchronize_session=False)
     )
-    next_value = existing_max + 1.0
-    for row in rows:
-        if exclude_task_id is not None and row.id == exclude_task_id:
-            continue
-        if row.sort_order is None:
-            row.sort_order = next_value
-            next_value += 1.0
+    await session.execute(upd)
 
 
 async def _redensify_lane(
@@ -2109,6 +2181,35 @@ async def update_task(
             # iteration exists solely to break cleanly when the chain ends
             # (or cycle closes) at the budget edge. Mirrors the
             # _enforce_blocker_order_constraint fix (#772 / Kanban #820).
+            #
+            # #2501 perf: pre-fetch the chain in one recursive-CTE SELECT,
+            # build id→Task dict, walk in Python. Same cycle/depth semantics.
+            from sqlalchemy import text as _sa_text_cycle  # SELECT only — not DML
+
+            _cycle_chain_rows = (
+                await session.execute(
+                    _sa_text_cycle(
+                        "WITH RECURSIVE bc(id, blocked_by, depth) AS ("
+                        "  SELECT id, blocked_by, 1 FROM tasks WHERE id = :start_id"
+                        "  UNION ALL"
+                        "  SELECT t.id, t.blocked_by, bc.depth + 1"
+                        "  FROM tasks t JOIN bc ON t.id = bc.blocked_by"
+                        "  WHERE bc.depth <= :max_depth"
+                        ") SELECT id FROM bc"
+                    ),
+                    {"start_id": new_blocked_by, "max_depth": _BLOCKED_BY_MAX_CHAIN_DEPTH + 1},
+                )
+            ).fetchall()
+            _cycle_chain_ids = [r[0] for r in _cycle_chain_rows]
+            _cycle_task_map: dict[int, Task] = {}
+            if _cycle_chain_ids:
+                _cycle_fetched = (
+                    await session.execute(
+                        select(Task).where(Task.id.in_(_cycle_chain_ids))
+                    )
+                ).scalars().all()
+                _cycle_task_map = {t.id: t for t in _cycle_fetched}
+
             cursor: int | None = blocker.blocked_by
             for depth in range(1, _BLOCKED_BY_MAX_CHAIN_DEPTH + 2):
                 if cursor is None:
@@ -2118,7 +2219,7 @@ async def update_task(
                         status_code=422,
                         detail=f"blocked_by {new_blocked_by} would create a cycle (depth {depth})",
                     )
-                next_row = await session.get(Task, cursor)
+                next_row = _cycle_task_map.get(cursor)
                 if next_row is None:
                     break
                 cursor = next_row.blocked_by
@@ -2541,6 +2642,21 @@ async def update_task(
             # back (we haven't commit'd yet).
             await spawn_child_from_handoff(session, task)
 
+    # Kanban #832: auto-unblock dependents when a question/decision task is
+    # marked DONE. Folded into the main transaction (#2501) so the task
+    # DONE-flip and the dependent unblocks are all-or-nothing — a crash
+    # between the two commits can no longer leave a DONE parent whose
+    # dependents are still blocked. auto_unblock_dependents mutates ORM
+    # objects only (no commit inside); IntegrityError on the combined commit
+    # is still translated below (same handler).
+    if (
+        _resolved_ps_for_done == TaskStatus.DONE
+        and _resolved_interaction_kind_for_done in (
+            TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION
+        )
+    ):
+        await auto_unblock_dependents(session, task_id)
+
     try:
         await session.commit()
     except IntegrityError as exc:
@@ -2552,26 +2668,20 @@ async def update_task(
         detail = _translate_task_integrity_error(exc, context="update")
         raise HTTPException(status_code=400, detail=detail) from exc
 
-    # Kanban #832: auto-unblock dependents when a question/decision task is marked DONE.
-    if (
-        _resolved_ps_for_done == TaskStatus.DONE
-        and _resolved_interaction_kind_for_done in (
-            TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION
-        )
-    ):
-        await auto_unblock_dependents(session, task_id)
-        await session.commit()  # second commit for the unblock writes
-
     # Kanban #1211 (GOV3 AC#3): post-PATCH hook — if the patched task is an
     # audit task (task_type='audit') that just transitioned to DONE, invoke
     # the flag pipeline. The hook is surgical: it only fires on the
     # DONE-flip of an 'audit' task, leaving every other PATCH path
     # unaffected.
     #
-    # Why here (not in the audit-task DONE flow above): the audit-task
-    # transition is a regular PATCH, not a question/decision answer. We
-    # detect it post-commit so the audit_report (which the same PATCH may
-    # have written) is already persisted before the helper reads it.
+    # Why isolated from the main commit (#2501): apply_flag_from_audit_report
+    # may call pause_project which commits internally; folding it into the
+    # main tx would silently split the boundary anyway. Keeping it isolated
+    # preserves the existing rollback semantics (flag failure rolls back flag
+    # side effects; audit-task DONE flip already landed). The audit_report
+    # written by this same PATCH is visible to session.get() as the
+    # in-session dirty object — the helper does not need the value to be
+    # committed before reading it.
     #
     # Errors from apply_flag_from_audit_report are LOGGED but NOT raised —
     # an audit-flag pipeline failure must not crash the audit-task DONE
