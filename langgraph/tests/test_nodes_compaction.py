@@ -392,3 +392,81 @@ def test_recent_n_window_exceeds_budget_emits_warning(caplog) -> None:
     )
     # No orphans in the returned list.
     _assert_no_orphans(out)
+
+
+# ---------------------------------------------------------------------------
+# H-4 regression — _stub_turn clones ToolMessage, never mutates the original
+# ---------------------------------------------------------------------------
+
+
+def test_stub_turn_clones_toolmessage_original_unchanged() -> None:
+    """H-4 fix regression: _stub_turn must NOT mutate the original ToolMessage
+    objects — it must replace each slot with a new object.
+
+    NEGATIVE assertion: original message content is unchanged after compaction.
+    POSITIVE assertion: the compacted list contains a different object with
+    the elided stub content (proving the clone replaced the slot).
+    """
+    from nodes import _stub_turn
+
+    original_content = "big result payload " * 50
+    cid = "tc-h4-test"
+    original_msg = _tool_msg(cid, original_content)
+    # Capture the id of the original object.
+    original_id = id(original_msg)
+
+    turn: list = [
+        _ai_turn([(cid, "some_tool")]),
+        original_msg,
+    ]
+
+    _stub_turn(turn)
+
+    # NEGATIVE: the original object's content is unchanged.
+    assert original_msg.content == original_content, (
+        f"_stub_turn mutated the original ToolMessage in place; "
+        f"content is now: {original_msg.content!r}"
+    )
+    # POSITIVE: the slot in the turn now holds a DIFFERENT object with elided content.
+    stubbed = next(m for m in turn if isinstance(m, ToolMessage))
+    assert id(stubbed) != original_id, (
+        "_stub_turn must replace the slot with a new ToolMessage, not mutate the old one"
+    )
+    assert stubbed.content.startswith(f"[elided: {cid} result,"), (
+        f"unexpected stub content: {stubbed.content!r}"
+    )
+    assert stubbed.tool_call_id == cid, "stub clone must preserve tool_call_id"
+
+
+def test_compact_messages_does_not_mutate_input_toolmessages() -> None:
+    """Integration form of H-4: _compact_messages triggers _stub_turn internally;
+    the original message objects in the input list must be unchanged after the call.
+
+    This is the scenario that breaks on checkpoint resume: the state['messages']
+    list shares ToolMessage objects with the turn list _compact_messages receives.
+    """
+    big = "Y" * 8000  # ~2000 tokens via len//4; need at least 2 old turns to stub
+
+    # Build 5 turns: 2 old (will be stubbed) + 3 recent (protected window).
+    all_orig_msgs: list = []
+    turns: list = []
+    for i in range(5):
+        cid = f"h4-{i}"
+        ai_msg = _ai_turn([(cid, "tool")])
+        tm = _tool_msg(cid, big)
+        all_orig_msgs.append(tm)
+        turns.extend([ai_msg, tm])
+
+    messages = _head() + turns
+    # Snapshot the original content of every ToolMessage BEFORE compaction.
+    before = {m.tool_call_id: m.content for m in messages if isinstance(m, ToolMessage)}
+
+    # Budget that requires stubbing the first 2 turns (old window).
+    _compact_messages(messages, budget_tokens=3500)
+
+    # NEGATIVE: none of the original ToolMessage objects should have been mutated.
+    for tm in all_orig_msgs:
+        assert tm.content == before[tm.tool_call_id], (
+            f"_compact_messages mutated original ToolMessage {tm.tool_call_id!r} in place; "
+            f"was {before[tm.tool_call_id]!r[:40]}, now {tm.content!r[:40]}"
+        )

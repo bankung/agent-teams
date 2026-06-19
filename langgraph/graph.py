@@ -246,7 +246,7 @@ async def lifespan(app: FastAPI):
     logger.info("validating LLM provider: %s", provider_name)
     try:
         probe_model = make_chat_model()
-        probe_model.invoke([HumanMessage(content="ping")])
+        await probe_model.ainvoke([HumanMessage(content="ping")])  # C-2 fix: was sync invoke, blocking event loop
     except Exception as exc:
         logger.exception("LLM provider validation failed — aborting lifespan")
         raise RuntimeError(
