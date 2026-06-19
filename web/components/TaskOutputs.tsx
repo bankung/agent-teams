@@ -110,8 +110,11 @@ function parseCsvNaive(raw: string): { headers: string[]; rows: string[][]; tota
   return { headers, rows, totalDataRows: dataLines.length };
 }
 
-// OutputRow — one file row: header + kind-specific content + Download button.
-function OutputRow({
+// OutputRowBody — fetches bytes and renders content; only mounted when the row
+// is expanded. Keeping the hook call in a child that is conditionally rendered
+// makes the lazy-load straightforward: the hook simply does not run until the
+// user expands the row.
+function OutputRowBody({
   entry,
   projectId,
   taskId,
@@ -123,15 +126,6 @@ function OutputRow({
   const [modalOpen, setModalOpen] = useState(false);
   const modalTitleId = useId();
 
-  // v1 limitation: every listed row fetches its bytes eagerly on mount with no
-  // concurrency cap or lazy-load. Fan-out is bounded because the BE caps the
-  // listing at 50 entries (MAX_OUTPUT_FILES), so at most 50 parallel fetches.
-  //
-  // #2492 — the fetch + cancel-guard now live in useAsyncData. The text-decode
-  // is pushed INTO the fetcher (returns { blob, text }) so the hook owns one
-  // resolved value; the object URL is derived from that blob via useMemo and
-  // revoked in a dedicated cleanup effect below (resource lifecycle — NOT a
-  // setState-in-effect).
   const needsText =
     entry.kind === "doc" ||
     entry.kind === "text" ||
@@ -154,10 +148,6 @@ function OutputRow({
 
   // Derive the object URL from the fetched blob (stable per fetch result) and
   // revoke it on change/unmount — the canonical leak-free blob-URL lifecycle.
-  // Keyed on `bytes` (not `bytes?.blob`) so the React-Compiler inferred dep
-  // matches the source dep (preserve-manual-memoization); `bytes` is a fresh
-  // object only when the fetch re-resolves, so the URL is recreated exactly
-  // when the blob changes.
   const blobUrl = useMemo(
     () => (bytes ? URL.createObjectURL(bytes.blob) : null),
     [bytes],
@@ -339,13 +329,53 @@ function OutputRow({
     return null;
   }
 
+  // Download: blob URL + <a download> — avoids ?download=1 round-trip.
+  // Rendered inside OutputRowBody so the blob is available; collapsed rows show
+  // the placeholder Download span in OutputRow instead.
+  return (
+    <>
+      {blobUrl ? (
+        <a
+          href={blobUrl}
+          download={entry.filename}
+          className="shrink-0 rounded border border-zinc-200 bg-white px-2 py-0.5 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600"
+          data-output-download
+        >
+          Download
+        </a>
+      ) : (
+        <span className="shrink-0 rounded border border-zinc-100 px-2 py-0.5 text-xs text-zinc-400 dark:border-zinc-800">
+          Download
+        </span>
+      )}
+      {renderContent()}
+    </>
+  );
+}
+
+// OutputRow — shell that owns the card frame + expand toggle.
+// Bytes are NOT fetched until the user expands the row (lazy-load Fix 2 #2502).
+// shortcut: no IntersectionObserver auto-expand; user click is sufficient for
+//   the current "≤50 rows per task" use-case. Upgrade path: add IO hook if
+//   auto-reveal on scroll is ever requested.
+function OutputRow({
+  entry,
+  projectId,
+  taskId,
+}: {
+  entry: TaskOutputEntry;
+  projectId: number;
+  taskId: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
   return (
     <div
       data-output-row
       data-output-kind={entry.kind}
       className="flex flex-col gap-1.5 rounded border border-zinc-100 bg-white p-2 dark:border-zinc-800 dark:bg-zinc-900/40"
     >
-      {/* Row header: filename + size + kind chip + Download */}
+      {/* Row header: filename + size + kind chip + expand + Download */}
       <div className="flex flex-wrap items-center gap-2">
         <span className="flex-1 truncate font-mono text-xs text-zinc-800 dark:text-zinc-200">
           {entry.filename}
@@ -356,22 +386,26 @@ function OutputRow({
         <span className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
           {entry.kind}
         </span>
-        {/* Download: blob URL + <a download> — avoids ?download=1 round-trip */}
-        {blobUrl ? (
-          <a
-            href={blobUrl}
-            download={entry.filename}
-            className="shrink-0 rounded border border-zinc-200 bg-white px-2 py-0.5 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600"
-          >
-            Download
-          </a>
-        ) : (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((v) => !v)}
+          className="shrink-0 rounded border border-zinc-200 bg-white px-2 py-0.5 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600"
+          data-output-expand
+        >
+          {expanded ? "Hide" : "Show"}
+        </button>
+        {/* Placeholder Download shown when collapsed; real link appears inside
+            OutputRowBody once the blob is fetched. */}
+        {!expanded && (
           <span className="shrink-0 rounded border border-zinc-100 px-2 py-0.5 text-xs text-zinc-400 dark:border-zinc-800">
             Download
           </span>
         )}
       </div>
-      {renderContent()}
+      {expanded && (
+        <OutputRowBody entry={entry} projectId={projectId} taskId={taskId} />
+      )}
     </div>
   );
 }

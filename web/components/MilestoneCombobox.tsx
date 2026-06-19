@@ -174,6 +174,7 @@ export function MilestoneCombobox({
         aria-expanded={open}
         aria-controls={listboxId}
         aria-autocomplete="list"
+        aria-activedescendant={open ? `${listboxId}-opt-${safeHighlight}` : undefined}
         autoComplete="off"
         value={inputValue}
         placeholder={NONE_LABEL}
@@ -197,6 +198,7 @@ export function MilestoneCombobox({
           data-milestone-combobox-list
         >
           <li
+            id={`${listboxId}-opt-0`}
             role="option"
             aria-selected={value === null}
             onMouseDown={(e) => {
@@ -224,6 +226,7 @@ export function MilestoneCombobox({
               return (
                 <li
                   key={m.id}
+                  id={`${listboxId}-opt-${idx}`}
                   role="option"
                   aria-selected={value === m.id}
                   onMouseDown={(e) => {
