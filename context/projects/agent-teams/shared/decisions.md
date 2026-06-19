@@ -18,6 +18,12 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-06-19 — #2417 ps=8 (halted-pending-user) intentionally surfaces in next-action + digest
+**Scope:** backend
+**Decision:** KEEP ps=8 visible — no code change. The next-action ranker (`user_actions.py:245`, `process_status.notin_((5,6,7))`) and the digest / pending-interaction queries (`dashboard.py:95`; `user_actions.py:353`, which exclude only DONE=5 / CANCELLED=6) do not exclude ps=8, so a `halted_pending_user` task with `interaction_kind IN (question,decision)` and `blocked_by IS NULL` already surfaces. That is correct; the `notin_((5,6,7))` filters stay as-is.
+**Reasoning:** A task halted PENDING THE USER is exactly what the operator's next-action surface + digest should show — excluding ps=8 would hide a task that by definition needs the operator. ps=8 (#1839) is an actionable, non-terminal state (cf. #2423, which kept it out of TaskFocusView TERMINAL_STATUSES for the same reason). Flagged for a decision by dev-sr-backend during #1839.
+**Implications:** None — preserves current behavior. If a future surface needs ps=8 hidden, exclude it there, not globally. (Lead decision on an away-day autonomous batch; fully reversible — flip to EXCLUDE if the operator prefers.)
+
 ## 2026-06-18 — #2474/#2475 glassmorphism: all-route rollout + DEFAULT-on flip
 **Scope:** frontend
 **Decision:** Finished the #2453 glass axis. (1) **#2474** — extended glass from the board to ALL 10 non-redirect routes (/ and /approve/[id] are redirects) by sprinkling the existing #2453 no-op hooks (`.glass-board` / `.glass-surface` / `.glass-card`) onto each route's main/panels/cards — NO axis rebuild. Added a hover "backlight-glow": a NEW glass-scoped, box-shadow-ONLY utility `.glass-glow` (on primary actionable buttons) plus an extended `.glass-card:hover`, with light/dark `--glass-glow-*` tokens and `prefers-reduced-motion` honored. The glow is GLASS-ONLY (so flat stays byte-for-byte, AC#2), and box-shadow (not backdrop-filter) keeps the documented 2-tier blur cap intact. (2) **#2475** — flipped the default surface off→on: `GlassProvider` unset → 'on' and `layout.tsx` pre-hydration bootstrap adds `.glass` unless localStorage `glass==='off'` (mirrors the dark-mode opt-out idiom; no FOUC; explicit 'off' persists). A fresh visitor now lands on glass.
