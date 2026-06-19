@@ -21,6 +21,7 @@ import {
   HttpError,
   type MilestoneDetail,
 } from "@/lib/api";
+import { orderGanttMilestones } from "@/lib/milestoneOrder";
 import { GanttView } from "@/components/GanttView";
 import { ViewSwitcher } from "@/components/ViewSwitcher";
 
@@ -52,24 +53,8 @@ export default async function ProjectGanttPage(props: Props) {
     }),
   );
 
-  // Sort by status rank: active(0) → released(1) → planned(2) → cancelled(3).
-  // Unknown/missing statuses rank last (4). Stable: index tiebreak preserves
-  // the API's relative order within each rank.
-  const STATUS_RANK: Record<string, number> = {
-    active: 0,
-    released: 1,
-    planned: 2,
-    cancelled: 3,
-  };
-  const milestones = milestonesRaw
-    .map((m, i) => ({ m, i }))
-    .sort(
-      (a, b) =>
-        (STATUS_RANK[a.m.milestone_status] ?? 4) -
-          (STATUS_RANK[b.m.milestone_status] ?? 4) ||
-        a.i - b.i,
-    )
-    .map(({ m }) => m);
+  // Status-rank order; released group by start_date asc (nulls last). #2496.
+  const milestones = orderGanttMilestones(milestonesRaw);
 
   const boardHref = `/p/${encodeURIComponent(project.name)}`;
 

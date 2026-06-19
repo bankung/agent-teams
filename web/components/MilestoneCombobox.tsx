@@ -29,6 +29,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import type { MilestoneRead } from "@/lib/api";
+import { orderMilestonesForPicker } from "@/lib/milestoneOrder";
 
 type Props = {
   // Current milestone_id, or null for unassigned.
@@ -77,12 +78,20 @@ export function MilestoneCombobox({
   // committed selection until they pick (or clear) something.
   const inputValue = open ? query : selectedLabel;
 
+  // #2496 — hide cancelled + order active>planned>released for the option list.
+  // selectedLabel below intentionally still uses the FULL `milestones` prop so a
+  // currently-assigned cancelled/hidden milestone keeps showing its title.
+  const orderedMilestones = useMemo(
+    () => orderMilestonesForPicker(milestones),
+    [milestones],
+  );
+
   // Filtered matches (case-insensitive substring on title). Empty query → all.
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (q === "") return milestones;
-    return milestones.filter((m) => m.title.toLowerCase().includes(q));
-  }, [query, milestones]);
+    if (q === "") return orderedMilestones;
+    return orderedMilestones.filter((m) => m.title.toLowerCase().includes(q));
+  }, [query, orderedMilestones]);
 
   // Option rows = a leading "None" row (index 0) + each match. Keeping None in
   // the same roving-focus list means ↑/↓/Enter can select it too.
