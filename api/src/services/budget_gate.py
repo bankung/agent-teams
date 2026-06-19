@@ -99,6 +99,11 @@ def _alert_already_sent_today(project_id: int, today: date, event: str) -> bool:
 
 
 def _mark_alert_sent_today(project_id: int, today: date, event: str) -> None:
+    # Evict any keys from prior days so the dict doesn't grow unboundedly
+    # in a long-lived process. Only today's entries survive.
+    stale = [k for k in _ALERT_SENT if k[1] != today]
+    for k in stale:
+        del _ALERT_SENT[k]
     _ALERT_SENT[(project_id, today, event)] = None
 
 
