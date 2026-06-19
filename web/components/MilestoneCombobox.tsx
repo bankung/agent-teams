@@ -123,10 +123,8 @@ export function MilestoneCombobox({
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [open, closePopover]);
 
-  // Keep the highlight within range as the match list shrinks/grows.
-  useEffect(() => {
-    setHighlight((h) => Math.min(h, optionCount - 1));
-  }, [optionCount]);
+  // Clamp the highlight within range during render — no effect needed.
+  const safeHighlight = Math.min(highlight, optionCount - 1);
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "ArrowDown") {
@@ -146,7 +144,7 @@ export function MilestoneCombobox({
     } else if (e.key === "Enter") {
       if (open) {
         e.preventDefault();
-        commit(highlight);
+        commit(safeHighlight);
       }
     } else if (e.key === "Escape") {
       if (open) {
@@ -199,7 +197,7 @@ export function MilestoneCombobox({
             }}
             onMouseEnter={() => setHighlight(0)}
             className={`cursor-pointer px-3 py-1.5 text-sm ${
-              highlight === 0
+              safeHighlight === 0
                 ? "bg-zinc-100 dark:bg-zinc-800"
                 : ""
             } text-zinc-500 dark:text-zinc-400`}
@@ -225,7 +223,7 @@ export function MilestoneCombobox({
                   }}
                   onMouseEnter={() => setHighlight(idx)}
                   className={`cursor-pointer px-3 py-1.5 text-sm text-zinc-700 dark:text-zinc-200 ${
-                    highlight === idx
+                    safeHighlight === idx
                       ? "bg-zinc-100 dark:bg-zinc-800"
                       : ""
                   } ${value === m.id ? "font-medium" : ""}`}

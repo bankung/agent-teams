@@ -192,27 +192,10 @@ export function CalendarView({
   // so there's no flicker back to the old day in the gap before the fetch lands.
   const [dueOverride, setDueOverride] = useState<Record<number, string>>({});
 
-  // Self-heal: once the incoming server `tasks` prop reflects an override's
-  // value, drop that override (server is now authoritative). A FAILED PATCH
-  // already reverted the override in its catch, so it never reaches here.
-  useEffect(() => {
-    setDueOverride((prev) => {
-      const keys = Object.keys(prev);
-      if (keys.length === 0) return prev;
-      let changed = false;
-      const next = { ...prev };
-      for (const t of tasks) {
-        const ov = prev[t.id];
-        if (ov !== undefined && normalizeDateOnly(t.due_date) === ov) {
-          delete next[t.id];
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [tasks]);
-
   // Apply overrides on top of the server task list before placement.
+  // Stale overrides (where the server task already reflects the value) are
+  // no-ops: the spread replaces due_date with the same value. Error-reverts
+  // clean up explicitly in onDragEnd/onPickExisting catch blocks.
   const effectiveTasks = useMemo(() => {
     if (Object.keys(dueOverride).length === 0) return tasks;
     return tasks.map((t) =>

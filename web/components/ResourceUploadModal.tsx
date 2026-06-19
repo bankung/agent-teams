@@ -90,7 +90,7 @@ export function ResourceUploadModal({
   // last stage (clamps) so a slow upload doesn't loop confusingly.
   useEffect(() => {
     if (!submitting || tab !== "file") {
-      setStageIndex(0);
+      setStageIndex(0); // eslint-disable-line react-hooks/set-state-in-effect -- interval setup is a legitimate effect; reset-to-0 guard cannot be derived (interval must live in an effect)
       return;
     }
     const id = setInterval(() => {

@@ -15,12 +15,14 @@ export default defineConfig([
       // React-Compiler lint family introduced by eslint-config-next@16 (via
       // eslint-plugin-react-hooks@7); none existed in the Next-14 baseline.
       //
-      // set-state-in-effect stays "warn" DELIBERATELY (#2489): its ~41 sites are
-      // idiomatic effects that sync with external systems — SSR-hydrate-from-
-      // localStorage, async data-fetch, prop-reset-on-open — which React's docs
-      // bless. A scoped remediation plan for these is tracked separately under
-      // #2489; do not blanket-promote without that pass.
-      "react-hooks/set-state-in-effect": "warn",
+      // set-state-in-effect promoted to "error" (ms49 Phase E, #2494): the ~50
+      // sites from the Next 16 upgrade were driven to 0 active warnings by phases
+      // A-D — idiomatic sites get usePersistentState / useAsyncData hooks, modals
+      // get key-remount, and genuine smells were fixed (clamps during render, Board
+      // URL-sync derived, filter-pagination resetted without an effect). The ~7
+      // remaining sites carry scoped justified eslint-disable-line comments.
+      // Rule is now "error" to guard against future regressions.
+      "react-hooks/set-state-in-effect": "error",
       // The remaining Compiler rules are "error": their few sites are genuinely
       // actionable and have been fixed (#2489) — refs written during render
       // moved into effects (AgentFormModal, ModalShell); a use-before-declare

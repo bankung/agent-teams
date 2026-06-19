@@ -313,9 +313,24 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
   // doneHasMore: server has more DONE rows beyond what's loaded (init from SSR prop).
   // doneLoadingMore: a fetch is in-flight (prevents double-fetch on rapid clicks).
   // visibleDoneCount: how many of the in-memory DONE tasks to render. Grows as
-  //   pages are appended; resets to DONE_PAGE on SSE refresh (accepted behavior).
+  //   pages are appended; resets to DONE_PAGE when filters change (derive during render).
   const DONE_PAGE = 50;
-  const [visibleDoneCount, setVisibleDoneCount] = useState(DONE_PAGE);
+  // Bundled state — count + the filter key that produced it — so filter changes
+  // reset the count during render (React "adjusting state based on props" pattern),
+  // without a setState-in-effect.
+  const [donePagination, setDonePagination] = useState({ count: DONE_PAGE, filterKey: "" });
+  const currentFilterKey = `${milestoneFilter}|${showAudit}|${showOperatorGateOnly}`;
+  if (donePagination.filterKey !== currentFilterKey) {
+    // During-render setState: React re-renders immediately with the new count,
+    // skipping the extra flush that a useEffect reset would require.
+    setDonePagination({ count: DONE_PAGE, filterKey: currentFilterKey });
+  }
+  const visibleDoneCount = donePagination.count;
+  const setVisibleDoneCount = (updater: number | ((n: number) => number)) =>
+    setDonePagination((prev) => ({
+      count: typeof updater === "function" ? updater(prev.count) : updater,
+      filterKey: prev.filterKey,
+    }));
   const [doneHasMore, setDoneHasMore] = useState(initialDoneHasMore);
   const [doneLoadingMore, setDoneLoadingMore] = useState(false);
 
@@ -330,7 +345,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
   useEffect(() => {
     const fromUrl = searchParams?.get("view");
     if (fromUrl === "list" || fromUrl === "board") {
-      setView(fromUrl);
+      setView(fromUrl); // eslint-disable-line react-hooks/set-state-in-effect -- localStorage/URL seed: cannot derive view during SSR render; read-on-mount is the correct pattern
       localStorage.setItem(`kanban-view-${project.name}`, fromUrl);
       return;
     }
@@ -402,7 +417,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
       return;
     }
 
-    setHighlightedTaskId(parsed);
+    setHighlightedTaskId(parsed); // eslint-disable-line react-hooks/set-state-in-effect -- deep-link: effect also scrolls DOM + replaces URL; genuine external side effects, cannot derive during render
 
     // Defer the scroll one tick so React commits the card render first.
     // requestAnimationFrame is friendlier than setTimeout(0) for paint sync.
@@ -436,7 +451,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
   // Sync local tasks state to server snapshot on each RSC refresh (SSE router.refresh).
   // Also resets DONE pagination so the next Load-more starts from the fresh SSR cursor.
   useEffect(() => {
-    setTasks(initialTasks);
+    setTasks(initialTasks); // eslint-disable-line react-hooks/set-state-in-effect -- prop-sync on RSC refresh: tasks has local mutations (optimistic drag, SSE), cannot be derived directly from the prop
     setDoneHasMore(initialDoneHasMore);
     setVisibleDoneCount(DONE_PAGE);
     // initialDoneHasMore and DONE_PAGE are intentionally omitted: they always
@@ -591,17 +606,6 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
     if (typeof milestoneFilter === "number") return milestoneDoneRollup;
     return computeDoneTotalCount(milestoneFilter, projectStats, project.id);
   }, [milestoneFilter, milestoneDoneRollup, projectStats, project.id]);
-
-  // Reset the client-side DONE display window (visibleDoneCount) ONLY when the
-  // filter inputs change. Keyed on the filter state directly — NOT on the DONE
-  // bucket contents — so appending a server page (which grows doneTasks) does
-  // NOT reset, and Load-more terminates correctly. doneHasMore is NOT reset here;
-  // it reflects the server's has-more for the lane and is owned by the
-  // initialTasks-sync effect (SSE refresh) + handleLoadMoreDone. (#2112 regression
-  // fix: the prior content-keyed effect reverted both on every append.)
-  useEffect(() => {
-    setVisibleDoneCount(DONE_PAGE);
-  }, [milestoneFilter, showAudit, showOperatorGateOnly]);
 
   // #2412 — blocker-badge suppression. Build the set of task ids that are
   // still active (non-terminal). A blocker ABSENT from this set is necessarily

@@ -81,10 +81,8 @@ export function CalendarTaskPicker({
       .slice(0, 50);
   }, [tasks, query]);
 
-  // Keep the active index in range as the result set shrinks.
-  useEffect(() => {
-    setActiveIdx((i) => Math.min(i, Math.max(0, results.length - 1)));
-  }, [results.length]);
+  // Clamp the active index during render — no effect needed.
+  const safeActiveIdx = Math.min(activeIdx, Math.max(0, results.length - 1));
 
   function onKeyDown(e: React.KeyboardEvent) {
     if (e.key === "ArrowDown") {
@@ -95,7 +93,7 @@ export function CalendarTaskPicker({
       setActiveIdx((i) => Math.max(i - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      const t = results[activeIdx];
+      const t = results[safeActiveIdx];
       if (t) onPick(t);
     }
   }
@@ -156,7 +154,7 @@ export function CalendarTaskPicker({
             <ul ref={listRef} role="listbox" aria-label="Tasks">
               {results.map((t, i) => {
                 const currentDue = normalizeDateOnly(t.due_date);
-                const isActive = i === activeIdx;
+                const isActive = i === safeActiveIdx;
                 return (
                   <li key={t.id} role="presentation">
                     <button
