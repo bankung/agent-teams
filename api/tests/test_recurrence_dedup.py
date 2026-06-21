@@ -49,7 +49,9 @@ def _past_iso(minutes: int = 2) -> str:
     return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
 
 
-async def _make_template(client, project_id: int) -> int:
+async def _make_template(
+    client, project_id: int, *, task_type: str | None = None
+) -> int:
     body = {
         "project_id": project_id,
         "title": "dedup-test-template",
@@ -60,6 +62,8 @@ async def _make_template(client, project_id: int) -> int:
         "recurrence_timezone": "UTC",
         "next_fire_at": _future_iso(),
     }
+    if task_type is not None:
+        body["task_type"] = task_type
     resp = await client.post(
         "/api/tasks", json=body, headers={"X-Project-Id": str(project_id)}
     )
@@ -422,6 +426,71 @@ async def test_tick_once_dedup_does_not_pile_up(client, scaffold_cleanup) -> Non
         # Cleanup.
         for t in from_tpl_after_2:
             await client.delete(f"/api/tasks/{t['id']}", headers=headers)
+        await client.delete(f"/api/tasks/{tpl_id}", headers=headers)
+    finally:
+        await client.delete(f"/api/projects/{project_id}")
+
+
+# =============================================================================
+# 6. Regression: child inherits task_type from template (commit 4ab69ed)
+# =============================================================================
+
+
+# Regression: Kanban #2506
+@pytest.mark.asyncio
+async def test_fire_template_child_inherits_task_type(
+    client, scaffold_cleanup
+) -> None:
+    """Spawned child must carry the template's task_type, not the ORM default.
+
+    Before 4ab69ed, fire_template omitted task_type from the child row, so
+    children always defaulted to 'feature' regardless of the template's value.
+    This test uses task_type='chore' (non-default) and asserts the child
+    inherits it — it would FAIL on the pre-fix code and PASS after the fix.
+    """
+    from src.db import SessionLocal
+    from src.models.task import Task
+    from src.services.recurrence import fire_template
+
+    name = _unique_name("tasktype-inherit")
+    scaffold_cleanup(name)
+    create = await client.post("/api/projects", json=_project_create_payload(name))
+    project_id = create.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    try:
+        # Template with a non-default task_type ('chore' vs ORM default 'feature').
+        tpl_id = await _make_template(client, project_id, task_type="chore")
+
+        # Sanity: template itself must carry task_type='chore'.
+        tpl_resp = await client.get(f"/api/tasks/{tpl_id}", headers=headers)
+        assert tpl_resp.status_code == 200, tpl_resp.text
+        assert tpl_resp.json()["task_type"] == "chore", (
+            f"template task_type should be 'chore', got {tpl_resp.json()['task_type']!r}"
+        )
+
+        # Spawn child via fire_template (mirrors test_fire_template_no_dedup_when_no_open_children).
+        async with SessionLocal() as db:
+            tpl = await db.get(Task, tpl_id)
+            child = await fire_template(db, tpl)
+            assert child is not None, "fire_template must spawn a child when no open children exist"
+            child_id = child.id
+            # Assert directly on the in-session ORM object (no extra round-trip needed).
+            assert child.task_type == "chore", (
+                f"child task_type must be inherited from template ('chore'), "
+                f"got {child.task_type!r} — guards 4ab69ed task_type-inheritance fix"
+            )
+
+        # Belt-and-suspenders: re-GET via API to confirm the persisted value.
+        child_resp = await client.get(f"/api/tasks/{child_id}", headers=headers)
+        assert child_resp.status_code == 200, child_resp.text
+        assert child_resp.json()["task_type"] == "chore", (
+            f"persisted child task_type must be 'chore', "
+            f"got {child_resp.json()['task_type']!r} — guards 4ab69ed task_type-inheritance fix"
+        )
+
+        # Cleanup.
+        await client.delete(f"/api/tasks/{child_id}", headers=headers)
         await client.delete(f"/api/tasks/{tpl_id}", headers=headers)
     finally:
         await client.delete(f"/api/projects/{project_id}")
