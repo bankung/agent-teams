@@ -20,6 +20,7 @@ import {
   type ProjectStatsEntry,
   type TaskRead,
 } from "@/lib/api";
+import { orderMilestonesForPicker } from "@/lib/milestoneOrder";
 
 // Kanban #2111 Part 3c — @dnd-kit loads only for the board view.
 // BoardDndCanvas owns all dnd-kit imports; this dynamic() call ensures the
@@ -288,6 +289,8 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
   // the dropdown; loaded once on mount (failure degrades to a no-op filter).
   const [milestoneFilter, setMilestoneFilter] = useState<"all" | "none" | number>("all");
   const [milestones, setMilestones] = useState<MilestoneRead[]>([]);
+  // #2519 — hide cancelled + order active>planned>released for the filter picker.
+  const filterMilestones = useMemo(() => orderMilestonesForPicker(milestones), [milestones]);
   // Kanban #2347 — when a numeric milestone filter is active, fetch its server
   // rollup DONE count so the DONE-lane header shows the true total (not just
   // what's loaded client-side). undefined = still loading or no rollup available.
@@ -849,7 +852,8 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
           />
         )}
         {/* #1868 v1.1 — milestone filter; moved from nav row to toolbar (v0.7.0 UX). */}
-        {milestones.length > 0 && (
+        {/* #2519 — filterMilestones hides cancelled + orders active>planned>released. */}
+        {filterMilestones.length > 0 && (
           <label className="inline-flex items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
             <span className="sr-only sm:not-sr-only">Milestone</span>
             <select
@@ -869,7 +873,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
             >
               <option value="all">All milestones</option>
               <option value="none">No milestone</option>
-              {milestones.map((m) => (
+              {filterMilestones.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.title}
                 </option>

@@ -67,6 +67,30 @@ describe("orderGanttMilestones", () => {
     expect(result.map((r) => r.id)).toEqual([10, 11, 12]);
   });
 
+  it("within active, orders by start_date ascending", () => {
+    const rows: GanttRow[] = [
+      { id: 1, milestone_status: "active", start_date: "2026-06-01" },
+      { id: 2, milestone_status: "active", start_date: "2026-01-01" },
+      { id: 3, milestone_status: "active", start_date: "2025-12-01" },
+    ];
+    const result = orderGanttMilestones(rows);
+    expect(result.map((r) => r.id)).toEqual([3, 2, 1]);
+  });
+
+  it("within active, null start_date sorts last", () => {
+    const rows: GanttRow[] = [
+      { id: 1, milestone_status: "active", start_date: null },
+      { id: 2, milestone_status: "active", start_date: "2026-03-01" },
+      { id: 3, milestone_status: "active", start_date: null },
+      { id: 4, milestone_status: "active", start_date: "2026-01-01" },
+    ];
+    const result = orderGanttMilestones(rows);
+    // dated ones first (4, 2), then null ones (1, 3 — stable input order)
+    expect(result[0].id).toBe(4);
+    expect(result[1].id).toBe(2);
+    expect(result.slice(2).map((r) => r.start_date)).toEqual([null, null]);
+  });
+
   it("unknown status ranks last (after cancelled)", () => {
     const rows: GanttRow[] = [
       { id: 1, milestone_status: "unknown", start_date: null },

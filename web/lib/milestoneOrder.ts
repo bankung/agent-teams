@@ -1,7 +1,7 @@
 // Pure milestone ordering helpers (extracted for deterministic unit tests).
 // TWO different orderings by design:
 //  - Gantt (orderGanttMilestones): status rank active>released>planned>cancelled;
-//    within the released group, by start_date asc (nulls last). #2496.
+//    within the active AND released groups, by start_date asc (nulls last). #2496/#2519.
 //  - Picker (orderMilestonesForPicker): active>planned>released; cancelled hidden.
 
 const GANTT_RANK: Record<string, number> = {
@@ -21,11 +21,9 @@ export function orderGanttMilestones<
         (GANTT_RANK[a.m.milestone_status] ?? 4) -
         (GANTT_RANK[b.m.milestone_status] ?? 4);
       if (rankDiff !== 0) return rankDiff;
-      // Released group → start_date asc, nulls last. Other groups: stable index.
-      if (
-        a.m.milestone_status === "released" &&
-        b.m.milestone_status === "released"
-      ) {
+      // Active and released groups → start_date asc, nulls last. Other groups: stable index.
+      const g = a.m.milestone_status;
+      if (g === b.m.milestone_status && (g === "active" || g === "released")) {
         const sa = a.m.start_date;
         const sb = b.m.start_date;
         if (sa !== sb) {
