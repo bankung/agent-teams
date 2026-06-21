@@ -468,5 +468,5 @@ def test_compact_messages_does_not_mutate_input_toolmessages() -> None:
     for tm in all_orig_msgs:
         assert tm.content == before[tm.tool_call_id], (
             f"_compact_messages mutated original ToolMessage {tm.tool_call_id!r} in place; "
-            f"was {before[tm.tool_call_id]!r[:40]}, now {tm.content!r[:40]}"
+            f"was {before[tm.tool_call_id]!r:.40}, now {tm.content!r:.40}"
         )
