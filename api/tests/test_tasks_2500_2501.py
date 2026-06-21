@@ -31,8 +31,11 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
+
+from src.models.task import Task
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +97,7 @@ async def _next_autorun(client, project_id: int) -> dict:
 
 @pytest.mark.asyncio
 async def test_hitl_timeout_stamp_is_idempotent_on_second_poll(
-    client, scaffold_cleanup
+    client, scaffold_cleanup, db_session
 ) -> None:
     """#2500: second GET /next-autorun cannot double-stamp a HITL-timeout row.
 
@@ -107,27 +110,31 @@ async def test_hitl_timeout_stamp_is_idempotent_on_second_poll(
     """
     pid = await _make_fresh_project(client, scaffold_cleanup, "k2500-a")
 
-    # Project must have hitl_timeout_hours set to trigger the sweep.
+    # Project must have hitl_timeout_hours set to trigger the sweep (schema: ge=1).
     ph = {"X-Project-Id": str(pid)}
     set_to = await client.patch(
         f"/api/projects/{pid}",
-        json={"hitl_timeout_hours": 0},  # 0 h = immediately times out
+        json={"hitl_timeout_hours": 24},
         headers=ph,
     )
     assert set_to.status_code == 200, set_to.text
 
-    # Create a BLOCKED task with halt_reason='question' (sweep target).
+    # Create the task normally, then put it into the BLOCKED/HITL state with a
+    # backdated updated_at (>24 h) so the timeout has elapsed. The API rejects a
+    # direct process_status=4, so stamp via the ORM — mirrors test_hitl_timeout's
+    # _stamp_paused_hitl helper.
     task = await _make_task(
         client,
         pid,
         "hitl question task",
-        process_status=3,          # BLOCKED
-        halt_reason="question",
-        interaction_kind="question",
         task_kind="human",
-        run_mode="manual",
     )
     tid = task["id"]
+    t = await db_session.get(Task, tid)
+    t.process_status = 4  # TaskStatus.BLOCKED
+    t.halt_reason = "question"
+    t.updated_at = datetime.now(timezone.utc) - timedelta(hours=25)
+    await db_session.commit()
 
     # First poll: stamps hitl_timeout on the task.
     body1 = await _next_autorun(client, pid)

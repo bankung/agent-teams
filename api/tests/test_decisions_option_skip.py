@@ -45,7 +45,7 @@ async def test_malformed_option_skipped_and_warned(caplog):
     mock_session = AsyncMock()
     mock_scalars = MagicMock()
     mock_scalars.all.return_value = [row]
-    mock_execute = AsyncMock()
+    mock_execute = MagicMock()  # the awaited Result is sync: .scalars().all() are not coroutines
     mock_execute.scalars.return_value = mock_scalars
     mock_session.execute.return_value = mock_execute
 
