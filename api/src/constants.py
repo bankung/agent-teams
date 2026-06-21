@@ -159,7 +159,7 @@ TEAM_ROSTERS: dict[str, tuple[str, ...]] = {
         "meta-ads-specialist",
         "platform-ads-coordinator",
     ),
-    ProjectTeam.NETOPS: ("netops-monitoring-reader",),
+    ProjectTeam.NETOPS: ("netops-triage", "netops-monitoring-reader", "netops-l2l3"),
     ProjectTeam.DATA_ANALYTICS: (
         "bi-analyst",
         "sql-optimizer",
