@@ -13,7 +13,19 @@ The compact core (rail mandatory · recording bright-line · contamination write
 
 ## When to open a story
 
-Only when a thread reaches ≥2–3 related tasks or the operator names a workstream. Tag tasks with a `story: <slug>` line in the Kanban description (plus `from #X` refs). One-off tasks stay storyless (rail checkpoint only).
+Open a story doc ONLY when a workstream meets ALL THREE (sharpened 2026-06-21, #2520 — replaces the old "≥2–3 related tasks" auto-trigger, which over-fired):
+
+1. **Cross-session & ongoing** — actively resumed across ≥3 separate sessions AND still open (not a one-session/batch landing; not closed).
+2. **Live NOW-state beyond Kanban / one entry** — accumulates a "what's-true-now" picture (what's LIVE vs pending · operational gotchas · open measurement-gates) that is NOT a Kanban field and is scattered across several `decisions.md` entries, so re-deriving it on each pickup is genuinely expensive.
+3. **Re-read on pickup** — future sessions actually need that NOW-view to continue (real open threads/follow-ups), not just a closed historical record.
+
+**A milestone/version bucket is NOT automatically story-worthy** — its Kanban rollup (done/total + task rows) + per-feature `decisions.md` entries already ARE the NOW-view. A story doc is reserved for a cross-cutting workstream whose live/operational state escapes BOTH the milestone view and a single `decisions.md` entry.
+
+**Default** (everything else — anything that lands in one session/batch, or whose end-state fits one `decisions.md` entry): `decisions.md` (locked decision + reasoning) + live Kanban rows + `from #X` refs. The activity rail still carries per-task events. The operator may still NAME a workstream to force a story doc.
+
+Tag story tasks with a `story: <slug>` line in the Kanban description (plus `from #X` refs); storyless tasks stay rail-checkpoint only.
+
+**Sanity check (the criterion reproduces what actually worked):** `mode-a-cost` (multi-week ingest→capture→read→forecast across many sessions; NOW-state over ~6 `decisions.md` entries + gotchas + open threads) → **story doc** ✓. glassmorphism #2474-2479 (landed 06-18 in one `decisions.md` entry, closed) → **decisions.md-only** ✓. v0.7.0 / a remediation milestone like ms49 (the Kanban milestone rollup + per-feature entries ARE the NOW-view) → **no story doc** ✓. Retrospective false-positive of the old trigger: `ux-simplification` got a story doc but completed in ~1 session ("Open threads: none") — kept as a harmless closed record, but the sharpened criterion would not have opened it.
 
 ## Versioning (git alone is NOT enough — non-git working_paths + uncommitted batch windows)
 
@@ -33,6 +45,8 @@ Only when a thread reaches ≥2–3 related tasks or the operator names a workst
 - **Proportionality:** tiny chores may skip layers 2–3 even when refs exist.
 - **Write-side duty:** every derived task cites `from #X` (+ FK when a real dependency exists) at creation — the links ARE the index.
 
-## Sunset
+## Sunset — RESOLVED-FORWARD (2026-06-21, #2520)
 
-Evaluate ~2026-07-03 (or ~30 chain pickups): were story docs / handoffs actually read; sample ~10 records against ground truth (artifact-backed → mechanically checkable). Unused or unread → trim the rule set. The `/tn-task-context` convenience skill is built only AFTER this evaluation passes.
+The ~2026-07-03 evaluation was brought forward: #2520 IS the evidence it was meant to gather. Finding — the story-doc layer was OVER-TRIGGERED (the "≥2–3 tasks" rule fired on threads whose state lives fine in `decisions.md` + Kanban) and consequently BYPASSED (recent tasks stopped carrying `story:` tags while `decisions.md` stayed heavily maintained). Resolution = **sharpen, not remove** — `mode-a-cost` proves the layer has real value when scoped to a genuine cross-session workstream. The "When to open" criterion above is the sharpened rule.
+
+Residual: a LIGHT "did the sharpened criterion stick" check at the next 2-3 story-eligible threads (does a new mode-a-cost-class workstream get a story doc, and does nothing else?) — then close. `/tn-task-context` automation stays UNBUILT: the trigger is a judgment call, and automating a deliberately-rare layer is the wrong move (#2520).
