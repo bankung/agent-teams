@@ -802,6 +802,7 @@ async def get_next_autorun(
             blocker.process_status == TaskStatus.DONE,
         )
         .order_by(Task.priority.desc(), Task.created_at.asc())
+        .limit(50)  # app-side guard — Kanban #2505
     )
     resume_rows = list((await session.execute(resume_stmt)).scalars().all())
 
