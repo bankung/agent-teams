@@ -18,6 +18,19 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-06-21 — #2500/#2503 review-batch security/RFC posture accepted as-is (solo-dev localhost)
+**Scope:** backend + devops
+**Decision:** Operator accept-all on the three non-test (design/config) ACs from the #2497 review batch:
+- **#2500** — `GET /api/tasks/next-autorun` STAYS a side-effecting **idempotent GET** (the fix was `with_for_update(skip_locked)` + a `halt_reason` filter), NOT moved to POST/background. The observed harm — duplicate HITL-timeout/budget stamps + duplicate pushes under concurrent polls — is eliminated (test-proven); RFC-purity (zero side-effects on GET) consciously waived.
+- **#2503 AC2** — network binding **accepted as-is**: `api` is bound `127.0.0.1`; `db`(5432)/`web`(5431)/`langgraph`(8465) stay on `0.0.0.0` for solo-dev localhost / trusted-LAN. NOT hardened.
+- **#2503 AC4** — `shell_run` `docker compose exec` allowlist **accepted with rationale**: every DESTRUCTIVE-tier shell call always-HALTs for human review (the primary guard), so the broad prefix is acceptable; NOT narrowed.
+**Reasoning:** Solo-dev dogfood on localhost. The heavy alternatives (POST-move breaks the langgraph worker + FE callers; bind-hardening; allowlist-narrowing) are over-engineering for the context; the #2497 review itself framed the security items as "by-design for single-operator." Minimal-change posture. The gate code (kill/revive/grant-consent operator-proof, b54514b) + the static-error-detail remediation (ingest.py/agent_gallery.py) WERE done — only these three knobs were accepted-as-is.
+**Implications (anti-re-litigation — a future review WILL re-surface these):**
+- next-autorun is an **intentional** side-effecting idempotent GET — do NOT re-flag as "RFC-unsafe GET" without re-opening this decision.
+- `db`/`web`/`langgraph` `0.0.0.0` binding is **intentional for localhost** — REVISIT (bind `127.0.0.1` + set a strong `POSTGRES_PASSWORD`) only if the host is ever exposed to an untrusted network.
+- `shell_run` broad allowlist is **intentional** (HALT-gate mitigates).
+All three reversible. verified_by='lead' on the AC PATCH per the operator-proof rule; operator decision credited in each AC note. Mirror status section in [`review-2026-06-19-consolidated.md`](review-2026-06-19-consolidated.md).
+
 ## 2026-06-19 — #2417 ps=8 (halted-pending-user) intentionally surfaces in next-action + digest
 **Scope:** backend
 **Decision:** KEEP ps=8 visible — no code change. The next-action ranker (`user_actions.py:245`, `process_status.notin_((5,6,7))`) and the digest / pending-interaction queries (`dashboard.py:95`; `user_actions.py:353`, which exclude only DONE=5 / CANCELLED=6) do not exclude ps=8, so a `halted_pending_user` task with `interaction_kind IN (question,decision)` and `blocked_by IS NULL` already surfaces. That is correct; the `notin_((5,6,7))` filters stay as-is.
