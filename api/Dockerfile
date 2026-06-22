@@ -27,6 +27,16 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends curl postgresql-client \
  && rm -rf /var/lib/apt/lists/*
 
+# Infisical CLI — opt-in (Kanban #2488). Off by default to keep the base image lean;
+# docker-compose.secrets.yml sets INSTALL_INFISICAL_CLI=true. ~40 MB when enabled.
+# CLI pinned to 0.43.96 (verified working 2026-06-23, #2488); bump if pruned from the repo.
+ARG INSTALL_INFISICAL_CLI=false
+RUN if [ "$INSTALL_INFISICAL_CLI" = "true" ]; then \
+      curl -1sLf 'https://artifacts-cli.infisical.com/setup.deb.sh' | bash \
+   && apt-get update && apt-get install -y --no-install-recommends infisical=0.43.96 \
+   && rm -rf /var/lib/apt/lists/* ; \
+    fi
+
 # Copy the package layout first. setuptools.packages.find needs src/ and
 # scripts/ visible at install time (see api/pyproject.toml).
 COPY . /repo/api/
