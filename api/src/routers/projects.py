@@ -94,9 +94,6 @@ def _require_operator(operator_proof: OperatorDecision) -> None:
         raise HTTPException(status_code=403, detail=_OPERATOR_PROOF_REQUIRED_MSG)
 
 
-# #793 — settings.json substitution after scaffold; see substitute_settings_json service
-
-
 def _substitute_settings_json(target: Path, project: Project) -> None:
     """Read, filter, write settings.json. Failure is non-fatal — DB row is source of truth (#793)."""
     settings_path = target / ".claude" / "settings.json"
@@ -284,8 +281,8 @@ async def list_projects_stats(
         .where(
             Project.status == RecordStatus.ACTIVE,
             Task.status == RecordStatus.ACTIVE,
-            Task.process_status != TaskStatus.CANCELLED,  # exclude process_status=6
-            Task.estimated_cost_usd.is_not(None),  # only rows with an estimate
+            Task.process_status != TaskStatus.CANCELLED,
+            Task.estimated_cost_usd.is_not(None),
         )
         .group_by(Task.project_id)
     )
@@ -376,7 +373,6 @@ async def list_projects_stats(
         if bucket is None:
             continue
         ec = bucket["estimated_cost"]
-        # SQL-side COALESCE(SUM(...), 0) on Numeric column → Decimal, never None.
         ec["total_cost_usd"] = sum_estimated_cost_usd
         ec["total_input_tokens"] = int(sum_estimated_input_tokens)
         ec["total_output_tokens"] = int(sum_estimated_output_tokens)

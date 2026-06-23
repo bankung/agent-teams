@@ -478,34 +478,22 @@ async def list_tasks(
     ),
     session: AsyncSession = Depends(get_session),
 ) -> list[Task]:
-    # Kanban #695: project scoping comes from the X-Project-Id header (session-
-    # bound). The legacy `?project_id=` query param was removed — header is the
-    # canonical channel; missing/non-int → 400 via require_project_id_header.
     stmt = select(Task).where(Task.project_id == session_project_id)
     if not include_deleted:
         stmt = stmt.where(Task.status == RecordStatus.ACTIVE)
     # Kanban #1240: default-exclude auto-archived rows (is_active=false).
-    # Opt-in via ?include_archived=true (blast-radius guard — existing explicit
-    # callers can still fetch archived rows). Independent of the soft-delete
-    # filter above; the two compose. No interaction with the process_status /
-    # pending / cancelled gates — an archived row is hidden regardless of its
-    # lifecycle code.
+    # Independent of the soft-delete filter; the two compose.
     if not include_archived:
         stmt = stmt.where(Task.is_active.is_(True))
     if process_status is not None:
         stmt = stmt.where(Task.process_status == process_status)
     elif pending:
-        # Kanban #697: convenience shortcut for the Lead-bootstrap "list pending
-        # tasks" query. `elif` enforces precedence — explicit `process_status`
-        # wins (more specific); `pending` is silently ignored on conflict.
-        # Note: `pending=true` returns ps != 5; CANCELLED (ps=6) is also a
-        # "non-done" code, but cancelled work is dead-end and excluded below
-        # via the `include_cancelled` gate unless explicitly opted in.
+        # Kanban #697: `elif` enforces precedence — explicit `process_status`
+        # wins; `pending` is silently ignored on conflict. CANCELLED (ps=6) is
+        # excluded below unless opted in.
         stmt = stmt.where(Task.process_status != TaskStatus.DONE)
-    # Kanban #854: cancelled rows (process_status=6) are excluded by default
-    # — parity with soft-delete semantics for dead-end work. Skipped when an
-    # explicit `process_status=N` filter is provided (the explicit filter is
-    # more specific and wins, same precedence pattern as `pending`).
+    # Kanban #854: cancelled rows excluded by default — parity with soft-delete
+    # semantics. Skipped when explicit `process_status=N` is provided.
     if process_status is None and not include_cancelled:
         stmt = stmt.where(Task.process_status != TaskStatus.CANCELLED)
     if assigned_role is not None:
@@ -910,7 +898,6 @@ async def list_task_summaries(
     mode and the operator_gate / due-range / parent filters are intentionally
     out of scope — use `list_tasks` for those. Read-only; no side effects.
     """
-    # Kanban #695: project scoping comes from the X-Project-Id header.
     stmt = select(Task).where(Task.project_id == session_project_id)
     if not include_deleted:
         stmt = stmt.where(Task.status == RecordStatus.ACTIVE)
@@ -926,7 +913,6 @@ async def list_task_summaries(
     # process_status filter is provided — more specific wins).
     if process_status is None and not include_cancelled:
         stmt = stmt.where(Task.process_status != TaskStatus.CANCELLED)
-    # Kanban #1868: filter to a single milestone's tasks.
     if milestone_id is not None:
         stmt = stmt.where(Task.milestone_id == milestone_id)
     stmt = stmt.order_by(Task.id.asc()).limit(limit).offset(offset)
@@ -985,8 +971,7 @@ async def get_task(
     task = await get_or_404(
         session, Task, detail=f"Task id={task_id} not found", id=task_id
     )
-    # Kanban #695: cross-check the session-bound project against the row.
-    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)  # #695
     return task
 
 
@@ -1843,14 +1828,12 @@ async def create_task(
         payload_dict["acceptance_criteria"] = [
             c.model_dump(mode="json") for c in payload.acceptance_criteria
         ]
-    # same #801 pattern
-    payload_dict["subagent_models"] = [
+    payload_dict["subagent_models"] = [  # #801
         e.model_dump(mode="json") for e in payload.subagent_models
     ]
-    # same #801 pattern
-    if payload_dict.get("question_payload") is not None:
+    if payload_dict.get("question_payload") is not None:  # #801
         payload_dict["question_payload"] = payload.question_payload.model_dump(mode="json")
-    # #801 pattern — resume_context: re-serialize from payload when no template.
+    # #801 — resume_context: re-serialize from payload when no template.
     if _action_template is None and payload_dict.get("resume_context") is not None:
         payload_dict["resume_context"] = payload.model_dump(mode="json")["resume_context"]
 
@@ -1935,8 +1918,7 @@ async def update_task(
     task = await get_or_404(
         session, Task, detail=f"Task id={task_id} not found", id=task_id
     )
-    # Kanban #695: cross-check the session-bound project against the row.
-    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)  # #695
 
     # Kanban #1128: optimistic locking via If-Unmodified-Since header.
     # If the header is present, compare the client's baseline against the
@@ -1995,9 +1977,7 @@ async def update_task(
 
     updates = payload.model_dump(exclude_unset=True)
 
-    # #801 — model_dump(mode='json') coercion for JSONB columns. Kanban #1682
-    # Phase 1 dedup: extracted to _apply_jsonb_serialization (defined above).
-    _apply_jsonb_serialization(payload, updates)
+    _apply_jsonb_serialization(payload, updates)  # #801 / Kanban #1682
 
     # Kanban #1857 / #1852 (Phase 1) — operator-only AC attribution gate.
     # If this PATCH sets any criterion's `verified_by` to a reserved
@@ -2580,27 +2560,23 @@ async def update_task(
     # =====================================================================
     # POST-PATCH cross-resource side-effect hooks (4 sites below)
     # ---------------------------------------------------------------------
-    # All 4 hooks below follow the codified pattern in
-    # `context/standards/fastapi/atomic-mutations.md` § "Post-PATCH
-    # cross-resource side effects":
+    # All 4 hooks follow `context/standards/fastapi/atomic-mutations.md`
+    # § "Post-PATCH cross-resource side effects":
     #
-    #   (1) Kanban #1004 — handoff_template spawn (in-transaction, line ~1823)
-    #   (2) Kanban #832  — auto-unblock dependents       (line ~1895)
-    #   (3) Kanban #1211 — audit-flag pipeline           (line ~1905)
-    #   (4) Kanban #955.B — push-notification event hooks (line ~1958)
+    #   (1) Kanban #1004 — handoff_template spawn (in-transaction)
+    #   (2) Kanban #832  — auto-unblock dependents
+    #   (3) Kanban #1211 — audit-flag pipeline
+    #   (4) Kanban #955.B — push-notification event hooks
     #
-    # Shared invariants per the standard:
+    # Shared invariants:
     # - Transition detection via "`field` in updates AND old != new" → gives
     #   idempotent re-PATCH semantics for free.
-    # - In-transaction hooks (#1004) fire BEFORE session.commit() so atomic
-    #   rollback works; errors raise HTTPException, not swallow.
-    # - Post-commit hooks (#832, #1211, #955.B) fire AFTER the durable write
-    #   so any payload they ship reflects the persisted state.
+    # - In-transaction hooks (#1004) fire BEFORE session.commit(); errors
+    #   raise HTTPException (not swallow).
+    # - Post-commit hooks (#832, #1211, #955.B) fire AFTER the durable write.
     #
-    # If you're adding a 5th hook here, pattern-match the shape exactly —
-    # don't invent a new style. If the pattern has structurally diverged
-    # at n>=6 sites, that's the point to extract a mini-framework (see the
-    # "Generalizes to" section of the standards doc).
+    # Adding a 5th hook: pattern-match this shape exactly. If the pattern
+    # diverges at n>=6 sites, extract a mini-framework (see standards doc).
     # =====================================================================
 
     # Kanban #1004: auto-handoff spawn hook. When this PATCH transitions
@@ -3256,7 +3232,6 @@ async def _decide_legacy_1007(
     )
     assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
 
-    # Guard: wrong interaction kind.
     if task.interaction_kind != TaskInteractionKind.DECISION:
         raise HTTPException(
             status_code=422,
@@ -3266,14 +3241,12 @@ async def _decide_legacy_1007(
             ),
         )
 
-    # Guard: already decided.
     if task.process_status == TaskStatus.DONE:
         raise HTTPException(
             status_code=409,
             detail=f"Task id={task_id} is already DONE",
         )
 
-    # Validate chosen_id against the existing option list.
     try:
         validate_decision_payload({
             **(task.question_payload or {}),
@@ -3282,7 +3255,6 @@ async def _decide_legacy_1007(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    # Merge decision fields into question_payload.
     now_utc = datetime.now(timezone.utc)
     updated_payload = {
         **(task.question_payload or {}),
@@ -3293,14 +3265,12 @@ async def _decide_legacy_1007(
     }
     task.question_payload = updated_payload
 
-    # Flip to DONE + stamp timestamps.
     task.process_status = TaskStatus.DONE
     task.completed_at = func.now()
     task.updated_at = func.now()
 
     await session.commit()
 
-    # Auto-unblock any tasks blocked by this decision task (mirrors the PATCH path).
     await auto_unblock_dependents(session, task_id)
     await session.commit()
 
@@ -3440,8 +3410,6 @@ async def forecast_task_cost_endpoint(
     await session.commit()
     await session.refresh(task)
 
-    # response_model = CostForecastRead — return only the operator-facing fields
-    # (provider/model are computed but not surfaced).
     return CostForecastRead(
         estimated_usd=result["estimated_usd"],
         estimated_tokens=result["estimated_tokens"],
@@ -3462,8 +3430,7 @@ async def delete_task(
     task = await get_or_404(
         session, Task, detail=f"Task id={task_id} not found", id=task_id
     )
-    # Kanban #695: cross-check the session-bound project against the row.
-    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)  # #695
     # Idempotent: skip the no-op UPDATE so we don't write a redundant audit row.
     if task.status == RecordStatus.DELETED:
         return Response(status_code=http_status.HTTP_204_NO_CONTENT)
