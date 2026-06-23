@@ -114,7 +114,6 @@ function deriveFromTemplate(
   };
 }
 
-
 type Props = {
   projectId: number;
   // #7 §A AC#3 — per-project role whitelist (project.config.enabled_roles).
@@ -139,7 +138,6 @@ type Props = {
   // restores this initial value rather than blanking it.
   initialDueDate?: string;
 };
-
 
 export function NewTaskModal({
   projectId,
@@ -758,9 +756,9 @@ export function NewTaskModal({
 
             {/* #1310 — acceptance-criteria editor. Visible only when a template
                 is selected; seeded from the template (substituted), then freely
-                editable. Non-empty rows are sent on submit as `pending` ACs. */}
-            {/* #1310 — AC editor shown only when a template is selected; standalone manual AC entry is out of scope for this task. */}
-            {/* #1310 r4 — gate on resolved template (same source as placeholder editor) so a stale id can't render the AC editor without its template. */}
+                editable. Non-empty rows are sent on submit as `pending` ACs.
+                #1310 r4 — gate on `selectedTemplate` (not `selectedTemplateId`)
+                so a stale id never renders the AC editor without its template. */}
             {selectedTemplate !== null && (
               <div className="mt-3 flex flex-col gap-2" data-new-task-ac-editor>
                 <span className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
