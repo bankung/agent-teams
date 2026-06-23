@@ -99,16 +99,20 @@ curl --silent -X POST \
 
 ## Step 6 — verify (don't trust the POST)
 
-GET the rail back and confirm the lead row is present:
+The POST returns **201 with the created row as the body** (`response_model=ToolCallRead`) —
+already saved to `_scratch/tn_report_resp.json` in Step 5. Verify against THAT (no second
+GET round-trip — T3/#2541): open the response file and confirm it carries a numeric `id`,
+`source:"lead"`, the right `kind`, your `summary`, and that the engine-only fields
+(`tier`, `input_json`, `duration_ms`, `permission_decision`) are `null` (lead rows never
+fill them). The 201 body IS the persisted row, so a passing check here proves the write.
+
+Fallback: if the 201 body is missing/empty/unparseable for any reason, GET the rail back
+and confirm the newest row matches:
 
 ```
 curl --silent -H "X-Project-Id: <id>" \
   http://localhost:8456/api/tasks/<task_id>/tool-calls
 ```
-
-Confirm the newest row has `source:"lead"`, the right `kind`, your `summary`, and that
-the engine-only fields (`tier`, `input_json`, `duration_ms`, `permission_decision`) are
-`null` (lead rows never fill them).
 
 ## Step 7 — report
 

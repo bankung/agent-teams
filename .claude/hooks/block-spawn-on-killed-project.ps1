@@ -19,8 +19,10 @@ FAILURE MODES:
 - Project is_killed=true → deny spawn; return error message to user.
 
 IMPLEMENTATION:
-Read `_runtime/lead_project_id.txt`, parse the integer id, call FastAPI
-`GET /api/projects/<id>`, check `is_killed` flag, deny if true.
+Read `_runtime/lead_project_id.txt`, parse the integer id, read `is_killed` from the
+shared Lever B cache (Invoke-CachedPolicyFetch in _shared.ps1; live GET only on cache
+miss / >60s), deny if true. On is_killed=true a supplementary GET fetches the kill
+metadata for the message. Sharing the cache drops the dedicated per-spawn GET (R2/#2541).
 #>
 
 
@@ -85,36 +87,32 @@ if ($projectId -le 0) {
     exit 0
 }
 
-# GET /api/projects/{id}. curl.exe is used (not Invoke-WebRequest) because it matches
-# every other hook in this repo and avoids PowerShell 5.1's stderr-wrapping quirk on
-# native commands. --silent suppresses progress; --max-time bounds the wait so a hung
-# API doesn't stall the Agent spawn for the full 5s timeout.
+# R2 (#2541): consult the SHARED Lever B cache (the same _runtime cache the Bash gate
+# warms) for the kill flag instead of a dedicated per-spawn GET. The common path (project
+# not killed) is a cache hit -> no curl. Fail-open on any infra error — the PRIMARY defense
+# is POST /api/tasks returning 423 on a killed project; this hook is layer-2.
+#
+# Staleness note: the cache TTL is 60s, so a fresh kill can take up to 60s to gate spawns
+# here; the live 423 API gate still blocks the spawned agent's first write immediately.
+. (Join-Path $PSScriptRoot '_shared.ps1')
+
+$fetch = Invoke-CachedPolicyFetch -ProjectId $projectId
+if ($fetch.failed) {
+    [Console]::Error.WriteLine("WARN: project fetch failed for id=$projectId ; spawn block hook inactive")
+    exit 0
+}
+# is_killed false OR absent -> neutral allow (no curl on the common path).
+if (-not $fetch.is_killed) { exit 0 }
+
+# is_killed = true (rare) -> one live GET for the full kill metadata to build the message.
+# If this supplementary fetch fails, we STILL deny (the cached kill flag is authoritative);
+# the message just degrades to generic placeholders via the fallbacks below.
 $apiUrl = "http://localhost:8456/api/projects/$projectId"
+$project = $null
 try {
     $body = & curl.exe --silent --max-time 3 --fail -H "X-Project-Id: $projectId" $apiUrl 2>$null
-} catch {
-    [Console]::Error.WriteLine("WARN: curl invocation failed for $apiUrl ; spawn block hook inactive")
-    exit 0
-}
-
-if ($LASTEXITCODE -ne 0 -or -not $body) {
-    [Console]::Error.WriteLine("WARN: API unreachable or non-2xx at $apiUrl (curl exit $LASTEXITCODE); spawn block hook inactive")
-    exit 0
-}
-
-try {
-    $project = $body | ConvertFrom-Json
-} catch {
-    [Console]::Error.WriteLine("WARN: API response not valid JSON; spawn block hook inactive")
-    exit 0
-}
-
-# is_killed missing OR false -> neutral allow.
-if (-not $project.PSObject.Properties.Name -contains 'is_killed') {
-    [Console]::Error.WriteLine("WARN: API response missing is_killed field; spawn block hook inactive")
-    exit 0
-}
-if (-not $project.is_killed) { exit 0 }
+    if ($LASTEXITCODE -eq 0 -and $body) { $project = $body | ConvertFrom-Json }
+} catch { $project = $null }
 
 # is_killed = true -> deny with informative reason.
 $killedAt     = if ($project.killed_at)     { $project.killed_at }     else { '(unknown)' }

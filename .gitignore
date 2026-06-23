@@ -3,7 +3,14 @@
 .claude/settings.local.json
 # git worktrees (transparent to git via gitfile; ignored here to keep `git status` clean)
 .claude/worktrees/
-/docs/
+# docs/ is local-only EXCEPT the README screenshots (public assets; demo-project = leak-safe).
+/docs/*
+!/docs/media/
+/docs/media/*
+!/docs/media/heroes.jpg
+!/docs/media/kanban.jpg
+!/docs/media/task-detail.jpg
+!/docs/media/gantt.jpg
 
 # Env / secrets
 .env

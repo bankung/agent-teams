@@ -51,33 +51,66 @@ try {
 } catch { <# best-effort; proceed with empty message #> }
 
 # ---------------------------------------------------------------------------
-# Step 3 — GET IN_PROGRESS tasks (process_status=2) for the project
+# Step 3 — resolve the IN_PROGRESS task that anchors the notification
+# S3 (#2541): cache the picked task (id/title/priority) with a short TTL so rapid
+# successive idle notifications skip the tasks-list GET. Any cache miss / stale entry /
+# parse error falls through to the full GET + write-through (full fallback preserved).
 # ---------------------------------------------------------------------------
 
 $taskId = $null
 $taskTitle = ''
 $taskPriority = $null
 
-try {
-    $tasksJson = & curl.exe --silent --max-time 4 `
-        -H "X-Project-Id: $projectId" `
-        "http://localhost:8456/api/tasks?process_status=2&limit=50" 2>$null
+$notifyCacheFile = Join-Path $repoRoot "_runtime\notify_last_task_${projectId}.json"
+$notifyCacheTtl  = 30   # seconds — bounds how stale the anchored task can be
 
-    if ($LASTEXITCODE -eq 0 -and $tasksJson) {
-        $tasks = $tasksJson | ConvertFrom-Json -ErrorAction Stop
-        if ($tasks -and $tasks.Count -gt 0) {
-            # Pick the highest priority (HIGHEST numeric code; LOW=1..URGENT=4) task;
-            # break ties by most recently started (latest started_at).
-            $best = $tasks |
-                Sort-Object -Property @{Expression='priority';Descending=$true},
-                                      @{Expression='started_at';Descending=$true} |
-                Select-Object -First 1
-            $taskId    = $best.id
-            $taskTitle = [string]$best.title
-            $taskPriority = $best.priority
+# --- Try the cache first (skip the tasks-list GET when fresh) ---
+try {
+    if (Test-Path $notifyCacheFile) {
+        $cachedTask = (Get-Content -Raw -Path $notifyCacheFile) | ConvertFrom-Json -ErrorAction Stop
+        $cacheAge = [int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [int]$cachedTask.fetched_at_unix
+        if ($cacheAge -ge 0 -and $cacheAge -lt $notifyCacheTtl -and $cachedTask.task_id) {
+            $taskId       = $cachedTask.task_id
+            $taskTitle    = [string]$cachedTask.title
+            $taskPriority = $cachedTask.priority
         }
     }
-} catch { <# best-effort; proceed without task context #> }
+} catch { $taskId = $null }   # corrupt/unreadable cache -> full GET below
+
+# --- Cache miss / stale -> full GET + write-through ---
+if (-not $taskId) {
+    try {
+        $tasksJson = & curl.exe --silent --max-time 4 `
+            -H "X-Project-Id: $projectId" `
+            "http://localhost:8456/api/tasks?process_status=2&limit=50" 2>$null
+
+        if ($LASTEXITCODE -eq 0 -and $tasksJson) {
+            $tasks = $tasksJson | ConvertFrom-Json -ErrorAction Stop
+            if ($tasks -and $tasks.Count -gt 0) {
+                # Pick the highest priority (HIGHEST numeric code; LOW=1..URGENT=4) task;
+                # break ties by most recently started (latest started_at).
+                $best = $tasks |
+                    Sort-Object -Property @{Expression='priority';Descending=$true},
+                                          @{Expression='started_at';Descending=$true} |
+                    Select-Object -First 1
+                $taskId    = $best.id
+                $taskTitle = [string]$best.title
+                $taskPriority = $best.priority
+
+                # Write-through cache (best-effort; failure is non-fatal).
+                try {
+                    $cacheObj = @{
+                        fetched_at_unix = [int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+                        task_id  = $taskId
+                        title    = $taskTitle
+                        priority = $taskPriority
+                    } | ConvertTo-Json -Compress
+                    [System.IO.File]::WriteAllText($notifyCacheFile, $cacheObj, (New-Object System.Text.UTF8Encoding($false)))
+                } catch { <# cache write failure is non-fatal #> }
+            }
+        }
+    } catch { <# best-effort; proceed without task context #> }
+}
 
 # ---------------------------------------------------------------------------
 # Step 4 — Compute downstream_block_count

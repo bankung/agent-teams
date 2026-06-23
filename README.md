@@ -1,13 +1,3 @@
-<!--
-  SCREENSHOTS / GIF TO ADD before going public (drop files into docs/media/):
-    docs/media/hero.png         — project board, hero shot (≈820px wide)
-    docs/media/kanban.png       — Kanban board view
-    docs/media/task-detail.png  — a task with acceptance criteria + verification status
-    docs/media/gantt.png        — Gantt timeline (optional)
-    docs/media/demo.gif         — 15-30s: Create Project -> Create Task -> Execute -> Done (optional)
-  Public repos should NOT ship placeholder images — replace these before flipping the repo public.
--->
-
 <h1 align="center">Agent Teams</h1>
 
 <p align="center"><strong>Run AI agents like a real engineering team.</strong></p>
@@ -21,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/media/hero.png" alt="Agent Teams — project board (Kanban + Gantt + calendar)" width="820">
+  <img src="docs/media/heroes.jpg" alt="Agent Teams — project board (Kanban + Gantt + calendar)" width="820">
 </p>
 
 Agent Teams turns a single instruction into coordinated work across a roster of specialist agents. A **Lead orchestrator** resolves the active project, loads the right domain playbook, spawns the right specialists, integrates their output, and tracks everything on a Kanban board with acceptance-criteria.
@@ -144,9 +134,9 @@ Optional autonomous worker (Mode B): `docker compose --profile langgraph -f dock
 5. **Review on the board** — the task flips **DONE only when its acceptance criteria pass**
 
 <p align="center">
-  <img src="docs/media/kanban.png" alt="Kanban board" width="32%">
-  <img src="docs/media/task-detail.png" alt="Task detail — acceptance criteria with verification status" width="32%">
-  <img src="docs/media/gantt.png" alt="Gantt timeline" width="32%">
+  <img src="docs/media/kanban.jpg" alt="Kanban board" width="32%">
+  <img src="docs/media/task-detail.jpg" alt="Task detail — acceptance criteria with verification status" width="32%">
+  <img src="docs/media/gantt.jpg" alt="Gantt timeline" width="32%">
 </p>
 
 ---

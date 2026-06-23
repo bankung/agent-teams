@@ -7,10 +7,11 @@
 #   block-bitdefender-triggers.ps1 (deny AV-trigger shapes)
 #   block-pytest-on-live-db.ps1  (deny pytest against live DB)
 #
-# Guards fire in THE SAME ORDER as the original settings.json array
-# (approval-policies first, then the four block-* in list order).
-# First guard that emits a decision exits immediately — identical to the
-# sequential hook chain behaviour.
+# Guard order (deny-first reorder, #2541): the four LOCAL block-* guards run FIRST
+# (pure functions of the command — no I/O), then approval-policies-gate runs LAST
+# (it does the Lever B project fetch). A local deny short-circuits (exit 2) before
+# any network fetch. The final decision is unchanged: deny short-circuits regardless
+# of position, asks accumulate, allow is a no-op — so aggregation is order-invariant.
 #
 # Fail-open-to-ask on infra error (payload unreadable / project_id missing /
 # API unreachable) — same as original approval-policies-gate.ps1.
@@ -52,68 +53,6 @@ $cmd = if ($toolInput) { [string]$toolInput.command } else { '' }
 # denies, we emit ask (if any was recorded) else allow. This is what stops an operator
 # auto_approve rule from suppressing a block-* deny.
 $askReason = $null
-
-# ---------------------------------------------------------------------------
-# GUARD 1 — approval-policies-gate  (Lever B cached)
-# Same logic as approval-policies-gate.ps1, using shared helpers.
-# ---------------------------------------------------------------------------
-$projectId = Get-ProjectId
-$policies = $null
-if ($null -eq $projectId) {
-    # Infra error at the approval stage — record an ask candidate but DO NOT exit;
-    # the block-* deny guards below still run on $cmd and must win over ask.
-    [Console]::Error.WriteLine("WARN: pretooluse-bash-gate: _runtime/lead_project_id.txt missing or invalid ; ask candidate")
-    if (-not $askReason) { $askReason = 'pretooluse-bash-gate fallthrough: _runtime/lead_project_id.txt missing or invalid' }
-} else {
-    $fetchResult = Invoke-CachedPolicyFetch -ProjectId $projectId
-    if ($fetchResult.failed) {
-        [Console]::Error.WriteLine("WARN: pretooluse-bash-gate: API unreachable for project $projectId ; ask candidate")
-        if (-not $askReason) { $askReason = "pretooluse-bash-gate fallthrough: API unreachable for project $projectId" }
-    } else {
-        $policies = $fetchResult.policies
-    }
-}
-
-if ($null -ne $policies) {
-    # Extract URL and serialized content for rule matching.
-    $targetUrl         = $null
-    $serializedContent = ''
-    if ($toolInput) {
-        if ($toolInput.PSObject.Properties.Name -contains 'url') {
-            $targetUrl = [string]$toolInput.url
-        } elseif ($toolName -eq 'Bash' -and $toolInput.PSObject.Properties.Name -contains 'command') {
-            $urlMatch = [regex]::Match($cmd, '(?i)https?://[^\s"''<>]+')
-            if ($urlMatch.Success) { $targetUrl = $urlMatch.Value }
-        }
-        try {
-            $serializedContent = $toolInput | ConvertTo-Json -Compress -Depth 6
-        } catch {
-            $serializedContent = [string]$toolInput
-        }
-    }
-
-    $evalResult = Invoke-PolicyRuleEval `
-        -Policies $policies `
-        -ToolName $toolName `
-        -TargetUrl $targetUrl `
-        -SerializedContent $serializedContent
-
-    if ($evalResult.matched) {
-        # Preserve precedence:
-        #   auto_deny (deny)            → maximal → emit + short-circuit (exit 2).
-        #   requires_attention (ask)    → record ask; a later block-* deny can still win.
-        #   auto_approve (allow)        → lowest severity; record NOTHING. An operator
-        #                                 auto_approve rule must NOT suppress a block-* deny.
-        if ($evalResult.decision -eq 'deny') {
-            Emit-Decision -Decision 'deny' -Reason $evalResult.reason
-            exit 2
-        } elseif ($evalResult.decision -eq 'ask') {
-            if (-not $askReason) { $askReason = $evalResult.reason }
-        }
-    }
-    # No rule matched → fall through to block-* guards then default-allow.
-}
-# approval_policies null → no policy constraints; fall through.
 
 # ---------------------------------------------------------------------------
 # GUARD 2 — block-raw-sql-dml  (deny)
@@ -357,6 +296,69 @@ and emits a warning marker for audit.
         }
     }
 }
+
+# ---------------------------------------------------------------------------
+# GUARD 5 — approval-policies-gate  (LAST: runs only if no local block-* guard
+# denied above — does the Lever B project fetch, so deny paths skip it. #2541)
+# ---------------------------------------------------------------------------
+$projectId = Get-ProjectId
+$policies = $null
+if ($null -eq $projectId) {
+    # Infra error at the approval stage — record an ask candidate but DO NOT exit.
+    # The local block-* deny guards above already ran (none denied, else we'd have
+    # exited 2), so recording an ask here cannot mask a deny.
+    [Console]::Error.WriteLine("WARN: pretooluse-bash-gate: _runtime/lead_project_id.txt missing or invalid ; ask candidate")
+    if (-not $askReason) { $askReason = 'pretooluse-bash-gate fallthrough: _runtime/lead_project_id.txt missing or invalid' }
+} else {
+    $fetchResult = Invoke-CachedPolicyFetch -ProjectId $projectId
+    if ($fetchResult.failed) {
+        [Console]::Error.WriteLine("WARN: pretooluse-bash-gate: API unreachable for project $projectId ; ask candidate")
+        if (-not $askReason) { $askReason = "pretooluse-bash-gate fallthrough: API unreachable for project $projectId" }
+    } else {
+        $policies = $fetchResult.policies
+    }
+}
+
+if ($null -ne $policies) {
+    # Extract URL and serialized content for rule matching.
+    $targetUrl         = $null
+    $serializedContent = ''
+    if ($toolInput) {
+        if ($toolInput.PSObject.Properties.Name -contains 'url') {
+            $targetUrl = [string]$toolInput.url
+        } elseif ($toolName -eq 'Bash' -and $toolInput.PSObject.Properties.Name -contains 'command') {
+            $urlMatch = [regex]::Match($cmd, '(?i)https?://[^\s"''<>]+')
+            if ($urlMatch.Success) { $targetUrl = $urlMatch.Value }
+        }
+        try {
+            $serializedContent = $toolInput | ConvertTo-Json -Compress -Depth 6
+        } catch {
+            $serializedContent = [string]$toolInput
+        }
+    }
+
+    $evalResult = Invoke-PolicyRuleEval `
+        -Policies $policies `
+        -ToolName $toolName `
+        -TargetUrl $targetUrl `
+        -SerializedContent $serializedContent
+
+    if ($evalResult.matched) {
+        # Preserve precedence:
+        #   auto_deny (deny)            → emit + short-circuit (exit 2).
+        #   requires_attention (ask)    → record ask candidate.
+        #   auto_approve (allow)        → record NOTHING. An operator auto_approve rule
+        #                                 must NOT suppress a block-* deny (they ran first).
+        if ($evalResult.decision -eq 'deny') {
+            Emit-Decision -Decision 'deny' -Reason $evalResult.reason
+            exit 2
+        } elseif ($evalResult.decision -eq 'ask') {
+            if (-not $askReason) { $askReason = $evalResult.reason }
+        }
+    }
+    # No rule matched → fall through to default-allow.
+}
+# approval_policies null → no policy constraints; fall through to default-allow.
 
 # ---------------------------------------------------------------------------
 # Default: no guard fired → allow
