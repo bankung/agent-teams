@@ -1347,11 +1347,19 @@ async def reorder_task(
         process_status=task.process_status,
         exclude_task_id=task_id,
     )
-    # NOTE: the materializer above mutates `Task.sort_order` on the SAME
-    # ORM-managed instances in the session's identity map; before_anchor /
-    # after_anchor reflect the new floor floats directly. Do NOT call
-    # session.refresh() here — that would re-read from the DB and clobber
-    # the pre-commit mutation.
+    # NOTE (#2501 CTE-bulk-UPDATE path): the materializer issues a CTE UPDATE
+    # with synchronize_session=False, which writes to the DB within this txn
+    # but does NOT update already-loaded ORM instances in the identity map.
+    # before_anchor / after_anchor were loaded via session.get() BEFORE the
+    # bulk UPDATE ran, so they still carry sort_order=None. Refresh them so
+    # _compute_sort_order() sees the materialized values. A SELECT within the
+    # same transaction sees the UPDATE; no commit needed first.
+    # Do NOT call session.refresh() on instances that already had a non-null
+    # sort_order — that path was never NULL-filled so no refresh is needed.
+    if before_anchor is not None and before_anchor.sort_order is None:
+        await session.refresh(before_anchor, ["sort_order"])
+    if after_anchor is not None and after_anchor.sort_order is None:
+        await session.refresh(after_anchor, ["sort_order"])
 
     # Both anchors → average. before only → below before_id. after only → above after_id (#772)
     async def _compute_sort_order() -> float:
