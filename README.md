@@ -26,7 +26,7 @@
 
 Agent Teams turns a single instruction into coordinated work across a roster of specialist agents. A **Lead orchestrator** resolves the active project, loads the right domain playbook, spawns the right specialists, integrates their output, and tracks everything on a Kanban board with acceptance-criteria.
 
-> **Two execution modes, one platform.** Drive agents **interactively** (attended, in Claude Code) or hand tasks to an **autonomous LangGraph worker** (headless). Same roster, tasks, guardrails, and cost controls in both.
+> **Two execution modes, one platform.** Drive agents **interactively** (attended, in Claude Code) or hand tasks to an **autonomous LangGraph worker** (headless — **experimental** today). Same roster, tasks, guardrails, and cost controls in both.
 
 ---
 
@@ -163,7 +163,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 ```
 Web on **:5431**, API on **:8456**.
-Optional autonomous worker (Mode B): `docker compose --profile langgraph -f docker-compose.yml -f docker-compose.prod.yml up -d` → **:8465**.
+Optional autonomous worker (Mode B, **experimental**): `docker compose --profile langgraph -f docker-compose.yml -f docker-compose.prod.yml up -d` → **:8465**.
 
 ---
 
@@ -286,7 +286,7 @@ Forward-looking; subject to change.
     spawned subagents)       headless)                                       (:8465)
 ```
 
-Both modes share the same task store, agent roster, team playbooks, skills, and guardrails.
+Both modes share the same task store, agent roster, team playbooks, skills, and guardrails. **Mode B (the LangGraph worker) is experimental today** — Mode A (interactive) is the production path.
 
 ---
 
