@@ -48,7 +48,12 @@ import { ProjectConsentGrantModal } from "@/components/ProjectConsentGrantModal"
 import { ProductTourBoardResume } from "@/components/ProductTourBoardResume";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { SourcesBadge } from "@/components/SourcesBadge";
-import { TaskDetail } from "@/components/TaskDetail";
+// S-2: defer TaskDetail (~1 191 LOC, "use client") out of the initial board
+// bundle. The drawer only mounts on task click; SSR is not needed.
+const TaskDetail = dynamic(
+  () => import("@/components/TaskDetail").then((m) => m.TaskDetail),
+  { ssr: false, loading: () => null },
+);
 import { ToastStack, type ToastMessage } from "@/components/Toast";
 import { ViewSwitcher } from "@/components/ViewSwitcher";
 import { FINANCE_PANELS_ENABLED } from "@/lib/featureFlags";

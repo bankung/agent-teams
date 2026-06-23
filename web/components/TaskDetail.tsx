@@ -24,10 +24,17 @@ import { MilestoneCombobox } from "./MilestoneCombobox";
 import { PendingBadge } from "./PendingBadge";
 import { RunModeBadge } from "./RunModeBadge";
 import { TaskKindBadge } from "./TaskKindBadge";
+import dynamic from "next/dynamic";
 import { TaskComments } from "./TaskComments";
 import { TaskMuteToggle } from "./TaskMuteToggle";
-import { TaskOutputs } from "./TaskOutputs";
 import { TaskToolCalls } from "./TaskToolCalls";
+
+// S-1: defer react-markdown / micromark chunk (~1.5 MB) out of the board bundle.
+// TaskOutputs renders below-the-fold inside the task drawer — no SSR needed.
+const TaskOutputs = dynamic(
+  () => import("./TaskOutputs").then((m) => m.TaskOutputs),
+  { ssr: false, loading: () => <div className="text-sm text-gray-400">Loading outputs…</div> },
+);
 import { ModelTierSelect } from "./ModelTierSelect";
 
 type Props = {

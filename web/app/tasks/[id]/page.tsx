@@ -40,20 +40,28 @@ async function locateTask(
   taskId: number,
 ): Promise<{ task: TaskRead; project: ProjectRead } | null> {
   const projects = await listProjects({ status: 1 });
-  for (const project of projects) {
-    try {
-      const task = await getTask(project.id, taskId);
-      return { task, project };
-    } catch (err) {
-      if (err instanceof HttpError) {
-        // 400 = wrong project id for the resource — keep probing.
-        // 404 = task doesn't exist anywhere — also keep probing (the next
-        // project's GET will 400 too unless this is the right project).
-        if (err.status === 400 || err.status === 404) continue;
+
+  // S-3: fan out all project probes concurrently instead of serially.
+  // 400/404 from a wrong project → filtered out (same semantics as the old
+  // `continue`). Non-HttpError or unexpected status → re-thrown so it bubbles
+  // to error.tsx exactly as before.
+  const results = await Promise.allSettled(
+    projects.map(async (project) => {
+      try {
+        const task = await getTask(project.id, taskId);
+        return { task, project };
+      } catch (err) {
+        if (err instanceof HttpError && (err.status === 400 || err.status === 404)) {
+          return null; // task not in this project — filter below
+        }
+        throw err; // unexpected — surface to allSettled as rejected
       }
-      // 500 / network / unexpected — bubble to error.tsx.
-      throw err;
-    }
+    }),
+  );
+
+  for (const result of results) {
+    if (result.status === "rejected") throw result.reason;
+    if (result.value !== null) return result.value;
   }
   return null;
 }
