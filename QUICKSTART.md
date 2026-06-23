@@ -23,7 +23,7 @@ they work, you approve key decisions.
 
 Open your browser to **http://localhost:5431**
 
-(If you changed ports during install, check docker-compose.yml for the actual `WEB_PORT`.)
+(If you changed ports during install, check `.env` or `docker-compose.yml` for the actual `WEB_PORT`.)
 
 ## Try the demo project
 
@@ -57,11 +57,11 @@ The browser board is great for creating, managing, and tracking tasks. For agent
 - **Browser says "loading…" for >30s** → reload the page (Ctrl+R or Cmd+R).
 - **Task says "waiting for AI" for >5 min** → check Docker is healthy:
   ```
-  docker compose ps
+  docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
   ```
   If anything shows "unhealthy", restart:
   ```
-  docker compose restart api
+  docker compose -f docker-compose.yml -f docker-compose.prod.yml restart api
   ```
 - **An agent did something you didn't want** → click **Halt** on the task,
   write down what went wrong, file a bug.

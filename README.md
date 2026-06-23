@@ -109,7 +109,7 @@ bin/install.ps1        # Windows   (bin/install.sh on macOS / Linux / WSL)
 **The installer does the whole first run for you:**
 1. Checks Docker is installed and the daemon is running
 2. Creates `.env` (from `.env.example`) and generates the required security key (`CREDENTIALS_MASTER_KEY`)
-3. Builds and starts the stack — `docker compose up -d --build`
+3. Builds and starts the stack in **production mode** (`next build` → `node server.js`, no hot-reload)
 4. Runs the database migration + seed
 5. Waits for the API to come up, then opens the board
 
@@ -122,8 +122,16 @@ ANTHROPIC_API_KEY=sk-ant-...      # or set LANGGRAPH_LLM_PROVIDER + the matching
 # DATABASE_URL · REPO_ROOT · WEB_PORT (5431) · API_PORT (8456) — sane compose defaults
 ```
 
-Prefer manual? `docker compose -p agent-teams up -d --build` → web on **:5431**, API on **:8456**.
-Optional autonomous worker (Mode B): `docker compose -p agent-teams --profile langgraph up -d` → **:8465**.
+Prefer manual?
+```bash
+# Production (default — fast, no bind-mount):
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+
+# Developer mode (hot-reload):
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+```
+Web on **:5431**, API on **:8456**.
+Optional autonomous worker (Mode B): `docker compose --profile langgraph -f docker-compose.yml -f docker-compose.prod.yml up -d` → **:8465**.
 
 ---
 

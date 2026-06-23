@@ -1,11 +1,12 @@
 # Base compose for agent-teams (db + api + web + langgraph).
 # This file is the common base — apply an overlay for your mode:
 #
-#   Dev mode (hot-reload):   docker compose -p agent-teams -f docker-compose.yml -f docker-compose.dev.yml up -d
-#   Lightweight/prod mode:   docker compose -p agent-teams -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-#   Back to dev mode:        docker compose -p agent-teams -f docker-compose.yml -f docker-compose.dev.yml up -d
+#   Prod mode (default/install): docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#   Dev mode (hot-reload):       docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#   Back to prod mode:           docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 #
 # First-time install: use ./bin/install.sh (Linux/Mac) or .\bin\install.ps1 (Windows).
+# The installer defaults to prod mode (next build → node server.js, no --reload).
 # Manual flow for developers: see readme_dev.md "Live migration procedure".
 #
 # Reset (DEV ONLY — wipes DB):
