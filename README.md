@@ -26,7 +26,7 @@
 
 Agent Teams turns a single instruction into coordinated work across a roster of specialist agents. A **Lead orchestrator** resolves the active project, loads the right domain playbook, spawns the right specialists, integrates their output, and tracks everything on a Kanban board with acceptance-criteria.
 
-> **Two execution modes, one platform.** Drive agents **interactively** (attended, in Claude Code) or hand tasks to an **autonomous LangGraph worker** (headless — **experimental** today). Same roster, tasks, guardrails, and cost controls in both.
+> **Two execution modes, one platform.** Drive agents **interactively** (attended, in Claude Code or Codex) or hand tasks to an **autonomous LangGraph worker** (headless — **experimental** today). Same roster, tasks, guardrails, and cost controls in both.
 
 ---
 
@@ -106,9 +106,9 @@ If you've ever wished your agent runs were a **board you can manage** instead of
 ## Requirements
 
 - **Docker** + Docker Compose
-- An **Anthropic API key** (Claude) — or another supported provider
+- **Claude Code or Codex** — runs the interactive Lead (Mode A, the production path). No LLM API key needed; Mode A uses your existing coding agent.
 
-Optional providers (set one to switch): **OpenAI** · **Google (Gemini)** · **DeepSeek** · **Ollama** (local, no key).
+An **LLM provider key is optional** — only the **Mode B** worker (plus optional in-app AI helpers like natural-language task creation) calls a provider. Choose any: **Anthropic** · **OpenAI** · **Google (Gemini)** · **DeepSeek** · or **Ollama** (run Mode B fully local — **no key**).
 
 ---
 
@@ -145,7 +145,7 @@ bin/install.ps1        # Windows   (bin/install.sh on macOS / Linux / WSL)
 4. Runs the database migration + seed
 5. Waits for the API to come up, then opens the board
 
-Then add your provider key to `.env`:
+Optional — add a provider key to `.env` only if you'll run Mode B or the AI helpers:
 
 ```env
 ANTHROPIC_API_KEY=sk-ant-...      # or set LANGGRAPH_LLM_PROVIDER + the matching key
