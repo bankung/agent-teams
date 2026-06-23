@@ -205,11 +205,11 @@ An append-only, per-task telemetry record of every spawn, result, commit, and st
 
 **And the rest:**
 
-### 🎛️ Cost & Quality Control
+### 💰 Cost & Quality Control
 **One-size LLM spend on every task → dial cost vs quality per task.**
 Per-agent model tiers (`opus` / `sonnet` / `haiku`), per-task `model_override` + `effort_override` (the Mode B worker drives the Anthropic effort lever — auto-resolved or manual), multi-provider (Anthropic / OpenAI / Google / DeepSeek / Ollama), and a per-task + monthly cost view.
 
-### 🖥️ Web Workspace
+### 🌐 Web Workspace
 **Agent runs scattered across logs → one board you can manage.**
 A Next.js workspace: Kanban board, Gantt timeline, calendar, and milestone roll-ups — visual project management, not just a CLI.
 
@@ -217,7 +217,7 @@ A Next.js workspace: Kanban board, Gantt timeline, calendar, and milestone roll-
 **Docs and memory rot over time → continuous, review-gated hygiene.**
 The auditor flags stale docs, proposes skill stubs from recurring task patterns, and *(new)* proposes a de-duplicated compaction of the memory + decision log — all HITL, never auto-applied.
 
-### 🛡️ Safe by Default
+### 🔒 Safe by Default
 **Agents with unchecked access → propose-don't-apply, with structural guardrails.**
 HITL (agents propose, humans apply), humans-only zones, read-only agents constrained by tool-grant (not just prompts), a gated email path, PreToolUse hooks blocking raw SQL DML, and a treat-input-as-data prompt-injection posture.
 
@@ -225,7 +225,7 @@ HITL (agents propose, humans apply), humans-only zones, read-only agents constra
 **Secrets sprinkled across `.env` files → centralized, auditable secrets.**
 Moving to **Infisical** (primary) with `.env` fallback.
 
-### ⚙️ Standards-Driven Output
+### 📐 Standards-Driven Output
 **Inconsistent AI output → every agent follows the same committed standards.**
 A standards library (~28 docs: FastAPI, Next.js, React, SQLAlchemy, Pydantic, Docker…), the **Karpathy lane** on every change (think-before-code, minimum-viable-change, verify), and a skill-authoring standard + validator.
 
