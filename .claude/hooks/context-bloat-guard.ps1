@@ -13,6 +13,18 @@
 # Wired as a PostToolUse(Write|Edit) hook (.claude/settings.json). Loads at
 # session start.
 
+# S1 (#2541) — early-exit unless THIS write targets a project shared doc. A shared doc only
+# grows via a Write/Edit to it, so the full cross-project scan on any OTHER write is redundant
+# (~542ms saved on the ~90% of writes that aren't shared-doc edits). Fail-open: unreadable
+# payload / absent file_path -> fall through to the full scan (preserves prior behaviour).
+try {
+  $payloadRaw = [Console]::In.ReadToEnd()
+  if ($payloadRaw) {
+    $writtenPath = ($payloadRaw | ConvertFrom-Json).tool_input.file_path
+    if ($writtenPath -and (($writtenPath -replace '\\', '/') -notmatch '(?i)context/projects/[^/]+/shared/')) { exit 0 }
+  }
+} catch { <# parse error -> fall through to the full scan #> }
+
 $root = if ($env:CLAUDE_PROJECT_DIR) { $env:CLAUDE_PROJECT_DIR } else { (git rev-parse --show-toplevel 2>$null) }
 if (-not $root) { exit 0 }
 $projects = Join-Path $root 'context\projects'

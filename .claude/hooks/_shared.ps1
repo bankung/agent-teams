@@ -13,12 +13,15 @@
 #
 # Lever B cache contract:
 #   Cache file: _runtime\approval_policies_cache_<projectId>.json
-#   Shape: { "fetched_at_unix": <int>, "policies": <approval_policies-or-null> }
+#   Shape: { "fetched_at_unix": <int>, "policies": <approval_policies-or-null>,
+#            "is_killed": <bool> }
 #   TTL: 60 seconds. Fresh -> use cached value, NO curl.
 #   ANY cache read/parse error -> ignore cache, do a live fetch (fail-safe).
 #   Live fetch failure -> return sentinel @{ failed = $true } (caller → ask).
-#   The cached value is the `approval_policies` sub-field of the project row, NOT
-#   the full row, so the cache is compact and its staleness is bounded.
+#   The cached value is the `approval_policies` sub-field plus the `is_killed` flag of
+#   the project row (NOT the full row) — compact, staleness bounded by the TTL.
+#   is_killed is consumed by block-spawn-on-killed-project.ps1 (R2/#2541) so the spawn
+#   gate shares this cache instead of doing its own per-spawn GET.
 #
 # Test overrides (env vars, same contract as original gate):
 #   APPROVAL_POLICIES_GATE_PROJECT_FILE  — path to a fake lead_project_id.txt
@@ -88,18 +91,19 @@ function Get-ProjectId {
 # Invoke-CachedPolicyFetch  (Lever B)
 #
 # Returns a result object:
-#   { policies = <PSObject|$null>; failed = $false }   on success
-#   { policies = $null;            failed = $true  }   on infra error
+#   { policies = <PSObject|$null>; is_killed = <bool>; failed = $false }  on success
+#   { policies = $null;           is_killed = $false;  failed = $true  }  on infra error
 #
 # "policies" is the `approval_policies` sub-field (may be $null if the project
-# has none — that is a success, not a failure).
+# has none — that is a success, not a failure). "is_killed" mirrors the project
+# row's kill-switch flag for the spawn gate (R2/#2541).
 # ---------------------------------------------------------------------------
 function Invoke-CachedPolicyFetch {
     param(
         [Parameter(Mandatory = $true)][int]$ProjectId
     )
 
-    $success = [pscustomobject]@{ policies = $null; failed = $false }
+    $success = [pscustomobject]@{ policies = $null; is_killed = $false; failed = $false }
 
     # --- Test override: APPROVAL_POLICIES_GATE_POLICY_FILE -------------------
     # When set, skip both cache AND HTTP; load the fixture file directly.
@@ -112,6 +116,7 @@ function Invoke-CachedPolicyFetch {
         try {
             $projectJson = (Get-Content -Raw -Path $policyFile) | ConvertFrom-Json
             $success.policies = $projectJson.approval_policies
+            $success.is_killed = [bool]$projectJson.is_killed
             return $success
         } catch {
             return [pscustomobject]@{ policies = $null; failed = $true }
@@ -156,6 +161,7 @@ function Invoke-CachedPolicyFetch {
             if ($ageSeconds -ge 0 -and $ageSeconds -lt $ttlSeconds) {
                 # Cache hit — return without curling.
                 $success.policies = $cached.policies
+                $success.is_killed = [bool]$cached.is_killed
                 return $success
             }
             # Cache expired — fall through to live fetch.
@@ -191,6 +197,7 @@ function Invoke-CachedPolicyFetch {
             $cacheObj = @{
                 fetched_at_unix = $nowUnix
                 policies        = $projectJson.approval_policies
+                is_killed       = [bool]$projectJson.is_killed
             } | ConvertTo-Json -Compress -Depth 8
             # Ensure _runtime/ exists (it should, but guard anyway).
             $cacheParent = Split-Path -Parent $cacheFile
@@ -207,6 +214,7 @@ function Invoke-CachedPolicyFetch {
     }
 
     $success.policies = $projectJson.approval_policies
+    $success.is_killed = [bool]$projectJson.is_killed
     return $success
 }
 

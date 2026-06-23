@@ -27,23 +27,15 @@ $payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
 # Lead might trust naively.
 if ($payload.tool_response.is_error -eq $true) { exit 0 }
 
+# Trimmed to the actionable cue (T1/#2541): the verify-before-PATCH rule + the 4 check
+# methods. The strike-#5 narrative + doc refs live in CLAUDE.md / feedback_karpathy_lane.md
+# / the incident doc — no need to re-inject ~145 tokens of history into every spawn turn.
 $reminder = @"
-[KARPATHY MODE B GUARD] An Agent (specialist) just completed and reported.
-Before any PATCH /api/tasks/{id} based on this report, independently verify
-the specialist's "done" claim via the smallest concrete check:
-
-  - Code edit claimed: Read the modified file, confirm the diff matches
-  - Tests pass claimed: re-run the smallest selector that exercises the
-    claim (NOT pytest -q — that wiped the DB on 2026-05-17)
-  - File created claimed: ls / Glob for the path
-  - DB row written claimed: GET /api/<resource>/<id>, confirm the field
-
-In your next message, report the verification command + observable result
-BEFORE flipping any Kanban state. Mode B strike #5 (2026-05-17) wiped
-~1100 tasks because Lead trusted "854 passed" without independent verify.
-
-See: feedback_karpathy_lane.md (Mode B section), context/projects/
-agent-teams/shared/incidents/2026-05-17-dev-db-wipe.md.
+[KARPATHY MODE B GUARD] A specialist just reported done. Before any PATCH
+/api/tasks/{id}, independently verify the claim with the smallest check —
+code edit: Read the file; tests pass: re-run the selector (never pytest -q);
+file created: Glob the path; DB row: GET /api/<resource>/<id>.
+Report the verify command + observable result BEFORE flipping Kanban state.
 "@
 
 $output = @{
