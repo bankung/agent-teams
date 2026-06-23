@@ -42,6 +42,8 @@ _SLIM_KEYS = {
     "updated_at",
     "started_at",
     "completed_at",
+    # Kanban #1839: halted_at added to TaskSummaryRead — stamped on →ps=8 transition.
+    "halted_at",
     "is_active",
 }
 

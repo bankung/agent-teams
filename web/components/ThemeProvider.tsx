@@ -4,9 +4,10 @@ import {
   createContext,
   useContext,
   useEffect,
-  useState,
   type ReactNode,
 } from "react";
+
+import { usePersistentState } from "@/lib/usePersistentState";
 
 export type Theme = "light" | "dark" | "system";
 
@@ -37,21 +38,21 @@ function applyDarkClass(isDark: boolean) {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  // SSR: start 'system'; client reconciles from localStorage in effect
-  const [theme, setThemeState] = useState<Theme>("system");
+  // SSR snapshot = 'system'; client snapshot reads localStorage (Safari
+  // private-mode safe via the hook's try/catch). Stored values are validated
+  // by isTheme — anything else falls back to 'system'. The theme string is
+  // stored raw (not JSON) to match the prior contract.
+  const [theme, setTheme] = usePersistentState<Theme>(STORAGE_KEY, "system", {
+    serialize: (v) => v,
+    deserialize: (raw) => (isTheme(raw) ? raw : "system"),
+  });
 
-  // Hydrate: wrapped in try/catch for Safari private mode
+  // DOM-sync side-effect: apply the .dark class whenever the resolved theme
+  // changes. This is an external-system sync (not a setState-in-effect), so it
+  // stays as an effect — keyed on the resolved value.
   useEffect(() => {
-    let stored: string | null = null;
-    try {
-      stored = window.localStorage.getItem(STORAGE_KEY);
-    } catch {
-      stored = null;
-    }
-    const initial: Theme = isTheme(stored) ? stored : "system";
-    setThemeState(initial);
-    applyDarkClass(resolveDark(initial));
-  }, []);
+    applyDarkClass(resolveDark(theme));
+  }, [theme]);
 
   // Listen for OS preference change while in 'system' mode
   useEffect(() => {
@@ -61,16 +62,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     media.addEventListener("change", onChange);
     return () => media.removeEventListener("change", onChange);
   }, [theme]);
-
-  const setTheme = (next: Theme) => {
-    setThemeState(next);
-    try {
-      window.localStorage.setItem(STORAGE_KEY, next);
-    } catch {
-      // Private-mode / quota-exceeded: theme applies in-memory; persistence skipped
-    }
-    applyDarkClass(resolveDark(next));
-  };
 
   return (
     <ThemeContext.Provider value={{ theme, setTheme }}>

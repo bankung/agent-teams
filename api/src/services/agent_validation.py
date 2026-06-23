@@ -53,6 +53,8 @@ is the BASENAME only — absolute paths never leave this module.
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -709,10 +711,13 @@ def _summarize_one_file(
     model: str | None = None
     tools_summary, tool_count = ALL_TOOLS_LITERAL, None
     hook_count = 0
+    # Detail-only: structured tools (list / "All tools" / None) + raw body text.
+    tools_structured: list[str] | str | None = None
+    body_text = ""
 
     try:
         text = path.read_text(encoding="utf-8-sig")
-        fm_text, _fence = _extract_frontmatter(text)
+        fm_text, fence_offset = _extract_frontmatter(text)
         if fm_text is not None:
             raw_frontmatter = fm_text
             try:
@@ -731,6 +736,28 @@ def _summarize_one_file(
                     model = fm_model  # type: ignore[assignment]  # mypy cannot narrow via 'in MODEL_TIERS'; guarded above. #1017
                 tools_summary, tool_count = _summarize_tools(data)
                 hook_count = _count_hooks(data.get("hooks"))
+                # Structured tools for the detail/edit pre-fill (Part D, #2481).
+                raw_tools = data.get("tools")
+                if isinstance(raw_tools, list):
+                    tools_structured = [str(t) for t in raw_tools]
+                elif isinstance(raw_tools, str) and raw_tools == ALL_TOOLS_LITERAL:
+                    tools_structured = ALL_TOOLS_LITERAL
+                # else: absent → stays None (= all tools, not set explicitly)
+
+            # Body = everything after the closing '---' fence.
+            lines = text.splitlines()
+            # fence_offset is 1 (= the opening fence source line, 1-based).
+            # The closing fence is the second '---' line; body starts after it.
+            fence_count = 0
+            body_start = None
+            for i, line in enumerate(lines):
+                if line.strip() == "---":
+                    fence_count += 1
+                    if fence_count == 2:
+                        body_start = i + 1
+                        break
+            if body_start is not None:
+                body_text = "\n".join(lines[body_start:]).lstrip("\n")
     except OSError:
         # Unreadable file — _validate_one_file already emitted the read error.
         pass
@@ -750,6 +777,8 @@ def _summarize_one_file(
         # listing endpoint; consumed by AgentDetail on the detail endpoint).
         "raw_frontmatter": raw_frontmatter,
         "full_description": full_description,
+        "tools": tools_structured,
+        "body": body_text,
     }
 
 
@@ -803,3 +832,350 @@ def get_agent_summary(agents_dir: Path, name: str) -> dict[str, object] | None:
         if row["name"] == name:
             return row
     return None
+
+
+# ===========================================================================
+# Agent WRITE (Kanban #2481) — gated create/edit of `.claude/agents/*.md`.
+#
+# Built ON TOP of the validator above: the candidate file is run through the
+# SAME `validate_agents_dir` (in an isolated tmp dir) so a write can never
+# persist a file the read endpoints would flag as invalid. The byte-write path
+# is path-confined + atomic; the operator-proof gate lives in the ROUTER (this
+# module is pure filesystem + validation, no HTTP / no auth).
+# ===========================================================================
+
+
+class AgentPathError(Exception):
+    """The requested agent ``name`` cannot be confined to the agents dir.
+
+    Raised by :func:`confine_agent_path` when ``name`` fails the agent-name
+    regex OR the resolved target escapes ``agents_dir`` (traversal). The router
+    maps this to the gallery's posture (422/404) BEFORE any filesystem write.
+    Carrying a dedicated exception (rather than returning ``None``) keeps the
+    "never write outside the sandbox" decision in ONE place that callers cannot
+    accidentally ignore.
+    """
+
+
+def confine_agent_path(agents_dir: Path, name: str) -> Path:
+    """Resolve ``<agents_dir>/<name>.md`` and assert it stays INSIDE agents_dir.
+
+    Two independent guards, in order (defense-in-depth — either alone would
+    block the obvious attacks, but both are cheap and the combination is
+    auditable):
+
+      1. ``AGENT_NAME_RE.fullmatch(name)`` — a name that is not a valid agent
+         name (contains ``/``, ``\\``, ``..``, ``.``, upper-case, etc.) is
+         rejected before it is ever joined onto a path. This mirrors the
+         gallery's regex-first posture.
+      2. Realpath confinement — resolve both the agents dir and the candidate
+         target and assert the target is the dir itself or a descendant via
+         ``os.path.commonpath`` (NOT ``startswith`` — that has the
+         ``/agents-evil`` sibling-prefix bug). This backstops guard 1 against
+         any future regex loosening and against symlink games.
+
+    Returns the confined ``Path`` on success; raises :class:`AgentPathError`
+    otherwise. NEVER touches the filesystem beyond resolving paths (no read, no
+    write, no mkdir) — resolution of a not-yet-existing target is fine.
+    """
+    if not AGENT_NAME_RE.fullmatch(name):
+        raise AgentPathError(
+            f"name {name!r} is not a valid agent name (must match "
+            f"{AGENT_NAME_PATTERN})"
+        )
+
+    target = agents_dir / f"{name}.md"
+
+    # Confinement: resolve the dir + the candidate and require the candidate to
+    # live under the dir. We resolve the PARENT of the target (the agents dir)
+    # to a realpath and compare against the realpath of the target's parent —
+    # the filename component (already regex-clean) is appended back. Using
+    # `os.path.realpath` (string-level) avoids requiring the target file to
+    # exist (Path.resolve(strict=False) would also work; realpath matches the
+    # task_outputs/sandbox precedents in this repo).
+    dir_real = os.path.realpath(str(agents_dir))
+    target_real = os.path.realpath(str(target))
+    try:
+        common = os.path.commonpath([dir_real, target_real])
+    except ValueError:
+        # Different drives on Windows (no common path) → definitively outside.
+        raise AgentPathError(
+            f"resolved target {target_real!r} is not under {dir_real!r}"
+        ) from None
+    if common != dir_real or os.path.dirname(target_real) != dir_real:
+        # Either the target is not under the dir at all, or it resolved to a
+        # nested location (a symlink/`..` that climbs out and back into a
+        # subdir). Agent files live DIRECTLY in agents_dir — reject anything
+        # whose parent is not exactly the dir.
+        raise AgentPathError(
+            f"resolved target {target_real!r} is not directly inside "
+            f"{dir_real!r}"
+        )
+    return target
+
+
+def _serialize_frontmatter(fields: dict[str, object]) -> str:
+    """Serialize the present frontmatter ``fields`` into a YAML block (no fences).
+
+    Only keys present in ``fields`` are emitted, in a STABLE order
+    (name, description, model, tools, hooks, scope) so a round-trip is
+    deterministic. Each top-level key is serialized to be readable by the #1016
+    LINE-ORIENTED parser (``services.agent_validation._parse_frontmatter_block``),
+    which is NOT strict YAML — it handles, per top-level key, only: a plain
+    scalar (literal to EOL), a ``[...]``/``{...}`` flow value, an indented nested
+    mapping, and a block scalar. It does NOT handle a YAML BLOCK sequence
+    (``tools:`` then ``- Read`` at column 0). So:
+
+      * scalars (``name``/``description``/``model``/``scope``) → one
+        ``yaml.safe_dump`` line. A ``description`` with a colon is quoted by
+        PyYAML and the parser strips the matching surrounding quotes on read
+        (round-trips).
+      * ``tools`` LIST → forced to a FLOW list (``tools: [Read, Grep]``) via
+        ``default_flow_style=True`` — the parser's ``[...]`` branch reads it back
+        as a real list. (A block sequence would break the parser; calibration
+        caught this — 2026-06-18, #2481.) A ``tools`` string (the ``"All tools"``
+        literal) is emitted as a quoted scalar.
+      * ``hooks`` MAPPING → block style so it renders as an indented sub-block
+        the parser feeds to YAML.
+
+    ``allow_unicode=True`` keeps non-ASCII (e.g. Thai in a description) intact.
+    ``sort_keys=False`` preserves our explicit order. The result NEVER includes
+    the leading/trailing ``---`` fences — the caller wraps it (see
+    :func:`assemble_agent_file`).
+    """
+    ordered_keys = ("name", "description", "model", "tools", "hooks", "scope")
+    chunks: list[str] = []
+    for key in ordered_keys:
+        if key not in fields:
+            continue
+        value = fields[key]
+        if key == "tools" and isinstance(value, list):
+            # Emit `tools: [a, b, c]` — a FLOW list the line-parser's `[...]`
+            # branch reads back as a real list. We flow-dump the LIST VALUE
+            # ALONE (not `{tools: [...]}`, which yaml renders as a flow MAPPING
+            # `{tools: [...]}` and breaks the parser — caught 2026-06-18, #2481).
+            # safe_dump quotes any odd tool name (e.g. one containing a colon).
+            flow_list = yaml.safe_dump(
+                value, allow_unicode=True, default_flow_style=True
+            ).strip()
+            chunks.append(f"tools: {flow_list}")
+        else:
+            # Scalars + the hooks mapping + the "All tools" string dump cleanly
+            # in the default block style, one top-level key at a time.
+            dumped = yaml.safe_dump(
+                {key: value},
+                sort_keys=False,
+                allow_unicode=True,
+                default_flow_style=False,
+            )
+            chunks.append(dumped.rstrip("\n"))
+    return "\n".join(chunks)
+
+
+def assemble_agent_file(fields: dict[str, object], body: str) -> str:
+    """Build the full ``.md`` text: frontmatter fence + serialized fields + body.
+
+    Shape (matches how real agent files + the #1016 ``_extract_frontmatter``
+    expect it): an opening ``---`` line, the serialized frontmatter, a closing
+    ``---`` line, a blank separator line, then the body. The body is written
+    VERBATIM (it is the operator's markdown); a single trailing newline is
+    ensured so the file is POSIX-clean.
+    """
+    frontmatter = _serialize_frontmatter(fields)
+    body_text = body.rstrip("\n")
+    if body_text:
+        return f"---\n{frontmatter}\n---\n\n{body_text}\n"
+    # Body empty → frontmatter-only file (structurally valid). Still emit the
+    # trailing blank line + newline for a clean file.
+    return f"---\n{frontmatter}\n---\n"
+
+
+# Claude Code hook event names that are structurally accepted on the WRITE path.
+# Derived from the real agent files (all 14 hook-bearing agents use PreToolUse)
+# and from .claude/settings.json (PreToolUse, PostToolUse, Notification,
+# SubagentStop, PreCompact, SessionEnd in active use as of 2026-06-18).
+# Stop / UserPromptSubmit / SessionStart are in the Claude Code spec but absent
+# from existing files — included to avoid breaking agents that legitimately need
+# them.  Adding a new CC event only requires extending this set (not a migration).
+KNOWN_HOOK_EVENTS: frozenset[str] = frozenset(
+    {
+        "PreToolUse",
+        "PostToolUse",
+        "UserPromptSubmit",
+        "Stop",
+        "SubagentStop",
+        "Notification",
+        "SessionStart",
+        "SessionEnd",
+        "PreCompact",
+    }
+)
+
+# Accepted ``type`` values for a single hook entry.  ``"command"`` is the only
+# type Claude Code defines today; the allowlist is intentionally narrow — an
+# unknown type would silently do nothing and indicates a typo / future type that
+# needs an explicit extension here.
+_KNOWN_HOOK_TYPES: frozenset[str] = frozenset({"command"})
+
+
+def validate_hooks_structure(hooks: dict | None) -> list[str]:
+    """Structurally validate a ``hooks`` mapping from the WRITE path.
+
+    Returns a list of human-readable error strings (empty = valid).  Enforces:
+
+      * Every top-level key is a known Claude Code hook event name
+        (``KNOWN_HOOK_EVENTS``).
+      * Each event value is a list of mappings (the list of matcher entries).
+      * Each matcher mapping may carry an optional ``matcher`` string.
+      * Each matcher mapping MUST carry a ``hooks`` list of
+        ``{type, command}`` entries where:
+          - ``type`` is one of ``_KNOWN_HOOK_TYPES``
+          - ``command`` is a string
+
+    ``None`` / absent hooks is accepted (returns ``[]``).
+
+    Residual: a well-formed hook can still carry any shell command string.
+    The operator-proof gate is the authorization control for that (out of scope
+    to sanitize command contents here — that is a human-only decision).
+    """
+    if hooks is None:
+        return []
+
+    errors: list[str] = []
+
+    for event_key, event_val in hooks.items():
+        if event_key not in KNOWN_HOOK_EVENTS:
+            errors.append(
+                f"hooks: unknown event key {event_key!r}; "
+                f"must be one of {sorted(KNOWN_HOOK_EVENTS)}"
+            )
+            continue  # Don't deep-validate under an unknown event key.
+
+        if not isinstance(event_val, list):
+            errors.append(
+                f"hooks.{event_key}: value must be a list of matcher entries; "
+                f"got {type(event_val).__name__}"
+            )
+            continue
+
+        for i, entry in enumerate(event_val):
+            prefix = f"hooks.{event_key}[{i}]"
+            if not isinstance(entry, dict):
+                errors.append(
+                    f"{prefix}: each matcher entry must be a mapping; "
+                    f"got {type(entry).__name__}"
+                )
+                continue
+
+            # Optional ``matcher`` must be a string if present.
+            if "matcher" in entry and not isinstance(entry["matcher"], str):
+                errors.append(
+                    f"{prefix}.matcher: must be a string; "
+                    f"got {type(entry['matcher']).__name__}"
+                )
+
+            # ``hooks`` sub-list is required and must contain {type, command}.
+            sub_hooks = entry.get("hooks")
+            if sub_hooks is None:
+                errors.append(f"{prefix}: missing required 'hooks' list")
+                continue
+            if not isinstance(sub_hooks, list):
+                errors.append(
+                    f"{prefix}.hooks: must be a list; got {type(sub_hooks).__name__}"
+                )
+                continue
+            for j, cmd_entry in enumerate(sub_hooks):
+                cp = f"{prefix}.hooks[{j}]"
+                if not isinstance(cmd_entry, dict):
+                    errors.append(
+                        f"{cp}: each hook entry must be a mapping; "
+                        f"got {type(cmd_entry).__name__}"
+                    )
+                    continue
+                h_type = cmd_entry.get("type")
+                if h_type not in _KNOWN_HOOK_TYPES:
+                    errors.append(
+                        f"{cp}.type: {h_type!r} not in allowed set "
+                        f"{sorted(_KNOWN_HOOK_TYPES)}"
+                    )
+                h_cmd = cmd_entry.get("command")
+                if not isinstance(h_cmd, str):
+                    errors.append(
+                        f"{cp}.command: must be a string; "
+                        f"got {type(h_cmd).__name__}"
+                    )
+
+    return errors
+
+
+def validate_candidate_agent_file(name: str, file_text: str) -> list[dict[str, object]]:
+    """Validate a candidate agent file IN ISOLATION; return its ERROR diagnostics.
+
+    Writes ``file_text`` as ``<tmp>/<name>.md`` into a throwaway temp directory
+    and runs the real ``validate_agents_dir`` over it, then returns ONLY the
+    error-severity diagnostics (warnings — unknown tool names / custom keys — do
+    NOT block a write, matching the gallery's ``valid`` rule). The temp dir is
+    removed before returning.
+
+    Isolation rationale: validating in the REAL agents dir would (a) require
+    writing the candidate first (the very thing we are gate-checking) and (b)
+    drag in cross-file duplicate-name diagnostics from unrelated files. The
+    contract is "this proposed agent is itself valid", so we validate it alone.
+    Reserved-name (``validate``) and every structural/field rule still fire —
+    they are single-file checks.
+
+    ``name`` is assumed already path-safe (the router calls
+    :func:`confine_agent_path` first); here it only forms the temp filename.
+    """
+    diags: list[dict[str, object]] = []
+    # Hoist candidate BEFORE the try so the finally can always reference it (NIT-3).
+    tmp_dir = tempfile.mkdtemp(prefix="agent-candidate-")
+    candidate = Path(tmp_dir) / f"{name}.md"
+    try:
+        candidate.write_text(file_text, encoding="utf-8")
+        result = validate_agents_dir(Path(tmp_dir))
+        diags = [d for d in result["diagnostics"] if d["severity"] == "error"]
+    finally:
+        # Best-effort cleanup; a leaked tmp dir is harmless but we tidy up.
+        try:
+            candidate.unlink(missing_ok=True)
+        except OSError:
+            pass
+        try:
+            os.rmdir(tmp_dir)
+        except OSError:
+            pass
+    return diags
+
+
+def write_agent_file_atomic(target: Path, file_text: str) -> None:
+    """Write ``file_text`` to ``target`` ATOMICALLY (temp file + ``os.replace``).
+
+    A partial/garbled file must NEVER be observable at ``target`` — a reader
+    (the gallery scan, Claude Code at session start) either sees the old file or
+    the fully-written new one, never a half-written one. We write to a temp file
+    IN THE SAME DIRECTORY (so ``os.replace`` is a same-filesystem atomic rename,
+    not a cross-device copy) then replace.
+
+    ``target`` is assumed already confined (the caller runs
+    :func:`confine_agent_path`); this function does the bytes only. Synchronous
+    by design — the router offloads it via ``anyio.to_thread.run_sync`` (same
+    discipline as the gallery scan).
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.stem}-", suffix=".md.tmp", dir=str(target.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(file_text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, str(target))
+    except BaseException:
+        # On any failure leave the original target untouched and clean the temp.
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise

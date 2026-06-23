@@ -15,7 +15,6 @@ import {
   type TaskCreateBody,
 } from "@/lib/api";
 import {
-  PRIORITY_OPTIONS,
   REASON_MIN_CHARS,
   ROLE_OPTIONS,
   TaskPriority,
@@ -26,13 +25,10 @@ import {
 import { filterRoleOptions } from "@/lib/enabledRoles";
 import { extractErrorMessage } from "@/lib/errors";
 import { ActionTemplatePicker } from "./ActionTemplatePicker";
-import { DatePicker } from "./DatePicker";
 import { PauseOverrideBlock } from "./PauseOverrideBlock";
-import { HandoffTemplatePicker } from "./HandoffTemplatePicker";
 import { Icon } from "./Icon";
-import { MilestoneCombobox } from "./MilestoneCombobox";
 import { ModalShell } from "./ModalShell";
-import { ModelTierSelect } from "./ModelTierSelect";
+import { TaskFormFields, type TaskFormType } from "./TaskFormFields";
 
 // Trigger button + dialog for the AI-task flow (Kanban #857).
 //
@@ -57,19 +53,6 @@ import { ModelTierSelect } from "./ModelTierSelect";
 //   504 → provider exceeded 10s wall
 
 type Phase = "input" | "preview";
-
-type TaskTypeOption = {
-  value: "bug" | "feature" | "chore" | "docs" | "refactor";
-  label: string;
-};
-
-const TASK_TYPE_OPTIONS: TaskTypeOption[] = [
-  { value: "bug", label: "Bug" },
-  { value: "feature", label: "Feature" },
-  { value: "chore", label: "Chore" },
-  { value: "docs", label: "Docs" },
-  { value: "refactor", label: "Refactor" },
-];
 
 
 type Props = {
@@ -130,7 +113,7 @@ export function AiTaskModal({
   // Preview-phase fields (pre-filled from `proposed`).
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [taskType, setTaskType] = useState<TaskTypeOption["value"]>("feature");
+  const [taskType, setTaskType] = useState<TaskFormType>("feature");
   const [priority, setPriority] = useState<TaskPriorityValue>(
     TaskPriority.NORMAL,
   );
@@ -559,188 +542,62 @@ export function AiTaskModal({
                 disabled={creating}
               />
 
-              <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                Title <span className="text-red-600 dark:text-red-400">*</span>
-                <input
-                  ref={titleInputRef}
-                  type="text"
-                  value={title}
-                  onChange={(e) => {
-                    setTitle(e.target.value);
-                    if (createError !== null) setCreateError(null);
-                  }}
-                  placeholder="Short imperative summary"
-                  autoComplete="off"
-                  disabled={creating}
-                  aria-invalid={title.length > 0 && !titleValid}
-                  className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
-                  data-ai-task-title
-                />
-              </label>
-
-              <div className="mt-3 grid grid-cols-2 gap-3">
-                <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                  Type{" "}
-                  <span className="text-red-600 dark:text-red-400">*</span>
-                  <select
-                    value={taskType}
-                    onChange={(e) => {
-                      setTaskType(e.target.value as TaskTypeOption["value"]);
-                      if (createError !== null) setCreateError(null);
-                    }}
-                    disabled={creating}
-                    className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
-                    data-ai-task-type
-                  >
-                    {TASK_TYPE_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                  Priority{" "}
-                  <span className="text-red-600 dark:text-red-400">*</span>
-                  <select
-                    value={priority}
-                    onChange={(e) => {
-                      setPriority(Number(e.target.value) as TaskPriorityValue);
-                      if (createError !== null) setCreateError(null);
-                    }}
-                    disabled={creating}
-                    className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
-                    data-ai-task-priority
-                  >
-                    {PRIORITY_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-
-              <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                Role{" "}
-                <span className="font-normal text-zinc-400">(optional)</span>
-                <select
-                  value={role === "" ? "" : String(role)}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setRole(v === "" ? "" : (Number(v) as TaskRoleValue));
-                    if (createError !== null) setCreateError(null);
-                  }}
-                  disabled={creating}
-                  className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
-                  data-ai-task-role
-                >
-                  {visibleRoleOptions.map((o) => (
-                    <option key={String(o.value)} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              {/* #1677 — per-task model-tier override dropdown */}
-              <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                Model tier{" "}
-                <span className="font-normal text-zinc-400">(optional)</span>
-                <ModelTierSelect
-                  value={modelOverride ?? ""}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setModelOverride(
-                      v === "" ? null : (v as "haiku" | "sonnet" | "opus"),
-                    );
-                    if (createError !== null) setCreateError(null);
-                  }}
-                  disabled={creating}
-                  data-ai-task-model-override
-                />
-              </label>
-
-              <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                Blocked by{" "}
-                <span className="font-normal text-zinc-400">
-                  (optional task id)
-                </span>
-                <input
-                  type="number"
-                  min={1}
-                  step={1}
-                  value={blockedBy}
-                  onChange={(e) => {
-                    setBlockedBy(e.target.value);
-                    if (createError !== null) setCreateError(null);
-                  }}
-                  placeholder="e.g. 123"
-                  disabled={creating}
-                  aria-invalid={blockedBy.length > 0 && !blockedByValid}
-                  className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
-                  data-ai-task-blocked-by
-                />
-              </label>
-
-              {/* #1868 parity — optional milestone picker + due date (mirrors
-                  NewTaskModal). Preview phase only — the create POST that
-                  persists them fires here. */}
-              <div className="mt-3 grid grid-cols-2 gap-3">
-                <div className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                  Milestone{" "}
-                  <span className="font-normal text-zinc-400">(optional)</span>
-                  <MilestoneCombobox
-                    value={milestoneId === "" ? null : milestoneId}
-                    onChange={(id) => {
-                      setMilestoneId(id === null ? "" : id);
-                      if (createError !== null) setCreateError(null);
-                    }}
-                    milestones={milestones}
-                    disabled={creating}
-                    inputProps={{ "data-ai-task-milestone": true }}
-                  />
-                </div>
-                <div className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                  Due date{" "}
-                  <span className="font-normal text-zinc-400">(optional)</span>
-                  <DatePicker
-                    value={dueDate}
-                    onChange={(v) => {
-                      setDueDate(v ?? "");
-                      if (createError !== null) setCreateError(null);
-                    }}
-                    disabled={creating}
-                    inputProps={{ "data-ai-task-due-date": true }}
-                  />
-                </div>
-              </div>
-
-              <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                Description{" "}
-                <span className="font-normal text-zinc-400">(optional)</span>
-                <textarea
-                  value={description}
-                  onChange={(e) => {
-                    setDescription(e.target.value);
-                    if (createError !== null) setCreateError(null);
-                  }}
-                  placeholder="Markdown supported"
-                  rows={4}
-                  disabled={creating}
-                  className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
-                  data-ai-task-description
-                />
-              </label>
-
-              {/* #1343 — handoff template picker (preview phase only — same
-                  rationale as the pause-override block; the POST that
-                  persists handoff_template_id only fires in this phase). */}
-              <HandoffTemplatePicker
+              {/* #2373 R3 — shared common fields + Advanced disclosure. */}
+              <TaskFormFields
+                prefix="ai-task"
+                title={title}
+                onTitleChange={(v) => {
+                  setTitle(v);
+                  if (createError !== null) setCreateError(null);
+                }}
+                titleValid={titleValid}
+                titleRef={titleInputRef}
+                taskType={taskType}
+                onTaskTypeChange={(v) => {
+                  setTaskType(v);
+                  if (createError !== null) setCreateError(null);
+                }}
+                priority={priority}
+                onPriorityChange={(v) => {
+                  setPriority(v);
+                  if (createError !== null) setCreateError(null);
+                }}
+                role={role}
+                onRoleChange={(v) => {
+                  setRole(v);
+                  if (createError !== null) setCreateError(null);
+                }}
+                roleOptions={visibleRoleOptions}
+                milestoneId={milestoneId}
+                onMilestoneChange={(v) => {
+                  setMilestoneId(v);
+                  if (createError !== null) setCreateError(null);
+                }}
+                milestones={milestones}
+                dueDate={dueDate}
+                onDueDateChange={(v) => {
+                  setDueDate(v);
+                  if (createError !== null) setCreateError(null);
+                }}
+                description={description}
+                onDescriptionChange={(v) => {
+                  setDescription(v);
+                  if (createError !== null) setCreateError(null);
+                }}
+                blockedBy={blockedBy}
+                onBlockedByChange={(v) => {
+                  setBlockedBy(v);
+                  if (createError !== null) setCreateError(null);
+                }}
+                blockedByValid={blockedByValid}
+                modelOverride={modelOverride}
+                onModelOverrideChange={(v) => {
+                  setModelOverride(v);
+                  if (createError !== null) setCreateError(null);
+                }}
                 projectId={projectId}
-                selectedId={handoffTemplateId}
-                onSelect={(id) => {
+                handoffTemplateId={handoffTemplateId}
+                onHandoffTemplateChange={(id) => {
                   setHandoffTemplateId(id);
                   if (createError !== null) setCreateError(null);
                 }}

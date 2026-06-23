@@ -168,12 +168,89 @@ class AgentDetail(AgentSummary):
     """Response for ``GET /api/agents/{name}`` (contract §2).
 
     Everything in :class:`AgentSummary` PLUS the raw frontmatter text, the full
-    (untruncated) description, and recent cross-project spawn history.
+    (untruncated) description, recent cross-project spawn history, the structured
+    tools list (for edit pre-fill), and the raw markdown body.
+
+    New fields (additive, detail-only):
+      * ``tools`` — the parsed structured tools value: a list of tool-name
+        strings, the literal ``"All tools"``, or ``None`` when absent.  Distinct
+        from ``tools_summary`` / ``tool_count`` (those are display strings);
+        this field gives the exact members so the edit form can pre-populate.
+      * ``body`` — the raw markdown body (everything after the closing ``---``
+        frontmatter fence).  Empty string when the file has no body.  Written
+        verbatim; the edit form uses it to pre-load the textarea.
     """
 
     raw_frontmatter: str
     full_description: str
     spawns: list[AgentSpawn]
+    tools: list[str] | Literal["All tools"] | None
+    body: str
+
+
+class AgentWrite(BaseModel):
+    """Request body for the gated agent write endpoints (Kanban #2481).
+
+    POST ``/api/agents`` (create) and PUT ``/api/agents/{name}`` (edit). Carries
+    the frontmatter fields the operator wants to write PLUS the markdown
+    ``body``. Unlike :class:`AgentMetadata` (which is ``extra="allow"`` so the
+    *reader* tolerates real-world custom keys like ``email_actions``), this WRITE
+    schema is ``extra="forbid"``: a create/edit request that carries an unknown
+    top-level field is a 422, not a silently-persisted custom key. We will not
+    let the API mint new off-schema frontmatter keys; the validator may *tolerate*
+    them on disk, but the write surface does not *create* them.
+
+    Field rules mirror the #1016 contract (so a body that passes Pydantic here
+    has a real chance of passing the file validator too — though the file
+    validator remains the authority; see the router):
+
+      * ``name`` — required, must match ``AGENT_NAME_PATTERN``. For POST this is
+        the created agent's name (and the filename stem). For PUT the path
+        ``{name}`` is authoritative; the handler requires the body ``name`` to
+        EQUAL the path name (else 422) so the on-disk frontmatter and the
+        filename can never disagree.
+      * ``description`` — required, non-empty after strip.
+      * ``model`` — optional; when present one of ``MODEL_TIERS`` (absent =
+        inherit default, NOT written).
+      * ``tools`` — optional; a list of tool-name strings OR the literal
+        ``"All tools"`` OR absent. Unknown tool NAMES are NOT rejected here (the
+        validator surfaces them as warnings, which do not block a write).
+      * ``hooks`` — optional nested mapping (presence + mapping-type only).
+      * ``scope`` — optional string.
+      * ``body`` — the markdown body that follows the frontmatter fence. May be
+        empty (an agent file with only frontmatter is structurally valid); it is
+        written verbatim after the serialized frontmatter block.
+
+    The router serializes ``{name, description, model?, tools?, hooks?, scope?}``
+    back into a YAML frontmatter block, appends ``body``, and runs the WHOLE
+    candidate file through ``services.agent_validation`` before any byte is
+    written. ``AgentWrite`` is the request contract; the file validator is the
+    persistence gate.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., min_length=1)
+    description: str = Field(..., min_length=1, max_length=2000)
+    model: ModelTierLiteral | None = None
+    tools: list[str] | Literal["All tools"] | None = None
+    hooks: dict | None = None
+    scope: str | None = Field(None, max_length=500)
+    body: str = Field("", max_length=50_000)
+
+    @field_validator("name")
+    @classmethod
+    def _name_matches_pattern(cls, v: str) -> str:
+        if not AGENT_NAME_RE.fullmatch(v):
+            raise ValueError(f"name must match {AGENT_NAME_PATTERN}")
+        return v
+
+    @field_validator("description")
+    @classmethod
+    def _description_non_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("description must be non-empty")
+        return v
 
 
 class AgentMetadata(BaseModel):

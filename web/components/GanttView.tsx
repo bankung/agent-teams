@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -96,6 +96,7 @@ const STATUS_LABEL: Record<number, string> = {
   [TaskStatus.BLOCKED]: "blocked",
   [TaskStatus.DONE]: "done",
   [TaskStatus.CANCELLED]: "cancelled",
+  [TaskStatus.HALTED_PENDING_USER]: "halted",
 };
 
 // Stable sort for the Unassigned pool list: process_status then id.
@@ -147,6 +148,12 @@ export function GanttView({ projectId, projectName, milestones }: Props) {
   const [activeTask, setActiveTask] = useState<TaskRead | null>(null);
   const [dndError, setDndError] = useState<string | null>(null);
 
+  // MED-1: guard setState calls in the in-flight loadUnassigned promise against
+  // unmount (loadUnassigned is on-demand, not an effect, so we use a ref + a
+  // one-time cleanup effect instead of a local cancelled flag).
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
   const keyStr = (k: ListKey) => String(k);
 
   // Lazy-load the Unassigned pool (milestone_id-null tasks). The BE has no
@@ -167,14 +174,14 @@ export function GanttView({ projectId, projectName, milestones }: Props) {
     listTasks(projectId, { limit: 500 })
       .then((rows) => rows.filter((t) => t.milestone_id == null))
       .then((rows) => {
-        setTaskLists((prev) => ({ ...prev, [UNASSIGNED]: sortTasks(rows) }));
+        if (mountedRef.current) setTaskLists((prev) => ({ ...prev, [UNASSIGNED]: sortTasks(rows) }));
       })
       .catch((err: unknown) => {
-        setErrorUnassigned(extractErrorMessage(err, "Failed to load tasks"));
-        setTaskLists((prev) => ({ ...prev, [UNASSIGNED]: [] }));
+        if (mountedRef.current) setErrorUnassigned(extractErrorMessage(err, "Failed to load tasks"));
+        if (mountedRef.current) setTaskLists((prev) => ({ ...prev, [UNASSIGNED]: [] }));
       })
       .finally(() => {
-        setLoadingUnassigned(false);
+        if (mountedRef.current) setLoadingUnassigned(false);
       });
   }, [projectId]);
 
@@ -356,7 +363,7 @@ export function GanttView({ projectId, projectName, milestones }: Props) {
             <button
               type="button"
               onClick={() => setCreateOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded border border-emerald-600 bg-emerald-600 px-3 py-2 text-xs font-medium uppercase tracking-wide text-white hover:bg-emerald-700 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-emerald-500 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+              className="glass-glow inline-flex items-center gap-1.5 rounded border border-emerald-600 bg-emerald-600 px-3 py-2 text-xs font-medium uppercase tracking-wide text-white hover:bg-emerald-700 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-emerald-500 dark:bg-emerald-500 dark:hover:bg-emerald-600"
               data-new-milestone-trigger
             >
               New milestone
@@ -401,7 +408,7 @@ export function GanttView({ projectId, projectName, milestones }: Props) {
             it on the timeline.
           </p>
         ) : (
-          <div className="flex overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
+          <div className="glass-surface flex overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
             {/* ── Left rail — one row per milestone (drop target). ─────────── */}
             <div className="w-64 shrink-0 border-r border-zinc-200 dark:border-zinc-800">
               {/* Rail header aligns with the timeline axis row. */}

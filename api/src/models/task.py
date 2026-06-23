@@ -202,6 +202,14 @@ class Task(Base):
     # (process_status -> 6). Independent of the value: any PATCH may set it.
     # NULL = unset. Audit-trigger snapshot captures the field automatically.
     status_change_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Kanban #1839: stamped once on the →process_status=8 ('halted-pending-user')
+    # transition by routers/tasks.py, mirroring started_at/completed_at (stamped
+    # only when currently NULL; persists; not auto-cleared; no re-stamp on re-halt).
+    # Orthogonal to halt_reason (#785) — the two are decoupled. CHECK derives from
+    # TaskStatus.ALL — do NOT hand-edit ck_tasks_process_status_valid.
+    halted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Kanban #830 (2026-05-12): interaction_kind discriminates agent-executed tasks
     # from user-interaction gates. DB DEFAULT 'work' covers existing rows + INSERT.
     interaction_kind: Mapped[str] = mapped_column(
@@ -342,6 +350,18 @@ class Task(Base):
         nullable=True,
     )
     estimated_cost_usd: Mapped[_Decimal | None] = mapped_column(
+        Numeric(10, 4),
+        nullable=True,
+    )
+
+    # Kanban #1304 (2026-06-15): per-task PRE-run cost forecast, persisted by
+    # POST /api/tasks/{id}/cost-forecast. Mirror of estimated_cost_usd's shape
+    # (Numeric(10,4), nullable, no CHECK). Distinct from estimated_cost_usd: that
+    # is the POST-HOC (#944 done-flip) actual; this is the BEFORE-spawn forecast.
+    # Storing both makes the ±30% calibration loop measurable. Read-only on the
+    # wire (TaskRead exposes; TaskCreate / TaskUpdate do NOT — server-computed
+    # only). Backfilled to NULL on existing rows by migration 0068's nullable=true.
+    forecast_cost_usd: Mapped[_Decimal | None] = mapped_column(
         Numeric(10, 4),
         nullable=True,
     )
@@ -705,6 +725,27 @@ class Task(Base):
             "acceptance_criteria",
             postgresql_using="gin",
             postgresql_ops={"acceptance_criteria": "jsonb_path_ops"},
+        ),
+        # Kanban #2505: next-autorun hot path — WHERE project_id=? AND
+        # process_status=1 AND status=1 AND run_mode IN ('auto','auto_headless').
+        # Partial predicate keeps the index sparse (~175 active-TODO rows today).
+        # Covering INCLUDE avoids heap fetches for the priority-sort + scheduling
+        # fields the caller reads. Mirror of migration 0071.
+        Index(
+            "ix_tasks_next_autorun",
+            "project_id",
+            "process_status",
+            "status",
+            "run_mode",
+            postgresql_include=[
+                "priority",
+                "sort_order",
+                "created_at",
+                "halt_reason",
+                "blocked_by",
+                "scheduled_at",
+            ],
+            postgresql_where=text("status = 1 AND process_status = 1"),
         ),
     )
 

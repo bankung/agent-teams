@@ -169,7 +169,19 @@ async def _live_db_row_count_invariant():
     # The remaining tables (projects, sessions, projects_audit, etc.) are
     # low-churn enough that any increase during a ~10-minute test run is a
     # genuine signal worth investigating.
-    _INVARIANT_EXCLUDED = frozenset({"alembic_version", "tasks", "tasks_history"})
+    _INVARIANT_EXCLUDED = frozenset(
+        {
+            "alembic_version",
+            "tasks",        # high-churn: live API writes during any test run
+            "tasks_history",  # populated by the tasks audit trigger on every live write
+            "tool_calls",   # activity-rail rows written by live API during any session;
+                            # pytest_runner is SELECT-only on agent_teams so test code
+                            # cannot write here — same concurrent-API-noise rationale as tasks
+            "usage_events",  # live API writes usage-tracking rows during any run;
+                             # pytest_runner is SELECT-only on agent_teams so test code
+                             # cannot write here — same concurrent-API-noise rationale as tasks
+        }
+    )
 
     async def _counts() -> dict[str, int]:
         async with live_engine.connect() as conn:

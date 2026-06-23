@@ -1,17 +1,20 @@
-// Board DONE-column true-total tests — Kanban #2346.
+// Board DONE-column true-total tests — Kanban #2346 / #2347.
 //
 // Verifies that doneTotalCount is derived correctly in Board and threaded to
 // BoardDndCanvas (via the next/dynamic stub) so the column header badge shows
 // the server total instead of the client-loaded count.
 //
-// Three cases:
-//   1. milestoneFilter="all"  → doneTotalCount = projectStats[0].counts["5"]
-//   2. milestoneFilter=<id>   → doneTotalCount = undefined (rollup not loaded)
-//   3. Active lanes (TODO)    → totalCount prop is undefined (loaded = true count)
+// Cases:
+//   1. milestoneFilter="all"    → doneTotalCount = projectStats[0].counts["5"]
+//   2. milestoneFilter=<id>     → doneTotalCount = undefined while loading, then
+//                                  the milestone rollup by_process_status["5"] (#2347)
+//   3. Active lanes (TODO)      → totalCount prop is undefined (loaded = true count)
+//   4. getMilestone fetch error  → falls back to undefined (no stale count shown)
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, configure } from "@testing-library/react";
-import type { TaskRead, ProjectRead, ProjectStatsEntry, ProgressStatsResponse } from "@/lib/api";
+import { render, screen, waitFor, configure, act } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { TaskRead, ProjectRead, ProjectStatsEntry, ProgressStatsResponse, MilestoneDetail } from "@/lib/api";
 import { TaskStatus } from "@/lib/constants";
 
 configure({ asyncUtilTimeout: 5000 });
@@ -21,6 +24,7 @@ configure({ asyncUtilTimeout: 5000 });
 // ---------------------------------------------------------------------------
 const mockListDoneLanePage = vi.fn();
 const mockListMilestones = vi.fn();
+const mockGetMilestone = vi.fn();
 const mockPatchTask = vi.fn();
 const mockReorderTask = vi.fn();
 
@@ -30,6 +34,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     ...actual,
     listDoneLanePage: (...args: unknown[]) => mockListDoneLanePage(...args),
     listMilestones: (...args: unknown[]) => mockListMilestones(...args),
+    getMilestone: (...args: unknown[]) => mockGetMilestone(...args),
     patchTask: (...args: unknown[]) => mockPatchTask(...args),
     reorderTask: (...args: unknown[]) => mockReorderTask(...args),
   };
@@ -239,6 +244,7 @@ describe("Board — doneTotalCount wiring (#2346)", () => {
   beforeEach(() => {
     mockListDoneLanePage.mockReset();
     mockListMilestones.mockResolvedValue([]);
+    mockGetMilestone.mockReset();
     mockPatchTask.mockReset();
     mockReorderTask.mockReset();
     vi.spyOn(Storage.prototype, "getItem").mockReturnValue(null);
@@ -363,5 +369,151 @@ describe("Board — doneTotalCount wiring (#2346)", () => {
     // (they receive totalCount=undefined from BoardDndCanvas's isDone guard).
     expect(canvas.dataset.doneTotalCount).toBe("123");
     expect(canvas).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Kanban #2347 — milestone-filter DONE count: getMilestone rollup wiring
+// ---------------------------------------------------------------------------
+// These tests verify that when milestoneFilter is a numeric id the Board
+// fetches getMilestone and threads rollup.by_process_status["5"] into
+// doneTotalCount. They test the useEffect + milestoneDoneRollup state path
+// by driving the select element on the toolbar.
+//
+// NOTE: the milestone dropdown is rendered by the Board itself (a <select>).
+// Icon is mocked to null so the toolbar select is visible.
+// ---------------------------------------------------------------------------
+
+function makeMilestoneDetail(milestoneId: number, doneCount: number): MilestoneDetail {
+  return {
+    id: milestoneId,
+    project_id: 1,
+    title: "Sprint 1",
+    milestone_status: 1 as MilestoneDetail["milestone_status"],
+    description: null,
+    start_date: null,
+    target_date: null,
+    released_at: null,
+    sort_order: null,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    rollup: {
+      total: 10,
+      by_process_status: { "5": doneCount },
+      done: doneCount,
+      progress_pct: 50,
+    },
+  } as unknown as MilestoneDetail;
+}
+
+describe("Board — milestone-filter DONE rollup (#2347)", () => {
+  beforeEach(() => {
+    mockListDoneLanePage.mockReset();
+    mockListMilestones.mockResolvedValue([
+      {
+        id: 7, project_id: 1, title: "Sprint 1", milestone_status: 1,
+        description: null, start_date: null, target_date: null,
+        released_at: null, sort_order: null, created_at: "", updated_at: "",
+      },
+    ]);
+    mockGetMilestone.mockReset();
+    mockPatchTask.mockReset();
+    mockReorderTask.mockReset();
+    vi.spyOn(Storage.prototype, "getItem").mockReturnValue(null);
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => undefined);
+  });
+
+  it("selects milestone → calls getMilestone and shows rollup DONE count", async () => {
+    const user = userEvent.setup();
+    mockGetMilestone.mockResolvedValue(makeMilestoneDetail(7, 42));
+    const stats = makeProjectStats(); // counts["5"] = 123
+
+    render(
+      <Board
+        initialTasks={[makeTask({ id: 10, process_status: TaskStatus.DONE, milestone_id: 7 })]}
+        initialDoneHasMore={false}
+        hasHeadlessTask={false}
+        project={makeProject()}
+        projectStats={[stats]}
+        progressStats={EMPTY_PROGRESS}
+      />,
+    );
+
+    // Wait for initial render with "all" filter → doneTotalCount = 123
+    const canvas = await screen.findByTestId("stub-board-dnd-canvas");
+    expect(canvas.dataset.doneTotalCount).toBe("123");
+
+    // Locate the milestone select element and change to milestone id=7
+    const select = await screen.findByRole("combobox", { name: /milestone/i });
+    await act(async () => {
+      await user.selectOptions(select, "7");
+    });
+
+    // After selecting milestone 7, getMilestone should have been called
+    expect(mockGetMilestone).toHaveBeenCalledWith(1, 7);
+
+    // After the fetch resolves, doneTotalCount should be the rollup value (42)
+    await waitFor(() => {
+      expect(canvas.dataset.doneTotalCount).toBe("42");
+    });
+  });
+
+  it("switches back to 'all' clears milestone rollup → doneTotalCount back to projectStats", async () => {
+    const user = userEvent.setup();
+    mockGetMilestone.mockResolvedValue(makeMilestoneDetail(7, 42));
+    const stats = makeProjectStats(); // counts["5"] = 123
+
+    render(
+      <Board
+        initialTasks={[makeTask({ id: 11, process_status: TaskStatus.DONE, milestone_id: 7 })]}
+        initialDoneHasMore={false}
+        hasHeadlessTask={false}
+        project={makeProject()}
+        projectStats={[stats]}
+        progressStats={EMPTY_PROGRESS}
+      />,
+    );
+
+    await screen.findByTestId("stub-board-dnd-canvas");
+    const select = await screen.findByRole("combobox", { name: /milestone/i });
+
+    // Select milestone 7
+    await act(async () => { await user.selectOptions(select, "7"); });
+    await waitFor(() => {
+      expect(screen.getByTestId("stub-board-dnd-canvas").dataset.doneTotalCount).toBe("42");
+    });
+
+    // Switch back to "all"
+    await act(async () => { await user.selectOptions(select, "all"); });
+    await waitFor(() => {
+      expect(screen.getByTestId("stub-board-dnd-canvas").dataset.doneTotalCount).toBe("123");
+    });
+  });
+
+  it("getMilestone fetch error → falls back to undefined (no broken count shown)", async () => {
+    const user = userEvent.setup();
+    mockGetMilestone.mockRejectedValue(new Error("network error"));
+    const stats = makeProjectStats(); // counts["5"] = 123
+
+    render(
+      <Board
+        initialTasks={[makeTask({ id: 12, process_status: TaskStatus.DONE, milestone_id: 7 })]}
+        initialDoneHasMore={false}
+        hasHeadlessTask={false}
+        project={makeProject()}
+        projectStats={[stats]}
+        progressStats={EMPTY_PROGRESS}
+      />,
+    );
+
+    await screen.findByTestId("stub-board-dnd-canvas");
+    const select = await screen.findByRole("combobox", { name: /milestone/i });
+
+    await act(async () => { await user.selectOptions(select, "7"); });
+
+    // After rejected fetch, milestoneDoneRollup stays undefined → doneTotalCount = undefined
+    await waitFor(() => {
+      expect(screen.getByTestId("stub-board-dnd-canvas").dataset.doneTotalCount).toBe("undefined");
+    });
   });
 });

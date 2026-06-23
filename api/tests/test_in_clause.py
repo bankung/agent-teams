@@ -20,7 +20,8 @@ from src.constants import (
 
 
 def test_in_clause_status_canonical() -> None:
-    assert in_clause("process_status", TaskStatus.ALL) == "process_status IN (1, 2, 3, 4, 5, 6)"
+    # 7 is intentionally skipped/reserved; 8=HALTED_PENDING_USER added by #1839.
+    assert in_clause("process_status", TaskStatus.ALL) == "process_status IN (1, 2, 3, 4, 5, 6, 8)"
 
 
 def test_in_clause_priority_canonical() -> None:

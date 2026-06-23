@@ -4,7 +4,7 @@
 // surfacing attached files + links from /api/projects/{id}/resources.
 //
 // Default COLLAPSED; the chevron toggles. Expand/collapse persists per-user via
-// collapseState (readExpanded / writeExpanded) under a stable per-project key.
+// usePersistentState (#2491) under a stable per-project key.
 //
 // Open state:
 //   * Lists resources newest-first (the BE orders created_at DESC).
@@ -30,7 +30,7 @@ import {
   type ResourceKindValue,
 } from "@/lib/api";
 import { extractErrorMessage } from "@/lib/errors";
-import { readExpanded, writeExpanded } from "@/lib/collapseState";
+import { usePersistentState, useIsHydrated } from "@/lib/usePersistentState";
 import { Icon } from "./Icon";
 import { ResourcePreviewDrawer } from "./ResourcePreviewDrawer";
 import { ResourceUploadModal, formatBytes } from "./ResourceUploadModal";
@@ -50,9 +50,14 @@ const FLASH_MS = 1500;
 export function ResourcesPanel({ projectId, defaultCollapsed = true }: Props) {
   const storageKey = `resources-panel:${projectId}`;
 
-  // SSR-safe: start from defaultCollapsed; hydrate the persisted pref on mount.
-  const [expanded, setExpanded] = useState(!defaultCollapsed);
-  const [hydrated, setHydrated] = useState(false);
+  // SSR-safe: server snapshot = !defaultCollapsed; client reads localStorage.
+  const [expanded, setExpanded] = usePersistentState<boolean>(
+    storageKey,
+    !defaultCollapsed,
+    { deserialize: (raw) => JSON.parse(raw) !== false },
+  );
+  // Mount gate for the chevron glyph (avoids an SSR/client glyph mismatch).
+  const hydrated = useIsHydrated();
 
   const [resources, setResources] = useState<Resource[]>([]);
   const [loading, setLoading] = useState(false);
@@ -67,14 +72,6 @@ export function ResourcesPanel({ projectId, defaultCollapsed = true }: Props) {
   const [flashId, setFlashId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Hydrate persisted expand state once on mount (localStorage is client-only).
-  useEffect(() => {
-    setExpanded(readExpanded(storageKey, defaultCollapsed));
-    setHydrated(true);
-    // storageKey is stable per projectId; intentionally run once per project.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storageKey]);
 
   // cancelled ref — set to true on unmount so in-flight fetch doesn't update
   // state after the component is gone (mirrors ResourcePreviewDrawer pattern).
@@ -105,7 +102,18 @@ export function ResourcesPanel({ projectId, defaultCollapsed = true }: Props) {
 
   // Lazy fetch: only when expanded AND not yet loaded. Avoids a fetch while
   // the panel sits collapsed at the bottom of every board.
+  //
+  // #2492 — deliberately NOT migrated to useAsyncData. This is a LAZY,
+  // fetch-once-then-latch machine (the `loaded` flag stops a re-expand from
+  // refetching) with local list mutations (onCreated prepend, onDelete filter)
+  // and its own cancelledRef. useAsyncData(fetcher, deps) fetches eagerly on
+  // mount + on every dep change, which would (a) fetch while the panel is
+  // collapsed and (b) re-fetch on every expand/collapse — both behavior
+  // regressions. `refresh` already guards stale responses via cancelledRef, so
+  // the warning is a false-positive here; disabled with rationale rather than
+  // contorting the lazy-latch design to fit the hook.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (expanded && !loaded && !loading) void refresh();
   }, [expanded, loaded, loading, refresh]);
 
@@ -116,9 +124,7 @@ export function ResourcesPanel({ projectId, defaultCollapsed = true }: Props) {
   }, []);
 
   function toggle() {
-    const next = !expanded;
-    setExpanded(next);
-    writeExpanded(storageKey, next);
+    setExpanded(!expanded);
   }
 
   const onCreated = useCallback((created: Resource) => {

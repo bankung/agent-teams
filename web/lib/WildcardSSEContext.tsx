@@ -85,6 +85,8 @@ export function WildcardSSEProvider({
     let firstEventMs: number | null = null;
     let trailingTimer: ReturnType<typeof setTimeout> | null = null;
     let hardCapTimer: ReturnType<typeof setTimeout> | null = null;
+    // Stable local for the cleanup below (ref-value-in-cleanup lint guard).
+    const subscribers = subscribersRef.current;
 
     const clearTimers = () => {
       if (trailingTimer !== null) {
@@ -158,6 +160,7 @@ export function WildcardSSEProvider({
       clearTimers();
       buffer = [];
       firstEventMs = null;
+      subscribers.clear();
       setConnectionState("offline");
     };
   }, []);

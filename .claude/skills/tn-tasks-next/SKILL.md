@@ -8,6 +8,10 @@ argument-hint: "[N] [milestone:<id>]  — N is 5/10/20 (default 10)"
 allowed-tools:
   - Bash(curl:*)
   - Read
+metadata:
+  version: 1.0.0
+  category: kanban
+  tags: [kanban, task, planning, read-only, queue]
 ---
 
 # /tn-tasks-next — the prioritized "what's next" queue
@@ -68,3 +72,7 @@ is one · status label. Note which milestone(s) the list spans, and if fewer tha
 ## Why this exists
 Encodes a consistent "work the current sprint first, clear blockers first, by priority" policy so
 "what's next?" returns the same disciplined answer every time — instead of an ad-hoc scan.
+
+## Related skills
+- `tn-task` — inspect a single task by id once you've identified it from this queue
+- `tn-milestones` — see all milestones and their progress percentages for broader sprint context

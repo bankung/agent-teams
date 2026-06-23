@@ -63,7 +63,7 @@ export function ActionTemplatePicker({
     // collapses entirely so the modal stays minimal.
     if (loadError) {
       // Surface only as a console hint for the operator-debug case.
-      // eslint-disable-next-line no-console
+       
       console.debug("[ActionTemplatePicker] load error:", loadError);
     }
     return null;

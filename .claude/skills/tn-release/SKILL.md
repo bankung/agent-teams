@@ -1,6 +1,15 @@
 ---
 name: tn-release
 description: Run the weekly agent-teams release flow (dev → main) end-to-end — Tier-2 gate, merge, version bump, annotated tag, push, MILESTONE FLIPS (released + activate next), and resume dev. Encodes shared/release-workflow.md (#1646) so the milestone-status step (the gap behind #2056) can never be skipped. Use for a normal weekly release or an explicit "release vX.Y.0".
+argument-hint: "[vX.Y.Z]"
+allowed-tools:
+  - Bash(git:*)
+  - Bash(curl:*)
+  - Bash(gh:*)
+metadata:
+  version: 1.0.0
+  category: platform
+  tags: [platform, git, release, mutate]
 ---
 
 # /tn-release — weekly release flow (dev → main) with milestone flips
@@ -49,3 +58,8 @@ Args: optional `vX.Y.Z` (else compute the next MINOR from the latest tag).
 ## Report
 - Tag created, `main HEAD == tag`, images CI (`release-images.yml`) triggered by the tag,
   milestone flips applied, dev resumed. List anything that needs the operator (gh install, etc.).
+
+## Related skills
+
+- **tn-git-commit** — handles the scoped-staging + scan + commit mechanics that tn-release composes into its merge and version-bump steps.
+- **tn-milestone-done** — the milestone-completion check tn-release calls in Step 6 before flipping a milestone to released.

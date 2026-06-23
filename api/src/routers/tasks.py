@@ -18,7 +18,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi import status as http_status
-from sqlalchemy import cast, or_, select
+from sqlalchemy import cast, or_, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +31,7 @@ from src.db import get_or_404, get_session
 from src.models.handoff_template import HandoffTemplate
 from src.models.milestone import Milestone
 from src.models.project import Project
+from src.models.project_resource import ProjectResource
 from src.models.session import SessionRun
 from src.models.task import Task
 from src.models.task_comment import TaskComment
@@ -40,6 +41,7 @@ from src.schemas.project import ResolveFlagRequest, ResolveFlagResponse
 from src.schemas.task_comment import TaskCommentCreate, TaskCommentRead
 from src.schemas.task import (
     AcceptanceCriterion,
+    CostForecastRead,
     DecisionRequest,
     HitlResolveRequest,
     HitlResolveResponse,
@@ -67,7 +69,11 @@ from src.services.budget_enforcer import check_budget
 from src.services.budget_gate import check_budget as check_spawn_budget
 from src.services.run_mode import assert_consent_for_run_mode
 from src.services.cost_tracker import compute_cost, resolve_pricing_key
-from src.services.task_cost_estimator import estimate_task_cost, resolve_provider_model
+from src.services.task_cost_estimator import (
+    estimate_task_cost,
+    forecast_task_cost,
+    resolve_provider_model,
+)
 from src.services.task_interaction import (
     _validate_answer,
     append_answer,
@@ -165,6 +171,10 @@ _BLOCKED_BY_MAX_CHAIN_DEPTH = 10
 # walk's budget — real blocker chains stay 1-3 deep. Hitting depth 10
 # without resolving raises 422 defensively.
 _REORDER_BLOCKER_CHAIN_DEPTH = 10
+
+# #2422: a blocker in EITHER terminal state no longer blocks its dependent —
+# mirrors the FE chip semantics (#2412/#2419) and dashboard.py's _TERMINAL_STATUSES.
+_TERMINAL_BLOCKER_STATUSES: tuple[int, ...] = (TaskStatus.DONE, TaskStatus.CANCELLED)
 
 # Kanban #819: minimum gap between float sort_orders before re-densification
 # is triggered. Float-64 midpoint arithmetic exhausts after ~52 same-interval
@@ -332,10 +342,14 @@ def _fire_hitl_push(task_id: int, title: str, question_payload: dict | None) -> 
     except Exception:  # noqa: BLE001 — never crash the API response
         logger.exception("hitl_push: unexpected error on task=%d; push skipped", task_id)
 
-# Auto-stamp started_at / completed_at on ps=2 / ps=5 transitions
+# Auto-stamp started_at / completed_at / halted_at on ps=2 / ps=5 / ps=8
+# transitions. The transition block below stamps only when the field is
+# currently NULL and uses setdefault, so a client-supplied value is respected
+# and a re-halt never re-stamps (Kanban #1839, mirrors started_at/completed_at).
 _STATUS_TIMESTAMP_FIELDS: dict[int, str] = {
     TaskStatus.IN_PROGRESS: "started_at",
     TaskStatus.DONE: "completed_at",
+    TaskStatus.HALTED_PENDING_USER: "halted_at",
 }
 
 
@@ -464,34 +478,22 @@ async def list_tasks(
     ),
     session: AsyncSession = Depends(get_session),
 ) -> list[Task]:
-    # Kanban #695: project scoping comes from the X-Project-Id header (session-
-    # bound). The legacy `?project_id=` query param was removed — header is the
-    # canonical channel; missing/non-int → 400 via require_project_id_header.
     stmt = select(Task).where(Task.project_id == session_project_id)
     if not include_deleted:
         stmt = stmt.where(Task.status == RecordStatus.ACTIVE)
     # Kanban #1240: default-exclude auto-archived rows (is_active=false).
-    # Opt-in via ?include_archived=true (blast-radius guard — existing explicit
-    # callers can still fetch archived rows). Independent of the soft-delete
-    # filter above; the two compose. No interaction with the process_status /
-    # pending / cancelled gates — an archived row is hidden regardless of its
-    # lifecycle code.
+    # Independent of the soft-delete filter; the two compose.
     if not include_archived:
         stmt = stmt.where(Task.is_active.is_(True))
     if process_status is not None:
         stmt = stmt.where(Task.process_status == process_status)
     elif pending:
-        # Kanban #697: convenience shortcut for the Lead-bootstrap "list pending
-        # tasks" query. `elif` enforces precedence — explicit `process_status`
-        # wins (more specific); `pending` is silently ignored on conflict.
-        # Note: `pending=true` returns ps != 5; CANCELLED (ps=6) is also a
-        # "non-done" code, but cancelled work is dead-end and excluded below
-        # via the `include_cancelled` gate unless explicitly opted in.
+        # Kanban #697: `elif` enforces precedence — explicit `process_status`
+        # wins; `pending` is silently ignored on conflict. CANCELLED (ps=6) is
+        # excluded below unless opted in.
         stmt = stmt.where(Task.process_status != TaskStatus.DONE)
-    # Kanban #854: cancelled rows (process_status=6) are excluded by default
-    # — parity with soft-delete semantics for dead-end work. Skipped when an
-    # explicit `process_status=N` filter is provided (the explicit filter is
-    # more specific and wins, same precedence pattern as `pending`).
+    # Kanban #854: cancelled rows excluded by default — parity with soft-delete
+    # semantics. Skipped when explicit `process_status=N` is provided.
     if process_status is None and not include_cancelled:
         stmt = stmt.where(Task.process_status != TaskStatus.CANCELLED)
     if assigned_role is not None:
@@ -598,18 +600,32 @@ async def get_next_autorun(
     if session_project is not None and session_project.hitl_timeout_hours is not None:
         timeout_hours = session_project.hitl_timeout_hours
         threshold = timedelta(hours=timeout_hours)
-        paused_q = select(Task).where(
-            Task.project_id == project_id,
-            Task.status == RecordStatus.ACTIVE,
-            Task.halt_reason.in_(("question", "decision")),
-            Task.process_status == TaskStatus.BLOCKED,
+        # #2500: skip_locked so concurrent polls each lock a distinct subset of
+        # un-stamped rows; a second caller skips any row already locked by the
+        # first, eliminating the double-stamp + duplicate-push race.
+        # shortcut: SELECT-then-stamp rather than bulk-UPDATE-RETURNING; the
+        # existing `(now - updated_at) > threshold` guard makes concurrent
+        # re-entry idempotent even on the (unlikely) window after the lock
+        # releases. Upgrade path: replace with bulk UPDATE...RETURNING if
+        # HITL-timeout lanes grow large (>1k simultaneous BLOCKED tasks).
+        paused_q = (
+            select(Task)
+            .where(
+                Task.project_id == project_id,
+                Task.status == RecordStatus.ACTIVE,
+                Task.halt_reason.in_(("question", "decision")),
+                Task.process_status == TaskStatus.BLOCKED,
+            )
+            .with_for_update(skip_locked=True)
         )
         paused = (await session.execute(paused_q)).scalars().all()
         stamped_any = False
+        hitl_timeout_halted: list[tuple[int, str]] = []  # Kanban #1841: (task_id, title)
         for t in paused:
             if t.updated_at is not None and (now - t.updated_at) > threshold:
                 t.halt_reason = "hitl_timeout"
                 stamped_any = True
+                hitl_timeout_halted.append((t.id, t.title or ""))
                 logger.warning(
                     "task %d HITL timeout exceeded (project %d, elapsed_h=%.1f, "
                     "limit_h=%d) — halt_reason stamped 'hitl_timeout'",
@@ -620,6 +636,28 @@ async def get_next_autorun(
                 )
         if stamped_any:
             await session.commit()
+            # Kanban #1841 — fire task_halted push per newly-halted task.
+            # Defensive try/except: push failure must never break next-autorun.
+            from src.services.notification_router import deliver as _push_deliver_nar
+            for _htid, _httitle in hitl_timeout_halted:
+                try:
+                    await _push_deliver_nar(
+                        task_id=_htid,
+                        payload={
+                            "title": f"Task halted: {_httitle}",
+                            "body": "hitl_timeout",
+                            "url": f"/tasks/{_htid}",
+                        },
+                        kind="web_push",
+                        event_kind="task_halted",
+                        session=session,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "#1841 task_halted push failed for hitl_timeout task_id=%d; "
+                        "next-autorun stands",
+                        _htid,
+                    )
 
     # Alias for the blocker row so we can outerjoin Task → blocker Task.
     blocker = aliased(Task)
@@ -628,16 +666,24 @@ async def get_next_autorun(
     # Highest-priority runnable TODO task: auto_pickup or auto_headless,
     # not halted, not blocked by an in-progress/todo blocker,
     # and scheduled_at is either unset or already reached (Kanban #1972).
+    # #2500: skip_locked so at most one concurrent poll stamps halt_reason on
+    # the candidate row; a second caller skips a locked candidate and either
+    # gets None or its own distinct candidate (idempotent: if budget is
+    # exceeded, that row is also halted, which is correct behavior).
     next_task_stmt = (
         select(Task)
         .outerjoin(blocker, Task.blocked_by == blocker.id)
         .where(
             Task.project_id == project_id,
             Task.status == RecordStatus.ACTIVE,
+            # process_status=8 ('halted-pending-user', #1839) is structurally
+            # excluded from auto-pickup by this TODO-only filter (AC1) — no
+            # separate ps=8 clause needed, and the halt_reason filter below is
+            # untouched (ps=8 is orthogonal to the #785 halt_reason flag).
             Task.process_status == TaskStatus.TODO,
             Task.run_mode.in_([TaskRunMode.AUTO_PICKUP, TaskRunMode.AUTO_HEADLESS]),
             Task.halt_reason.is_(None),
-            or_(Task.blocked_by.is_(None), blocker.process_status == TaskStatus.DONE),
+            or_(Task.blocked_by.is_(None), blocker.process_status.in_(_TERMINAL_BLOCKER_STATUSES)),
             or_(Task.scheduled_at.is_(None), Task.scheduled_at <= now),
         )
         .order_by(
@@ -646,6 +692,10 @@ async def get_next_autorun(
             Task.created_at.asc(),
         )
         .limit(1)
+        # #2500: of=Task locks ONLY the tasks row, not the outer-joined
+        # (nullable) blocker alias — PG rejects FOR UPDATE on the nullable
+        # side of an outer join (asyncpg FeatureNotSupportedError) otherwise.
+        .with_for_update(skip_locked=True, of=Task)
     )
     next_task_row = (await session.execute(next_task_stmt)).scalars().first()
 
@@ -667,18 +717,42 @@ async def get_next_autorun(
         verdict = await check_budget(session, project_id)
         if verdict.hard_halt:
             halt_msg = f"budget_exceeded:{verdict.exceeded_cap}"
+            # Capture before commit expiry (Kanban #1841 push needs these after commit).
+            _budget_halt_task_id = next_task_row.id
+            _budget_halt_task_title = next_task_row.title or ""
             next_task_row.halt_reason = halt_msg
             await session.commit()
             logger.warning(
                 "budget_hard_halt: project=%d task=%d cap=%s "
                 "daily_pct=%s monthly_pct=%s total_pct=%s",
                 project_id,
-                next_task_row.id,
+                _budget_halt_task_id,
                 verdict.exceeded_cap,
                 verdict.daily_pct,
                 verdict.monthly_pct,
                 verdict.total_pct,
             )
+            # Kanban #1841 — push notification for budget-halted task.
+            # Defensive try/except: push failure must never break next-autorun.
+            try:
+                from src.services.notification_router import deliver as _push_deliver_budget
+                await _push_deliver_budget(
+                    task_id=_budget_halt_task_id,
+                    payload={
+                        "title": f"Task halted: {_budget_halt_task_title}",
+                        "body": halt_msg,
+                        "url": f"/tasks/{_budget_halt_task_id}",
+                    },
+                    kind="web_push",
+                    event_kind="task_halted",
+                    session=session,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "#1841 task_halted push failed for budget_halt task_id=%d; "
+                    "next-autorun stands",
+                    _budget_halt_task_id,
+                )
             next_task_row = None
         elif verdict.soft_warn:
             logger.warning(
@@ -692,7 +766,17 @@ async def get_next_autorun(
             )
 
     # --- resume_tasks --------------------------------------------------------
-    # HALTED tasks (halt_reason IS NOT NULL) whose blocker question/decision is DONE.
+    # HALTED tasks (halt_reason IS NOT NULL) whose blocker is DONE (ps=5) — intentionally
+    # DONE-only, not _TERMINAL_BLOCKER_STATUSES.  A halted task resumes only when its
+    # blocker actually completed and provided an answer; a CANCELLED blocker provides
+    # nothing, so auto-resuming a HITL-halted task against a cancelled question would
+    # re-run it with no input.  When a blocker is cancelled the halted task is left
+    # halted for manual attention.
+    # Context: #2422 broadened next-autorun readiness (~:658) and blocked-count (~:762)
+    # to treat CANCELLED as terminal (correct — a cancelled blocker no longer HOLDS a
+    # TODO task from running).  The pre-push review found that applying the same
+    # broadening to resume_stmt was incorrect; this predicate is intentionally reverted
+    # to == DONE while the other two sites retain _TERMINAL_BLOCKER_STATUSES.
     # Tasks halted without a blocker (old-style "Option A/B" halts) are excluded —
     # they have no resolved answer and require manual unhalt by the user.
     resume_stmt = (
@@ -706,6 +790,7 @@ async def get_next_autorun(
             blocker.process_status == TaskStatus.DONE,
         )
         .order_by(Task.priority.desc(), Task.created_at.asc())
+        .limit(50)  # app-side guard — Kanban #2505
     )
     resume_rows = list((await session.execute(resume_stmt)).scalars().all())
 
@@ -731,7 +816,7 @@ async def get_next_autorun(
     question_rows = list((await session.execute(questions_stmt)).scalars().all())
 
     # --- blocked_count -------------------------------------------------------
-    # Count of active TODO/IN_PROGRESS tasks that have a non-DONE blocker.
+    # Count of active TODO/IN_PROGRESS tasks that have a non-terminal blocker (non-DONE, non-CANCELLED; #2422).
     blocked_stmt = (
         select(func.count())
         .select_from(Task)
@@ -741,7 +826,7 @@ async def get_next_autorun(
             Task.status == RecordStatus.ACTIVE,
             Task.process_status.in_([TaskStatus.TODO, TaskStatus.IN_PROGRESS]),
             Task.blocked_by.is_not(None),
-            blocker.process_status != TaskStatus.DONE,
+            blocker.process_status.notin_(_TERMINAL_BLOCKER_STATUSES),
         )
     )
     blocked_count = (await session.execute(blocked_stmt)).scalar_one()
@@ -758,7 +843,7 @@ async def get_next_autorun(
 async def list_task_summaries(
     session_project_id: int = Depends(require_project_id_header),
     process_status: int | None = Query(
-        default=None, ge=1, le=6, description="Filter by tasks.process_status (1..6, 6=CANCELLED)"
+        default=None, ge=1, le=8, description="Filter by tasks.process_status (1..8; 7 reserved/unused, 8=HALTED_PENDING_USER)"
     ),
     milestone_id: int | None = Query(
         default=None,
@@ -813,7 +898,6 @@ async def list_task_summaries(
     mode and the operator_gate / due-range / parent filters are intentionally
     out of scope — use `list_tasks` for those. Read-only; no side effects.
     """
-    # Kanban #695: project scoping comes from the X-Project-Id header.
     stmt = select(Task).where(Task.project_id == session_project_id)
     if not include_deleted:
         stmt = stmt.where(Task.status == RecordStatus.ACTIVE)
@@ -829,7 +913,6 @@ async def list_task_summaries(
     # process_status filter is provided — more specific wins).
     if process_status is None and not include_cancelled:
         stmt = stmt.where(Task.process_status != TaskStatus.CANCELLED)
-    # Kanban #1868: filter to a single milestone's tasks.
     if milestone_id is not None:
         stmt = stmt.where(Task.milestone_id == milestone_id)
     stmt = stmt.order_by(Task.id.asc()).limit(limit).offset(offset)
@@ -888,8 +971,7 @@ async def get_task(
     task = await get_or_404(
         session, Task, detail=f"Task id={task_id} not found", id=task_id
     )
-    # Kanban #695: cross-check the session-bound project against the row.
-    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)  # #695
     return task
 
 
@@ -1025,16 +1107,45 @@ async def _enforce_blocker_order_constraint(
     if target_process_status != TaskStatus.TODO:
         return
 
+    # #2501 perf: pre-fetch up to N+1 blocker nodes in ONE round-trip using
+    # a recursive CTE, build an id→Task dict, then walk it in Python.
+    # Removes up to N sequential session.get() round-trips. Cycle-detection
+    # and depth-cap behavior are preserved exactly via the same for-else loop.
+    from sqlalchemy import text as _sa_text  # SELECT only — not DML
+
+    # Collect chain IDs via recursive CTE (depth-limited to N+1 rows).
+    # shortcut: text() for this SELECT-only recursive walk; the loop below
+    # is pure Python over the pre-fetched dict. Upgrade path: ORM
+    # recursive CTE (union_all on aliased Task) if column names change.
+    chain_id_rows = (
+        await session.execute(
+            _sa_text(
+                "WITH RECURSIVE bc(id, blocked_by, depth) AS ("
+                "  SELECT id, blocked_by, 1 FROM tasks WHERE id = :start_id"
+                "  UNION ALL"
+                "  SELECT t.id, t.blocked_by, bc.depth + 1"
+                "  FROM tasks t JOIN bc ON t.id = bc.blocked_by"
+                "  WHERE bc.depth <= :max_depth"
+                ") SELECT id FROM bc"
+            ),
+            {"start_id": target_blocked_by, "max_depth": _REORDER_BLOCKER_CHAIN_DEPTH + 1},
+        )
+    ).fetchall()
+    chain_ids = [r[0] for r in chain_id_rows]
+
+    # Batch-fetch all chain nodes in one ORM SELECT; build id→Task map.
+    task_map: dict[int, Task] = {}
+    if chain_ids:
+        chain_rows = (
+            await session.execute(select(Task).where(Task.id.in_(chain_ids)))
+        ).scalars().all()
+        task_map = {t.id: t for t in chain_rows}
+
     cursor: int | None = target_blocked_by
-    # Range is N+2 (not N+1) so a chain of EXACTLY N blockers terminates via
-    # the `cursor is None: break` path on iteration N+1 instead of falsely
-    # tripping the for-else. The constant N is the budget for "blockers
-    # walked"; the +1 sentinel iteration exists solely to break cleanly
-    # when the chain ends at the budget edge (WARN-3 fix).
     for depth in range(1, _REORDER_BLOCKER_CHAIN_DEPTH + 2):
         if cursor is None:
             break
-        blocker = await session.get(Task, cursor)
+        blocker = task_map.get(cursor)
         if blocker is None:
             break
         # Only check when the blocker shares the lane AND has a sort_order.
@@ -1067,30 +1178,53 @@ async def _materialize_null_sort_orders_in_lane(
     """#772 — first-reorder densifier. Fills NULL sort_orders in the lane with
     floor floats starting at (max non-null + 1.0). Existing non-null values are
     preserved. `exclude_task_id` skips a row about to be set by the caller.
+
+    #2501 perf: replaced full-lane ORM fetch + Python loop with a single
+    CTE-based UPDATE that computes floor + ROW_NUMBER() in SQL. Semantics
+    are identical: the ORDER BY (sort_order ASC NULLS LAST, created_at ASC)
+    and starting floor (max non-null + 1.0, default 1.0) are preserved.
     """
-    stmt = (
-        select(Task)
-        .where(
-            Task.project_id == project_id,
-            Task.process_status == process_status,
-            Task.status == RecordStatus.ACTIVE,
+    lane_where = [
+        Task.project_id == project_id,
+        Task.process_status == process_status,
+        Task.status == RecordStatus.ACTIVE,
+    ]
+    # Scalar subquery: max existing non-null sort_order in the lane, or 0.0.
+    floor_subq = (
+        select(func.coalesce(func.max(Task.sort_order), 0.0))
+        .where(*lane_where)
+        .scalar_subquery()
+    )
+    # CTE: rank only the NULL-sort_order rows (excluding exclude_task_id)
+    # using the same ordering the Python loop observed.
+    null_where = [*lane_where, Task.sort_order.is_(None)]
+    if exclude_task_id is not None:
+        null_where.append(Task.id != exclude_task_id)
+    from sqlalchemy.dialects.postgresql import DOUBLE_PRECISION as _DP
+
+    ranked_cte = (
+        select(
+            Task.id,
+            (
+                floor_subq
+                + func.cast(
+                    func.row_number().over(
+                        order_by=[Task.sort_order.asc().nulls_last(), Task.created_at.asc()]
+                    ),
+                    _DP(),
+                )
+            ).label("new_so"),
         )
-        .order_by(Task.sort_order.asc().nulls_last(), Task.created_at.asc())
+        .where(*null_where)
+        .cte("_mat_ranked")
     )
-    result = await session.execute(stmt)
-    rows = list(result.scalars().all())
-    # Determine the starting floor: max existing non-null sort_order in lane.
-    existing_max = max(
-        (r.sort_order for r in rows if r.sort_order is not None),
-        default=0.0,
+    upd = (
+        update(Task)
+        .where(Task.id == ranked_cte.c.id)
+        .values(sort_order=ranked_cte.c.new_so)
+        .execution_options(synchronize_session=False)
     )
-    next_value = existing_max + 1.0
-    for row in rows:
-        if exclude_task_id is not None and row.id == exclude_task_id:
-            continue
-        if row.sort_order is None:
-            row.sort_order = next_value
-            next_value += 1.0
+    await session.execute(upd)
 
 
 async def _redensify_lane(
@@ -1213,11 +1347,19 @@ async def reorder_task(
         process_status=task.process_status,
         exclude_task_id=task_id,
     )
-    # NOTE: the materializer above mutates `Task.sort_order` on the SAME
-    # ORM-managed instances in the session's identity map; before_anchor /
-    # after_anchor reflect the new floor floats directly. Do NOT call
-    # session.refresh() here — that would re-read from the DB and clobber
-    # the pre-commit mutation.
+    # NOTE (#2501 CTE-bulk-UPDATE path): the materializer issues a CTE UPDATE
+    # with synchronize_session=False, which writes to the DB within this txn
+    # but does NOT update already-loaded ORM instances in the identity map.
+    # before_anchor / after_anchor were loaded via session.get() BEFORE the
+    # bulk UPDATE ran, so they still carry sort_order=None. Refresh them so
+    # _compute_sort_order() sees the materialized values. A SELECT within the
+    # same transaction sees the UPDATE; no commit needed first.
+    # Do NOT call session.refresh() on instances that already had a non-null
+    # sort_order — that path was never NULL-filled so no refresh is needed.
+    if before_anchor is not None and before_anchor.sort_order is None:
+        await session.refresh(before_anchor, ["sort_order"])
+    if after_anchor is not None and after_anchor.sort_order is None:
+        await session.refresh(after_anchor, ["sort_order"])
 
     # Both anchors → average. before only → below before_id. after only → above after_id (#772)
     async def _compute_sort_order() -> float:
@@ -1694,14 +1836,12 @@ async def create_task(
         payload_dict["acceptance_criteria"] = [
             c.model_dump(mode="json") for c in payload.acceptance_criteria
         ]
-    # same #801 pattern
-    payload_dict["subagent_models"] = [
+    payload_dict["subagent_models"] = [  # #801
         e.model_dump(mode="json") for e in payload.subagent_models
     ]
-    # same #801 pattern
-    if payload_dict.get("question_payload") is not None:
+    if payload_dict.get("question_payload") is not None:  # #801
         payload_dict["question_payload"] = payload.question_payload.model_dump(mode="json")
-    # #801 pattern — resume_context: re-serialize from payload when no template.
+    # #801 — resume_context: re-serialize from payload when no template.
     if _action_template is None and payload_dict.get("resume_context") is not None:
         payload_dict["resume_context"] = payload.model_dump(mode="json")["resume_context"]
 
@@ -1786,8 +1926,7 @@ async def update_task(
     task = await get_or_404(
         session, Task, detail=f"Task id={task_id} not found", id=task_id
     )
-    # Kanban #695: cross-check the session-bound project against the row.
-    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)  # #695
 
     # Kanban #1128: optimistic locking via If-Unmodified-Since header.
     # If the header is present, compare the client's baseline against the
@@ -1842,12 +1981,11 @@ async def update_task(
     # PATCH" check in the post-commit hooks is accurate.
     _pre_patch_process_status = task.process_status
     _pre_patch_interaction_kind = task.interaction_kind
+    _pre_patch_halt_reason = task.halt_reason  # Kanban #1841 — task_halted hook
 
     updates = payload.model_dump(exclude_unset=True)
 
-    # #801 — model_dump(mode='json') coercion for JSONB columns. Kanban #1682
-    # Phase 1 dedup: extracted to _apply_jsonb_serialization (defined above).
-    _apply_jsonb_serialization(payload, updates)
+    _apply_jsonb_serialization(payload, updates)  # #801 / Kanban #1682
 
     # Kanban #1857 / #1852 (Phase 1) — operator-only AC attribution gate.
     # If this PATCH sets any criterion's `verified_by` to a reserved
@@ -2032,6 +2170,35 @@ async def update_task(
             # iteration exists solely to break cleanly when the chain ends
             # (or cycle closes) at the budget edge. Mirrors the
             # _enforce_blocker_order_constraint fix (#772 / Kanban #820).
+            #
+            # #2501 perf: pre-fetch the chain in one recursive-CTE SELECT,
+            # build id→Task dict, walk in Python. Same cycle/depth semantics.
+            from sqlalchemy import text as _sa_text_cycle  # SELECT only — not DML
+
+            _cycle_chain_rows = (
+                await session.execute(
+                    _sa_text_cycle(
+                        "WITH RECURSIVE bc(id, blocked_by, depth) AS ("
+                        "  SELECT id, blocked_by, 1 FROM tasks WHERE id = :start_id"
+                        "  UNION ALL"
+                        "  SELECT t.id, t.blocked_by, bc.depth + 1"
+                        "  FROM tasks t JOIN bc ON t.id = bc.blocked_by"
+                        "  WHERE bc.depth <= :max_depth"
+                        ") SELECT id FROM bc"
+                    ),
+                    {"start_id": new_blocked_by, "max_depth": _BLOCKED_BY_MAX_CHAIN_DEPTH + 1},
+                )
+            ).fetchall()
+            _cycle_chain_ids = [r[0] for r in _cycle_chain_rows]
+            _cycle_task_map: dict[int, Task] = {}
+            if _cycle_chain_ids:
+                _cycle_fetched = (
+                    await session.execute(
+                        select(Task).where(Task.id.in_(_cycle_chain_ids))
+                    )
+                ).scalars().all()
+                _cycle_task_map = {t.id: t for t in _cycle_fetched}
+
             cursor: int | None = blocker.blocked_by
             for depth in range(1, _BLOCKED_BY_MAX_CHAIN_DEPTH + 2):
                 if cursor is None:
@@ -2041,7 +2208,7 @@ async def update_task(
                         status_code=422,
                         detail=f"blocked_by {new_blocked_by} would create a cycle (depth {depth})",
                     )
-                next_row = await session.get(Task, cursor)
+                next_row = _cycle_task_map.get(cursor)
                 if next_row is None:
                     break
                 cursor = next_row.blocked_by
@@ -2283,6 +2450,11 @@ async def update_task(
         if "question_payload" in updates
         else task.question_payload
     )
+    _notify_new_halt_reason = (  # Kanban #1841 — resolved post-PATCH halt_reason value
+        updates.get("halt_reason")
+        if "halt_reason" in updates
+        else task.halt_reason
+    )
 
     # Kanban #1007 (AC2): when a decision task is being flipped to DONE via PATCH,
     # enforce that chosen_id is set and matches an option id. This mirrors the
@@ -2396,27 +2568,23 @@ async def update_task(
     # =====================================================================
     # POST-PATCH cross-resource side-effect hooks (4 sites below)
     # ---------------------------------------------------------------------
-    # All 4 hooks below follow the codified pattern in
-    # `context/standards/fastapi/atomic-mutations.md` § "Post-PATCH
-    # cross-resource side effects":
+    # All 4 hooks follow `context/standards/fastapi/atomic-mutations.md`
+    # § "Post-PATCH cross-resource side effects":
     #
-    #   (1) Kanban #1004 — handoff_template spawn (in-transaction, line ~1823)
-    #   (2) Kanban #832  — auto-unblock dependents       (line ~1895)
-    #   (3) Kanban #1211 — audit-flag pipeline           (line ~1905)
-    #   (4) Kanban #955.B — push-notification event hooks (line ~1958)
+    #   (1) Kanban #1004 — handoff_template spawn (in-transaction)
+    #   (2) Kanban #832  — auto-unblock dependents
+    #   (3) Kanban #1211 — audit-flag pipeline
+    #   (4) Kanban #955.B — push-notification event hooks
     #
-    # Shared invariants per the standard:
+    # Shared invariants:
     # - Transition detection via "`field` in updates AND old != new" → gives
     #   idempotent re-PATCH semantics for free.
-    # - In-transaction hooks (#1004) fire BEFORE session.commit() so atomic
-    #   rollback works; errors raise HTTPException, not swallow.
-    # - Post-commit hooks (#832, #1211, #955.B) fire AFTER the durable write
-    #   so any payload they ship reflects the persisted state.
+    # - In-transaction hooks (#1004) fire BEFORE session.commit(); errors
+    #   raise HTTPException (not swallow).
+    # - Post-commit hooks (#832, #1211, #955.B) fire AFTER the durable write.
     #
-    # If you're adding a 5th hook here, pattern-match the shape exactly —
-    # don't invent a new style. If the pattern has structurally diverged
-    # at n>=6 sites, that's the point to extract a mini-framework (see the
-    # "Generalizes to" section of the standards doc).
+    # Adding a 5th hook: pattern-match this shape exactly. If the pattern
+    # diverges at n>=6 sites, extract a mini-framework (see standards doc).
     # =====================================================================
 
     # Kanban #1004: auto-handoff spawn hook. When this PATCH transitions
@@ -2459,6 +2627,21 @@ async def update_task(
             # back (we haven't commit'd yet).
             await spawn_child_from_handoff(session, task)
 
+    # Kanban #832: auto-unblock dependents when a question/decision task is
+    # marked DONE. Folded into the main transaction (#2501) so the task
+    # DONE-flip and the dependent unblocks are all-or-nothing — a crash
+    # between the two commits can no longer leave a DONE parent whose
+    # dependents are still blocked. auto_unblock_dependents mutates ORM
+    # objects only (no commit inside); IntegrityError on the combined commit
+    # is still translated below (same handler).
+    if (
+        _resolved_ps_for_done == TaskStatus.DONE
+        and _resolved_interaction_kind_for_done in (
+            TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION
+        )
+    ):
+        await auto_unblock_dependents(session, task_id)
+
     try:
         await session.commit()
     except IntegrityError as exc:
@@ -2470,26 +2653,20 @@ async def update_task(
         detail = _translate_task_integrity_error(exc, context="update")
         raise HTTPException(status_code=400, detail=detail) from exc
 
-    # Kanban #832: auto-unblock dependents when a question/decision task is marked DONE.
-    if (
-        _resolved_ps_for_done == TaskStatus.DONE
-        and _resolved_interaction_kind_for_done in (
-            TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION
-        )
-    ):
-        await auto_unblock_dependents(session, task_id)
-        await session.commit()  # second commit for the unblock writes
-
     # Kanban #1211 (GOV3 AC#3): post-PATCH hook — if the patched task is an
     # audit task (task_type='audit') that just transitioned to DONE, invoke
     # the flag pipeline. The hook is surgical: it only fires on the
     # DONE-flip of an 'audit' task, leaving every other PATCH path
     # unaffected.
     #
-    # Why here (not in the audit-task DONE flow above): the audit-task
-    # transition is a regular PATCH, not a question/decision answer. We
-    # detect it post-commit so the audit_report (which the same PATCH may
-    # have written) is already persisted before the helper reads it.
+    # Why isolated from the main commit (#2501): apply_flag_from_audit_report
+    # may call pause_project which commits internally; folding it into the
+    # main tx would silently split the boundary anyway. Keeping it isolated
+    # preserves the existing rollback semantics (flag failure rolls back flag
+    # side effects; audit-task DONE flip already landed). The audit_report
+    # written by this same PATCH is visible to session.get() as the
+    # in-session dirty object — the helper does not need the value to be
+    # committed before reading it.
     #
     # Errors from apply_flag_from_audit_report are LOGGED but NOT raised —
     # an audit-flag pipeline failure must not crash the audit-task DONE
@@ -2614,6 +2791,29 @@ async def update_task(
                 },
                 kind="web_push",
                 event_kind="task_failed",
+                session=session,
+            )
+
+        # Kanban #1841 — task_halted hook: fires when halt_reason transitions
+        # NULL → non-NULL in this PATCH. Independent of done/failed branches
+        # (a halt PATCH sets halt_reason, not ps=5/6 — defensive `elif` is not
+        # used here so a pathological PATCH that simultaneously sets
+        # halt_reason AND ps=5/6 fires both; in practice that never happens
+        # through the normal Lead API usage pattern).
+        if (
+            "halt_reason" in updates
+            and _notify_new_halt_reason is not None
+            and _pre_patch_halt_reason is None
+        ):
+            await _push_deliver(
+                task_id=task_id,
+                payload={
+                    "title": f"Task halted: {_notify_task_title}",
+                    "body": str(_notify_new_halt_reason),
+                    "url": f"/tasks/{task_id}",
+                },
+                kind="web_push",
+                event_kind="task_halted",
                 session=session,
             )
     except Exception:  # noqa: BLE001 — defensive: push hook failure never crashes PATCH
@@ -3040,7 +3240,6 @@ async def _decide_legacy_1007(
     )
     assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
 
-    # Guard: wrong interaction kind.
     if task.interaction_kind != TaskInteractionKind.DECISION:
         raise HTTPException(
             status_code=422,
@@ -3050,14 +3249,12 @@ async def _decide_legacy_1007(
             ),
         )
 
-    # Guard: already decided.
     if task.process_status == TaskStatus.DONE:
         raise HTTPException(
             status_code=409,
             detail=f"Task id={task_id} is already DONE",
         )
 
-    # Validate chosen_id against the existing option list.
     try:
         validate_decision_payload({
             **(task.question_payload or {}),
@@ -3066,7 +3263,6 @@ async def _decide_legacy_1007(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    # Merge decision fields into question_payload.
     now_utc = datetime.now(timezone.utc)
     updated_payload = {
         **(task.question_payload or {}),
@@ -3077,14 +3273,12 @@ async def _decide_legacy_1007(
     }
     task.question_payload = updated_payload
 
-    # Flip to DONE + stamp timestamps.
     task.process_status = TaskStatus.DONE
     task.completed_at = func.now()
     task.updated_at = func.now()
 
     await session.commit()
 
-    # Auto-unblock any tasks blocked by this decision task (mirrors the PATCH path).
     await auto_unblock_dependents(session, task_id)
     await session.commit()
 
@@ -3177,6 +3371,61 @@ async def set_task_cost_estimate(
     return task
 
 
+@router.post(
+    "/{task_id}/cost-forecast",
+    response_model=CostForecastRead,
+    status_code=http_status.HTTP_200_OK,
+)
+async def forecast_task_cost_endpoint(
+    task_id: int,
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+) -> CostForecastRead:
+    """Kanban #1304: PRE-run cost forecast for a task (before it is spawned).
+
+    Estimates USD cost + token breakdown from the task's text fields, a flat
+    role-brief proxy, and the sum of `est_cost_if_full.approx_tokens` over the
+    task's pinned resources (services/task_cost_estimator.forecast_task_cost).
+    Persists the result to `tasks.forecast_cost_usd` so the ±30% calibration
+    loop is measurable, then returns the operator-facing breakdown.
+
+    No request body in V1 — the model comes from `tasks.model_override` (or the
+    env default), not the wire. Same 404 guard as the cost-estimate handler.
+    """
+    task = await get_or_404(
+        session, Task, detail=f"Task id={task_id} not found", id=task_id
+    )
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+    if task.status != RecordStatus.ACTIVE:
+        raise HTTPException(status_code=400, detail="Task is not active")
+
+    # Pinned, non-deleted resources for this task. Pre-fetch here so
+    # forecast_task_cost stays a pure compute (same posture as estimate_task_cost
+    # taking a pre-fetched `runs` list).
+    resources = (
+        await session.scalars(
+            select(ProjectResource).where(
+                ProjectResource.task_id == task_id,
+                ProjectResource.status == RecordStatus.ACTIVE,
+            )
+        )
+    ).all()
+
+    result = forecast_task_cost(task, list(resources))
+
+    task.forecast_cost_usd = result["estimated_usd"]
+    task.updated_at = func.now()
+    await session.commit()
+    await session.refresh(task)
+
+    return CostForecastRead(
+        estimated_usd=result["estimated_usd"],
+        estimated_tokens=result["estimated_tokens"],
+        breakdown=result["breakdown"],
+        confidence=result["confidence"],
+    )
+
+
 @router.delete("/{task_id}", status_code=http_status.HTTP_204_NO_CONTENT)
 async def delete_task(
     task_id: int,
@@ -3189,8 +3438,7 @@ async def delete_task(
     task = await get_or_404(
         session, Task, detail=f"Task id={task_id} not found", id=task_id
     )
-    # Kanban #695: cross-check the session-bound project against the row.
-    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)  # #695
     # Idempotent: skip the no-op UPDATE so we don't write a redundant audit row.
     if task.status == RecordStatus.DELETED:
         return Response(status_code=http_status.HTTP_204_NO_CONTENT)

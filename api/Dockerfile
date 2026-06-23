@@ -27,6 +27,23 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends curl postgresql-client \
  && rm -rf /var/lib/apt/lists/*
 
+# Infisical CLI — opt-in (Kanban #2488). Off by default to keep the base image lean;
+# docker-compose.secrets.yml sets INSTALL_INFISICAL_CLI=true. ~40 MB when enabled.
+# CLI pinned to 0.43.96; supply-chain hardened (#2488 Phase 2): pinned .deb from
+# github.com/Infisical/cli v0.43.96 release + SHA256 verified before install.
+# To update: fetch the new checksums.txt from the Infisical/cli GitHub release, replace
+# INFISICAL_DEB_SHA256 below, and update the version strings in the URLs.
+ARG INSTALL_INFISICAL_CLI=false
+RUN if [ "$INSTALL_INFISICAL_CLI" = "true" ]; then \
+      INFISICAL_DEB_URL="https://github.com/Infisical/cli/releases/download/v0.43.96/infisical_0.43.96_linux_amd64.deb" \
+   && INFISICAL_DEB_SHA256="bf563a5b9f1ac5aac29aeeab7c45d455ff18f175f01aea144743768271f1d10c" \
+   && curl -fsSL -o /tmp/infisical.deb "$INFISICAL_DEB_URL" \
+   && echo "${INFISICAL_DEB_SHA256}  /tmp/infisical.deb" | sha256sum -c - \
+   && (dpkg -i /tmp/infisical.deb || apt-get install -y -f) \
+   && rm -f /tmp/infisical.deb \
+   && rm -rf /var/lib/apt/lists/* ; \
+    fi
+
 # Copy the package layout first. setuptools.packages.find needs src/ and
 # scripts/ visible at install time (see api/pyproject.toml).
 COPY . /repo/api/

@@ -32,16 +32,15 @@ export function ConnectionStateBadge({ state, lastEventAt }: Props) {
 
   return (
     <span
-      className="inline-flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400"
+      className="inline-flex items-center"
       title={tooltip}
       data-connection-state={state}
       data-connection-badge
     >
       <span
-        aria-hidden
+        aria-label={LABEL[state]}
         className={`inline-block h-2 w-2 rounded-full ${DOT_CLASS[state]}`}
       />
-      <span className="tabular-nums">{LABEL[state]}</span>
     </span>
   );
 }

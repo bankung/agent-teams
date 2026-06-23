@@ -4,9 +4,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import {
+  costForecast,
   createTask,
+  deleteTask,
   listMilestones,
   listTaskTemplates,
+  patchTask,
   HttpError,
   type AcceptanceCriterion,
   type ActionTemplateRead,
@@ -27,15 +30,13 @@ import {
 } from "@/lib/constants";
 import { filterRoleOptions } from "@/lib/enabledRoles";
 import { extractErrorMessage } from "@/lib/errors";
+import { useAsyncData } from "@/lib/useAsyncData";
 import { ActionTemplatePicker } from "./ActionTemplatePicker";
 import { TaskTemplatePicker } from "./TaskTemplatePicker";
-import { DatePicker } from "./DatePicker";
 import { PauseOverrideBlock } from "./PauseOverrideBlock";
-import { HandoffTemplatePicker } from "./HandoffTemplatePicker";
 import { Icon } from "./Icon";
-import { MilestoneCombobox } from "./MilestoneCombobox";
 import { ModalShell } from "./ModalShell";
-import { ModelTierSelect } from "./ModelTierSelect";
+import { TaskFormFields } from "./TaskFormFields";
 
 // Trigger button + dialog for POST /api/tasks (Kanban #855 FE).
 // Visual pattern mirrors NewProjectModal: zinc-bordered panel, focus on first
@@ -51,6 +52,11 @@ import { ModelTierSelect } from "./ModelTierSelect";
 // hook on Board.tsx routes to router.refresh(). The successful POST also
 // triggers router.refresh() locally so the user sees the new card even on
 // SSE reconnect / cold-start.
+
+// #1304 — LOCKED sample directive appended to the task description when the
+// operator picks "Use Sample" on the cost-gate confirm modal. Generic, NOT a
+// per-file substitution: it caps the data the run reads, lowering the cost.
+const SAMPLE_DIRECTIVE = "\n\n[Cost-saver] Use first 100 rows of attached files only.";
 
 type LaneOption = { value: TaskStatusValue; label: string };
 
@@ -108,7 +114,6 @@ function deriveFromTemplate(
   };
 }
 
-
 type Props = {
   projectId: number;
   // #7 §A AC#3 — per-project role whitelist (project.config.enabled_roles).
@@ -133,7 +138,6 @@ type Props = {
   // restores this initial value rather than blanking it.
   initialDueDate?: string;
 };
-
 
 export function NewTaskModal({
   projectId,
@@ -167,6 +171,16 @@ export function NewTaskModal({
   const [blockedBy, setBlockedBy] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // #1304 — cost-forecast gate. Non-null when the post-create forecast exceeded
+  // the project ceiling: holds the created task id (so the three confirm buttons
+  // can act on it) + the forecast USD (rendered in the modal copy). `gateBusy`
+  // disables the buttons while Use-Sample's PATCH / Cancel's DELETE is in flight.
+  const [forecastGate, setForecastGate] = useState<{
+    taskId: number;
+    estimatedUsd: number;
+  } | null>(null);
+  const [gateBusy, setGateBusy] = useState(false);
+  const [gateError, setGateError] = useState<string | null>(null);
   // #1238 GOV3 — per-task pause override (only meaningful when isProjectPaused).
   const [allowDuringPause, setAllowDuringPause] = useState(false);
   const [allowDuringPauseReason, setAllowDuringPauseReason] = useState("");
@@ -192,7 +206,8 @@ export function NewTaskModal({
   // GLOBAL /api/task-templates surface; `selectedTemplateId` tracks the chosen
   // row; `placeholderValues` holds the live {{key}} inputs; `acceptanceCriteria`
   // is the editable AC list seeded from the template (also sent on submit).
-  const [templates, setTemplates] = useState<TaskTemplateRead[]>([]);
+  // #2492 — the fetch (was a manual fetch-in-effect) now routes through
+  // useAsyncData; see the useAsyncData call below `titleInputRef`.
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(
     null,
   );
@@ -237,30 +252,38 @@ export function NewTaskModal({
 
   // #1310 — load the team's task templates when the modal opens. GLOBAL
   // endpoint (no X-Project-Id). Failure degrades to [] (manual entry only) —
-  // a template-list outage must NOT block task creation. When the project /
-  // team is unknown, skip the fetch and show manual-entry only.
-  useEffect(() => {
-    if (!open) return;
-    const team = project?.team;
-    if (!team) {
-      setTemplates([]);
-      return;
-    }
-    let cancelled = false;
-    listTaskTemplates(team, { limit: 200 })
-      .then((rows) => {
-        if (!cancelled) setTemplates(rows);
-      })
-      .catch(() => {
-        if (!cancelled) setTemplates([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, project?.team]);
+  // a template-list outage must NOT block task creation. When the modal is
+  // closed or the project / team is unknown, the fetcher returns [] so the
+  // picker shows manual-entry only.
+  // #2492 — fetch + cancel-guard via useAsyncData. On error `data` stays null →
+  // `templates` falls back to [] (the same silent degrade the old .catch did);
+  // refetches on open / team change because both are in the deps.
+  const { data: templatesData } = useAsyncData<TaskTemplateRead[]>(
+    () => {
+      const team = project?.team;
+      if (!open || !team) return Promise.resolve<TaskTemplateRead[]>([]);
+      return listTaskTemplates(team, { limit: 200 });
+    },
+    [open, project?.team],
+  );
+  const templates = templatesData ?? [];
 
   function closeModal() {
-    if (submitting) return;
+    // #1304 — while the cost gate is open it owns the interaction; a background
+    // ESC / backdrop-click must not tear the create modal out from under it.
+    if (submitting || forecastGate !== null) return;
+    setInternalOpen(false);
+    onExternalClose?.();
+    resetFields();
+  }
+
+  // #1304 — shared close used by the create success path AND the three cost-gate
+  // buttons. `refresh=true` re-fetches the board so the new (or sample-directed)
+  // task card appears; the Cancel path passes false (the task was soft-deleted,
+  // so router.refresh on the SSE row_changed already covers the removal). Always
+  // resets the form + tears down the gate.
+  function finishAndClose(refresh: boolean) {
+    if (refresh) router.refresh();
     setInternalOpen(false);
     onExternalClose?.();
     resetFields();
@@ -291,6 +314,10 @@ export function NewTaskModal({
     // it, so a "New task on this date" flow keeps the target day on re-open.
     setDueDate(initialDueDate ?? "");
     setError(null);
+    // #1304 — clear any in-flight cost gate so a re-open starts clean.
+    setForecastGate(null);
+    setGateBusy(false);
+    setGateError(null);
   }
 
   // #1340 — when an action template is picked, seed local form fields from
@@ -461,11 +488,33 @@ export function NewTaskModal({
     };
 
     try {
-      await createTask(projectId, body);
-      router.refresh();
-      setInternalOpen(false);
-      onExternalClose?.();
-      resetFields();
+      // Option-A flow (#1304): create the task FIRST, then forecast its cost.
+      const created = await createTask(projectId, body);
+      // Gate ceiling comes from the project (null/undefined = NO gate). Coerce
+      // through Number() so a Decimal-as-string payload still compares numerically.
+      const threshold =
+        project?.cost_forecast_threshold_usd == null
+          ? null
+          : Number(project.cost_forecast_threshold_usd);
+      if (threshold !== null) {
+        try {
+          const forecast = await costForecast(projectId, created.id);
+          const estUsd = Number(forecast.estimated_usd);
+          if (Number.isFinite(estUsd) && estUsd > threshold) {
+            // Over the ceiling: hold the modal open + raise the confirm sub-modal.
+            // The task already exists; the three buttons decide its fate.
+            setForecastGate({ taskId: created.id, estimatedUsd: estUsd });
+            setGateError(null);
+            return; // finally{} resets `submitting`; main modal stays mounted.
+          }
+        } catch {
+          // Forecast failed AFTER the task was created. Do NOT lose the task or
+          // trap the operator — fall through to the today's path (refresh +
+          // close). Ungated is the safe degraded behaviour (mirrors the
+          // template/milestone fetch-failure handling elsewhere in this modal).
+        }
+      }
+      finishAndClose(true);
     } catch (err: unknown) {
       if (err instanceof HttpError) {
         // #1238 GOV3 — 423 = paused-project gate. Render a toast with the
@@ -488,6 +537,54 @@ export function NewTaskModal({
       }
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  // #1304 — cost-gate "Run Full": keep the task exactly as created. Refresh +
+  // close (no extra network call).
+  function onGateRunFull() {
+    finishAndClose(true);
+  }
+
+  // #1304 — cost-gate "Use Sample": append the LOCKED sample directive to the
+  // task description (PATCH), then refresh + close. The base is the description
+  // the operator just submitted (local state), so the directive lands on top of
+  // exactly what was sent. A trailing-trim mirrors the create-body normalisation.
+  async function onGateUseSample() {
+    if (forecastGate === null || gateBusy) return;
+    setGateBusy(true);
+    setGateError(null);
+    try {
+      const base = description.trim();
+      const newDescription = base ? `${base}${SAMPLE_DIRECTIVE}` : SAMPLE_DIRECTIVE.trimStart();
+      await patchTask(projectId, forecastGate.taskId, {
+        description: newDescription,
+      });
+      finishAndClose(true);
+    } catch (err: unknown) {
+      // Leave the gate open so the operator can retry / pick another action; the
+      // task still exists (unmodified) — no data loss.
+      setGateError(extractErrorMessage(err, "Could not apply the sample directive"));
+    } finally {
+      setGateBusy(false);
+    }
+  }
+
+  // #1304 — cost-gate "Cancel": the task was already created in this flow, so
+  // soft-delete it (DELETE) before closing so the abandoned task doesn't linger
+  // on the board. No refresh arg (the DELETE emits a row_changed SSE that the
+  // Board's useRowChangedEvents hook already routes to router.refresh()).
+  async function onGateCancel() {
+    if (forecastGate === null || gateBusy) return;
+    setGateBusy(true);
+    setGateError(null);
+    try {
+      await deleteTask(projectId, forecastGate.taskId);
+      finishAndClose(false);
+    } catch (err: unknown) {
+      setGateError(extractErrorMessage(err, "Could not cancel the task"));
+    } finally {
+      setGateBusy(false);
     }
   }
 
@@ -536,25 +633,6 @@ export function NewTaskModal({
               disabled={submitting}
             />
 
-            <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-              Title <span className="text-red-600 dark:text-red-400">*</span>
-              <input
-                ref={titleInputRef}
-                type="text"
-                value={title}
-                onChange={(e) => {
-                  setTitle(e.target.value);
-                  if (error !== null) setError(null);
-                }}
-                placeholder="Short imperative summary"
-                autoComplete="off"
-                disabled={submitting}
-                aria-invalid={title.length > 0 && !titleValid}
-                className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
-                data-new-task-title
-              />
-            </label>
-
             {/* #1310 — Task Template picker (native <select>). Pre-fills
                 description + AC client-side. Empty-state note when the team has
                 no templates; manual entry below stays fully usable. */}
@@ -592,187 +670,95 @@ export function NewTaskModal({
                 </div>
               )}
 
-            <div className="mt-3 grid grid-cols-2 gap-3">
-              <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                Lane <span className="text-red-600 dark:text-red-400">*</span>
-                <select
-                  value={processStatus}
-                  onChange={(e) => {
-                    setProcessStatus(
-                      Number(e.target.value) as TaskStatusValue,
-                    );
-                    if (error !== null) setError(null);
-                  }}
-                  disabled={submitting}
-                  className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
-                  data-new-task-lane
-                >
-                  {LANE_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                Priority <span className="text-red-600 dark:text-red-400">*</span>
-                <select
-                  value={priority}
-                  onChange={(e) => {
-                    setPriority(Number(e.target.value) as TaskPriorityValue);
-                    if (error !== null) setError(null);
-                  }}
-                  disabled={submitting}
-                  className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
-                  data-new-task-priority
-                >
-                  {PRIORITY_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
-            {/* Wave B (#4) — task_type selector. 'feature' is the default;
-                'bug' triggers the red left-accent border on the board + ListView. */}
+            {/* Lane — NewTaskModal-only (AiTaskModal always files to TODO). */}
             <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-              Type <span className="text-red-600 dark:text-red-400">*</span>
+              Lane <span className="text-red-600 dark:text-red-400">*</span>
               <select
-                value={taskType}
+                value={processStatus}
                 onChange={(e) => {
-                  setTaskType(e.target.value as typeof taskType);
+                  setProcessStatus(Number(e.target.value) as TaskStatusValue);
                   if (error !== null) setError(null);
                 }}
                 disabled={submitting}
                 className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
-                data-new-task-type
+                data-new-task-lane
               >
-                <option value="feature">Feature</option>
-                <option value="bug">Bug</option>
-                <option value="chore">Chore</option>
-                <option value="docs">Docs</option>
-                <option value="refactor">Refactor</option>
-              </select>
-            </label>
-
-            <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-              Role <span className="font-normal text-zinc-400">(optional)</span>
-              <select
-                value={role === "" ? "" : String(role)}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setRole(v === "" ? "" : (Number(v) as TaskRoleValue));
-                  if (error !== null) setError(null);
-                }}
-                disabled={submitting}
-                className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
-                data-new-task-role
-              >
-                {visibleRoleOptions.map((o) => (
-                  <option key={String(o.value)} value={o.value}>
+                {LANE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
                     {o.label}
                   </option>
                 ))}
               </select>
             </label>
 
-            {/* #1677 — per-task model-tier override dropdown */}
-            <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-              Model tier{" "}
-              <span className="font-normal text-zinc-400">(optional)</span>
-              <ModelTierSelect
-                value={modelOverride ?? ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setModelOverride(
-                    v === "" ? null : (v as "haiku" | "sonnet" | "opus"),
-                  );
-                  if (error !== null) setError(null);
-                }}
-                disabled={submitting}
-                data-new-task-model-override
-              />
-            </label>
-
-            <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-              Blocked by{" "}
-              <span className="font-normal text-zinc-400">
-                (optional task id)
-              </span>
-              <input
-                type="number"
-                min={1}
-                step={1}
-                value={blockedBy}
-                onChange={(e) => {
-                  setBlockedBy(e.target.value);
-                  if (error !== null) setError(null);
-                }}
-                placeholder="e.g. 123"
-                disabled={submitting}
-                aria-invalid={blockedBy.length > 0 && !blockedByValid}
-                className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 font-mono text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
-                data-new-task-blocked-by
-              />
-            </label>
-
-            {/* #1868 — optional milestone picker + due date. */}
-            <div className="mt-3 grid grid-cols-2 gap-3">
-              <div className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                Milestone{" "}
-                <span className="font-normal text-zinc-400">(optional)</span>
-                <MilestoneCombobox
-                  value={milestoneId === "" ? null : milestoneId}
-                  onChange={(id) => {
-                    setMilestoneId(id === null ? "" : id);
-                    if (error !== null) setError(null);
-                  }}
-                  milestones={milestones}
-                  disabled={submitting}
-                  inputProps={{ "data-new-task-milestone": true }}
-                />
-              </div>
-              <div className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                Due date{" "}
-                <span className="font-normal text-zinc-400">(optional)</span>
-                <DatePicker
-                  value={dueDate}
-                  onChange={(v) => {
-                    setDueDate(v ?? "");
-                    if (error !== null) setError(null);
-                  }}
-                  disabled={submitting}
-                  inputProps={{ "data-new-task-due-date": true }}
-                />
-              </div>
-            </div>
-
-            <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-              Description{" "}
-              <span className="font-normal text-zinc-400">(optional)</span>
-              <textarea
-                value={description}
-                onChange={(e) => {
-                  setDescription(e.target.value);
-                  setDescriptionDirty(true);
-                  if (error !== null) setError(null);
-                }}
-                placeholder="Markdown supported"
-                rows={4}
-                disabled={submitting}
-                className="mt-1 block w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
-                data-new-task-description
-              />
-            </label>
+            {/* #2373 R3 — shared common fields + Advanced disclosure. */}
+            <TaskFormFields
+              prefix="new-task"
+              title={title}
+              onTitleChange={(v) => {
+                setTitle(v);
+                if (error !== null) setError(null);
+              }}
+              titleValid={titleValid}
+              titleRef={titleInputRef}
+              taskType={taskType}
+              onTaskTypeChange={(v) => {
+                setTaskType(v);
+                if (error !== null) setError(null);
+              }}
+              priority={priority}
+              onPriorityChange={(v) => {
+                setPriority(v);
+                if (error !== null) setError(null);
+              }}
+              role={role}
+              onRoleChange={(v) => {
+                setRole(v);
+                if (error !== null) setError(null);
+              }}
+              roleOptions={visibleRoleOptions}
+              milestoneId={milestoneId}
+              onMilestoneChange={(v) => {
+                setMilestoneId(v);
+                if (error !== null) setError(null);
+              }}
+              milestones={milestones}
+              dueDate={dueDate}
+              onDueDateChange={(v) => {
+                setDueDate(v);
+                if (error !== null) setError(null);
+              }}
+              description={description}
+              onDescriptionChange={(v) => {
+                setDescription(v);
+                setDescriptionDirty(true);
+                if (error !== null) setError(null);
+              }}
+              blockedBy={blockedBy}
+              onBlockedByChange={(v) => {
+                setBlockedBy(v);
+                if (error !== null) setError(null);
+              }}
+              blockedByValid={blockedByValid}
+              modelOverride={modelOverride}
+              onModelOverrideChange={(v) => {
+                setModelOverride(v);
+                if (error !== null) setError(null);
+              }}
+              projectId={projectId}
+              handoffTemplateId={handoffTemplateId}
+              onHandoffTemplateChange={(id) => {
+                setHandoffTemplateId(id);
+                if (error !== null) setError(null);
+              }}
+              disabled={submitting}
+            />
 
             {/* #1310 — acceptance-criteria editor. Visible only when a template
                 is selected; seeded from the template (substituted), then freely
-                editable. Non-empty rows are sent on submit as `pending` ACs. */}
-            {/* #1310 — AC editor shown only when a template is selected; standalone manual AC entry is out of scope for this task. */}
-            {/* #1310 r4 — gate on resolved template (same source as placeholder editor) so a stale id can't render the AC editor without its template. */}
+                editable. Non-empty rows are sent on submit as `pending` ACs.
+                #1310 r4 — gate on `selectedTemplate` (not `selectedTemplateId`)
+                so a stale id never renders the AC editor without its template. */}
             {selectedTemplate !== null && (
               <div className="mt-3 flex flex-col gap-2" data-new-task-ac-editor>
                 <span className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
@@ -832,19 +818,6 @@ export function NewTaskModal({
               </div>
             )}
 
-            {/* #1343 — handoff template picker. Self-hides when no templates
-                exist (empty GET response). On DONE-flip BE atomically spawns
-                the child task per the chosen template (#1004 spawn hook). */}
-            <HandoffTemplatePicker
-              projectId={projectId}
-              selectedId={handoffTemplateId}
-              onSelect={(id) => {
-                setHandoffTemplateId(id);
-                if (error !== null) setError(null);
-              }}
-              disabled={submitting}
-            />
-
             {/* #1238 GOV3 — paused-project override (E3: extracted to PauseOverrideBlock). */}
             {isProjectPaused && (
               <PauseOverrideBlock
@@ -891,6 +864,79 @@ export function NewTaskModal({
               </button>
             </div>
           </form>
+      </ModalShell>
+
+      {/* #1304 — cost-forecast confirm gate. A SECOND ModalShell layered on top
+          of the (still-mounted) create modal; appears only when the post-create
+          forecast exceeded project.cost_forecast_threshold_usd. Light-tech copy
+          in $ (never "tokens"). The task already exists — the three buttons
+          decide its fate (keep / sample-cap / cancel-delete). */}
+      <ModalShell
+        open={forecastGate !== null}
+        onClose={() => { if (!gateBusy) onGateCancel(); }}
+        labelledBy="cost-gate-title"
+        maxWidth="sm"
+        backdropProps={{ "data-cost-gate-modal": true }}
+      >
+        {forecastGate !== null && (
+          <div data-cost-gate>
+            <h2
+              id="cost-gate-title"
+              className="text-sm font-semibold uppercase tracking-wide text-zinc-900 dark:text-zinc-100"
+              data-cost-gate-heading
+            >
+              Estimated cost ${forecastGate.estimatedUsd.toFixed(2)}
+            </h2>
+            <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-300">
+              This task may cost about{" "}
+              <span className="font-semibold">
+                ${forecastGate.estimatedUsd.toFixed(2)}
+              </span>{" "}
+              to run. Run it in full, run a smaller sample to keep the cost down,
+              or cancel.
+            </p>
+
+            {gateError !== null && (
+              <p
+                role="alert"
+                className="mt-3 text-xs text-red-700 dark:text-red-300"
+                data-cost-gate-error
+              >
+                {gateError}
+              </p>
+            )}
+
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+              <button
+                type="button"
+                onClick={onGateCancel}
+                disabled={gateBusy}
+                className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+                data-cost-gate-cancel
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={onGateUseSample}
+                disabled={gateBusy}
+                className="rounded border border-amber-500 bg-amber-500 px-3 py-2 text-xs font-medium uppercase tracking-wide text-white hover:bg-amber-600 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-amber-400 dark:bg-amber-400 dark:text-zinc-900 dark:hover:bg-amber-300"
+                data-cost-gate-sample
+              >
+                Use Sample
+              </button>
+              <button
+                type="button"
+                onClick={onGateRunFull}
+                disabled={gateBusy}
+                className="rounded border border-emerald-600 bg-emerald-600 px-3 py-2 text-xs font-medium uppercase tracking-wide text-white hover:bg-emerald-700 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-emerald-500 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                data-cost-gate-runfull
+              >
+                Run Full
+              </button>
+            </div>
+          </div>
+        )}
       </ModalShell>
     </>
   );

@@ -7,6 +7,10 @@ argument-hint: "<milestone id>"
 allowed-tools:
   - Bash(curl:*)
   - Read
+metadata:
+  version: 1.0.0
+  category: kanban
+  tags: [kanban, milestone, done, mutate, gate]
 ---
 
 # /tn-milestone-done — release a milestone after verifying its tasks
@@ -46,3 +50,7 @@ GET-verify `milestone_status` is now `released`. Report: milestone id, title, fi
 1. "done" = **released** (not a literal 'done' state).
 2. Don't release a milestone with unfinished child tasks without explicit operator confirmation
    (Step 3 gate — mirrors /tn-task-done's AC gate).
+
+## Related skills
+- `tn-milestone-create` — create a new milestone to replace or follow the one you're releasing
+- `tn-milestones` — review all milestone progress percentages before deciding to release

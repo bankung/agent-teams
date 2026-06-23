@@ -127,17 +127,23 @@ if (Test-Path -LiteralPath $EnvFile) {
 # `docker compose` writes build progress to stderr. With $ErrorActionPreference='Stop'
 # PS 5.1 wraps each line in a NativeCommandError and halts. Run with 'Continue'
 # for the duration of the call; rely on $LASTEXITCODE for the success check.
-Write-Log "Building and starting services (docker compose up -d --build)..."
+#
+# The prod overlay (docker-compose.prod.yml) swaps the web service to the
+# multi-stage standalone build (Dockerfile.prod → `node server.js`) and drops
+# uvicorn --reload. This is the correct default for a clean install.
+# Developers who want hot-reload use the dev overlay instead:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+Write-Log "Building and starting services (prod mode: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build)..."
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 try {
-    & docker compose up -d --build
+    & docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
     $composeExit = $LASTEXITCODE
 } finally {
     $ErrorActionPreference = $prevEAP
 }
 if ($composeExit -ne 0) {
-    Write-Err "docker compose up failed. Inspect the output above."
+    Write-Err "docker compose up (prod) failed. Inspect the output above."
     exit 2
 }
 
@@ -153,13 +159,13 @@ Write-Log "Running schema migration (docker compose exec -T -e MIGRATION_TARGET=
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 try {
-    & docker compose exec -T -e MIGRATION_TARGET=live api alembic upgrade head
+    & docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T -e MIGRATION_TARGET=live api alembic upgrade head
     $alembicExit = $LASTEXITCODE
 } finally {
     $ErrorActionPreference = $prevEAP
 }
 if ($alembicExit -ne 0) {
-    Write-Err "Schema migration failed. Check logs: docker compose logs api"
+    Write-Err "Schema migration failed. Check logs: docker compose -f docker-compose.yml -f docker-compose.prod.yml logs api"
     exit 5
 }
 
@@ -185,7 +191,7 @@ while ($elapsed -lt $WaitTimeoutSec) {
 
 if (-not $healthy) {
     Write-Err "API did not become healthy within ${WaitTimeoutSec}s."
-    Write-Err "Check logs: docker compose logs api"
+    Write-Err "Check logs: docker compose -f docker-compose.yml -f docker-compose.prod.yml logs api"
     exit 3
 }
 Write-Log "API healthy."
@@ -198,13 +204,13 @@ Write-Log "Running seed (docker compose exec -T -e SEED_TARGET=production api py
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 try {
-    & docker compose exec -T -e SEED_TARGET=production api python -m scripts.seed
+    & docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T -e SEED_TARGET=production api python -m scripts.seed
     $seedExit = $LASTEXITCODE
 } finally {
     $ErrorActionPreference = $prevEAP
 }
 if ($seedExit -ne 0) {
-    Write-Err "Seed failed. Check logs: docker compose logs api"
+    Write-Err "Seed failed. Check logs: docker compose -f docker-compose.yml -f docker-compose.prod.yml logs api"
     exit 4
 }
 

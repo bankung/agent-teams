@@ -8,7 +8,7 @@
 // noise). Row-level expand reveals input_json / output_summary / error /
 // permission decision / absolute timestamp.
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import {
   getTaskToolCalls,
@@ -16,7 +16,7 @@ import {
   type ToolCallRead,
   type ToolCallTier,
 } from "@/lib/api";
-import { extractErrorMessage } from "@/lib/errors";
+import { useAsyncData } from "@/lib/useAsyncData";
 import { KIND_CLASS } from "@/lib/leadEventKinds";
 import { formatRelative } from "@/lib/time";
 import { Icon } from "./Icon";
@@ -55,55 +55,46 @@ function formatDuration(ms: number | null): string {
 
 export function TaskToolCalls({ projectId, taskId }: Props) {
   const [expanded, setExpanded] = useState(false);
-  const [rows, setRows] = useState<ToolCallRead[] | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [probedEmpty, setProbedEmpty] = useState(false);
 
   // First-load probe — fetch once on mount (cheap; just a count) so the
   // section can hide itself when the task has zero rows. We could defer this
   // until expand, but the brief explicitly says "hide when empty" → we have
   // to know the count before deciding whether to render the header at all.
-  // The probe response IS the data, so we cache it as `rows` to avoid a
+  // The probe response IS the data, so the hook caches it (`data`) to avoid a
   // second fetch on expand.
-  useEffect(() => {
-    let cancelled = false;
-    setRows(null);
-    setError(null);
-    setProbedEmpty(false);
-    getTaskToolCalls(projectId, taskId)
-      .then((data) => {
-        if (cancelled) return;
-        if (data.length === 0) {
-          setProbedEmpty(true);
-        } else {
-          setRows(data);
-        }
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        // 404 (endpoint not deployed yet / no tool_calls row) → treat as empty.
-        // Anything else surfaces as an inline message inside the expanded section.
-        const msg = extractErrorMessage(err, String(err));
-        if (/404/.test(msg)) {
-          setProbedEmpty(true);
-        } else {
-          setError(msg);
-          setProbedEmpty(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId, taskId]);
+  //
+  // #2492 — fetch + cancel-guard via useAsyncData. The domain mapping (404 /
+  // empty → "hide section") is kept here: a 404 is treated as empty (the
+  // endpoint may not be deployed yet) and derived from `rawError` at render,
+  // and an empty array hides the section. reload() drives the defensive
+  // re-fetch on expand after a transient error.
+  const {
+    data: rows,
+    loading,
+    error: rawError,
+    reload,
+  } = useAsyncData<ToolCallRead[]>(
+    () => getTaskToolCalls(projectId, taskId),
+    [projectId, taskId],
+    { errorFallback: "Failed to load", resetDataOnReload: true },
+  );
 
-  // Hide the entire section when probe returned 0 rows (no tool calls
-  // recorded → nothing to show, no "0 tool calls" chrome).
+  // 404 (endpoint not deployed yet / no tool_calls row) → treat as empty;
+  // anything else surfaces as an inline message inside the expanded section.
+  const is404 = rawError !== null && /404/.test(rawError);
+  const error = is404 ? null : rawError;
+  // Hide the entire section when the probe returned 0 rows OR a 404 (no tool
+  // calls recorded → nothing to show, no "0 tool calls" chrome).
+  const probedEmpty = (rows !== null && rows.length === 0) || is404;
   if (probedEmpty) return null;
 
-  // Loading state — probe still in flight; render a tiny placeholder so
-  // the section has stable layout. Hidden once we know the count.
-  if (rows === null && error === null) {
+  // Loading state — INITIAL probe still in flight (nothing settled yet AND the
+  // user hasn't expanded). Render a tiny placeholder so the section has stable
+  // layout. Once expanded, a defensive reload's loading shows INLINE in the
+  // panel instead (preserving the pre-#2492 behavior), so this top placeholder
+  // is gated on !expanded.
+  const settled = rows !== null || rawError !== null;
+  if (!settled && !expanded) {
     return (
       <section
         className="flex flex-col gap-2"
@@ -123,27 +114,12 @@ export function TaskToolCalls({ projectId, taskId }: Props) {
   const hasLeadRows = rows?.some((r) => r.source === "lead") ?? false;
   const headerLabel = hasLeadRows ? "Activity" : "Tool calls";
 
-  const handleToggle = async () => {
+  const handleToggle = () => {
     setExpanded((v) => !v);
     // Defensive re-fetch on expand if we have an error from the initial probe
-    // (e.g. transient 500). For the happy path the probe data is already
-    // cached in `rows`, so no extra request fires.
-    if (!expanded && error !== null) {
-      setLoading(true);
-      setError(null);
-      try {
-        const data = await getTaskToolCalls(projectId, taskId);
-        if (data.length === 0) {
-          setProbedEmpty(true);
-        } else {
-          setRows(data);
-        }
-      } catch (err: unknown) {
-        setError(extractErrorMessage(err, String(err)));
-      } finally {
-        setLoading(false);
-      }
-    }
+    // (e.g. transient 500). For the happy path the probe data is already cached
+    // in the hook, so reload() is only triggered out of the error branch.
+    if (!expanded && error !== null) reload();
   };
 
   return (

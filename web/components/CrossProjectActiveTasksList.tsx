@@ -21,14 +21,13 @@
 // per-task drawer. Tracked separately if/when needed.
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
 
 import {
   type DashboardActiveTaskRow,
   type DashboardActiveTasks,
 } from "@/lib/api";
 import { formatRelative } from "@/lib/time";
-import { readExpanded, writeExpanded } from "@/lib/collapseState";
+import { usePersistentState } from "@/lib/usePersistentState";
 
 // ----- Icons -----------------------------------------------------------------
 
@@ -73,13 +72,13 @@ function ChevronRightIcon() {
 // Lifecycle code → chip label + color. Mirrors the per-project Board.tsx
 // COLUMNS array and the dashboard `LANES` accent palette for visual
 // consistency (in-progress=amber, review=violet, blocked=red).
-const STATUS_LABEL: Record<2 | 3 | 4, string> = {
+const STATUS_LABEL: Record<number, string> = {
   2: "in-progress",
   3: "review",
   4: "blocked",
 };
 
-const STATUS_CHIP_CLASS: Record<2 | 3 | 4, string> = {
+const STATUS_CHIP_CLASS: Record<number, string> = {
   2: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
   3: "bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-200",
   4: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200",
@@ -150,13 +149,15 @@ function groupByProject(
 
 // ----- Row sub-components ---------------------------------------------------
 
-function StatusChip({ status }: { status: 2 | 3 | 4 }) {
-  const cls = STATUS_CHIP_CLASS[status];
+function StatusChip({ status }: { status: number }) {
+  const cls =
+    STATUS_CHIP_CLASS[status] ??
+    "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300";
   return (
     <span
       className={`inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${cls}`}
     >
-      {STATUS_LABEL[status]}
+      {STATUS_LABEL[status] ?? `ps${status}`}
     </span>
   );
 }
@@ -246,7 +247,8 @@ function TaskRow({ row }: { row: DashboardActiveTaskRow }) {
       >
         {formatRelative(row.updated_at)}
       </span>
-      {row.blocked_by !== null ? (
+      {/* #2419: hide chip when blocker is terminal (server-computed) */}
+      {row.blocked_by !== null && !row.blocked_by_terminal ? (
         <BlockedByChip blockedBy={row.blocked_by} />
       ) : null}
     </li>
@@ -270,38 +272,27 @@ export function CrossProjectActiveTasksList({
 
   const collapsible = storageKey != null;
 
-  // Default expanded=true so SSR + first paint avoid hydration mismatch.
-  // useEffect corrects from localStorage after hydration.
-  const [expanded, setExpanded] = useState(!defaultCollapsed);
-
-  useEffect(() => {
-    if (!collapsible || !storageKey) return;
-    setExpanded(readExpanded(storageKey, defaultCollapsed));
-
-    function onStorage(e: StorageEvent) {
-      if (e.key !== storageKey) return;
-      setExpanded(
-        e.newValue !== null ? JSON.parse(e.newValue) !== false : !defaultCollapsed,
-      );
-    }
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, [collapsible, storageKey, defaultCollapsed]);
+  // Persisted collapse state via usePersistentState. SSR snapshot = expanded
+  // default (no hydration mismatch); client reads localStorage after hydration.
+  const [storedExpanded, setStoredExpanded] = usePersistentState<boolean>(
+    storageKey ?? "active-tasks-list:__noop",
+    !defaultCollapsed,
+    { deserialize: (raw) => JSON.parse(raw) !== false },
+  );
+  const expanded = collapsible ? storedExpanded : !defaultCollapsed;
 
   function toggle() {
-    if (!collapsible || !storageKey) return;
-    const next = !expanded;
-    setExpanded(next);
-    writeExpanded(storageKey, next);
+    if (!collapsible) return;
+    setStoredExpanded(!expanded);
   }
 
   return (
     <section
       data-active-tasks-list
       aria-label="Cross-project active tasks"
-      className="mb-5 rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900"
+      className="mb-5 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900"
     >
-      <div className="mb-3 flex flex-wrap items-baseline gap-2">
+      <div className="flex flex-wrap items-baseline gap-2" style={{ marginBottom: expanded ? "0.75rem" : 0 }}>
         {collapsible ? (
           <button
             type="button"

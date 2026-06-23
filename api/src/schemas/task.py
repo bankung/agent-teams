@@ -838,6 +838,10 @@ class TaskUpdate(BaseModel):
     assigned_role: int | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    # Kanban #1839: server-managed (stamped on →ps=8 by the router). Declared for
+    # parity with started_at/completed_at — a client-supplied value is respected
+    # by the router's setdefault stamp logic; absence means the router stamps it.
+    halted_at: datetime | None = None
     # Re-parenting is NOT allowed in V1 (Kanban #238 lock 2026-05-08).
     # The field is declared so we can REJECT it explicitly — `extra="ignore"` on
     # this schema would silently drop unknown keys, which is wrong for this one.
@@ -1302,6 +1306,8 @@ class TaskSummaryRead(BaseModel):
     updated_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+    # Kanban #1839 — stamped on →ps=8 ('halted-pending-user'); NULL otherwise.
+    halted_at: datetime | None = None
     is_active: bool = True
 
 
@@ -1322,6 +1328,10 @@ class TaskRead(BaseModel):
     updated_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+    # Kanban #1839 — read-out of the →ps=8 ('halted-pending-user') stamp.
+    # Backfilled to NULL on existing rows by migration 0069's nullable=true.
+    # Stamped once on the first halt; mirrors started_at/completed_at.
+    halted_at: datetime | None = None
     run_mode: TaskRunModeLiteral
     # V3+ T1 (Kanban #706) — new fields added 2026-05-10. Migration 0007's
     # server_defaults backfill existing rows: task_kind='human', is_template=false,
@@ -1428,6 +1438,12 @@ class TaskRead(BaseModel):
     estimated_input_tokens: int | None
     estimated_output_tokens: int | None
     estimated_cost_usd: Decimal | None
+    # Kanban #1304 (2026-06-15) — PRE-run cost forecast persisted by
+    # POST /api/tasks/{id}/cost-forecast. NULL until the operator first runs the
+    # forecast. Distinct from estimated_cost_usd (the post-hoc #944 actual).
+    # Read-only — TaskCreate / TaskUpdate do NOT accept it (server-computed).
+    # Backfilled to NULL on existing rows by migration 0068's nullable=true.
+    forecast_cost_usd: Decimal | None = None
     # Kanban #952 (2026-05-16) — in-graph auditor node outputs (Auditor agent).
     # `audit_report` is a JSONB blob holding the LATEST audit's structured
     # outcome (verdict / severity / evidence / action_taken / etc.). Element
@@ -1567,6 +1583,40 @@ class TaskCostEstimateBackfill(BaseModel):
     estimated_output_tokens: int = Field(ge=0)
     provider: str = "anthropic"
     model: str = "claude-opus-4-8"
+
+
+class CostForecastBreakdown(BaseModel):
+    """Token breakdown for a pre-task cost forecast (Kanban #1304).
+
+    Four token buckets summing the forecast inputs + the output proxy:
+    `prompt + role_brief + attached_resources` = the total INPUT tokens
+    (== CostForecastRead.estimated_tokens); `completion` is the output proxy
+    (input * OUTPUT_TOKEN_RATIO) priced separately at the output rate.
+    """
+
+    prompt: int
+    role_brief: int
+    attached_resources: int
+    completion: int
+
+
+class CostForecastRead(BaseModel):
+    """Response body for POST /api/tasks/{id}/cost-forecast (Kanban #1304).
+
+    The pre-spawn cost estimate. `estimated_usd` is the forecast USD (4dp,
+    Decimal serialized as a JSON number); `estimated_tokens` is the total INPUT
+    tokens. `confidence` reflects resource-tag completeness + model-known state
+    (see services/task_cost_estimator.forecast_task_cost). Provider/model are
+    computed server-side but intentionally NOT surfaced here — the wire contract
+    is the four operator-facing fields only.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    estimated_usd: Decimal
+    estimated_tokens: int
+    breakdown: CostForecastBreakdown
+    confidence: Literal["low", "med", "high"]
 
 
 class SnoozeRequest(BaseModel):

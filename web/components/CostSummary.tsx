@@ -12,10 +12,8 @@
 // pattern as AuditorVisibilityToggle (#1291). When defaultCollapsed=false
 // (default), the panel is always-expanded (no toggle chrome).
 
-import { useEffect, useState } from "react";
-
-import type { ProjectStatsEntry } from "@/lib/api";
-import { readExpanded, writeExpanded } from "@/lib/collapseState";
+import { type ProjectStatsEntry } from "@/lib/api";
+import { usePersistentState } from "@/lib/usePersistentState";
 
 // Token / cost formatters — duplicates kept intentional: this file is the
 // canonical render home; dashboard/page.tsx private helpers remain for
@@ -100,7 +98,6 @@ export function CostSummary({
   let totalInput = 0;
   let totalOutput = 0;
   let totalRuns = 0;
-  let totalWarnings = 0;
   let totalEstimatedCost = 0;
   let totalEstimatedInput = 0;
   let totalEstimatedOutput = 0;
@@ -110,7 +107,6 @@ export function CostSummary({
     totalInput += entry.cost_usage.total_input_tokens;
     totalOutput += entry.cost_usage.total_output_tokens;
     totalRuns += entry.cost_usage.session_run_count;
-    totalWarnings += entry.cost_usage.budget_warning_count;
     if (entry.estimated_cost != null) {
       hasEstimated = true;
       totalEstimatedCost += parseUsd(entry.estimated_cost.total_cost_usd);
@@ -122,37 +118,27 @@ export function CostSummary({
   const noUsage = totalRuns === 0;
   const collapsible = defaultCollapsed && storageKey != null;
 
-  // Default expanded=true so SSR + first paint avoid hydration mismatch.
-  // For collapsible panels the actual value is read from localStorage after
-  // hydration (useEffect), mirroring AuditorVisibilityToggle's pattern.
-  const [expanded, setExpanded] = useState(!defaultCollapsed);
-
-  useEffect(() => {
-    if (!collapsible || !storageKey) return;
-    setExpanded(readExpanded(storageKey, defaultCollapsed));
-
-    function onStorage(e: StorageEvent) {
-      if (e.key !== storageKey) return;
-      setExpanded(
-        e.newValue !== null ? JSON.parse(e.newValue) !== false : !defaultCollapsed,
-      );
-    }
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, [collapsible, storageKey, defaultCollapsed]);
+  // Collapse state persisted via usePersistentState (SSR snapshot = expanded
+  // default → no hydration mismatch; client snapshot reads localStorage). Stored
+  // value `false` means collapsed; absent → !defaultCollapsed (= expanded here).
+  const [storedExpanded, setStoredExpanded] = usePersistentState<boolean>(
+    storageKey ?? "cost-summary:__noop",
+    !defaultCollapsed,
+    { deserialize: (raw) => JSON.parse(raw) !== false },
+  );
+  // Non-collapsible panels are always expanded (no toggle chrome / no storage).
+  const expanded = collapsible ? storedExpanded : !defaultCollapsed;
 
   function toggle() {
-    if (!collapsible || !storageKey) return;
-    const next = !expanded;
-    setExpanded(next);
-    writeExpanded(storageKey, next);
+    if (!collapsible) return;
+    setStoredExpanded(!expanded);
   }
 
   return (
     <section
       data-cost-summary
       aria-label={ariaLabel}
-      className={`${className} rounded-lg border border-amber-200/60 bg-amber-50/40 p-5 dark:border-amber-900/40 dark:bg-amber-950/10`}
+      className={`${className} rounded-lg border border-amber-200/60 bg-amber-50/40 p-3 dark:border-amber-900/40 dark:bg-amber-950/10`}
     >
       <div className="flex items-center gap-2 flex-wrap" style={{ marginBottom: expanded ? "0.75rem" : 0 }}>
         {collapsible ? (
@@ -163,11 +149,11 @@ export function CostSummary({
             className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
           >
             {expanded ? <ChevronDownIcon /> : <ChevronRightIcon />}
-            Usage
+            Usage & Spend
           </button>
         ) : (
           <h2 className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-            Usage
+            Usage & Spend
           </h2>
         )}
         {/* Compact inline summary shown only when collapsible + collapsed */}
@@ -184,14 +170,6 @@ export function CostSummary({
             <span>{totalRuns} run{totalRuns === 1 ? "" : "s"}</span>
           </span>
         )}
-        {totalWarnings > 0 ? (
-          <span
-            className="inline-flex items-center rounded bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
-            title={`${totalWarnings} session run${totalWarnings === 1 ? "" : "s"} flagged budget-warned`}
-          >
-            ⚠ {totalWarnings} run{totalWarnings === 1 ? "" : "s"} budget-warned
-          </span>
-        ) : null}
       </div>
 
       {expanded && (
@@ -202,117 +180,70 @@ export function CostSummary({
             </p>
           ) : (
             <>
-              {/* Mode A · Estimated — heuristic from projected in/out token usage at API rates.
-                  Rendered first: comparison baseline. */}
-              {hasEstimated && (
-                <div className="mb-3 rounded-md border border-blue-100 bg-blue-50/40 px-3 py-3 dark:border-blue-900/30 dark:bg-blue-950/10">
-                  <div className="mb-1.5 flex items-center gap-2">
-                    <span className="text-[11px] font-medium uppercase tracking-wide text-blue-600 dark:text-blue-400">
-                      Mode A · Estimated
-                    </span>
-                    <span
-                      className="cursor-default text-[10px] text-zinc-400 dark:text-zinc-500"
-                      title="Heuristic estimate derived from projected in/out token usage at API rates"
-                    >
-                      estimated from projected in/out tokens at API rates (heuristic) — comparison baseline
-                    </span>
+              {/* Mode A + Mode B side-by-side compact cards */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {/* Mode A · Estimated */}
+                {hasEstimated && (
+                  <div className="rounded-md border border-blue-100 bg-blue-50/40 px-3 py-3 dark:border-blue-900/30 dark:bg-blue-950/10">
+                    <div className="mb-1 flex items-center gap-2">
+                      <span className="text-[11px] font-medium uppercase tracking-wide text-blue-600 dark:text-blue-400">
+                        Mode A · Estimated
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                      <span
+                        className="text-lg font-semibold tabular-nums leading-none text-blue-700 dark:text-blue-300"
+                        title={`$${totalEstimatedCost.toFixed(4)} USD (heuristic estimate at API token rates)`}
+                      >
+                        {formatUsd(totalEstimatedCost)}
+                      </span>
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400 tabular-nums">
+                        {formatInt(totalEstimatedInput)} in / {formatInt(totalEstimatedOutput)} out tokens
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-                    <span
-                      className={`${collapsible ? "text-lg" : "text-2xl"} font-semibold tabular-nums leading-none text-blue-700 dark:text-blue-300`}
-                      title={`$${totalEstimatedCost.toFixed(4)} USD (heuristic estimate at API token rates)`}
-                    >
-                      {formatUsd(totalEstimatedCost)}
-                    </span>
-                    <span className="text-xs text-zinc-500 dark:text-zinc-400 tabular-nums">
-                      {formatInt(totalEstimatedInput)} in / {formatInt(totalEstimatedOutput)} out tokens
-                    </span>
-                  </div>
-                </div>
-              )}
+                )}
 
-              {/* Mode B · Actual (headless) — real metered cost from langgraph headless API calls.
-                  Rendered after Mode A. ~$0 until headless runs are metered. */}
-              {!noUsage ? (
-                <div className="mb-3">
-                  <div className="mb-1.5 flex items-center gap-2">
-                    <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                      Mode B · Actual (headless)
-                    </span>
-                    <span className="text-[10px] text-zinc-400 dark:text-zinc-500">
-                      actual cost metered from headless (langgraph) API calls
-                    </span>
-                  </div>
-                  {/* #954 — single column on mobile (375px iPhone); 3-col tile row restored at sm */}
-                  <div
-                    className="grid grid-cols-1 gap-3 sm:grid-cols-3"
-                    role="list"
-                    aria-label="Mode B Actual headless cost and token totals"
-                  >
-                    <div
-                      role="listitem"
-                      className="flex min-w-0 flex-col items-start gap-1 rounded-md border border-amber-100 bg-white/70 px-3 py-3 dark:border-amber-900/30 dark:bg-zinc-950/40"
-                      title={`$${totalCost.toFixed(4)} USD`}
-                    >
-                      <span className={`${collapsible ? "text-lg" : "text-3xl"} font-semibold tabular-nums leading-none text-amber-700 dark:text-amber-300`}>
+                {/* Mode B · Actual (headless) */}
+                {!noUsage ? (
+                  <div className="rounded-md border border-amber-100 bg-white/70 px-3 py-3 dark:border-amber-900/30 dark:bg-zinc-950/40">
+                    <div className="mb-1 flex items-center gap-2">
+                      <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                        Mode B · Actual (headless)
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                      <span
+                        className="text-lg font-semibold tabular-nums leading-none text-amber-700 dark:text-amber-300"
+                        title={`$${totalCost.toFixed(4)} USD`}
+                      >
                         {formatUsd(totalCost)}
                       </span>
-                      <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                        Total cost
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400 tabular-nums">
+                        {formatInt(totalInput)} in / {formatInt(totalOutput)} out tokens
                       </span>
                     </div>
-                    <div
-                      role="listitem"
-                      className="flex min-w-0 flex-col items-start gap-1 rounded-md border border-amber-100 bg-white/70 px-3 py-3 dark:border-amber-900/30 dark:bg-zinc-950/40"
-                      title={`${totalInput.toLocaleString("en-US")} input tokens`}
-                    >
-                      <span className={`${collapsible ? "text-lg" : "text-3xl"} font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100`}>
-                        {formatInt(totalInput)}
-                      </span>
+                    <p className="mt-1 text-[10px] text-zinc-400 dark:text-zinc-500 tabular-nums">
+                      {totalRuns} session run{totalRuns === 1 ? "" : "s"} tracked
+                    </p>
+                  </div>
+                ) : (
+                  /* When no session runs yet, show a muted placeholder for Mode B */
+                  <div className="rounded-md border border-amber-100 bg-white/70 px-3 py-3 dark:border-amber-900/30 dark:bg-zinc-950/40">
+                    <div className="mb-1 flex items-center gap-2">
                       <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                        Input tokens
+                        Mode B · Actual (headless)
                       </span>
                     </div>
-                    <div
-                      role="listitem"
-                      className="flex min-w-0 flex-col items-start gap-1 rounded-md border border-amber-100 bg-white/70 px-3 py-3 dark:border-amber-900/30 dark:bg-zinc-950/40"
-                      title={`${totalOutput.toLocaleString("en-US")} output tokens`}
-                    >
-                      <span className={`${collapsible ? "text-lg" : "text-3xl"} font-semibold tabular-nums leading-none text-zinc-900 dark:text-zinc-100`}>
-                        {formatInt(totalOutput)}
-                      </span>
-                      <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                        Output tokens
-                      </span>
-                    </div>
+                    <p className="text-xs text-zinc-400 dark:text-zinc-600">
+                      $0.00 — no headless runs recorded yet
+                    </p>
                   </div>
-                  <div className="mt-4 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs text-zinc-600 dark:text-zinc-400">
-                    <span>
-                      <span className="font-semibold text-zinc-900 dark:text-zinc-100 tabular-nums">
-                        {totalRuns}
-                      </span>{" "}
-                      session run{totalRuns === 1 ? "" : "s"} tracked
-                    </span>
-                  </div>
-                </div>
-              ) : (
-                /* When no session runs yet, show a muted placeholder for Mode B */
-                <div className="mb-3">
-                  <div className="mb-1.5 flex items-center gap-2">
-                    <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                      Mode B · Actual (headless)
-                    </span>
-                    <span className="text-[10px] text-zinc-400 dark:text-zinc-500">
-                      actual cost metered from headless (langgraph) API calls
-                    </span>
-                  </div>
-                  <p className="text-xs text-zinc-400 dark:text-zinc-600">
-                    Mode B · Actual: $0.00 — no headless runs recorded yet
-                  </p>
-                </div>
-              )}
+                )}
+              </div>
             </>
           )}
+
         </>
       )}
     </section>

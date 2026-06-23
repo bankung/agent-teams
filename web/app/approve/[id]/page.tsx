@@ -11,7 +11,15 @@
 // duplicated fetch/wiring code). If a future need diverges the two URLs
 // (different metadata, different chrome), peel this off then.
 
-// Re-export the dynamic config + default export. The Next.js route-segment
-// config is per-route-file; re-exporting `dynamic` ensures the alias has the
-// same SSR behavior (force-dynamic) as the canonical /tasks/[id] route.
-export { default, dynamic } from "../../tasks/[id]/page";
+// Re-export the default export. The Next.js route-segment config (`dynamic`)
+// cannot be re-exported across module boundaries in Next 16/Turbopack — it
+// must be declared as a named const in each route file. Declaring it here
+// directly preserves the same force-dynamic SSR behavior as the canonical
+// /tasks/[id] route.
+//
+// Next 16 async params (#2487): TaskFocusPage now takes `params`/`searchParams`
+// as `Promise<…>` (awaited inside the canonical route). This alias re-exports
+// that same component verbatim, so it inherits the async-params contract — no
+// per-file change needed here.
+export { default } from "../../tasks/[id]/page";
+export const dynamic = "force-dynamic";

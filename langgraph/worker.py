@@ -64,6 +64,7 @@ from hitl import (
     EngineCrashError,
     HITLError,
     InvalidAnswerError,
+    has_checkpoint,
     resume_graph,
     validate_answer,
 )
@@ -236,6 +237,21 @@ class WorkerConfig:
                 f"got {interval!r}. Default is {DEFAULT_POLL_INTERVAL_SEC}."
             )
         self.poll_interval_sec: int = int(interval)
+
+        # H-2 fix: validate LANGGRAPH_TRANSIENT_RETRIES at startup so a bad
+        # value fails fast instead of stranding an IN_PROGRESS task mid-loop.
+        _retries_raw = os.getenv(
+            "LANGGRAPH_TRANSIENT_RETRIES", str(_DEFAULT_TRANSIENT_RETRIES)
+        ).strip()
+        try:
+            _retries_val = int(_retries_raw)
+            if _retries_val < 0:
+                raise ValueError("negative")
+        except ValueError:
+            raise RuntimeError(
+                "LANGGRAPH_TRANSIENT_RETRIES must be a non-negative integer; "
+                f"got {_retries_raw!r}. Unset to use the default ({_DEFAULT_TRANSIENT_RETRIES})."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -501,31 +517,23 @@ async def _run_multi_board_loop(
                 session_id = await _ensure_project_session(
                     client, cfg, project_id, project_name
                 )
-                # Inject session_id into env so resolve_session_id() inside
-                # _poll_once picks it up — restored immediately after. Safe
-                # because this coroutine is serial (no concurrent _poll_once).
-                _prev_session_env = os.environ.get("LANGGRAPH_SESSION_ID")
-                if session_id is not None:
-                    os.environ["LANGGRAPH_SESSION_ID"] = str(session_id)
-                elif "LANGGRAPH_SESSION_ID" in os.environ:
-                    del os.environ["LANGGRAPH_SESSION_ID"]
+                # H-1 fix: pass session_id directly to _poll_once instead of
+                # mutating os.environ (process-wide shared state — race across
+                # the await). The override parameter threads through to the
+                # resolve_session_id() callsite inside _poll_once.
                 try:
-                    try:
-                        await _poll_once(client, graph_module, cfg, headers)
-                    except asyncio.CancelledError:
-                        logger.info("multi-board: worker shutdown — exiting loop")
-                        raise
-                    except Exception:
-                        logger.exception(
-                            "multi-board: iteration crashed for project %d; continuing",
-                            project_id,
-                        )
-                finally:
-                    # Restore previous session env exactly. #2184
-                    if _prev_session_env is not None:
-                        os.environ["LANGGRAPH_SESSION_ID"] = _prev_session_env
-                    elif "LANGGRAPH_SESSION_ID" in os.environ:
-                        del os.environ["LANGGRAPH_SESSION_ID"]
+                    await _poll_once(
+                        client, graph_module, cfg, headers,
+                        session_id_override=session_id,
+                    )
+                except asyncio.CancelledError:
+                    logger.info("multi-board: worker shutdown — exiting loop")
+                    raise
+                except Exception:
+                    logger.exception(
+                        "multi-board: iteration crashed for project %d; continuing",
+                        project_id,
+                    )
                 break  # first actionable project processed; end tick. #2184
 
             try:
@@ -545,6 +553,7 @@ async def _poll_once(
     graph_module: ModuleType,
     cfg: WorkerConfig,
     headers: dict[str, str],
+    session_id_override: int | None = None,
 ) -> None:
     """One polling tick.  GET next-autorun, optionally pick + invoke + PATCH.
 
@@ -703,8 +712,10 @@ async def _poll_once(
     # 2b) Kanban #1886 — Mode-A usage reporting. If LANGGRAPH_SESSION_ID is
     # configured, create a session_run for this task invocation so we have a
     # row to PATCH with token usage on finalize. None → skip usage reporting.
+    # H-1 fix: use session_id_override (passed by multi-board caller) instead
+    # of reading the process-wide env var to avoid a race across an await.
     session_run_id: int | None = None
-    session_id = resolve_session_id()
+    session_id = session_id_override if session_id_override is not None else resolve_session_id()
     if session_id is not None:
         session_run_id = await _create_session_run(
             client, cfg, headers, session_id, task_id
@@ -806,7 +817,16 @@ async def _poll_once(
     for _attempt in range(_max_retries + 1):
         _attempts_made = _attempt + 1
         try:
-            final_state = await compiled.ainvoke(initial_state, config=config)
+            # H-3 fix: on attempts after the first, check whether attempt 1
+            # wrote a partial checkpoint. If so, pass None (resume-from-checkpoint
+            # path) instead of re-injecting initial_state — the add_messages
+            # reducer would otherwise re-append the brief, causing double
+            # tool-execution on the resumed specialist.
+            if _attempt > 0 and await has_checkpoint(compiled, task_id):
+                invoke_input: dict[str, Any] | None = None
+            else:
+                invoke_input = initial_state
+            final_state = await compiled.ainvoke(invoke_input, config=config)
             _last_exc = None
             break  # success — exit retry loop
         except asyncio.CancelledError:
@@ -897,7 +917,7 @@ async def _poll_once(
             client, cfg, headers, _effective_project_id
         )
         action, default_answer, rule_name = evaluate_policy(
-            body["question_payload"], policies
+            body["question_payload"], policies, task
         )
         if action == "auto_approve":
             logger.info(

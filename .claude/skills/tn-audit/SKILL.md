@@ -8,6 +8,10 @@ argument-hint: "[project name or id]   (defaults to the bound project)"
 allowed-tools:
   - Bash(curl:*)
   - Read
+metadata:
+  version: 1.0.0
+  category: platform
+  tags: [platform, audit, health, read-only]
 ---
 
 # /tn-audit — on-demand project health audit
@@ -41,3 +45,8 @@ Combine: the project-auditor's 3 metrics + recommendation, plus the recent rollu
 /tn-audit
 /tn-audit secretary
 ```
+
+## Related skills
+
+- **tn-bind** — establishes the project binding that tn-audit defaults to; run before tn-audit when switching projects.
+- **tn-tasks-next** — complements the audit by surfacing the next actionable task for the project after reviewing its health.

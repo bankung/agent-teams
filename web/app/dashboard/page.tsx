@@ -1,44 +1,34 @@
 import Link from "next/link";
 
+import { Icon } from "@/components/Icon";
+
 import {
   getAuditDailyRollup,
   getCrossProjectActiveTasks,
+  getMonthlyUsage,
   getProjectsStats,
   listAuditFlags,
   listProjects,
   type DashboardActiveTasks,
+  type MonthlyUsageResponse,
   type ProjectRead,
   type ProjectStatsEntry,
 } from "@/lib/api";
 import { formatRelative } from "@/lib/time";
 import { AuditorActivityPanel } from "@/components/AuditorActivityPanel";
-import { AuditorVisibilityToggle } from "@/components/AuditorVisibilityToggle";
 import { CrossProjectActiveTasksList } from "@/components/CrossProjectActiveTasksList";
 import { DashboardWelcomeBanner } from "@/components/DashboardWelcomeBanner";
 import { BudgetBar, pickBudgetDisplay } from "@/components/BudgetBar";
 import { CostSummary } from "@/components/CostSummary";
+import { MonthlySpendSection } from "@/components/MonthlySpendSection";
 import { DashboardRefresher } from "@/components/DashboardRefresher";
 import { EditProjectModal } from "@/components/EditProjectModal";
 import { FlagBellBadge } from "@/components/FlagBellBadge";
 import { InboxBadge } from "@/components/InboxBadge";
 import { NewProjectModal } from "@/components/NewProjectModal";
-import nextDynamic from "next/dynamic";
 import { ReviewSummaryWidget } from "@/components/ReviewSummaryWidget";
 import { FINANCE_PANELS_ENABLED } from "@/lib/featureFlags";
-import { ThemePicker } from "@/components/ThemePicker";
-
-// Kanban #2111 Part 3b — code-split PnlDashboardSection behind finance flag.
-// next/dynamic ensures the component (and its dependencies) are only loaded
-// when FINANCE_PANELS_ENABLED is true; the chunk is absent from the bundle
-// when the flag is off (default).
-const PnlDashboardSection = nextDynamic(
-  () =>
-    import("@/components/PnlDashboardSection").then(
-      (m) => m.PnlDashboardSection,
-    ),
-  { ssr: false },
-);
-import { LlmSpendSection } from "@/components/LlmSpendSection";
+import { PnlDashboardSectionLazy } from "@/components/PnlDashboardSectionLazy";
 import { ProductTour } from "@/components/ProductTour";
 
 // Cross-project dashboard — aggregate-first layout (Kanban #869, 2026-05-13).
@@ -145,7 +135,7 @@ function AggregateSummary({ stats }: { stats: ProjectStatsEntry[] }) {
     <section
       data-aggregate-summary
       aria-label="Aggregate summary across all active projects"
-      className="mb-5 rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900"
+      className="glass-surface mb-5 rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900"
     >
       <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
         Across all projects
@@ -249,7 +239,7 @@ function CompactProjectCard({
     <article
       data-project-card
       data-project-name={entry.name}
-      className="flex flex-col gap-2 rounded-md border border-zinc-200 bg-white p-3 transition-colors hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
+      className="glass-card flex flex-col gap-2 rounded-md border border-zinc-200 bg-white p-3 transition-colors hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
     >
       <header className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 flex-col gap-0.5">
@@ -400,20 +390,24 @@ export default async function DashboardPage() {
   // (DashboardRefresher) refreshes this section automatically when any task
   // row changes. Failure degrades to a zero-row placeholder so a single API
   // hiccup doesn't blank the rest of the dashboard.
-  const [stats, projects, auditRollup, openFlags, activeTasks] = await Promise.all([
-    getProjectsStats(),
-    listProjects({ status: 1 }),
-    getAuditDailyRollup(),
-    listAuditFlags().catch(() => []),
-    getCrossProjectActiveTasks().catch(
-      (): DashboardActiveTasks => ({ rows: [], total_count: 0 }),
-    ),
-  ]);
+  // Kanban #2356 — monthly billing-cycle spend. Portfolio-wide (no project_id);
+  // degrades to null on API hiccup so a single failure doesn't blank the page.
+  const [stats, projects, auditRollup, openFlags, activeTasks, monthly] =
+    await Promise.all([
+      getProjectsStats(),
+      listProjects({ status: 1 }),
+      getAuditDailyRollup(),
+      listAuditFlags().catch(() => []),
+      getCrossProjectActiveTasks().catch(
+        (): DashboardActiveTasks => ({ rows: [], total_count: 0 }),
+      ),
+      getMonthlyUsage().catch((): MonthlyUsageResponse | null => null),
+    ]);
   const projectsById = new Map<number, ProjectRead>();
   for (const p of projects) projectsById.set(p.id, p);
 
   return (
-    <main className="flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950">
+    <main className="glass-board flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950">
       {/* T3 (#1362) — welcome banner; self-controls visibility (client-side
           localStorage flag + own-project check). Pass the already-fetched
           project list so the banner can detect whether the user has any own
@@ -425,31 +419,34 @@ export default async function DashboardPage() {
         <span className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
           Dashboard
         </span>
-        <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
-          ·
-        </span>
-        <span className="text-zinc-500 dark:text-zinc-400 tabular-nums">
-          {stats.length} project{stats.length === 1 ? "" : "s"}
-        </span>
+        <DashboardRefresher />
         <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
-          <DashboardRefresher />
-          <AuditorVisibilityToggle />
-          <NewProjectModal />
-          <InboxBadge />
-          <FlagBellBadge />
-          {/* #1582 — first-visit product tour: auto-fires once for new users;
-              this button is the always-available "Take the tour" replay. */}
-          <ProductTour />
-          {/* #1017 — agent gallery entry. Minimal text link, matches the
-              header's other nav affordances. */}
+          {/* #1017 — agent gallery entry. Moved to front of right cluster (#2378). */}
           <Link
             href="/agents"
             data-nav-agents
-            className="text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+            className="glass-glow inline-flex items-center rounded border border-zinc-300 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-400 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
           >
             Agents
           </Link>
-          <ThemePicker />
+          <NewProjectModal />
+          <InboxBadge />
+          <FlagBellBadge />
+          {/* #2375 (R5) — Settings nav. Now a gear icon immediately after the
+              bell (#2378). /settings has no other nav link; this is its sole
+              discoverable entry. */}
+          <Link
+            href="/settings"
+            data-nav-settings
+            aria-label="Settings"
+            title="Settings"
+            className="inline-flex items-center text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+          >
+            <Icon name="agent-config" size={16} aria-hidden />
+          </Link>
+          {/* #1582 — first-visit product tour: auto-fires once for new users;
+              this button is the always-available "Take the tour" replay. */}
+          <ProductTour />
         </span>
       </header>
 
@@ -464,50 +461,12 @@ export default async function DashboardPage() {
 
           <AggregateSummary stats={stats} />
 
-          {/* Cost/token strip (Kanban #871). Sibling section BETWEEN the
-              lifecycle aggregate and the per-project grid — separate concern
-              (usage) from the lifecycle counts above and the navigation
-              index below. */}
+          {/* Cost/token strip (Kanban #871). Sibling section ABOVE the
+              per-project grid — separate concern (usage) from the lifecycle
+              counts above and the navigation index below. */}
           <CostSummary
             stats={stats}
             ariaLabel="Portfolio-wide token and cost usage"
-          />
-
-          {/* Kanban #2135 — LLM API spend summary. Client-side fetch; outside
-              the finance flag so it's always visible to the operator. */}
-          <LlmSpendSection />
-
-          {/* Kanban #1329 (M6 FE) — cross-project P&L rollup. Operator-level
-              view of revenue / expenses / net per project in the chosen
-              window. Sits BELOW CostSummary (cost side first, P&L side after)
-              and ABOVE the per-project navigation grid.
-              Gated by NEXT_PUBLIC_FINANCE_PANELS_ENABLED (Kanban #1392). */}
-          {FINANCE_PANELS_ENABLED && (
-            <PnlDashboardSection
-              defaultCollapsed={false}
-              storageKey="dashboard.panels.pnl.expanded"
-            />
-          )}
-
-          {/* Kanban #945 — cross-project active-tasks list. Operator-level
-              view of tasks in {in-progress, review, blocked} across every
-              active project. Refreshes via DashboardRefresher's SSE-driven
-              router.refresh() (server-component fetch above). Sits BELOW
-              PnlDashboardSection and ABOVE the per-project nav grid. */}
-          <CrossProjectActiveTasksList
-            data={activeTasks}
-            defaultCollapsed={false}
-            storageKey="dashboard.panels.active-tasks.expanded"
-          />
-
-          {/* Auditor activity (Kanban #1082 + #1291). Cross-project 7-day verdict
-              rollup; hidden entirely when the API returns [] OR when the user
-              toggles the panel off (AuditorVisibilityToggle in the header).
-              Client visibility managed by AuditorActivityPanel (localStorage). */}
-          <AuditorActivityPanel
-            rollup={auditRollup}
-            defaultCollapsed={false}
-            storageKey="dashboard.panels.auditor.expanded"
           />
 
           {/* Per-project compact grid (SECONDARY). The aggregate section above
@@ -532,6 +491,49 @@ export default async function DashboardPage() {
               ))}
             </div>
           </section>
+
+          {/* Kanban #2356 — monthly billing-cycle spend. Sits BELOW the
+              per-project grid (cross-project detail sections). Degrades
+              gracefully when monthly=null. */}
+          {monthly != null && (
+            <MonthlySpendSection
+              data={monthly}
+              defaultCollapsed={false}
+              storageKey="dashboard.panels.monthly.expanded"
+            />
+          )}
+
+          {/* Kanban #1329 (M6 FE) — cross-project P&L rollup. Operator-level
+              view of revenue / expenses / net per project in the chosen
+              window. Sits BELOW the per-project grid (cross-project detail
+              sections). Gated by NEXT_PUBLIC_FINANCE_PANELS_ENABLED (#1392). */}
+          {FINANCE_PANELS_ENABLED && (
+            <PnlDashboardSectionLazy
+              defaultCollapsed={false}
+              storageKey="dashboard.panels.pnl.expanded"
+            />
+          )}
+
+          {/* Kanban #945 — cross-project active-tasks list. Operator-level
+              view of tasks in {in-progress, review, blocked} across every
+              active project. Refreshes via DashboardRefresher's SSE-driven
+              router.refresh() (server-component fetch above). Sits BELOW
+              the per-project nav grid. */}
+          <CrossProjectActiveTasksList
+            data={activeTasks}
+            defaultCollapsed={false}
+            storageKey="dashboard.panels.active-tasks.expanded"
+          />
+
+          {/* Auditor activity (Kanban #1082 + #1291). Cross-project 7-day verdict
+              rollup; hidden entirely when the API returns [].
+              Client visibility managed by AuditorActivityPanel (localStorage).
+              Sits BELOW the per-project nav grid. */}
+          <AuditorActivityPanel
+            rollup={auditRollup}
+            defaultCollapsed={false}
+            storageKey="dashboard.panels.auditor.expanded"
+          />
         </>
       )}
     </main>

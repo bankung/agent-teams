@@ -80,12 +80,14 @@ async def test_push_subscription_crud_happy_round_trip(client) -> None:
     assert created["auth"] == payload["keys"]["auth"]
     assert created["project_id"] is None
     assert created["status"] == 1
-    # Default kinds_enabled (D3 — all four True)
+    # Default kinds_enabled (D3 — four True + task_halted=False; 5-key default
+    # since commit 56fc563 / Kanban #1841 added task_halted opt-in key).
     assert created["kinds_enabled"] == {
         "hitl_needed": True,
         "task_done": True,
         "task_failed": True,
         "budget_warn": True,
+        "task_halted": False,
     }
 
     # GET list — row visible

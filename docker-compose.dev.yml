@@ -5,6 +5,12 @@
 
 services:
   web:
+    environment:
+      # WATCHPACK_POLLING enables inotify-less file watching via polling — required on
+      # Windows Docker Desktop bind-mounts where inotify events don't propagate from
+      # host to container. Without this, `next dev` (webpack) never detects source
+      # changes and HMR / SSR recompile never fires. Polling interval defaults to 300ms.
+      WATCHPACK_POLLING: "true"
     volumes:
       # Bind ./web read-write so source edits hot-reload via `next dev`. Mount node_modules
       # as an anonymous volume so the host node_modules (if any) doesn't clobber the

@@ -67,7 +67,11 @@ ALLOWLIST: tuple[tuple[str, ...], ...] = (
     ("npm", "run", "build"),
     ("pnpm", "run", "build"),
     ("python", "-m", "pytest"),
-    ("docker", "compose", "exec"),
+    # ("docker", "compose", "exec") removed: the prefix permitted ANY sub-command
+    # (e.g. "docker compose exec api rm -rf /") bypassing the denylist because the
+    # first token is "docker", not a denied command. No in-repo langgraph code uses
+    # this entry; all docker compose exec calls are operator-run from the host
+    # terminal (docs / readme_dev.md). Kanban #2503.
     ("git", "status"),
     ("git", "diff"),
 )
@@ -106,7 +110,7 @@ class ShellRunInput(ToolInput):
         description=(
             "Shell command to run. Must start with an ALLOWLISTED prefix "
             "(pytest, pnpm test, npm test, tsc, npm/pnpm run build, "
-            "python -m pytest, docker compose exec, git status, git diff). "
+            "python -m pytest, git status, git diff). "
             "Must NOT contain shell-control chars (| ; & $ ` > < && || $(...). "
             "Must NOT start with a denylisted command "
             "(rm/sudo/kill/dd/mkfs/chmod/chown/mv/cp)."
@@ -125,9 +129,9 @@ class ShellRunTool(Tool):
     name = "shell_run"
     description = (
         "Run a shell command from a narrow allowlist (pytest, npm test, tsc, "
-        "git status, git diff, docker compose exec, python -m pytest, "
-        "npm/pnpm run build). Hard denylist: rm/sudo/kill/dd/mkfs/chmod/chown/"
-        "mv/cp. Composite commands (pipes, redirections, &&, ||, subshells) "
+        "git status, git diff, python -m pytest, npm/pnpm run build). "
+        "Hard denylist: rm/sudo/kill/dd/mkfs/chmod/chown/mv/cp. "
+        "Composite commands (pipes, redirections, &&, ||, subshells) "
         "are refused outright. Returns stdout in output, stderr in error_msg "
         "on non-zero exit, with a {timeout_s}s subprocess timeout."
     )

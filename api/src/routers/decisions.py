@@ -8,6 +8,7 @@ Project scoping follows the `X-Project-Id` header convention (same as `/api/task
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -19,6 +20,8 @@ from src.db import get_session
 from src.models.task import Task
 from src.schemas.task import DecisionListItem, OptionItem
 from src.services.session_project import require_project_id_header
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/decisions", tags=["decisions"])
 
@@ -118,6 +121,7 @@ async def list_decisions(
                     typed_options.append(OptionItem(**opt))
                 except Exception:
                     # Gracefully skip malformed option entries rather than 500ing.
+                    logger.warning("list_decisions: skipped malformed option entry %r", opt)
                     pass
 
         items.append(

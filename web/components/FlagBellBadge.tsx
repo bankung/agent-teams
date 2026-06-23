@@ -39,7 +39,19 @@ export function FlagBellBadge() {
   });
 
   // Initial fetch on mount.
+  //
+  // #2492 — deliberately NOT migrated to useAsyncData. `count` is a
+  // multi-writer state: this mount fetch, the SSE row_changed handler
+  // (onTaskChange/onProjectChange), and the fallback poll interval ALL call the
+  // same `refresh`. useAsyncData(fetcher, deps) owns its own `data` and only
+  // re-fetches on dep change — it cannot share `count` with the SSE/poll
+  // writers, and its error state would break the deliberate "keep last known
+  // value on transient error" behavior (refresh swallows errors). This effect
+  // just fires the shared imperative refresh once on mount, so the warning is a
+  // false-positive; disabled with rationale rather than contorting the
+  // poll+SSE design.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh();
   }, [refresh]);
 

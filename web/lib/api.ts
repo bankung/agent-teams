@@ -92,6 +92,12 @@ export type ProjectRead = {
   // Kanban #2300 (2026-06-11) — per-project thinking effort for headless engine.
   // NULL = use global default (= off). Values: off|low|medium|high|extra|auto.
   effort_mode?: string | null;
+  // Kanban #1304 (2026-06-15) — per-project pre-task cost-forecast gate ceiling
+  // (USD). NULL = NO gate (the NewTaskModal never shows the confirm modal). A
+  // number = the USD ceiling above which the post-create forecast triggers the
+  // confirm modal. Serialized as a JSON number (BE Decimal, 2dp). Optional on
+  // the FE type for defensive resilience against pre-#1304 serialized payloads.
+  cost_forecast_threshold_usd?: number | null;
 };
 
 // AcceptanceCriterion — one entry in TaskRead.acceptance_criteria (#797).
@@ -356,6 +362,16 @@ function applyActor(
   if (actor && actor.trim().length > 0) headers["X-Actor"] = actor.trim();
 }
 
+// applyOperatorToken — stamp X-Operator-Token header when token is non-empty
+// after trim. Mirrors the agentWriteHeaders trim logic at line 2731-2732.
+function applyOperatorToken(
+  headers: Record<string, string>,
+  token?: string,
+): void {
+  const t = token?.trim();
+  if (t) headers["X-Operator-Token"] = t;
+}
+
 export async function getProjectByName(name: string): Promise<ProjectRead> {
   return jsonFetch<ProjectRead>(
     `/api/projects/by-name/${encodeURIComponent(name)}`,
@@ -507,6 +523,9 @@ export type ProjectUpdateBody = {
   // Kanban #2300 (2026-06-11) — per-project thinking effort for headless engine.
   // NULL = global default (= off). Values: off|low|medium|high|extra|auto.
   effort_mode?: "off" | "low" | "medium" | "high" | "extra" | "auto" | null;
+  // Kanban #1014 — form-authored approval policies over the #957 evaluator.
+  // Explicit null clears; object replaces the full JSONB document.
+  approval_policies?: Record<string, unknown> | null;
 };
 
 export async function updateProject(
@@ -526,10 +545,13 @@ export async function updateProject(
 export async function grantConsent(
   projectId: number,
   confirmName: string,
+  operatorToken?: string,
 ): Promise<ProjectRead> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  applyOperatorToken(headers, operatorToken);
   return jsonFetch<ProjectRead>(`/api/projects/${projectId}/grant-consent`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ confirm_name: confirmName }),
   });
 }
@@ -569,10 +591,12 @@ export async function killProject(
   body: KillProjectBody,
   force = false,
   actor?: string,
+  operatorToken?: string,
 ): Promise<KillReviveResponse> {
   const qs = force ? "?force=true" : "";
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   applyActor(headers, actor);
+  applyOperatorToken(headers, operatorToken);
   return jsonFetch<KillReviveResponse>(`/api/projects/${projectId}/kill${qs}`, {
     method: "POST",
     headers,
@@ -583,9 +607,11 @@ export async function killProject(
 export async function reviveProject(
   projectId: number,
   actor?: string,
+  operatorToken?: string,
 ): Promise<KillReviveResponse> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   applyActor(headers, actor);
+  applyOperatorToken(headers, operatorToken);
   return jsonFetch<KillReviveResponse>(`/api/projects/${projectId}/revive`, {
     method: "POST",
     headers,
@@ -677,6 +703,7 @@ export async function listProjectAuditTasks(
 
 type ListTasksOpts = {
   pending?: boolean;
+  process_status?: TaskStatusValue;
   parent_task_id?: number;
   top_level_only?: boolean;
   limit?: number;
@@ -697,6 +724,8 @@ export async function listTasks(
 ): Promise<TaskRead[]> {
   const qs = new URLSearchParams();
   if (opts.pending) qs.set("pending", "true");
+  if (opts.process_status !== undefined)
+    qs.set("process_status", String(opts.process_status));
   if (opts.top_level_only) qs.set("top_level_only", "true");
   else if (opts.parent_task_id !== undefined)
     qs.set("parent_task_id", String(opts.parent_task_id));
@@ -716,8 +745,8 @@ export async function listTasks(
 // milestone filters appear incomplete. listAllTasks paginates at PAGE=500
 // until a page shorter than PAGE is returned (= last page), then merges.
 // Only the opts fields that are safe to combine with offset are forwarded
-// (pending / top_level_only / parent_task_id / milestone_id / due_from /
-// due_to). `opts.limit` is intentionally ignored — the caller wants ALL rows.
+// (pending / process_status / top_level_only / parent_task_id / milestone_id /
+// due_from / due_to). `opts.limit` is intentionally ignored — the caller wants ALL rows.
 const _PAGE = 500;
 export async function listAllTasks(
   projectId: number,
@@ -728,6 +757,8 @@ export async function listAllTasks(
   while (true) {
     const qs = new URLSearchParams();
     if (opts.pending) qs.set("pending", "true");
+    if (opts.process_status !== undefined)
+      qs.set("process_status", String(opts.process_status));
     if (opts.top_level_only) qs.set("top_level_only", "true");
     else if (opts.parent_task_id !== undefined)
       qs.set("parent_task_id", String(opts.parent_task_id));
@@ -846,6 +877,71 @@ export async function createTask(
     },
     body: JSON.stringify(body),
   });
+}
+
+// ============================================================================
+// Kanban #1304 (2026-06-15) — POST /api/tasks/{id}/cost-forecast.
+//
+// PRE-run cost forecast for an already-created task (Option-A flow: create the
+// task first, THEN forecast). NO request body — the BE reads the task's text
+// fields + attached resources. X-Project-Id scoped (404 on missing / wrong-
+// project task). Mirror of api/src/schemas/task.py:CostForecastRead.
+//
+// `breakdown.{prompt,role_brief,attached_resources}` sum to estimated_tokens
+// (the INPUT total); `completion` is the priced output proxy. `estimated_usd`
+// is a JSON number (BE Decimal, 4dp). `confidence` reflects resource-tag
+// completeness + model-known state.
+// ============================================================================
+
+export type CostForecastBreakdown = {
+  prompt: number;
+  role_brief: number;
+  attached_resources: number;
+  completion: number;
+};
+
+export type CostForecastResult = {
+  estimated_usd: number;
+  estimated_tokens: number;
+  breakdown: CostForecastBreakdown;
+  confidence: "low" | "med" | "high";
+};
+
+export async function costForecast(
+  projectId: number,
+  taskId: number,
+): Promise<CostForecastResult> {
+  return jsonFetch<CostForecastResult>(`/api/tasks/${taskId}/cost-forecast`, {
+    method: "POST",
+    headers: { "X-Project-Id": String(projectId) },
+  });
+}
+
+// deleteTask — DELETE /api/tasks/{id} (soft-delete; flips status=0). Returns
+// 204 (no body) on success; idempotent on already-deleted rows. X-Project-Id
+// scoped (404 on cross-project / missing; 409 when active subtasks reference
+// the task). Used by the #1304 cost-gate "Cancel" path to remove a task that
+// was created in the Option-A flow but the operator declined to run.
+export async function deleteTask(
+  projectId: number,
+  taskId: number,
+): Promise<void> {
+  // DELETE returns 204 (no body) — jsonFetch would explode parsing JSON on an
+  // empty body; call fetch directly (mirrors deleteMilestone / push.unsubscribe).
+  const url = `${apiBaseUrl()}/api/tasks/${taskId}`;
+  const response = await fetch(url, {
+    method: "DELETE",
+    cache: "no-store",
+    headers: { Accept: "application/json", "X-Project-Id": String(projectId) },
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as {
+      detail?: unknown;
+    };
+    const message =
+      formatDetail(body.detail) ?? `${response.status} ${response.statusText}`;
+    throw new HttpError(response.status, body.detail, message);
+  }
 }
 
 // parseTaskText — POST /api/tasks/ai-parse (Kanban #857 FE / #856 BE).
@@ -1607,6 +1703,7 @@ export type DashboardActiveTaskRow = {
   priority: TaskPriorityValue;
   updated_at: string; // ISO 8601
   blocked_by: number | null;
+  blocked_by_terminal: boolean; // #2419: true when blocker is DONE/CANCELLED — chip suppressed
 };
 
 export type DashboardActiveTasks = {
@@ -1742,7 +1839,7 @@ export const handoffTemplates = {
 };
 
 // ============================================================================
-// Kanban #1655 — Platform Integrations settings (PlatformSettingsModal).
+// Kanban #1655 — Platform Integrations settings (IntegrationsPanel on /settings).
 //
 // Global, operator-level surface (NO X-Project-Id header — integrations are
 // platform-wide, not per-project). Status is READ-ONLY — no toggle. Keys live
@@ -2352,6 +2449,56 @@ export async function getDailyUsage(opts?: {
 }
 
 // ============================================================================
+// Kanban #2356 — GET /api/usage/monthly  (billing-cycle spend surface)
+// ============================================================================
+
+// UsageMonthlyTaskRow — per-task cost contribution inside one billing cycle.
+// cost fields are 4-dp decimal strings (same Decimal-as-string convention).
+// task_id/task_title are null for the "unattributed" bucket.
+export type UsageMonthlyTaskRow = {
+  task_id: number | null;
+  task_title: string | null;
+  mode_a_cost_usd: string;   // e.g. "10.3678"
+  mode_b_cost_usd: string;
+  total_cost_usd: string;
+};
+
+// UsageMonthlyCycle — one billing cycle window in MonthlyUsageResponse.cycles.
+export type UsageMonthlyCycle = {
+  cycle_start: string;          // "YYYY-MM-DD"
+  cycle_end: string;            // "YYYY-MM-DD"
+  mode_a_cost_usd: string;
+  mode_a_input_tokens: number;
+  mode_a_output_tokens: number;
+  mode_b_cost_usd: string;
+  mode_b_input_tokens: number;
+  mode_b_output_tokens: number;
+  total_cost_usd: string;
+  tasks: UsageMonthlyTaskRow[];
+};
+
+export type MonthlyUsageResponse = {
+  months: number;
+  cycle_day: number;
+  cycles: UsageMonthlyCycle[];   // most-recent first; zero-filled per window
+  total_cost_usd: string;        // 4-dp decimal string
+};
+
+// getMonthlyUsage — GET /api/usage/monthly?months=N&cycle_day=D[&project_id=P].
+// No X-Project-Id header — operator-level endpoint (same as /api/usage/daily).
+export async function getMonthlyUsage(opts?: {
+  months?: number;
+  cycle_day?: number;
+  project_id?: number;
+}): Promise<MonthlyUsageResponse> {
+  const qs = new URLSearchParams();
+  if (opts?.months != null) qs.set("months", String(opts.months));
+  if (opts?.cycle_day != null) qs.set("cycle_day", String(opts.cycle_day));
+  if (opts?.project_id != null) qs.set("project_id", String(opts.project_id));
+  return jsonFetch<MonthlyUsageResponse>(buildPath("/api/usage/monthly", qs));
+}
+
+// ============================================================================
 // Kanban #1305 — Task output files (listing + raw bytes).
 // ============================================================================
 
@@ -2484,11 +2631,18 @@ export type AgentSpawn = {
 };
 
 // AgentDetail — GET /api/agents/{name}. Everything in AgentSummary plus the
-// raw frontmatter block, the full (untruncated) description, and recent spawns.
+// raw frontmatter block, the full (untruncated) description, recent spawns,
+// and — Kanban #2481 finish — the structured tools list + raw markdown body
+// for edit pre-fill.
+//   tools: string[] = explicit tool list; "All tools" = the literal sentinel;
+//          null = no `tools:` key (inherit / all).
+//   body:  raw markdown after the frontmatter fence; "" when absent.
 export type AgentDetail = AgentSummary & {
   raw_frontmatter: string;
   full_description: string;
   spawns: AgentSpawn[];
+  tools: string[] | "All tools" | null;
+  body: string;
 };
 
 // getAgents — GET /api/agents. Platform-level (no X-Project-Id). Returns the
@@ -2502,4 +2656,123 @@ export async function getAgents(): Promise<AgentSummary[]> {
 // the detail page discriminates on .status === 404 → notFound().
 export async function getAgentDetail(name: string): Promise<AgentDetail> {
   return jsonFetch<AgentDetail>(`/api/agents/${encodeURIComponent(name)}`);
+}
+
+// ============================================================================
+// Kanban #2481 — gated agent WRITE endpoints (create + edit). Platform-level
+// (NO X-Project-Id; mirrors the gallery reads). Both write paths are guarded
+// server-side by the operator-proof header (X-Operator-Token = the operator's
+// OPERATOR_ACTION_KEY):
+//   POST /api/agents          → 201 AgentSummary  (create; 409 if name exists)
+//   PUT  /api/agents/{name}   → 200 AgentSummary  (edit; 404 if absent; body
+//                               name MUST equal the path name)
+//
+// SECURITY: the operator token is NEVER persisted (no localStorage / cookie /
+// NEXT_PUBLIC_*). The caller holds it in component state and passes it per-call;
+// this helper only stamps the header when a non-empty token is supplied. When
+// the server-side gate is dormant (OPERATOR_ACTION_KEY unset), a token-less call
+// still succeeds — the server is the authority, so the client never hard-requires it.
+// ============================================================================
+
+// AgentWrite — request body for POST /api/agents + PUT /api/agents/{name}.
+// Mirror of api/src/schemas/agent_metadata.py:AgentWrite (extra="forbid"
+// server-side, so callers must NOT add off-schema keys).
+//   - name        required; must match ^[a-z0-9]+(-[a-z0-9]+)*$. For PUT it must
+//                 equal the path name (the path is authoritative).
+//   - description required; non-empty after strip.
+//   - model       optional tier; omit (or null) = inherit the session default.
+//   - tools       optional; a string[] of tool names OR the literal "All tools";
+//                 omit = inherit all tools.
+//   - hooks       optional nested object (presence + mapping-type only).
+//   - scope       optional string.
+//   - body        the markdown body after the frontmatter fence; may be "".
+export type AgentWrite = {
+  name: string;
+  description: string;
+  model?: AgentModelTier | null;
+  tools?: string[] | "All tools" | null;
+  hooks?: Record<string, unknown> | null;
+  scope?: string | null;
+  body: string;
+};
+
+// AgentWriteDiagnostics — the SHAPE the file-validator 422 detail carries:
+// `{ message, diagnostics: AgentValidationError[] }`. NOTE: jsonFetch's
+// formatDetail() can only stringify a string detail or a Pydantic `msg[]`
+// array; this object detail collapses to a generic "422 …" HttpError.message.
+// So callers must read HttpError.detail (NOT .message) to surface the
+// per-field diagnostics — use extractAgentWriteDiagnostics() below.
+export type AgentWriteDiagnostics = {
+  message: string;
+  diagnostics: AgentValidationError[];
+};
+
+// extractAgentWriteDiagnostics — narrow an HttpError.detail to the validator's
+// `{message, diagnostics[]}` object, or null when the detail is a plain-string
+// Pydantic error (bad name / name-mismatch) or anything else. Lets the form
+// branch: object detail → render the diagnostics list; else → render .message.
+export function extractAgentWriteDiagnostics(
+  detail: unknown,
+): AgentWriteDiagnostics | null {
+  if (
+    detail &&
+    typeof detail === "object" &&
+    !Array.isArray(detail) &&
+    "diagnostics" in detail &&
+    Array.isArray((detail as { diagnostics: unknown }).diagnostics)
+  ) {
+    const d = detail as { message?: unknown; diagnostics: unknown[] };
+    const diagnostics = d.diagnostics.filter(
+      (x): x is AgentValidationError =>
+        !!x &&
+        typeof x === "object" &&
+        "message" in x &&
+        "severity" in x,
+    );
+    return {
+      message:
+        typeof d.message === "string"
+          ? d.message
+          : "Agent frontmatter is invalid; nothing was written.",
+      diagnostics,
+    };
+  }
+  return null;
+}
+
+// agentWriteHeaders — JSON content-type + the operator-proof header (only when
+// a non-empty token is supplied). The token is stamped per-request and never
+// stored anywhere by this module.
+function agentWriteHeaders(operatorToken?: string): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const token = operatorToken?.trim();
+  if (token) headers["X-Operator-Token"] = token;
+  return headers;
+}
+
+// createAgent — POST /api/agents. 201 AgentSummary. 403 (operator proof),
+// 409 (name exists), 422 (Pydantic field error OR validator diagnostics).
+export async function createAgent(
+  body: AgentWrite,
+  operatorToken?: string,
+): Promise<AgentSummary> {
+  return jsonFetch<AgentSummary>(`/api/agents`, {
+    method: "POST",
+    headers: agentWriteHeaders(operatorToken),
+    body: JSON.stringify(body),
+  });
+}
+
+// updateAgent — PUT /api/agents/{name}. 200 AgentSummary. The body.name MUST
+// equal `name` (the path is authoritative server-side). 403 / 404 / 422.
+export async function updateAgent(
+  name: string,
+  body: AgentWrite,
+  operatorToken?: string,
+): Promise<AgentSummary> {
+  return jsonFetch<AgentSummary>(`/api/agents/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: agentWriteHeaders(operatorToken),
+    body: JSON.stringify(body),
+  });
 }

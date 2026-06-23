@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   cancelTask,
@@ -30,66 +30,6 @@ import { TaskOutputs } from "./TaskOutputs";
 import { TaskToolCalls } from "./TaskToolCalls";
 import { ModelTierSelect } from "./ModelTierSelect";
 
-// #1581 — "Tip: add AC" banner. Follows the same localStorage pattern as
-// DashboardWelcomeBanner: show=false on SSR, hydrate from localStorage in
-// useEffect, dismiss writes the key permanently (per browser).
-const AC_TIP_LS_KEY = "agent-teams.taskDrawer.acTipDismissed";
-
-function AcTipBanner() {
-  const [show, setShow] = useState(false);
-
-  useEffect(() => {
-    try {
-      const dismissed = localStorage.getItem(AC_TIP_LS_KEY) === "true";
-      if (!dismissed) setShow(true);
-    } catch {
-      // localStorage blocked (private browsing, etc.) — silently skip
-    }
-  }, []);
-
-  if (!show) return null;
-
-  function handleDismiss() {
-    try {
-      localStorage.setItem(AC_TIP_LS_KEY, "true");
-    } catch {
-      // silently ignore
-    }
-    setShow(false);
-  }
-
-  return (
-    <aside
-      role="note"
-      aria-label="Tip: Acceptance Criteria"
-      data-ac-tip-banner
-      className="flex items-start justify-between gap-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100"
-    >
-      <p className="leading-relaxed">
-        <span className="font-semibold">Tip:</span> Adding Acceptance Criteria
-        helps AI agents stay on target — they check each criterion before
-        marking a task done. Ask Lead to set them when creating a task.
-      </p>
-      <button
-        type="button"
-        aria-label="Dismiss tip"
-        onClick={handleDismiss}
-        className="shrink-0 rounded p-0.5 text-amber-600 hover:bg-amber-100 hover:text-amber-800 dark:text-amber-400 dark:hover:bg-amber-900/40 dark:hover:text-amber-200"
-      >
-        <svg
-          aria-hidden
-          xmlns="http://www.w3.org/2000/svg"
-          viewBox="0 0 16 16"
-          fill="currentColor"
-          className="h-3.5 w-3.5"
-        >
-          <path d="M2.22 2.22a.75.75 0 0 1 1.06 0L8 6.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L9.06 8l4.72 4.72a.75.75 0 1 1-1.06 1.06L8 9.06l-4.72 4.72a.75.75 0 0 1-1.06-1.06L6.94 8 2.22 3.28a.75.75 0 0 1 0-1.06Z" />
-        </svg>
-      </button>
-    </aside>
-  );
-}
-
 type Props = {
   task: TaskRead;
   allTasks: TaskRead[];
@@ -106,6 +46,7 @@ const STATUS_LABEL: Record<number, string> = {
   [TaskStatus.BLOCKED]: "blocked",
   [TaskStatus.DONE]: "done",
   [TaskStatus.CANCELLED]: "cancelled",
+  [TaskStatus.HALTED_PENDING_USER]: "halted",
 };
 
 function truncate(s: string, n: number): string {
@@ -120,7 +61,6 @@ function formatTokens(n: number): string {
   return `${Math.round(n / 100_000) / 10}M`.replace(/\.0M$/, "M");
 }
 
-// TaskDetail — right-side drawer (#771); backdrop + Escape + click-outside, #818
 export function TaskDetail({
   task,
   allTasks,
@@ -131,8 +71,10 @@ export function TaskDetail({
 }: Props) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // lazy: don't fetch until the user expands the disclosure.
+  const [alsoBlocksOpen, setAlsoBlocksOpen] = useState(false);
   const [alsoBlocks, setAlsoBlocks] = useState<TaskRead[] | null>(null);
-  // #854 — inline cancel; state: cancelOpen / cancelReason
+  // #854 — inline cancel
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
   // #1677 — local model-tier selection; syncs from task.model_override on mount
@@ -140,15 +82,13 @@ export function TaskDetail({
     task.model_override,
   );
 
-  // #1677 — keep local model-override in sync when the task prop changes
-  // (e.g. drawer re-used for a different task after an onPatch update).
+  // #1677 — sync on task switch (e.g. drawer re-used for a different task after onPatch)
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- optimistic-patch sync: modelOverride is editable local state that must track the server value on task switch
     setModelOverride(task.model_override);
   }, [task.id, task.model_override]);
 
-  // #1868 — milestone grouping + due date. `milestones` populates the picker;
-  // milestoneId / dueDate mirror the task and sync on prop change. Both are
-  // optional optimistic-PATCH mutators (same posture as model_override above).
+  // #1868 — milestone + due date optimistic-PATCH state (same posture as model_override)
   const [milestones, setMilestones] = useState<MilestoneRead[]>([]);
   const [milestoneId, setMilestoneId] = useState<number | null>(
     task.milestone_id ?? null,
@@ -156,20 +96,18 @@ export function TaskDetail({
   const [dueDate, setDueDate] = useState<string>(task.due_date ?? "");
 
   useEffect(() => {
-    setMilestoneId(task.milestone_id ?? null);
+    setMilestoneId(task.milestone_id ?? null); // eslint-disable-line react-hooks/set-state-in-effect -- optimistic-patch sync: milestoneId/dueDate are editable local state that must track the server value on task switch
     setDueDate(task.due_date ?? "");
   }, [task.id, task.milestone_id, task.due_date]);
 
-  // #2181 — inline description editing state
   const [descEditing, setDescEditing] = useState(false);
   const [descDraft, setDescDraft] = useState(task.description ?? "");
 
   // SSE-refresh guard: only sync description from server when NOT editing
   useEffect(() => {
     if (!descEditing) {
-      setDescDraft(task.description ?? "");
+      setDescDraft(task.description ?? ""); // eslint-disable-line react-hooks/set-state-in-effect -- SSE guard: descDraft is an in-place edit buffer that must not be overwritten while the user is typing
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task.id, task.description, descEditing]);
 
   const handleDescSave = async () => {
@@ -196,8 +134,7 @@ export function TaskDetail({
     onPatch(patched);
   };
 
-  // Fetch the project's active milestones once for the picker. Failure degrades
-  // to an empty list (picker still shows "None" + the current assignment).
+  // Fetch milestones once for the picker; failure degrades to empty list.
   useEffect(() => {
     let cancelled = false;
     listMilestones(projectId, { limit: 500 })
@@ -212,27 +149,45 @@ export function TaskDetail({
     };
   }, [projectId]);
 
+  // MED-2: stash deps in refs so the keydown listener subscribes ONCE ([] deps),
+  // not on every SSE tick that re-creates the onClose arrow in Board.
+  const cancelOpenRef = useRef(cancelOpen);
+  const pickerOpenRef = useRef(pickerOpen);
+  const submittingRef = useRef(submitting);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { cancelOpenRef.current = cancelOpen; }, [cancelOpen]);
+  useEffect(() => { pickerOpenRef.current = pickerOpen; }, [pickerOpen]);
+  useEffect(() => { submittingRef.current = submitting; }, [submitting]);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (submitting) return;
-      // Nested ESC precedence: inner UIs absorb ESC before drawer (#854)
-      if (cancelOpen) {
+      if (submittingRef.current) return;
+      // #854 — inner UIs absorb ESC before drawer
+      if (cancelOpenRef.current) {
         setCancelOpen(false);
         setCancelReason("");
-      } else if (pickerOpen) {
+      } else if (pickerOpenRef.current) {
         setPickerOpen(false);
       } else {
-        onClose();
+        onCloseRef.current();
       }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [cancelOpen, pickerOpen, submitting, onClose]);
+  }, []);
 
+  // Reset lazy state when task changes so a re-open starts fresh.
   useEffect(() => {
-    let cancelled = false;
+    setAlsoBlocksOpen(false); // eslint-disable-line react-hooks/set-state-in-effect -- lazy-disclosure reset: alsoBlocks is derived from task.id fetch, must be cleared on task switch so stale data from a prior task doesn't show
     setAlsoBlocks(null);
+  }, [task.id]);
+
+  // Fetch only when the user expands the "Also blocks" disclosure.
+  useEffect(() => {
+    if (!alsoBlocksOpen || alsoBlocks !== null) return;
+    let cancelled = false;
     getTaskBlocks(projectId, task.id)
       .then((rows) => {
         if (!cancelled) setAlsoBlocks(rows);
@@ -243,7 +198,7 @@ export function TaskDetail({
     return () => {
       cancelled = true;
     };
-  }, [projectId, task.id]);
+  }, [alsoBlocksOpen, alsoBlocks, projectId, task.id]);
 
   const blockerTask = useMemo(() => {
     if (task.blocked_by == null) return null;
@@ -267,7 +222,6 @@ export function TaskDetail({
     }
   };
 
-  // #854 — PATCH ps=6 + reason; close drawer on success
   const handleCancelTask = async () => {
     if (submitting) return;
     const reason = cancelReason.trim();
@@ -288,7 +242,7 @@ export function TaskDetail({
 
   const isTerminal = ([TaskStatus.DONE, TaskStatus.CANCELLED] as number[]).includes(task.process_status);
 
-  // #860 — show Run for TODO+ai+manual; auto_pickup over auto_headless skips consent gate. Details: shared/decisions.md 2026-05-14
+  // #860 — show Run for TODO+ai+manual; auto_pickup skips consent gate (decisions.md 2026-05-14)
   const canRun =
     task.process_status === TaskStatus.TODO &&
     task.task_kind === TaskKind.AI &&
@@ -310,7 +264,6 @@ export function TaskDetail({
     }
   };
 
-  // #1677 — PATCH model_override; null clears back to inherit.
   const handleModelOverrideChange = async (
     tier: "haiku" | "sonnet" | "opus" | null,
   ) => {
@@ -332,7 +285,6 @@ export function TaskDetail({
     }
   };
 
-  // #1868 — PATCH milestone_id; null unassigns. Optimistic + revert on error.
   const handleMilestoneChange = async (newId: number | null) => {
     if (submitting) return;
     const prev = milestoneId;
@@ -352,7 +304,6 @@ export function TaskDetail({
     }
   };
 
-  // #1868 — PATCH due_date; "" clears to null. Optimistic + revert on error.
   const handleDueDateChange = async (value: string) => {
     if (submitting) return;
     const prev = dueDate;
@@ -390,7 +341,6 @@ export function TaskDetail({
         className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[90vw] flex-col overflow-y-auto border-l border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 sm:max-w-[480px] md:max-w-[640px] lg:max-w-[720px]"
         onMouseDown={(e) => e.stopPropagation()}
       >
-        {/* Header */}
         <header className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -409,7 +359,6 @@ export function TaskDetail({
             </h2>
             <CostStrip task={task} />
           </div>
-          {/* #954 — 44px min tap target on mobile; desktop restores px-2 py-1 chip size */}
           <button
             type="button"
             onClick={onClose}
@@ -422,8 +371,6 @@ export function TaskDetail({
           </button>
         </header>
 
-        {/* Body */}
-        {/* #859 — gap-6 between sections; see Section/QuestionInteractionSection */}
         <div className="flex flex-col gap-6 px-4 py-4 text-sm">
           {/* #818 — fixed 120px label column */}
           <Section label="Status">
@@ -445,7 +392,6 @@ export function TaskDetail({
                 </>
               )}
             </dl>
-            {/* #854 — reason display; truncated, italic */}
             {task.status_change_reason && (
               <p
                 data-status-change-reason
@@ -458,255 +404,257 @@ export function TaskDetail({
                 {truncate(task.status_change_reason, 120)}
               </p>
             )}
-            {/* #860 — Run: flips run_mode manual→auto_pickup; see canRun guard above */}
-            {canRun && (
-              <div className="mt-2" data-run-task-control>
-                {/* #954 — 44px min tap target on mobile */}
-                <button
-                  type="button"
-                  onClick={handleRun}
-                  disabled={submitting}
-                  data-run-task-trigger
-                  className="rounded border border-violet-300 bg-violet-600 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-white hover:bg-violet-700 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-3 sm:py-1 dark:border-violet-700 dark:bg-violet-700 dark:hover:bg-violet-600"
-                >
-                  {submitting ? "Queuing…" : "Run"}
-                </button>
-              </div>
-            )}
-            {/* #1349 — per-task HITL nudge toggle. Visible on non-terminal
-                tasks (terminal tasks no longer fire nudges anyway, so the
-                toggle would be cosmetic). Optimistic flip + revert on error. */}
-            {!isTerminal && (
-              <div className="mt-2" data-task-mute-control>
-                <TaskMuteToggle
-                  task={task}
-                  projectId={projectId}
-                  onPatch={onPatch}
-                  onError={onError}
-                />
-              </div>
-            )}
-            {/* #1677 — Model tier override: always visible, optimistic PATCH on change */}
-            <div className="mt-2" data-model-override-control>
-              <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                Model tier
-                <ModelTierSelect
-                  value={modelOverride ?? ""}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    void handleModelOverrideChange(
-                      v === "" ? null : (v as "haiku" | "sonnet" | "opus"),
-                    );
-                  }}
-                  disabled={submitting}
-                  data-model-override-select
-                />
-              </label>
-            </div>
+          </Section>
 
-            {/* #1868 — Milestone grouping: optimistic PATCH on change.
-                Wave C (#8) — searchable combobox; the defensive "#<id>"
-                fallback for a filtered-out / unfetched milestone is now owned
-                by MilestoneCombobox (its closed-input label). */}
-            <div className="mt-2" data-task-milestone-control>
-              <span className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                Milestone
-              </span>
-              <MilestoneCombobox
-                value={milestoneId}
-                onChange={(id) => void handleMilestoneChange(id)}
-                milestones={milestones}
-                disabled={submitting}
-                inputProps={{ "data-task-milestone-select": true }}
-              />
-            </div>
-
-            {/* #1868 — Due date: optimistic PATCH on change; clear sends null.
-                Wave C (#9) — calendar-popover; emitEmptyString=false so Clear
-                sends real null straight into the null-aware PATCH handler. */}
-            <div className="mt-2" data-task-due-date-control>
-              <span className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                Due date
-              </span>
-              <DatePicker
-                value={dueDate === "" ? null : dueDate}
-                onChange={(v) => void handleDueDateChange(v ?? "")}
-                emitEmptyString={false}
-                disabled={submitting}
-                inputProps={{ "data-task-due-date-input": true }}
-              />
-            </div>
-
-            {/* #854 — Cancel: hidden on terminal states */}
-            {!isTerminal && (
-              <div className="mt-2" data-cancel-task-control>
-                {!cancelOpen ? (
-                  // #954 — 44px min tap target on mobile
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCancelOpen(true);
-                      setCancelReason("");
-                    }}
-                    disabled={submitting}
-                    data-cancel-task-trigger
-                    className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-600 hover:border-red-300 hover:text-red-700 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-0.5 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:border-red-800 dark:hover:text-red-300"
-                  >
-                    Cancel task
-                  </button>
-                ) : (
-                  <div className="flex flex-col gap-1.5 rounded border border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-800 dark:bg-zinc-950/40">
-                    <label
-                      htmlFor="cancel-task-reason"
-                      className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400"
-                    >
-                      Reason for cancellation
-                    </label>
-                    <input
-                      id="cancel-task-reason"
-                      type="text"
-                      value={cancelReason}
-                      onChange={(e) => setCancelReason(e.target.value)}
-                      placeholder="e.g., superseded by #872; not needed for v2"
+          {(() => {
+            const controlsBlock = (
+              <Section label="Controls">
+                {canRun && (
+                  <div className="mt-2" data-run-task-control>
+                    <button
+                      type="button"
+                      onClick={handleRun}
                       disabled={submitting}
-                      autoFocus
-                      data-cancel-task-reason-input
-                      className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                      data-run-task-trigger
+                      className="rounded border border-violet-300 bg-violet-600 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-white hover:bg-violet-700 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-3 sm:py-1 dark:border-violet-700 dark:bg-violet-700 dark:hover:bg-violet-600"
+                    >
+                      {submitting ? "Queuing…" : "Run"}
+                    </button>
+                  </div>
+                )}
+                {/* #1349 — HITL nudge toggle; terminal tasks don't fire nudges so hidden there */}
+                {!isTerminal && (
+                  <div className="mt-2" data-task-mute-control>
+                    <TaskMuteToggle
+                      task={task}
+                      projectId={projectId}
+                      onPatch={onPatch}
+                      onError={onError}
                     />
-                    {/* #954 — 44px min tap target on mobile for the cancel confirm pair */}
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        disabled={submitting || cancelReason.trim() === ""}
-                        onClick={handleCancelTask}
-                        data-cancel-task-confirm
-                        className="rounded border border-red-300 bg-red-600 px-3 py-2 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-red-700"
-                      >
-                        Confirm cancel
-                      </button>
+                  </div>
+                )}
+                <div className="mt-2" data-model-override-control>
+                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                    Model tier
+                    <ModelTierSelect
+                      value={modelOverride ?? ""}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        void handleModelOverrideChange(
+                          v === "" ? null : (v as "haiku" | "sonnet" | "opus"),
+                        );
+                      }}
+                      disabled={submitting}
+                      data-model-override-select
+                    />
+                  </label>
+                </div>
+
+                {/* #1868 — milestone; defensive "#<id>" fallback owned by MilestoneCombobox */}
+                <div className="mt-2" data-task-milestone-control>
+                  <span className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                    Milestone
+                  </span>
+                  <MilestoneCombobox
+                    value={milestoneId}
+                    onChange={(id) => void handleMilestoneChange(id)}
+                    milestones={milestones}
+                    disabled={submitting}
+                    inputProps={{ "data-task-milestone-select": true }}
+                  />
+                </div>
+
+                {/* #1868 — due date; emitEmptyString=false so Clear sends null into PATCH handler */}
+                <div className="mt-2" data-task-due-date-control>
+                  <span className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                    Due date
+                  </span>
+                  <DatePicker
+                    value={dueDate === "" ? null : dueDate}
+                    onChange={(v) => void handleDueDateChange(v ?? "")}
+                    emitEmptyString={false}
+                    disabled={submitting}
+                    inputProps={{ "data-task-due-date-input": true }}
+                  />
+                </div>
+
+                {!isTerminal && (
+                  <div className="mt-2" data-cancel-task-control>
+                    {!cancelOpen ? (
                       <button
                         type="button"
                         onClick={() => {
-                          setCancelOpen(false);
+                          setCancelOpen(true);
                           setCancelReason("");
                         }}
                         disabled={submitting}
-                        data-cancel-task-dismiss
-                        className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:border-zinc-300 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300"
+                        data-cancel-task-trigger
+                        className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-600 hover:border-red-300 hover:text-red-700 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-0.5 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:border-red-800 dark:hover:text-red-300"
                       >
-                        Back
+                        Cancel task
+                      </button>
+                    ) : (
+                      <div className="flex flex-col gap-1.5 rounded border border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-800 dark:bg-zinc-950/40">
+                        <label
+                          htmlFor="cancel-task-reason"
+                          className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400"
+                        >
+                          Reason for cancellation
+                        </label>
+                        <input
+                          id="cancel-task-reason"
+                          type="text"
+                          value={cancelReason}
+                          onChange={(e) => setCancelReason(e.target.value)}
+                          placeholder="e.g., superseded by #872; not needed for v2"
+                          disabled={submitting}
+                          autoFocus
+                          data-cancel-task-reason-input
+                          className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                        />
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            disabled={submitting || cancelReason.trim() === ""}
+                            onClick={handleCancelTask}
+                            data-cancel-task-confirm
+                            className="rounded border border-red-300 bg-red-600 px-3 py-2 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-red-700"
+                          >
+                            Confirm cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCancelOpen(false);
+                              setCancelReason("");
+                            }}
+                            disabled={submitting}
+                            data-cancel-task-dismiss
+                            className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:border-zinc-300 disabled:opacity-50 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300"
+                          >
+                            Back
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </Section>
+            );
+
+            // #2372 (R2) — description block (shared between branches)
+            const descriptionBlock = (
+              <section className="flex flex-col gap-2" data-description-section>
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                    Description
+                  </h3>
+                  {!isTerminal && !descEditing && (
+                    <button
+                      type="button"
+                      onClick={() => { setDescDraft(task.description ?? ""); setDescEditing(true); }}
+                      disabled={submitting}
+                      aria-label="Edit description"
+                      data-description-edit-trigger
+                      className="rounded border border-zinc-200 bg-white px-2 py-0.5 text-xs font-medium text-zinc-600 hover:border-zinc-300 hover:text-zinc-800 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:border-zinc-600 dark:hover:text-zinc-200"
+                    >
+                      Edit
+                    </button>
+                  )}
+                </div>
+                {descEditing ? (
+                  <div className="flex flex-col gap-2 rounded border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-950/40">
+                    <label htmlFor="task-description-textarea" className="sr-only">
+                      Task description
+                    </label>
+                    <textarea
+                      id="task-description-textarea"
+                      rows={8}
+                      value={descDraft}
+                      onChange={(e) => setDescDraft(e.target.value)}
+                      disabled={submitting}
+                      placeholder="Enter a description…"
+                      data-description-textarea
+                      className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={handleDescSave}
+                        disabled={submitting}
+                        data-description-save
+                        className="rounded border border-violet-300 bg-violet-600 px-3 py-1 text-xs font-semibold text-white hover:bg-violet-700 disabled:opacity-50 dark:border-violet-700 dark:bg-violet-700 dark:hover:bg-violet-600"
+                      >
+                        {submitting ? "Saving…" : "Save"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setDescDraft(task.description ?? ""); setDescEditing(false); }}
+                        disabled={submitting}
+                        data-description-cancel
+                        className="rounded border border-zinc-200 bg-white px-3 py-1 text-xs font-medium text-zinc-700 hover:border-zinc-300 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300"
+                      >
+                        Cancel
                       </button>
                     </div>
                   </div>
-                )}
-              </div>
-            )}
-          </Section>
-
-          {/* #2181 — editable description; gated off for terminal tasks */}
-          <section className="flex flex-col gap-2" data-description-section>
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                Description
-              </h3>
-              {!isTerminal && !descEditing && (
-                <button
-                  type="button"
-                  onClick={() => { setDescDraft(task.description ?? ""); setDescEditing(true); }}
-                  disabled={submitting}
-                  aria-label="Edit description"
-                  data-description-edit-trigger
-                  className="rounded border border-zinc-200 bg-white px-2 py-0.5 text-xs font-medium text-zinc-600 hover:border-zinc-300 hover:text-zinc-800 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:border-zinc-600 dark:hover:text-zinc-200"
-                >
-                  Edit
-                </button>
-              )}
-            </div>
-            {descEditing ? (
-              <div className="flex flex-col gap-2 rounded border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-950/40">
-                <label htmlFor="task-description-textarea" className="sr-only">
-                  Task description
-                </label>
-                <textarea
-                  id="task-description-textarea"
-                  rows={8}
-                  value={descDraft}
-                  onChange={(e) => setDescDraft(e.target.value)}
-                  disabled={submitting}
-                  placeholder="Enter a description…"
-                  data-description-textarea
-                  className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-                />
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={handleDescSave}
-                    disabled={submitting}
-                    data-description-save
-                    className="rounded border border-violet-300 bg-violet-600 px-3 py-1 text-xs font-semibold text-white hover:bg-violet-700 disabled:opacity-50 dark:border-violet-700 dark:bg-violet-700 dark:hover:bg-violet-600"
-                  >
-                    {submitting ? "Saving…" : "Save"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setDescDraft(task.description ?? ""); setDescEditing(false); }}
-                    disabled={submitting}
-                    data-description-cancel
-                    className="rounded border border-zinc-200 bg-white px-3 py-1 text-xs font-medium text-zinc-700 hover:border-zinc-300 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div>
-                {task.description ? (
-                  <p id="taskdetail-desc" className="whitespace-pre-wrap text-zinc-800 dark:text-zinc-200">
-                    {task.description}
-                  </p>
                 ) : (
-                  <p className="text-sm italic text-zinc-500 dark:text-zinc-400">
-                    (none)
-                  </p>
+                  <div>
+                    {task.description ? (
+                      <p id="taskdetail-desc" className="whitespace-pre-wrap text-zinc-800 dark:text-zinc-200">
+                        {task.description}
+                      </p>
+                    ) : (
+                      <p className="text-sm italic text-zinc-500 dark:text-zinc-400">
+                        (none)
+                      </p>
+                    )}
+                  </div>
                 )}
-              </div>
-            )}
-          </section>
+              </section>
+            );
 
-          {/* #834 / #1335 — question/decision section; hidden for work tasks.
-              Decision tasks (interaction_kind='decision') render the
-              full OptionCard variant from DecisionInteractionView; question
-              tasks (free-text answers / legacy string-options) render the
-              original QuestionInteractionSection chip variant. */}
-          {task.interaction_kind === "decision" && (
-            <DecisionInteractionView
-              key={task.id}
-              task={task}
-              projectId={projectId}
-              onPatch={onPatch}
-              onError={onError}
-            />
-          )}
-          {task.interaction_kind === "question" && (
-            <QuestionInteractionSection
-              key={task.id}
-              task={task}
-              projectId={projectId}
-              onPatch={onPatch}
-              onError={onError}
-            />
-          )}
+            // #834/#1335 — decision renders DecisionInteractionView; question renders QuestionInteractionSection
+            const hitlBlock = (
+              <>
+                {task.interaction_kind === "decision" && (
+                  <DecisionInteractionView
+                    key={task.id}
+                    task={task}
+                    projectId={projectId}
+                    onPatch={onPatch}
+                    onError={onError}
+                  />
+                )}
+                {task.interaction_kind === "question" && (
+                  <QuestionInteractionSection
+                    key={task.id}
+                    task={task}
+                    projectId={projectId}
+                    onPatch={onPatch}
+                    onError={onError}
+                  />
+                )}
+              </>
+            );
 
-          {/* #827 — AC section always rendered (discipline gate) */}
-          {/* #1581 — first-time tip banner; dismisses to localStorage */}
-          <AcTipBanner />
-          {/* #2181 — AcEditor replaces read-only AcceptanceCriteriaSection */}
-          <AcEditor
-            criteria={task.acceptance_criteria}
-            isTerminal={isTerminal}
-            onSave={handleAcSave}
-            disabled={submitting}
-          />
+            // #827/#2181 — AcEditor always rendered (discipline gate; replaces read-only AcceptanceCriteriaSection)
+            const acEditor = (
+              <AcEditor
+                criteria={task.acceptance_criteria}
+                isTerminal={isTerminal}
+                onSave={handleAcSave}
+                disabled={submitting}
+              />
+            );
+
+            // #2372 (R2) — HITL: Metadata→HITL+AC→Desc→Controls; work: Metadata→Controls→Desc→AC
+            const isHitl = task.interaction_kind !== "work";
+            if (isHitl) {
+              return <>{hitlBlock}{acEditor}{descriptionBlock}{controlsBlock}</>;
+            }
+            return <>{controlsBlock}{descriptionBlock}{acEditor}</>;
+          })()}
 
           {task.parent_task_id !== null && (
             <Section label="Parent">
@@ -716,7 +664,6 @@ export function TaskDetail({
             </Section>
           )}
 
-          {/* Blocked-by mutator */}
           <Section label="Blocked by">
             {!pickerOpen ? (
               <div
@@ -775,62 +722,70 @@ export function TaskDetail({
             )}
           </Section>
 
-          {/* Also blocks — optional reverse-lookup */}
+          {/* expand-on-demand to avoid per-open API call */}
           <Section label="Also blocks">
-            {alsoBlocks === null ? (
-              <span role="status" className="text-zinc-400 italic dark:text-zinc-500">…</span>
-            ) : alsoBlocks.length === 0 ? (
-              <span className="text-zinc-500 italic dark:text-zinc-400">
-                (none)
-              </span>
-            ) : (
-              <ul
-                className="flex flex-col gap-1"
-                data-also-blocks
-              >
-                {alsoBlocks.map((t) => (
-                  <li
-                    key={t.id}
-                    className="font-mono text-xs text-zinc-700 dark:text-zinc-300"
-                  >
-                    #{t.id} — {truncate(t.title, 60)}
-                  </li>
-                ))}
-              </ul>
-            )}
+            <details
+              onToggle={(e) => {
+                if ((e.currentTarget as HTMLDetailsElement).open) {
+                  setAlsoBlocksOpen(true);
+                }
+              }}
+            >
+              <summary className="cursor-pointer text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200">
+                Show
+              </summary>
+              <div className="mt-1">
+                {alsoBlocks === null ? (
+                  <span role="status" className="text-zinc-400 italic dark:text-zinc-500">…</span>
+                ) : alsoBlocks.length === 0 ? (
+                  <span className="text-zinc-500 italic dark:text-zinc-400">
+                    (none)
+                  </span>
+                ) : (
+                  <ul className="flex flex-col gap-1" data-also-blocks>
+                    {alsoBlocks.map((t) => (
+                      <li
+                        key={t.id}
+                        className="font-mono text-xs text-zinc-700 dark:text-zinc-300"
+                      >
+                        #{t.id} — {truncate(t.title, 60)}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </details>
           </Section>
 
-          {/* Timestamps */}
           <Section label="Timestamps">
-            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 font-mono text-xs text-zinc-600 dark:text-zinc-400">
-              <dt>created</dt>
-              <dd>{task.created_at}</dd>
-              <dt>updated</dt>
-              <dd>{task.updated_at}</dd>
-              {task.started_at && (
-                <>
-                  <dt>started</dt>
-                  <dd>{task.started_at}</dd>
-                </>
-              )}
-              {task.completed_at && (
-                <>
-                  <dt>completed</dt>
-                  <dd>{task.completed_at}</dd>
-                </>
-              )}
-            </dl>
+            <details>
+              <summary className="cursor-pointer text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200">
+                Show timestamps
+              </summary>
+              <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 font-mono text-xs text-zinc-600 dark:text-zinc-400">
+                <dt>created</dt>
+                <dd>{task.created_at}</dd>
+                <dt>updated</dt>
+                <dd>{task.updated_at}</dd>
+                {task.started_at && (
+                  <>
+                    <dt>started</dt>
+                    <dd>{task.started_at}</dd>
+                  </>
+                )}
+                {task.completed_at && (
+                  <>
+                    <dt>completed</dt>
+                    <dd>{task.completed_at}</dd>
+                  </>
+                )}
+              </dl>
+            </details>
           </Section>
 
-          {/* #1305 — task output files section */}
           <TaskOutputs projectId={projectId} taskId={task.id} />
-
-          {/* #980 — per-task tool-call audit; self-hides when 0 rows */}
+          {/* #980 — self-hides when 0 rows */}
           <TaskToolCalls projectId={projectId} taskId={task.id} />
-
-          {/* #1005 — append-only comment thread at the bottom of task detail.
-              Collapsible (default-expanded when >0 comments); compose box posts
-              author_kind="user"; bodies render via the XSS-safe markdown path. */}
           <TaskComments projectId={projectId} taskId={task.id} />
         </div>
       </aside>
@@ -838,9 +793,7 @@ export function TaskDetail({
   );
 }
 
-// #944 — compact cost strip rendered under the task title in the header.
-// Hidden entirely when all 3 estimate fields are null (legacy / never-closed tasks).
-// Format: "~$0.0001 · 12k in / 4k out" — primary cost left, token breakdown right.
+// #944 — hidden when all 3 estimate fields are null (legacy tasks never closed by BE estimator)
 function CostStrip({ task }: { task: TaskRead }) {
   const cost = task.estimated_cost_usd;
   const inTok = task.estimated_input_tokens;
@@ -865,7 +818,7 @@ function CostStrip({ task }: { task: TaskRead }) {
   );
 }
 
-// #818 #859 — heavier header + gap-2 for scan-ability; mirrored on Question/AC sections
+// #818/#859 — fixed label column + gap-2 for scan-ability
 function Section({
   label,
   children,
@@ -883,7 +836,6 @@ function Section({
   );
 }
 
-// #834 — answer UI for question/decision tasks
 function QuestionInteractionSection({
   task,
   projectId,
@@ -970,8 +922,6 @@ function QuestionInteractionSection({
             {sectionLabel} resolved
           </p>
         ) : payload?.options != null && payload.options.length > 0 && !otherMode ? (
-          // Options mode — full-width cards; clicking one immediately submits.
-          // #1183 — replaced chip layout with stacked full-width cards (label + optional description).
           // #1335 — `options` is heterogeneous (string | OptionItem); narrow defensively.
           <div className="flex flex-col gap-2" data-question-options>
             {payload.options.map((opt, idx) => {
@@ -1014,10 +964,8 @@ function QuestionInteractionSection({
             </button>
           </div>
         ) : (
-          // Free-text mode — shown when no options OR when "Other" card is clicked.
-          // #1183 — shared freetext block used by both pure freetext and Other-mode paths.
+          // #1183 — freetext: no options, or "Other" escape hatch
           <div className="flex flex-col gap-2" data-question-freetext>
-            {/* Back link only visible when operator chose "Other" from an options list */}
             {otherMode && (
               <button
                 type="button"
@@ -1036,7 +984,6 @@ function QuestionInteractionSection({
               data-question-textarea
               className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
             />
-            {/* #988 — 44px tap target on all viewports for the answer submit (HITL workflow critical path) */}
             <button
               type="button"
               disabled={submittingAnswer || answerValue.trim() === ""}
@@ -1049,7 +996,6 @@ function QuestionInteractionSection({
           </div>
         )}
 
-        {/* Answer history */}
         {history.length > 0 && (
           <div className="flex flex-col gap-1.5" data-answer-history>
             <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
@@ -1090,7 +1036,6 @@ function QuestionInteractionSection({
                     </div>
                   </div>
 
-                  {/* Invalidate button — only on last valid answer, only when not done */}
                   {!isDone && idx === lastValidIdx && (
                     invalidateReasonFor === idx ? (
                       <div className="mt-1 flex flex-col gap-1.5 pl-7">
@@ -1152,7 +1097,6 @@ function QuestionInteractionSection({
   );
 }
 
-// BlockerPicker — single-select filterable list.
 function BlockerPicker({
   task,
   allTasks,

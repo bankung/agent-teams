@@ -197,6 +197,7 @@ async def fire_template(db: "AsyncSession", template: Task) -> Task | None:
         assigned_role=template.assigned_role,
         run_mode=template.run_mode,
         task_kind=template.task_kind,
+        task_type=template.task_type,
         process_status=TaskStatus.TODO,
         is_template=False,
         spawned_from_task_id=template.id,

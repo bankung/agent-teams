@@ -46,6 +46,7 @@ from src.routers import projects as projects_router
 from src.routers import resources as resources_router
 from src.routers import scaffold as scaffold_router
 from src.routers import sessions as sessions_router
+from src.routers import shared_search as shared_search_router
 from src.routers import settings as settings_router
 from src.routers import task_templates as task_templates_router
 from src.routers import task_outputs as task_outputs_router
@@ -414,6 +415,9 @@ def create_app() -> FastAPI:
     # + resource-scoped GET detail/preview + operator-gated DELETE-to-trash.
     app.include_router(resources_router.router_project, prefix="/api")
     app.include_router(resources_router.router_resource, prefix="/api")
+    # Kanban #1678 — zero-LLM 3-mode BM25 search over a project's shared/ corpus
+    # (GET /api/projects/{id}/shared/search?mode=discovery|scroll|browse). Read-only.
+    app.include_router(shared_search_router.router, prefix="/api")
     # Kanban #955.A — Web Push subscription CRUD (browser PushManager endpoints).
     app.include_router(push_router.router, prefix="/api")
     # Kanban #1192 — ntfy push-notification fire endpoint (POST /api/push/fire).

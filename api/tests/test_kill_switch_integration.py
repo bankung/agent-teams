@@ -25,6 +25,13 @@ import pytest
 from sqlalchemy import select
 
 # ---------------------------------------------------------------------------
+# Operator-proof gate constants (mirrors test_task_templates_router.py pattern)
+# ---------------------------------------------------------------------------
+
+_KEY = "OPERATOR_ACTION_KEY"
+_TOKEN = "test-operator-secret-123"
+
+# ---------------------------------------------------------------------------
 # helpers (mirrors pattern from test_kill_switch.py)
 # ---------------------------------------------------------------------------
 
@@ -454,3 +461,78 @@ async def test_kill_switch_full_multi_component_drain(
         # Clean up — soft-delete both projects (also cascades tasks via DB FK)
         await client.delete(f"/api/projects/{a_id}")
         await client.delete(f"/api/projects/{b_id}")
+
+
+# ---------------------------------------------------------------------------
+# Operator-proof gate tests — Kanban #2503 (gate restored on kill/revive/consent)
+#
+# Pattern mirrors test_task_templates_router.py::test_post_gated_403_*.
+# The conftest autouse `_operator_gate_inactive_by_default` delenv's the key
+# for the full suite, so the big drain test above is unaffected.  These tests
+# re-setenv the key (last-write-wins after autouse) to verify 403 behaviour.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_revive_gate_active_no_token_403(client, monkeypatch) -> None:
+    """Gate ACTIVE + no X-Operator-Token on /revive → 403, no lifecycle change.
+
+    POSITIVE: status 403 with operator_proof_required detail.
+    NEGATIVE lock: the revive call must NOT reach the lifecycle logic (a 403
+    that still executed a revive would be the whole vulnerability).
+    """
+    import src.services.operator_auth as oa
+    from src.routers.projects import _OPERATOR_PROOF_REQUIRED_MSG
+
+    monkeypatch.setenv(_KEY, _TOKEN)
+    oa._inactive_warned = False  # noqa: SLF001 — reset module guard so gate re-evaluates
+
+    resp = await client.post("/api/projects/1/revive", json={})
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"] == _OPERATOR_PROOF_REQUIRED_MSG
+
+
+@pytest.mark.asyncio
+async def test_grant_consent_gate_active_no_token_403(client, monkeypatch) -> None:
+    """Gate ACTIVE + no X-Operator-Token on /grant-consent → 403.
+
+    POSITIVE: status 403 before any consent logic runs.
+    NEGATIVE lock: consent must NOT be stamped; the 403 is checked before get_or_404.
+    """
+    import src.services.operator_auth as oa
+    from src.routers.projects import _OPERATOR_PROOF_REQUIRED_MSG
+
+    monkeypatch.setenv(_KEY, _TOKEN)
+    oa._inactive_warned = False  # noqa: SLF001
+
+    resp = await client.post(
+        "/api/projects/1/grant-consent", json={"confirm_name": "probe"}
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"] == _OPERATOR_PROOF_REQUIRED_MSG
+
+
+@pytest.mark.asyncio
+async def test_kill_gate_active_no_token_403(client, monkeypatch) -> None:
+    """Gate ACTIVE + no X-Operator-Token on /kill → 403, project NOT killed.
+
+    POSITIVE: status 403.
+    NEGATIVE lock: the kill service MUST NOT run — verified by asserting 403
+    rather than 200/409 (which would mean lifecycle code executed).
+    Safe probe: 403 is returned before the kill_project service is called,
+    so no state change occurs on any live project.
+    """
+    import src.services.operator_auth as oa
+    from src.routers.projects import _OPERATOR_PROOF_REQUIRED_MSG
+
+    monkeypatch.setenv(_KEY, _TOKEN)
+    oa._inactive_warned = False  # noqa: SLF001
+
+    # Use project_id=0 (guaranteed non-existent) to make the probe fully safe:
+    # even if the gate were somehow skipped, kill_project would 404 before mutating.
+    resp = await client.post(
+        "/api/projects/0/kill",
+        json={"reason": "gate-test probe — must 403 before reaching kill logic"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"] == _OPERATOR_PROOF_REQUIRED_MSG

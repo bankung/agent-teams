@@ -47,7 +47,7 @@ export function TaskRejectModal({
   // Clear the reason on close — open it again, blank slate (avoids stale
   // text leaking into a second attempt).
   useEffect(() => {
-    if (!open) setReason("");
+    if (!open) setReason(""); // eslint-disable-line react-hooks/set-state-in-effect -- close-reset: clears stale reason text on close so a second reject attempt starts blank; cannot key-remount without editing TaskFocusView (out of scope)
   }, [open]);
 
   function onSubmit(e: React.FormEvent) {

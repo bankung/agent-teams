@@ -10,13 +10,14 @@ import Link from "next/link";
 
 import { getAgentDetail, HttpError } from "@/lib/api";
 import { AgentDetail } from "@/components/AgentDetail";
-import { ThemePicker } from "@/components/ThemePicker";
+import { AgentDetailActions } from "@/components/AgentDetailActions";
 
 export const dynamic = "force-dynamic";
 
-type Props = { params: { name: string } };
+type Props = { params: Promise<{ name: string }> };
 
-export default async function AgentDetailPage({ params }: Props) {
+export default async function AgentDetailPage(props: Props) {
+  const params = await props.params;
   const name = decodeURIComponent(params.name);
   let agent;
   try {
@@ -29,7 +30,7 @@ export default async function AgentDetailPage({ params }: Props) {
   return (
     <main
       data-agent-detail-page
-      className="flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950"
+      className="glass-board flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950"
     >
       <header className="mb-4 flex flex-wrap items-center gap-2 text-sm">
         <Link
@@ -44,9 +45,10 @@ export default async function AgentDetailPage({ params }: Props) {
         <span className="truncate text-base font-semibold text-zinc-900 dark:text-zinc-100">
           {agent.name}
         </span>
-        <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
-          <ThemePicker />
-        </span>
+        {/* #2481 — edit entry point (client island; pre-fills from this detail). */}
+        <div className="ml-auto">
+          <AgentDetailActions agent={agent} />
+        </div>
       </header>
 
       <div className="mx-auto w-full max-w-3xl">

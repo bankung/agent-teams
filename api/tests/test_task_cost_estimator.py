@@ -141,10 +141,12 @@ def test_estimate_task_cost_ollama_provider_zero_cost(monkeypatch) -> None:
     assert result["cost_usd"] == Decimal("0.0000")
 
 
-def test_resolve_provider_model_defaults_to_anthropic_sonnet(monkeypatch) -> None:
+def test_resolve_provider_model_defaults_to_anthropic_opus(monkeypatch) -> None:
+    # Kanban #1304: default bumped sonnet-4-6 -> opus-4-8 (the model interactive
+    # Lead sessions actually run; aligned with langgraph/llm.py).
     monkeypatch.delenv("LANGGRAPH_LLM_PROVIDER", raising=False)
     monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
-    assert resolve_provider_model() == ("anthropic", "claude-sonnet-4-6")
+    assert resolve_provider_model() == ("anthropic", "claude-opus-4-8")
 
 
 def test_resolve_provider_model_openai_branch(monkeypatch) -> None:

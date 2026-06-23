@@ -74,7 +74,7 @@ export function ResourceUploadModal({
   // Reset everything when the modal closes so a re-open is clean.
   useEffect(() => {
     if (open) return;
-    setTab("file");
+    setTab("file"); // eslint-disable-line react-hooks/set-state-in-effect -- close-reset: 8 form fields must be cleared on close; key-remount from ResourcesPanel would discard the interval/stage effect (#93) that tracks in-flight upload progress
     setSubmitting(false);
     setError(null);
     setFile(null);
@@ -90,7 +90,7 @@ export function ResourceUploadModal({
   // last stage (clamps) so a slow upload doesn't loop confusingly.
   useEffect(() => {
     if (!submitting || tab !== "file") {
-      setStageIndex(0);
+      setStageIndex(0); // eslint-disable-line react-hooks/set-state-in-effect -- interval setup is a legitimate effect; reset-to-0 guard cannot be derived (interval must live in an effect)
       return;
     }
     const id = setInterval(() => {

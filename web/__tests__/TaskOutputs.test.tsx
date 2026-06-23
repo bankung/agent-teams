@@ -7,13 +7,14 @@
 // Coverage:
 //   1. Empty state — exact text "No outputs yet — task may still be running"
 //   2. Listing renders one row per entry with data-output-row + data-output-kind
-//   3. PNG chart row renders inline img (after blob URL created)
-//   4. Markdown doc row renders formatted content
-//   5. CSV export row renders as table with row-count note
-//   6. Text row renders in scrollable pre
+//   3. PNG chart row renders inline img (after blob URL created, after expand)
+//   4. Markdown doc row renders formatted content (after expand)
+//   5. CSV export row renders as table with row-count note (after expand)
+//   6. Text row renders in scrollable pre (after expand)
 //   7. Chart row click opens modal (AC[2])
 //   8. Modal closes on ModalShell backdrop click / ESC
-//   9. Download button present on each row
+//   9. Download button present on each row (after expand)
+//  10. No fetch fires on mount — only fires after expand (Fix 2 #2502)
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
@@ -86,6 +87,13 @@ function entry(over: Partial<TaskOutputEntry>): TaskOutputEntry {
   };
 }
 
+// Helper: click the Show button on the first (or only) output row.
+function expandFirstRow() {
+  const btn = document.querySelector("[data-output-expand]") as HTMLElement;
+  if (!btn) throw new Error("data-output-expand button not found");
+  fireEvent.click(btn);
+}
+
 beforeEach(() => {
   mockGetTaskOutputs.mockReset();
   mockFetchTaskOutputBytes.mockReset();
@@ -131,7 +139,7 @@ describe("TaskOutputs — listing renders correct attributes", () => {
 });
 
 describe("TaskOutputs — text kind", () => {
-  it("renders text content in a scrollable pre", async () => {
+  it("renders text content in a scrollable pre after expanding", async () => {
     mockGetTaskOutputs.mockResolvedValue([
       entry({ filename: "log.txt", kind: "text", mime: "text/plain" }),
     ]);
@@ -141,6 +149,10 @@ describe("TaskOutputs — text kind", () => {
 
     render(<TaskOutputs projectId={1} taskId={1305} />);
 
+    // Wait for the row shell to appear, then expand.
+    await waitFor(() => expect(document.querySelector("[data-output-expand]")).not.toBeNull());
+    expandFirstRow();
+
     // Content appears inside a <pre> element.
     const pre = await screen.findByText(/line one/);
     expect(pre.tagName.toLowerCase()).toBe("pre");
@@ -148,7 +160,7 @@ describe("TaskOutputs — text kind", () => {
 });
 
 describe("TaskOutputs — doc kind (markdown)", () => {
-  it("renders markdown content as formatted elements (not raw text)", async () => {
+  it("renders markdown content as formatted elements (not raw text) after expanding", async () => {
     mockGetTaskOutputs.mockResolvedValue([
       entry({ filename: "report.md", kind: "doc", mime: "text/markdown" }),
     ]);
@@ -157,6 +169,9 @@ describe("TaskOutputs — doc kind (markdown)", () => {
     );
 
     render(<TaskOutputs projectId={1} taskId={1305} />);
+
+    await waitFor(() => expect(document.querySelector("[data-output-expand]")).not.toBeNull());
+    expandFirstRow();
 
     // react-markdown renders # into an <h1>
     const heading = await screen.findByText("Heading");
@@ -173,8 +188,7 @@ describe("TaskOutputs — export kind (csv)", () => {
     "r7a,r7b,r7c\nr8a,r8b,r8c\nr9a,r9b,r9c\nr10a,r10b,r10c\nr11a,r11b,r11c";
 
   it("renders CRLF-encoded CSV without stray \\r in cells (FE-M2)", async () => {
-    // Windows CRLF CSV — each line ends with \r\n.
-    const crlfCsv = "a,b\r\n1,2\r\n";
+    const crlfCsv = "hea\rder,b\r\nval\rue,2\r\n";
     mockGetTaskOutputs.mockResolvedValue([
       entry({ filename: "crlf.csv", kind: "export", mime: "text/csv" }),
     ]);
@@ -182,16 +196,19 @@ describe("TaskOutputs — export kind (csv)", () => {
 
     render(<TaskOutputs projectId={1} taskId={1305} />);
 
-    // Header cells must be "a" and "b" — not "a\r" / "b\r".
-    await screen.findByText("a");
-    expect(screen.getByText("b")).toBeInTheDocument();
+    await waitFor(() => expect(document.querySelector("[data-output-expand]")).not.toBeNull());
+    expandFirstRow();
 
-    // Data cells must be "1" and "2" — not "1\r" / "2\r".
-    await screen.findByText("1");
+    await screen.findByText("header");
+    expect(screen.getByText("b")).toBeInTheDocument();
+    expect(screen.queryByText("hea\rder")).not.toBeInTheDocument();
+
+    await screen.findByText("value");
     expect(screen.getByText("2")).toBeInTheDocument();
+    expect(screen.queryByText("val\rue")).not.toBeInTheDocument();
   });
 
-  it("renders CSV as a table with first 10 rows and row-count note", async () => {
+  it("renders CSV as a table with first 10 rows and row-count note after expanding", async () => {
     mockGetTaskOutputs.mockResolvedValue([
       entry({ filename: "data.csv", kind: "export", mime: "text/csv" }),
     ]);
@@ -199,20 +216,20 @@ describe("TaskOutputs — export kind (csv)", () => {
 
     render(<TaskOutputs projectId={1} taskId={1305} />);
 
-    // Header cells
+    await waitFor(() => expect(document.querySelector("[data-output-expand]")).not.toBeNull());
+    expandFirstRow();
+
     await screen.findByText("col_a");
     expect(screen.getByText("col_b")).toBeInTheDocument();
 
-    // First data row visible.
     await screen.findByText("row1a");
 
-    // Row-count note: 11 data rows total, showing first 10.
     await screen.findByText(/showing first 10 of 11 rows/i);
   });
 });
 
 describe("TaskOutputs — chart kind (PNG)", () => {
-  it("renders an img element and a Download link", async () => {
+  it("renders an img element and a Download link after expanding", async () => {
     mockGetTaskOutputs.mockResolvedValue([
       entry({ filename: "chart.png", kind: "chart", mime: "image/png" }),
     ]);
@@ -220,11 +237,12 @@ describe("TaskOutputs — chart kind (PNG)", () => {
 
     render(<TaskOutputs projectId={1} taskId={1305} />);
 
-    // img element rendered with the blob URL.
+    await waitFor(() => expect(document.querySelector("[data-output-expand]")).not.toBeNull());
+    expandFirstRow();
+
     const img = await screen.findByRole("img");
     expect(img).toBeInTheDocument();
 
-    // Download link present.
     const dlLink = await screen.findByRole("link", { name: /download/i });
     expect(dlLink).toBeInTheDocument();
   });
@@ -237,20 +255,19 @@ describe("TaskOutputs — chart kind (PNG)", () => {
 
     render(<TaskOutputs projectId={1} taskId={1305} />);
 
-    // Wait for img to appear, then click to open modal.
+    await waitFor(() => expect(document.querySelector("[data-output-expand]")).not.toBeNull());
+    expandFirstRow();
+
     const img = await screen.findByRole("img", { name: "chart.png" });
     fireEvent.click(img);
 
-    // ModalShell renders a second img inside the dialog.
     await waitFor(() => {
       const dialog = document.querySelector("[role='dialog']");
       expect(dialog).not.toBeNull();
     });
 
-    // Guard: modal must be open before we fire ESC (prevents vacuous pass).
     expect(document.querySelector("[role='dialog']")).not.toBeNull();
 
-    // Close via ESC key.
     fireEvent.keyDown(document, { key: "Escape" });
 
     await waitFor(() => {
@@ -260,7 +277,7 @@ describe("TaskOutputs — chart kind (PNG)", () => {
 });
 
 describe("TaskOutputs — download button", () => {
-  it("renders a Download link (with href) for every file row", async () => {
+  it("renders a Download link (with href) for every file row after expanding", async () => {
     mockGetTaskOutputs.mockResolvedValue([
       entry({ filename: "sample.txt", kind: "text" }),
       entry({ filename: "sample.md", kind: "doc" }),
@@ -269,8 +286,16 @@ describe("TaskOutputs — download button", () => {
 
     render(<TaskOutputs projectId={1} taskId={1305} />);
 
+    // Expand all rows.
     await waitFor(() => {
-      // Each row should eventually get a download link once the blob URL is set.
+      const btns = document.querySelectorAll("[data-output-expand]");
+      expect(btns.length).toBe(2);
+    });
+    document.querySelectorAll<HTMLElement>("[data-output-expand]").forEach((btn) =>
+      fireEvent.click(btn)
+    );
+
+    await waitFor(() => {
       const links = screen.getAllByRole("link", { name: /download/i });
       expect(links.length).toBe(2);
     });
@@ -285,5 +310,60 @@ describe("TaskOutputs — data-outputs-section attribute", () => {
 
     await screen.findByText("No outputs yet — task may still be running");
     expect(document.querySelector("[data-outputs-section]")).not.toBeNull();
+  });
+});
+
+describe("TaskOutputs — lazy-load: no fetch on mount (Fix 2 #2502)", () => {
+  it("does not call fetchTaskOutputBytes on mount when rows are collapsed", async () => {
+    mockGetTaskOutputs.mockResolvedValue([
+      entry({ filename: "a.txt", kind: "text" }),
+      entry({ filename: "b.txt", kind: "text" }),
+      entry({ filename: "c.txt", kind: "text" }),
+    ]);
+    // fetchTaskOutputBytes should NOT be called yet.
+    mockFetchTaskOutputBytes.mockResolvedValue(textBlob("content"));
+
+    render(<TaskOutputs projectId={1} taskId={1305} />);
+
+    // Wait for rows to render (listing fetch settled).
+    await waitFor(() => {
+      expect(document.querySelectorAll("[data-output-row]").length).toBe(3);
+    });
+
+    // No byte-fetch should have fired while all rows are collapsed.
+    expect(mockFetchTaskOutputBytes).not.toHaveBeenCalled();
+  });
+
+  it("fires exactly one fetch per row only after that row is expanded", async () => {
+    mockGetTaskOutputs.mockResolvedValue([
+      entry({ filename: "x.txt", kind: "text" }),
+      entry({ filename: "y.txt", kind: "text" }),
+    ]);
+    mockFetchTaskOutputBytes.mockResolvedValue(textBlob("hi"));
+
+    render(<TaskOutputs projectId={1} taskId={1305} />);
+
+    await waitFor(() => {
+      expect(document.querySelectorAll("[data-output-expand]").length).toBe(2);
+    });
+
+    // Still zero fetches before any expand.
+    expect(mockFetchTaskOutputBytes).toHaveBeenCalledTimes(0);
+
+    // Expand only the first row.
+    const [firstBtn] = document.querySelectorAll<HTMLElement>("[data-output-expand]");
+    fireEvent.click(firstBtn);
+
+    await waitFor(() => {
+      expect(mockFetchTaskOutputBytes).toHaveBeenCalledTimes(1);
+    });
+
+    // Expanding the second row fires a second fetch.
+    const [, secondBtn] = document.querySelectorAll<HTMLElement>("[data-output-expand]");
+    fireEvent.click(secondBtn);
+
+    await waitFor(() => {
+      expect(mockFetchTaskOutputBytes).toHaveBeenCalledTimes(2);
+    });
   });
 });

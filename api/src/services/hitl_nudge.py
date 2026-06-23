@@ -63,7 +63,12 @@ async def scan_and_nudge(session: AsyncSession) -> int:
     Query contract (AC1):
       - tasks.status = 1 (active)
       - interaction_kind IN ('question', 'decision')
-      - process_status IN (1, 3) — TODO, REVIEW
+      - process_status IN (1, 3, 4) — TODO, REVIEW, BLOCKED
+        Note: BLOCKED is included because a HITL question/decision task
+        awaiting an answer is set to BLOCKED by the langgraph interrupt
+        (langgraph/nodes.py:31). The blocked_by IS NULL predicate below
+        ensures we only match the question task itself, not dependent work
+        tasks blocked *by* the question. (#2426)
       - blocked_by IS NULL
       - nudge_disabled = false
       - projects.hitl_nudge_threshold_hours IS NOT NULL AND > 0
@@ -85,7 +90,7 @@ async def scan_and_nudge(session: AsyncSession) -> int:
             Task.interaction_kind.in_(
                 [TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION]
             ),
-            Task.process_status.in_([TaskStatus.TODO, TaskStatus.REVIEW]),
+            Task.process_status.in_([TaskStatus.TODO, TaskStatus.REVIEW, TaskStatus.BLOCKED]),
             Task.blocked_by.is_(None),
             Task.nudge_disabled.is_(False),
             Project.hitl_nudge_threshold_hours.isnot(None),

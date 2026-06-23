@@ -21,15 +21,16 @@ import {
   HttpError,
   type MilestoneDetail,
 } from "@/lib/api";
+import { orderGanttMilestones } from "@/lib/milestoneOrder";
 import { GanttView } from "@/components/GanttView";
-import { ThemePicker } from "@/components/ThemePicker";
 import { ViewSwitcher } from "@/components/ViewSwitcher";
 
-type Props = { params: { name: string } };
+type Props = { params: Promise<{ name: string }> };
 
 export const dynamic = "force-dynamic";
 
-export default async function ProjectGanttPage({ params }: Props) {
+export default async function ProjectGanttPage(props: Props) {
+  const params = await props.params;
   let project;
   try {
     project = await getProjectByName(params.name);
@@ -52,51 +53,39 @@ export default async function ProjectGanttPage({ params }: Props) {
     }),
   );
 
-  // Sort by status rank: active(0) → released(1) → planned(2) → cancelled(3).
-  // Unknown/missing statuses rank last (4). Stable: index tiebreak preserves
-  // the API's relative order within each rank.
-  const STATUS_RANK: Record<string, number> = {
-    active: 0,
-    released: 1,
-    planned: 2,
-    cancelled: 3,
-  };
-  const milestones = milestonesRaw
-    .map((m, i) => ({ m, i }))
-    .sort(
-      (a, b) =>
-        (STATUS_RANK[a.m.milestone_status] ?? 4) -
-          (STATUS_RANK[b.m.milestone_status] ?? 4) ||
-        a.i - b.i,
-    )
-    .map(({ m }) => m);
+  // Status-rank order; released group by start_date asc (nulls last). #2496.
+  const milestones = orderGanttMilestones(milestonesRaw);
 
   const boardHref = `/p/${encodeURIComponent(project.name)}`;
 
   return (
-    <main className="flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950">
+    <main className="glass-board flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950">
+      {/* #2404 — 3-zone header: left (flex-1) · centered ViewSwitcher (shrink-0) · right placeholder (flex-1). */}
       <header className="mb-4 flex flex-wrap items-center gap-2 text-sm">
-        <Link
-          href={boardHref}
-          className="text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-        >
-          ← {project.name} board
-        </Link>
-        <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
-          ·
+        {/* LEFT zone */}
+        <span className="flex flex-1 flex-wrap items-center gap-2">
+          <Link
+            href={boardHref}
+            className="text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+          >
+            ← {project.name} board
+          </Link>
+          <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
+            ·
+          </span>
+          <span className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
+            Gantt
+          </span>
+          <span className="text-xs text-zinc-500 dark:text-zinc-400 font-mono">
+            ({project.name})
+          </span>
         </span>
-        <span className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
-          Gantt
-        </span>
-        <span className="text-xs text-zinc-500 dark:text-zinc-400 font-mono">
-          ({project.name})
-        </span>
-        {/* Wave A (#1) — shared view switcher (Gantt active). Off-board: all
-            four items navigate (no onSelect). */}
-        <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
+        {/* CENTER zone — Wave A (#1): shared view switcher (Gantt active). Off-board: all four items navigate (no onSelect). */}
+        <span className="shrink-0">
           <ViewSwitcher projectName={project.name} active="gantt" />
-          <ThemePicker />
         </span>
+        {/* RIGHT zone — placeholder to balance the flex-1 left zone so the center stays centered. */}
+        <span className="flex-1" />
       </header>
 
       <div className="mx-auto w-full max-w-6xl">

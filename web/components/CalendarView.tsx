@@ -79,6 +79,8 @@ const STATUS_CHIP: Record<TaskStatusValue, string> = {
     "bg-emerald-50 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200",
   [TaskStatus.CANCELLED]:
     "bg-zinc-100 text-zinc-400 line-through dark:bg-zinc-800 dark:text-zinc-500",
+  [TaskStatus.HALTED_PENDING_USER]:
+    "bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
 };
 
 // #14 — completed-late chip: a DONE task whose completed_at (date) is later than
@@ -93,6 +95,7 @@ const STATUS_LABEL: Record<TaskStatusValue, string> = {
   [TaskStatus.BLOCKED]: "blocked",
   [TaskStatus.DONE]: "done",
   [TaskStatus.CANCELLED]: "cancelled",
+  [TaskStatus.HALTED_PENDING_USER]: "halted",
 };
 
 // Month mode: keep cells compact (≤2 chips + overflow). Week mode: a fuller
@@ -189,27 +192,8 @@ export function CalendarView({
   // so there's no flicker back to the old day in the gap before the fetch lands.
   const [dueOverride, setDueOverride] = useState<Record<number, string>>({});
 
-  // Self-heal: once the incoming server `tasks` prop reflects an override's
-  // value, drop that override (server is now authoritative). A FAILED PATCH
-  // already reverted the override in its catch, so it never reaches here.
-  useEffect(() => {
-    setDueOverride((prev) => {
-      const keys = Object.keys(prev);
-      if (keys.length === 0) return prev;
-      let changed = false;
-      const next = { ...prev };
-      for (const t of tasks) {
-        const ov = prev[t.id];
-        if (ov !== undefined && normalizeDateOnly(t.due_date) === ov) {
-          delete next[t.id];
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [tasks]);
-
-  // Apply overrides on top of the server task list before placement.
+  // Apply overrides before placement; stale overrides are no-ops (spread replaces same value).
+  // Error-reverts clean up explicitly in onDragEnd/onPickExisting catch blocks.
   const effectiveTasks = useMemo(() => {
     if (Object.keys(dueOverride).length === 0) return tasks;
     return tasks.map((t) =>
@@ -219,7 +203,6 @@ export function CalendarView({
     );
   }, [tasks, dueOverride]);
 
-  // #14 — resolve every task to a placement cell (or drop it).
   const placed = useMemo(
     () =>
       effectiveTasks
@@ -239,7 +222,6 @@ export function CalendarView({
     return map;
   }, [placed]);
 
-  // Milestones index (unchanged behaviour — deadline markers by target_date).
   const milestonesByDay = useMemo(() => {
     const map = new Map<string, MilestoneRead[]>();
     for (const m of milestones) {
@@ -254,8 +236,7 @@ export function CalendarView({
   }, [milestones]);
 
   const boardHref = `/p/${encodeURIComponent(projectName)}`;
-  // Wave A.2c — the dedicated /milestones page was removed; the Gantt view is
-  // now the milestone home. Milestone deadline chips deep-link there.
+  // Wave A.2c — /milestones removed; Gantt is the milestone home
   const milestonesHref = `/p/${encodeURIComponent(projectName)}/gantt`;
   const calendarHref = `/p/${encodeURIComponent(projectName)}/calendar`;
 
@@ -263,9 +244,8 @@ export function CalendarView({
     router.push(`${calendarHref}?month=${monthParamKey(target)}`);
   };
 
-  // ── #11 context menu ───────────────────────────────────────────────────────
+  // #11 — context menu
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
-  // The day a "New task on this date" / picker action targets.
   const [createForDay, setCreateForDay] = useState<string | null>(null);
   const [pickerForDay, setPickerForDay] = useState<string | null>(null);
 
@@ -295,7 +275,7 @@ export function CalendarView({
     };
   }, [menu, closeMenu]);
 
-  // ── #12 drag-to-reschedule (dnd-kit; mirrors MilestonesView) ───────────────
+  // #12 — drag-to-reschedule (mirrors MilestonesView dnd-kit pattern)
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor),
@@ -353,7 +333,6 @@ export function CalendarView({
     [projectId, router],
   );
 
-  // #11 picker commit — PATCH the chosen task's due_date to the target day.
   const onPickExisting = useCallback(
     (task: TaskRead, dayKey: string) => {
       setPickerForDay(null);
@@ -379,13 +358,10 @@ export function CalendarView({
     [projectId, router],
   );
 
-  const totalPlaced = placed.length;
-  const totalMilestones = milestones.filter((m) =>
-    normalizeDateOnly(m.target_date),
-  ).length;
-  const totalItems = totalPlaced + totalMilestones;
+  const totalItems =
+    placed.length +
+    milestones.filter((m) => normalizeDateOnly(m.target_date)).length;
 
-  // Nav handlers branch on mode.
   const onPrev = () =>
     mode === "month"
       ? goToMonth(addMonths(ym, -1))
@@ -409,7 +385,6 @@ export function CalendarView({
       onDragCancel={() => setActiveTask(null)}
     >
       <section data-calendar-view aria-label={`Calendar for ${projectName}`}>
-        {/* Heading + Month|Week toggle + Prev / Today / Next nav. */}
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <h2
@@ -420,7 +395,6 @@ export function CalendarView({
             </h2>
           </div>
           <div className="flex items-center gap-1.5">
-            {/* #13 — Month | Week segmented toggle. */}
             <div
               role="tablist"
               aria-label="Calendar range"
@@ -463,7 +437,7 @@ export function CalendarView({
             <button
               type="button"
               onClick={onPrev}
-              className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2.5 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+              className="glass-glow rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2.5 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
               aria-label={mode === "month" ? "Previous month" : "Previous week"}
               data-calendar-prev
             >
@@ -472,7 +446,7 @@ export function CalendarView({
             <button
               type="button"
               onClick={onToday}
-              className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2.5 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+              className="glass-glow rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2.5 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
               data-calendar-today
             >
               Today
@@ -480,7 +454,7 @@ export function CalendarView({
             <button
               type="button"
               onClick={onNext}
-              className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2.5 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+              className="glass-glow rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2.5 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
               aria-label={mode === "month" ? "Next month" : "Next week"}
               data-calendar-next
             >
@@ -489,7 +463,6 @@ export function CalendarView({
           </div>
         </div>
 
-        {/* #12 — inline DnD/PATCH failure notice (revert already happened). */}
         {dndError !== null && (
           <p
             className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300"
@@ -525,6 +498,7 @@ export function CalendarView({
             boardHref={boardHref}
             milestonesHref={milestonesHref}
             onContextMenu={openMenu}
+            onNewTask={(key) => setCreateForDay(key)}
           />
         ) : (
           <WeekStrip
@@ -535,10 +509,10 @@ export function CalendarView({
             boardHref={boardHref}
             milestonesHref={milestonesHref}
             onContextMenu={openMenu}
+            onNewTask={(key) => setCreateForDay(key)}
           />
         )}
 
-        {/* #11 — day-cell context menu (portal-free; absolutely positioned). */}
         {menu && (
           <DayContextMenu
             state={menu}
@@ -554,7 +528,6 @@ export function CalendarView({
           />
         )}
 
-        {/* DragOverlay — floating preview of the dragged task chip (#12). */}
         <DragOverlay dropAnimation={null}>
           {activeTask ? (
             <div className="pointer-events-none rounded border border-zinc-300 bg-white px-2 py-1 text-xs shadow-lg dark:border-zinc-600 dark:bg-zinc-800">
@@ -565,8 +538,7 @@ export function CalendarView({
           ) : null}
         </DragOverlay>
 
-        {/* #11 — "New task on this date": NewTaskModal pre-filled with due_date.
-            Keyed on the day so the modal re-seeds per target date. */}
+        {/* #11 — keyed on the day so the modal re-seeds per target date */}
         {createForDay !== null && (
           <NewTaskModal
             key={`new-${createForDay}`}
@@ -577,7 +549,6 @@ export function CalendarView({
           />
         )}
 
-        {/* #11 — "Add existing task to this date": searchable picker → PATCH. */}
         {pickerForDay !== null && (
           <CalendarTaskPicker
             projectId={projectId}
@@ -591,7 +562,7 @@ export function CalendarView({
   );
 }
 
-// ── #11 day-cell context menu ───────────────────────────────────────────────
+// #11 — day-cell context menu
 function DayContextMenu({
   state,
   onNewTask,
@@ -604,8 +575,7 @@ function DayContextMenu({
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
-  // Clamp the menu inside the viewport (a right/bottom-edge right-click would
-  // otherwise render it partly off-screen), then focus the first item.
+  // Clamp to viewport; right/bottom-edge right-click would otherwise overflow.
   const [pos, setPos] = useState({ top: state.y, left: state.x });
   useEffect(() => {
     const el = ref.current;
@@ -618,7 +588,6 @@ function DayContextMenu({
     el.querySelector<HTMLButtonElement>("button")?.focus();
   }, [state.x, state.y]);
 
-  // Arrow-key roving focus between the two items.
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const items = Array.from(
       ref.current?.querySelectorAll<HTMLButtonElement>("button") ?? [],
@@ -673,8 +642,7 @@ function DayContextMenu({
 
 // ── Shared chip + cell building blocks ──────────────────────────────────────
 
-// TaskChip — a draggable task chip (#12). Right-click bubbles to the day cell
-// (the cell owns the context menu), so we don't stop propagation here.
+// TaskChip — #12 draggable. Right-click propagates up to day cell (context menu owner).
 function TaskChip({
   placed,
   sourceKey,
@@ -708,9 +676,7 @@ function TaskChip({
         isDragging ? "opacity-40" : ""
       }`}
     >
-      {/* Drag handle carries the dnd listeners so the chip link stays clickable.
-          Focusable (no tabIndex=-1) so the KeyboardSensor can start a keyboard
-          drag — mirrors MilestonesView's handle. */}
+      {/* drag handle keeps dnd listeners off the link; focusable for KeyboardSensor */}
       <button
         type="button"
         {...attributes}
@@ -732,7 +698,6 @@ function TaskChip({
   );
 }
 
-// MilestoneChip — deadline marker (unchanged vocabulary).
 function MilestoneChip({
   milestone,
   milestonesHref,
@@ -753,8 +718,7 @@ function MilestoneChip({
   );
 }
 
-// DroppableDay — a day cell that accepts task-chip drops (#12) + opens the
-// context menu on right-click (#11). Shared by month + week renderers.
+// DroppableDay — accepts drops (#12) + context menu (#11); shared by month + week.
 function DroppableDay({
   dayKey,
   isToday,
@@ -762,6 +726,7 @@ function DroppableDay({
   className,
   children,
   onContextMenu,
+  onNewTask,
 }: {
   dayKey: string;
   isToday: boolean;
@@ -769,6 +734,7 @@ function DroppableDay({
   className: string;
   children: React.ReactNode;
   onContextMenu: (key: string, x: number, y: number) => void;
+  onNewTask: (key: string) => void;
 }) {
   const { isOver, setNodeRef } = useDroppable({ id: `day-${dayKey}` });
   const dropHighlight = isOver
@@ -786,14 +752,28 @@ function DroppableDay({
         e.preventDefault();
         onContextMenu(dayKey, e.clientX, e.clientY);
       }}
-      className={`${className}${dropHighlight}`}
+      className={`relative group ${className}${dropHighlight}`}
     >
       {children}
+      {inMonth && (
+        <button
+          type="button"
+          data-calendar-new-task={dayKey}
+          aria-label={`New task on ${dayKey}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onNewTask(dayKey);
+          }}
+          className="absolute top-1 right-1 flex h-5 w-5 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 sm:h-5 sm:w-5 items-center justify-center rounded text-zinc-400 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 dark:text-zinc-500 transition-opacity"
+        >
+          <span aria-hidden className="text-sm leading-none">+</span>
+        </button>
+      )}
     </div>
   );
 }
 
-// ── Month grid renderer ─────────────────────────────────────────────────────
+// ── Month grid ─────────────────────────────────────────────────────────────
 function MonthGrid({
   ym,
   today,
@@ -802,6 +782,7 @@ function MonthGrid({
   boardHref,
   milestonesHref,
   onContextMenu,
+  onNewTask,
 }: {
   ym: YearMonth;
   today: string;
@@ -810,12 +791,13 @@ function MonthGrid({
   boardHref: string;
   milestonesHref: string;
   onContextMenu: (key: string, x: number, y: number) => void;
+  onNewTask: (key: string) => void;
 }) {
   const grid = useMemo(() => buildMonthGrid(ym), [ym]);
 
   return (
     <>
-      <div className="grid grid-cols-7 gap-px overflow-hidden rounded-t-lg border border-b-0 border-zinc-200 bg-zinc-200 text-center text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:bg-zinc-800 dark:text-zinc-400">
+      <div className="glass-surface grid grid-cols-7 gap-px overflow-hidden rounded-t-lg border border-b-0 border-zinc-200 bg-zinc-200 text-center text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:bg-zinc-800 dark:text-zinc-400">
         {WEEKDAY_LABELS.map((d) => (
           <div key={d} className="bg-zinc-50 py-1.5 dark:bg-zinc-900">
             {d}
@@ -824,7 +806,7 @@ function MonthGrid({
       </div>
 
       <div
-        className="grid grid-cols-7 gap-px overflow-hidden rounded-b-lg border border-zinc-200 bg-zinc-200 dark:border-zinc-800 dark:bg-zinc-800"
+        className="glass-surface grid grid-cols-7 gap-px overflow-hidden rounded-b-lg border border-zinc-200 bg-zinc-200 dark:border-zinc-800 dark:bg-zinc-800"
         data-calendar-grid
       >
         {grid.flat().map((cell) => {
@@ -852,6 +834,7 @@ function MonthGrid({
               isToday={isToday}
               inMonth={cell.inMonth}
               onContextMenu={onContextMenu}
+              onNewTask={onNewTask}
               className={`flex min-h-[92px] flex-col gap-1 p-1.5 ${
                 cell.inMonth
                   ? "bg-white dark:bg-zinc-950"
@@ -904,7 +887,7 @@ function MonthGrid({
   );
 }
 
-// ── Week strip renderer (#13) ───────────────────────────────────────────────
+// ── Week strip (#13) ───────────────────────────────────────────────────────
 function WeekStrip({
   anchor,
   today,
@@ -913,6 +896,7 @@ function WeekStrip({
   boardHref,
   milestonesHref,
   onContextMenu,
+  onNewTask,
 }: {
   anchor: string;
   today: string;
@@ -921,12 +905,13 @@ function WeekStrip({
   boardHref: string;
   milestonesHref: string;
   onContextMenu: (key: string, x: number, y: number) => void;
+  onNewTask: (key: string) => void;
 }) {
   const days = useMemo(() => buildWeekDays(anchor), [anchor]);
 
   return (
     <div
-      className="grid grid-cols-1 gap-px overflow-hidden rounded-lg border border-zinc-200 bg-zinc-200 sm:grid-cols-7 dark:border-zinc-800 dark:bg-zinc-800"
+      className="glass-surface grid grid-cols-1 gap-px overflow-hidden rounded-lg border border-zinc-200 bg-zinc-200 sm:grid-cols-7 dark:border-zinc-800 dark:bg-zinc-800"
       data-calendar-week-grid
     >
       {days.map((d, i) => {
@@ -943,6 +928,7 @@ function WeekStrip({
             isToday={isToday}
             inMonth
             onContextMenu={onContextMenu}
+            onNewTask={onNewTask}
             className={`flex min-h-[7rem] flex-col gap-1 bg-white p-2 sm:min-h-[20rem] dark:bg-zinc-950 ${
               isToday ? "ring-2 ring-inset ring-sky-500 dark:ring-sky-400" : ""
             }`}

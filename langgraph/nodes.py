@@ -37,6 +37,7 @@ to the DB unchanged. See `hitl.py` for the engine-side glue + validation rules.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -429,19 +430,19 @@ def _split_turns(tail: list[Any]) -> tuple[list[Any], list[list[Any]]]:
 def _stub_turn(turn: list[Any]) -> None:
     """Replace each ToolMessage payload in an OLD turn with a short stub.
 
-    Mutates the ToolMessage objects in place (KEEP the object → preserves
-    the `tool_call_id` pairing with its parent AIMessage's tool_call). The
-    parent AIMessage is left untouched so its `.tool_calls` ids still match.
-    Stubbing an already-stubbed turn is a no-op-ish re-stub (idempotent
-    shape), so calling this twice is safe.
+    H-4 fix: builds a NEW ToolMessage (clone) with the stub content +
+    the same tool_call_id and replaces the slot in `turn` in-place, so the
+    original object shared with the checkpointed state['messages'] is never
+    mutated. The parent AIMessage is left untouched so its .tool_calls ids
+    still match. Stubbing an already-stubbed turn is idempotent.
     """
-    for msg in turn:
+    for i, msg in enumerate(turn):
         if not isinstance(msg, ToolMessage):
             continue
-        original = msg.content
-        char_len = len(str(original))
-        msg.content = (
-            f"[elided: {msg.tool_call_id} result, {char_len} chars]"
+        char_len = len(str(msg.content))
+        turn[i] = ToolMessage(
+            content=f"[elided: {msg.tool_call_id} result, {char_len} chars]",
+            tool_call_id=msg.tool_call_id,
         )
 
 
@@ -451,9 +452,9 @@ def _compact_messages(messages: list[Any], budget_tokens: int) -> list[Any]:
     Invariants (correctness is the whole point — Kanban #1717):
       1. messages[0] (system) + messages[1] (original brief) kept VERBATIM.
       2. The most-recent CONTEXT_RECENT_TURNS_KEPT turns kept VERBATIM.
-      3. Older turns over budget: each ToolMessage's `.content` replaced with
-         a `[elided: <id> result, <N> chars]` stub — the ToolMessage OBJECT
-         is kept so its `tool_call_id` still pairs with the parent AIMessage.
+      3. Older turns over budget: each ToolMessage is replaced by a NEW clone
+         with `[elided: <id> result, <N> chars]` stub content and the same
+         `tool_call_id` — the original object is never mutated (H-4 fix).
       4. Still over budget: drop WHOLE oldest turns (AIMessage + ALL its
          paired ToolMessages together, as a unit). Never drop system/brief.
       5. After compaction every retained AIMessage tool_call has its
@@ -941,8 +942,12 @@ async def _ainvoke_model(model: Any, messages: list[Any]) -> Any:
     ainvoke = getattr(model, "ainvoke", None)
     if ainvoke is not None:
         return await ainvoke(messages)
-    # Sync fallback — wrap in asyncio.to_thread? For tests, just call inline.
-    return model.invoke(messages)
+    # C-1 fix: was `model.invoke(messages)` inline — blocks the event loop.
+    # Use asyncio.to_thread so sync model fakes (tests) still work but the
+    # call no longer stalls the loop in production-like environments.
+    # shortcut: asyncio.to_thread adds one thread-pool dispatch; fine here
+    # since the sync-fallback path is test-only in practice.
+    return await asyncio.to_thread(model.invoke, messages)
 
 
 def _extract_usage(response: Any) -> tuple[int, int, int, int]:

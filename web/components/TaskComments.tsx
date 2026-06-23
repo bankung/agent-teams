@@ -15,7 +15,7 @@
 // When body_markdown=false we render plain text (React-escaped) preserving
 // whitespace. See lib/safeMarkdown.tsx for the full threat model.
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import {
   COMMENT_AUTHOR_LABEL_MAX,
@@ -28,6 +28,7 @@ import {
 import { extractErrorMessage } from "@/lib/errors";
 import { renderMarkdown } from "@/lib/safeMarkdown";
 import { formatRelative } from "@/lib/time";
+import { useAsyncData } from "@/lib/useAsyncData";
 
 type Props = {
   projectId: number;
@@ -51,13 +52,18 @@ const AUTHOR_CLASS: Record<CommentAuthorKindValue, string> = {
 };
 
 export function TaskComments({ projectId, taskId, authorLabel = "operator" }: Props) {
-  // null = first load not yet resolved; [] = resolved-empty.
-  const [comments, setComments] = useState<TaskCommentRead[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  // collapsed is user-toggleable; the initial fetch seeds it (empty→collapsed)
+  // via onSuccess. An error always forces the panel open (see effectiveCollapsed
+  // below) so the error row + empty-thread chrome stay visible — preserving the
+  // pre-#2492 catch handler's setCollapsed(false).
   const [collapsed, setCollapsed] = useState(false);
-  // hasMore: a full page came back → an older page may exist. Reset on each task.
+  // hasMore: a full page came back → an older page may exist. Seeded by the
+  // initial fetch's onSuccess; updated by handleLoadOlder.
   const [hasMore, setHasMore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  // loadError covers BOTH the initial fetch (via the hook's error, merged below)
+  // and the imperative "load older" failure (set directly in handleLoadOlder).
+  const [olderError, setOlderError] = useState<string | null>(null);
 
   // Initial load — newest 50 via a single page (no cursor = oldest-first from
   // the BE; we request a page and treat a full page as "older pages may exist").
@@ -67,29 +73,37 @@ export function TaskComments({ projectId, taskId, authorLabel = "operator" }: Pr
   // loaded set is the cursor — see handleLoadOlder. (Trade-off documented in the
   // role report: load-all-small-threads, paginate-from-oldest is the simple-
   // correct choice given the BE's id-ASC + `before` cursor semantics.)
-  useEffect(() => {
-    let cancelled = false;
-    setComments(null);
-    setLoadError(null);
-    setHasMore(false);
-    getTaskComments(projectId, taskId, { limit: PAGE })
-      .then((rows) => {
-        if (cancelled) return;
-        setComments(rows);
+  //
+  // #2492 — fetch + cancel-guard via useAsyncData. setData drives the local
+  // mutations (handleLoadOlder prepends an older page, handlePosted appends a
+  // new comment) WITHOUT a refetch. onSuccess derives the coupled hasMore +
+  // collapsed from the freshly-loaded rows (runs in the resolved .then, not in
+  // a consumer effect). resetDataOnReload reproduces the prior "comments=null
+  // while a new task loads" placeholder.
+  const {
+    data: comments,
+    error: initialError,
+    setData: setComments,
+  } = useAsyncData<TaskCommentRead[]>(
+    () => getTaskComments(projectId, taskId, { limit: PAGE }),
+    [projectId, taskId],
+    {
+      errorFallback: "Failed to load comments",
+      resetDataOnReload: true,
+      onSuccess: (rows) => {
         setHasMore(rows.length === PAGE);
         // Collapse only when the thread is empty; expand when it has content.
         setCollapsed(rows.length === 0);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setLoadError(extractErrorMessage(err, "Failed to load comments"));
-        setComments([]);
-        setCollapsed(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId, taskId]);
+        setOlderError(null);
+      },
+    },
+  );
+  // Merge the initial-fetch error with any "load older" error for a single
+  // display source (matches the prior single loadError state).
+  const loadError = initialError ?? olderError;
+  // An error always forces the panel open (the prior catch did setCollapsed
+  // (false)); otherwise honor the user/auto collapsed state.
+  const effectiveCollapsed = collapsed && loadError === null;
 
   const handleLoadOlder = async () => {
     if (loadingOlder || comments === null || comments.length === 0) return;
@@ -104,7 +118,7 @@ export function TaskComments({ projectId, taskId, authorLabel = "operator" }: Pr
       setComments((prev) => (prev ? [...older, ...prev] : older));
       setHasMore(older.length === PAGE);
     } catch (err: unknown) {
-      setLoadError(extractErrorMessage(err, "Failed to load older comments"));
+      setOlderError(extractErrorMessage(err, "Failed to load older comments"));
     } finally {
       setLoadingOlder(false);
     }
@@ -143,14 +157,14 @@ export function TaskComments({ projectId, taskId, authorLabel = "operator" }: Pr
       <button
         type="button"
         onClick={() => setCollapsed((v) => !v)}
-        aria-expanded={!collapsed}
+        aria-expanded={!effectiveCollapsed}
         data-task-comments-toggle
         className="flex w-full items-center gap-2 text-left"
       >
         <span
           aria-hidden
           className={`inline-block text-zinc-400 transition-transform dark:text-zinc-500 ${
-            collapsed ? "" : "rotate-90"
+            effectiveCollapsed ? "" : "rotate-90"
           }`}
         >
           <svg
@@ -180,7 +194,7 @@ export function TaskComments({ projectId, taskId, authorLabel = "operator" }: Pr
         </p>
       )}
 
-      {!collapsed && (
+      {!effectiveCollapsed && (
         <div className="flex flex-col gap-3" data-task-comments-panel>
           {hasMore && (
             <button

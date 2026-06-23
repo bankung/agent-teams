@@ -604,7 +604,11 @@ async def ingest_webhook(
     try:
         rate_limit_check_and_consume(project_id, tag)
     except RateLimitError as exc:
-        raise HTTPException(status_code=429, detail=str(exc)) from exc
+        logger.warning(
+            "webhook rate limit exceeded project_id=%s tag=%s: %s",
+            project_id, tag, exc,
+        )
+        raise HTTPException(status_code=429, detail="rate_limit_exceeded") from exc
 
     # ----- 3. Authenticate via M3-vault webhook_<tag> secret --------------
     cred, secret = await _load_webhook_secret(session, project_id, tag)

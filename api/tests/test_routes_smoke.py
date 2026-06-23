@@ -93,25 +93,6 @@ async def test_get_active_project_returns_410_gone(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_active_project_410_detail_pinned_in_router_source() -> None:
-    """Regression: Kanban #694 — source-text-lock per #122 pattern.
-
-    The 410 detail string is wire contract — drift breaks any FE / shell that
-    string-matches it. Lock by scanning `routers/projects.py` source for the
-    exact substring."""
-    from src.routers import projects as projects_router
-
-    source = Path(projects_router.__file__).read_text(encoding="utf-8")
-    pinned = (
-        '"Endpoint deprecated. Use /api/projects/by-name/{name} or "\n'
-        '            "/api/projects?status=1 instead."'
-    )
-    assert pinned in source, (
-        f"410 detail string drifted in routers/projects.py — expected {pinned!r}"
-    )
-
-
-@pytest.mark.asyncio
 async def test_get_seeded_agent_teams_by_name(client) -> None:
     """Replacement for the legacy `/api/projects/active` smoke test.
 
@@ -263,7 +244,7 @@ async def test_post_task_invalid_process_status_returns_422_with_validator_messa
     # FastAPI 422 envelope: {"detail": [{"loc": [...], "msg": "...", ...}, ...]}
     assert "detail" in body and isinstance(body["detail"], list)
     msgs = " | ".join(err["msg"] for err in body["detail"])
-    assert "process_status must be one of (1, 2, 3, 4, 5, 6), got 99" in msgs
+    assert "process_status must be one of (1, 2, 3, 4, 5, 6, 8), got 99" in msgs
     # N8 — pin the field path so renames break the test.
     assert any(err["loc"] == ["body", "process_status"] for err in body["detail"]), (
         f"expected loc=['body','process_status'] in detail; got "

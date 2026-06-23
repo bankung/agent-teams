@@ -19,6 +19,7 @@
 // content directly inside. The panel itself is a <div>; callers that need a
 // <form> wrap their own <form> inside `children`.
 
+import { createPortal } from "react-dom";
 import { useCallback, useEffect, useRef } from "react";
 
 // Tailwind max-width tokens for the sm:max-w-* panel constraint.
@@ -56,13 +57,13 @@ type Props = {
   // aria-labelledby value — must match the id on the heading inside children.
   labelledBy: string;
   // Controls sm:max-w-* on the panel. Defaults to 'md' (matches existing
-  // migrated modals). Use 'lg' for denser forms (EditProjectModal,
-  // PlatformSettingsModal) and 'sm' for compact confirmations.
+  // migrated modals). Use 'lg' for denser forms (e.g. EditProjectModal,
+  // AiTaskModal) and 'sm' for compact confirmations.
   maxWidth?: "sm" | "md" | "lg";
   // Optional: appended to the panel className for one-off overrides.
   panelExtraClassName?: string;
   // When true, the desktop panel is capped at 85vh and scrolls vertically.
-  // Use for modals with long content lists (e.g. PlatformSettingsModal).
+  // Use for modals with long content lists (e.g. AiTaskModal).
   // Default false keeps the pre-existing sm:h-auto + sm:overflow-visible
   // behaviour so dropdown-bearing modals are unaffected.
   scrollable?: boolean;
@@ -84,7 +85,12 @@ export function ModalShell({
   // Keep a stable ref so the ESC listener always calls the freshest onClose
   // without needing to re-register every render.
   const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  // Sync after commit (react-hooks/refs: no ref writes during render). A
+  // post-commit update is correct here — the only reader is the ESC event
+  // handler below, which fires asynchronously after the listener is attached.
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   const handleEsc = useCallback((e: KeyboardEvent) => {
     if (e.key === "Escape") onCloseRef.current();
@@ -97,10 +103,11 @@ export function ModalShell({
   }, [open, handleEsc]);
 
   if (!open) return null;
+  if (typeof document === "undefined") return null;
 
   const panelMaxW = MAX_WIDTH_CLASS[maxWidth] ?? MAX_WIDTH_CLASS.md;
 
-  return (
+  return createPortal(
     // Backdrop — no role/aria-modal here (a11y fix: those go on the panel below)
     <div
       className="fixed inset-0 z-50 flex items-stretch justify-center bg-zinc-900/40 dark:bg-zinc-950/70 sm:items-center sm:px-4"
@@ -118,6 +125,7 @@ export function ModalShell({
       >
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

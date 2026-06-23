@@ -17,16 +17,9 @@ import { useMemo, useState } from "react";
 import type { AgentSummary, AgentModelTier, AgentDomain } from "@/lib/api";
 import { AgentCard } from "./AgentCard";
 
-type SortKey = "name" | "model" | "domain";
-
-// Model tiers in heaviest→lightest order for the sort + the filter-chip order.
+// Model tiers in heaviest→lightest order for the filter-chip order.
 const MODEL_ORDER: AgentModelTier[] = ["opus", "sonnet", "haiku"];
 
-// Rank for the "model" sort: known tiers heaviest-first, null ("default") last.
-function modelRank(model: AgentModelTier | null): number {
-  if (model === null) return MODEL_ORDER.length;
-  return MODEL_ORDER.indexOf(model);
-}
 
 // Model filter value: a concrete tier, the "default" sentinel (= agents with
 // no `model:` key / null model), or null (= no model filter active).
@@ -58,7 +51,6 @@ function matches(agent: AgentSummary, f: Filters): boolean {
 }
 
 export function AgentGallery({ agents }: { agents: AgentSummary[] }) {
-  const [sort, setSort] = useState<SortKey>("name");
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
 
   // Distinct domains present in the data, in first-seen-sorted order. The BE
@@ -78,24 +70,11 @@ export function AgentGallery({ agents }: { agents: AgentSummary[] }) {
     return { tiers, hasDefault: present.has(null) };
   }, [agents]);
 
-  // Filtered + sorted view.
+  // Filtered + sorted view (name sort — default and only option).
   const visible = useMemo(() => {
     const filtered = agents.filter((a) => matches(a, filters));
-    const sorted = [...filtered].sort((a, b) => {
-      if (sort === "model") {
-        const r = modelRank(a.model) - modelRank(b.model);
-        if (r !== 0) return r;
-        return a.name.localeCompare(b.name);
-      }
-      if (sort === "domain") {
-        const d = a.domain.localeCompare(b.domain);
-        if (d !== 0) return d;
-        return a.name.localeCompare(b.name);
-      }
-      return a.name.localeCompare(b.name);
-    });
-    return sorted;
-  }, [agents, filters, sort]);
+    return [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+  }, [agents, filters]);
 
   // Count of agents matching a candidate chip combined with the OTHER active
   // filters (so the count reflects what clicking the chip would yield). For the
@@ -110,28 +89,14 @@ export function AgentGallery({ agents }: { agents: AgentSummary[] }) {
 
   return (
     <div className="flex flex-col gap-3">
-      {/* Controls: sort select + filter chips. */}
+      {/* Controls: filter chips. */}
       <div
         data-agent-controls
-        className="flex flex-col gap-2 rounded-md border border-zinc-200 bg-zinc-50/60 p-3 dark:border-zinc-800 dark:bg-zinc-950/40"
+        className="glass-surface flex flex-col gap-2 rounded-md border border-zinc-200 bg-zinc-50/60 p-3 dark:border-zinc-800 dark:bg-zinc-950/40"
       >
         <div className="flex flex-wrap items-center gap-2">
-          <label className="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400">
-            <span className="font-medium uppercase tracking-wide">Sort</span>
-            <select
-              data-agent-sort
-              value={sort}
-              onChange={(e) => setSort(e.target.value as SortKey)}
-              className="rounded border border-zinc-300 bg-white px-1.5 py-0.5 text-xs text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-            >
-              <option value="name">name</option>
-              <option value="model">model</option>
-              <option value="domain">domain</option>
-            </select>
-          </label>
-
           <span
-            className="ml-auto text-[11px] text-zinc-500 dark:text-zinc-400 tabular-nums"
+            className="text-[11px] text-zinc-500 dark:text-zinc-400 tabular-nums"
             data-agent-count
           >
             {visible.length} of {agents.length}
@@ -236,7 +201,7 @@ export function AgentGallery({ agents }: { agents: AgentSummary[] }) {
       {visible.length === 0 ? (
         <p
           data-agent-grid-empty
-          className="rounded border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400"
+          className="glass-surface rounded border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400"
         >
           No agents match the active filters.
         </p>

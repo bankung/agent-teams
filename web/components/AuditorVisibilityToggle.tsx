@@ -9,35 +9,9 @@
 // Default: visible (true) when the key is absent — preserves backward-compat
 // for users who have never interacted with the toggle.
 
-import { useEffect, useState } from "react";
+import { usePersistentState } from "@/lib/usePersistentState";
 
 const LS_KEY = "dashboard.panels.auditor.visible";
-
-function readVisible(): boolean {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (raw === null) return true;
-    return JSON.parse(raw) !== false;
-  } catch {
-    return true;
-  }
-}
-
-function writeVisible(next: boolean): void {
-  try {
-    localStorage.setItem(LS_KEY, JSON.stringify(next));
-    // Notify same-tab listeners (native StorageEvent only goes to other tabs).
-    window.dispatchEvent(
-      new StorageEvent("storage", {
-        key: LS_KEY,
-        newValue: JSON.stringify(next),
-        storageArea: localStorage,
-      }),
-    );
-  } catch {
-    // localStorage blocked (private-mode quota exceeded, etc.) — silently ignore.
-  }
-}
 
 // Eye icon — visible state
 function EyeIcon() {
@@ -81,26 +55,16 @@ function EyeOffIcon() {
 }
 
 export function AuditorVisibilityToggle() {
-  // Default true so SSR and first paint both render the button in "visible"
-  // state — avoids hydration mismatch and layout flash.
-  const [visible, setVisible] = useState(true);
-
-  useEffect(() => {
-    // Sync to actual localStorage value after hydration.
-    setVisible(readVisible());
-
-    function onStorage(e: StorageEvent) {
-      if (e.key !== LS_KEY) return;
-      setVisible(e.newValue !== null ? JSON.parse(e.newValue) !== false : true);
-    }
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
+  // Server snapshot = true so SSR + first paint render the button "visible"
+  // (avoids hydration mismatch / layout flash); client reads localStorage.
+  // Absent → true. usePersistentState dispatches the same-tab StorageEvent that
+  // AuditorActivityPanel listens for (replaces the old writeVisible).
+  const [visible, setVisible] = usePersistentState<boolean>(LS_KEY, true, {
+    deserialize: (raw) => JSON.parse(raw) !== false,
+  });
 
   function toggle() {
-    const next = !visible;
-    setVisible(next);
-    writeVisible(next);
+    setVisible(!visible);
   }
 
   return (

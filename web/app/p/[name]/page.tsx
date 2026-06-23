@@ -11,9 +11,10 @@ import {
 import { TaskRunMode } from "@/lib/constants";
 import { Board } from "@/components/Board";
 
-type Props = { params: { name: string } };
+type Props = { params: Promise<{ name: string }> };
 
-export default async function ProjectBoardPage({ params }: Props) {
+export default async function ProjectBoardPage(props: Props) {
+  const params = await props.params;
   let project;
   try {
     project = await getProjectByName(params.name);

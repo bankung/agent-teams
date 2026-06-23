@@ -106,9 +106,14 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 # ---- 2. docker compose up ---------------------------------------------------
-log "Building and starting services (docker compose up -d --build)..."
-if ! docker compose up -d --build; then
-  err "docker compose up failed. Inspect the output above."
+# The prod overlay (docker-compose.prod.yml) swaps the web service to the
+# multi-stage standalone build (Dockerfile.prod → `node server.js`) and drops
+# uvicorn --reload. This is the correct default for a clean install.
+# Developers who want hot-reload use the dev overlay instead:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+log "Building and starting services (prod mode: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build)..."
+if ! docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build; then
+  err "docker compose up (prod) failed. Inspect the output above."
   exit 2
 fi
 
@@ -121,8 +126,8 @@ fi
 log "First-time install: bypassing live-DB guards (MIGRATION_TARGET=live + SEED_TARGET=production) for the initial schema + seed."
 log "  This is safe on a fresh DB. Subsequent re-runs are no-ops (alembic no-op + seed idempotent)."
 log "Running schema migration (docker compose exec -T -e MIGRATION_TARGET=live api alembic upgrade head)..."
-if ! docker compose exec -T -e MIGRATION_TARGET=live api alembic upgrade head; then
-  err "Schema migration failed. Check logs: docker compose logs api"
+if ! docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T -e MIGRATION_TARGET=live api alembic upgrade head; then
+  err "Schema migration failed. Check logs: docker compose -f docker-compose.yml -f docker-compose.prod.yml logs api"
   exit 5
 fi
 
@@ -143,7 +148,7 @@ done
 
 if [ "$healthy" -ne 1 ]; then
   err "API did not become healthy within ${WAIT_TIMEOUT_SEC}s."
-  err "Check logs: docker compose logs api"
+  err "Check logs: docker compose -f docker-compose.yml -f docker-compose.prod.yml logs api"
   exit 3
 fi
 log "API healthy."
@@ -152,8 +157,8 @@ log "API healthy."
 # Seed is idempotent — re-runs print 'already seeded' and exit 0.
 # Use -T to disable pseudo-TTY (safe in non-interactive CI / scripts).
 log "Running seed (docker compose exec -T -e SEED_TARGET=production api python -m scripts.seed)..."
-if ! docker compose exec -T -e SEED_TARGET=production api python -m scripts.seed; then
-  err "Seed failed. Check logs: docker compose logs api"
+if ! docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T -e SEED_TARGET=production api python -m scripts.seed; then
+  err "Seed failed. Check logs: docker compose -f docker-compose.yml -f docker-compose.prod.yml logs api"
   exit 4
 fi
 

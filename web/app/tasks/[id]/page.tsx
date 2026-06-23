@@ -26,13 +26,12 @@ import {
   type TaskRead,
 } from "@/lib/api";
 import { TaskFocusView } from "@/components/TaskFocusView";
-import { ThemePicker } from "@/components/ThemePicker";
 
 export const dynamic = "force-dynamic";
 
 type Props = {
-  params: { id: string };
-  searchParams?: { action_hint?: string };
+  params: Promise<{ id: string }>;
+  searchParams?: Promise<{ action_hint?: string }>;
 };
 
 // Locate the task across the bound user's active projects. The X-Project-Id
@@ -59,7 +58,9 @@ async function locateTask(
   return null;
 }
 
-export default async function TaskFocusPage({ params, searchParams }: Props) {
+export default async function TaskFocusPage(props: Props) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   const parsedId = Number.parseInt(params.id, 10);
   if (!Number.isFinite(parsedId) || parsedId < 1) {
     notFound();
@@ -94,7 +95,7 @@ export default async function TaskFocusPage({ params, searchParams }: Props) {
     <main
       data-task-focus-page
       data-task-id={located.task.id}
-      className="flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950"
+      className="glass-board flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950"
     >
       <header className="mb-4 flex flex-wrap items-center gap-2 text-sm">
         <Link
@@ -108,9 +109,6 @@ export default async function TaskFocusPage({ params, searchParams }: Props) {
         </span>
         <span className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
           Task #{located.task.id}
-        </span>
-        <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
-          <ThemePicker />
         </span>
       </header>
 

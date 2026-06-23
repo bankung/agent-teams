@@ -41,14 +41,16 @@ from src.constants import RecordStatus
 from src.models.base import Base
 
 
-# kinds_enabled default — kept in lockstep with the server_default in
-# migration 0046_push_subscriptions. Pydantic `KindsEnabled` mirrors the same
-# four keys + their defaults.
+# kinds_enabled default — kept in lockstep with Pydantic `KindsEnabled`.
+# The DB server_default in migration 0046_push_subscriptions omits
+# `task_halted`; the resolver treats absent keys as False (correct opt-in
+# behaviour for Kanban #1841) so no migration is required for that key.
 _KINDS_ENABLED_DEFAULT: dict[str, bool] = {
     "hitl_needed": True,
     "task_done": True,
     "task_failed": True,
     "budget_warn": True,
+    "task_halted": False,  # Kanban #1841 — OPT-IN, default False
 }
 
 

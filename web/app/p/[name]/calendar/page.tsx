@@ -26,20 +26,18 @@ import {
 } from "@/lib/api";
 import { currentYearMonth, parseMonthParam } from "@/lib/calendarDates";
 import { CalendarView } from "@/components/CalendarView";
-import { ThemePicker } from "@/components/ThemePicker";
 import { ViewSwitcher } from "@/components/ViewSwitcher";
 
 type Props = {
-  params: { name: string };
-  searchParams: { month?: string };
+  params: Promise<{ name: string }>;
+  searchParams: Promise<{ month?: string }>;
 };
 
 export const dynamic = "force-dynamic";
 
-export default async function ProjectCalendarPage({
-  params,
-  searchParams,
-}: Props) {
+export default async function ProjectCalendarPage(props: Props) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   let project;
   try {
     project = await getProjectByName(params.name);
@@ -69,29 +67,33 @@ export default async function ProjectCalendarPage({
   const boardHref = `/p/${encodeURIComponent(project.name)}`;
 
   return (
-    <main className="flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950">
+    <main className="glass-board flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950">
+      {/* #2404 — 3-zone header: left (flex-1) · centered ViewSwitcher (shrink-0) · right placeholder (flex-1). */}
       <header className="mb-4 flex flex-wrap items-center gap-2 text-sm">
-        <Link
-          href={boardHref}
-          className="text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-        >
-          ← {project.name} board
-        </Link>
-        <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
-          ·
+        {/* LEFT zone */}
+        <span className="flex flex-1 flex-wrap items-center gap-2">
+          <Link
+            href={boardHref}
+            className="text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+          >
+            ← {project.name} board
+          </Link>
+          <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
+            ·
+          </span>
+          <span className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
+            Calendar
+          </span>
+          <span className="text-xs text-zinc-500 dark:text-zinc-400 font-mono">
+            ({project.name})
+          </span>
         </span>
-        <span className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
-          Calendar
-        </span>
-        <span className="text-xs text-zinc-500 dark:text-zinc-400 font-mono">
-          ({project.name})
-        </span>
-        {/* Wave A (#1) — shared view switcher (Calendar active). Off-board: all
-            four items navigate (no onSelect). */}
-        <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
+        {/* CENTER zone — Wave A (#1): shared view switcher (Calendar active). Off-board: all four items navigate (no onSelect). */}
+        <span className="shrink-0">
           <ViewSwitcher projectName={project.name} active="calendar" />
-          <ThemePicker />
         </span>
+        {/* RIGHT zone — placeholder to balance the flex-1 left zone so the center stays centered. */}
+        <span className="flex-1" />
       </header>
 
       <div className="mx-auto w-full max-w-5xl">

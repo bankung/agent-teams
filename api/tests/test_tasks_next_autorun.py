@@ -232,6 +232,42 @@ async def test_next_task_includes_task_whose_blocker_is_done(
 
 
 # ---------------------------------------------------------------------------
+# (d2) #2422 — next_task includes task whose blocker is CANCELLED (ps=6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_next_task_includes_task_whose_blocker_is_cancelled(
+    client, scaffold_cleanup
+) -> None:
+    """#2422: A task blocked by a CANCELLED(6) task IS eligible for next_task.
+    CANCELLED is a terminal state — the dependent must not stay blocked.
+    """
+    pid = await _make_fresh_project(client, scaffold_cleanup, "k2422-d2")
+
+    blocker = await _make_task(
+        client, pid, "blocker cancelled", run_mode="manual", task_kind="human"
+    )
+    # Mark blocker CANCELLED (ps=6)
+    await _patch_task(client, pid, blocker["id"], process_status=6)
+
+    unblocked = await _make_task(
+        client,
+        pid,
+        "formerly-blocked by cancelled",
+        run_mode="auto_pickup",
+        task_kind="ai",
+        blocked_by=blocker["id"],
+    )
+
+    body = await _get_next_autorun(client, pid)
+    assert body["next_task"] is not None, (
+        f"task {unblocked['id']} blocked by CANCELLED blocker must be eligible: {body}"
+    )
+    assert body["next_task"]["id"] == unblocked["id"]
+
+
+# ---------------------------------------------------------------------------
 # (e) resume_tasks returns halted task whose blocker is DONE
 # ---------------------------------------------------------------------------
 
@@ -262,6 +298,48 @@ async def test_resume_tasks_returns_halted_task_with_done_blocker(
     resume_ids = [t["id"] for t in body["resume_tasks"]]
     assert halted["id"] in resume_ids, (
         f"halted task {halted['id']} should be in resume_tasks: {body['resume_tasks']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# (e2) pre-push review revert — resume_tasks must NOT include halted task
+#      whose blocker is CANCELLED (ps=6); DONE-only resume (#2422 over-broad)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resume_tasks_excludes_halted_task_with_cancelled_blocker(
+    client, scaffold_cleanup
+) -> None:
+    """resume_tasks is intentionally DONE-only.  A CANCELLED blocker provides no
+    answer, so a HITL-halted task whose blocker was cancelled must NOT be auto-resumed
+    — it is left halted for manual attention.
+
+    #2422 correctly broadened next-autorun readiness and blocked-count to treat
+    CANCELLED as terminal; the pre-push review found that applying the same broadening
+    to resume_stmt was incorrect.  This test locks the correct (reverted) behaviour.
+    """
+    pid = await _make_fresh_project(client, scaffold_cleanup, "k2422-e2")
+
+    blocker = await _make_task(
+        client, pid, "blocker cancelled for resume", run_mode="manual", task_kind="human"
+    )
+    await _patch_task(client, pid, blocker["id"], process_status=6)
+
+    halted = await _make_task(
+        client,
+        pid,
+        "halted task waiting on cancelled blocker",
+        run_mode="auto_pickup",
+        task_kind="ai",
+        halt_reason="blocked by Question:blocker",
+        blocked_by=blocker["id"],
+    )
+
+    body = await _get_next_autorun(client, pid)
+    resume_ids = [t["id"] for t in body["resume_tasks"]]
+    assert halted["id"] not in resume_ids, (
+        f"halted task {halted['id']} with CANCELLED blocker must NOT be in resume_tasks: {body['resume_tasks']}"
     )
 
 
@@ -427,6 +505,53 @@ async def test_blocked_count_counts_tasks_with_active_blockers(
     body = await _get_next_autorun(client, pid)
     assert body["blocked_count"] == 2, (
         f"expected 2 actively-blocked tasks, got {body['blocked_count']}: {body}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# (g2) #2422 — blocked_count excludes tasks whose blocker is CANCELLED (ps=6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_blocked_count_excludes_tasks_with_cancelled_blocker(
+    client, scaffold_cleanup
+) -> None:
+    """#2422: blocked_count must NOT include tasks whose blocker is CANCELLED(6).
+    CANCELLED is terminal — the dependent is no longer held.
+    """
+    pid = await _make_fresh_project(client, scaffold_cleanup, "k2422-g2")
+
+    # Active (TODO) blocker — should count
+    active_blocker = await _make_task(
+        client, pid, "active blocker", run_mode="manual", task_kind="human"
+    )
+    await _make_task(
+        client,
+        pid,
+        "blocked by active",
+        run_mode="auto_pickup",
+        task_kind="ai",
+        blocked_by=active_blocker["id"],
+    )
+
+    # CANCELLED blocker — must NOT count
+    cancelled_blocker = await _make_task(
+        client, pid, "cancelled blocker", run_mode="manual", task_kind="human"
+    )
+    await _patch_task(client, pid, cancelled_blocker["id"], process_status=6)
+    await _make_task(
+        client,
+        pid,
+        "blocked by cancelled",
+        run_mode="auto_pickup",
+        task_kind="ai",
+        blocked_by=cancelled_blocker["id"],
+    )
+
+    body = await _get_next_autorun(client, pid)
+    assert body["blocked_count"] == 1, (
+        f"expected 1 blocked task (active blocker only), got {body['blocked_count']}: {body}"
     )
 
 

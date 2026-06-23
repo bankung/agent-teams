@@ -25,7 +25,7 @@
 //   PLSummary.currency is the first observed currency. We compute the bucket
 //   currency cardinality client-side; >1 unique currency → render "(mixed)".
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef } from "react";
 import Link from "next/link";
 
 import {
@@ -37,37 +37,16 @@ import {
 import { formatMoney, formatSignedPercent, parseMoney } from "@/lib/money";
 import {
   RANGE_OPTIONS,
-  readStoredRange,
-  writeStoredRange,
+  STORAGE_KEY as PNL_RANGE_KEY,
+  STORABLE_RANGE_KEYS,
   type RangeKey,
 } from "@/lib/plRangePresets";
+import { useAsyncData } from "@/lib/useAsyncData";
+import { usePersistentState } from "@/lib/usePersistentState";
 
-// ----- Collapse helpers (mirrors CostSummary pattern) ------------------------
-
-function readPnlExpanded(key: string, defaultCollapsed: boolean): boolean {
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw === null) return !defaultCollapsed;
-    return JSON.parse(raw) !== false;
-  } catch {
-    return !defaultCollapsed;
-  }
-}
-
-function writePnlExpanded(key: string, next: boolean): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(next));
-    window.dispatchEvent(
-      new StorageEvent("storage", {
-        key,
-        newValue: JSON.stringify(next),
-        storageArea: localStorage,
-      }),
-    );
-  } catch {
-    // localStorage blocked — silently ignore.
-  }
-}
+// Collapse + range persistence now route through usePersistentState (#2491);
+// the prior local readPnlExpanded/writePnlExpanded dups (a copy of
+// collapseState.ts) and the readStoredRange/writeStoredRange calls are removed.
 
 // Chevron icons (local copies mirror CostSummary; no shared icon lib in scope)
 function ChevronDownIcon() {
@@ -124,12 +103,6 @@ type Props = {
   className?: string;
 };
 
-type LoadState =
-  | { kind: "idle" }
-  | { kind: "loading" }
-  | { kind: "ok"; data: PLSummary }
-  | { kind: "error"; message: string };
-
 export function PnlSummaryCard({
   projectId,
   projectName,
@@ -138,85 +111,95 @@ export function PnlSummaryCard({
   storageKey,
   className = "mb-5",
 }: Props) {
-  // SSR / first-paint fallback is the brief's default "last_30d" so the
-  // initial render is stable. Hydration effect upgrades to the stored value
-  // (if any) — same pattern as CostSummary's expand-state persistence.
-  const [rangeKey, setRangeKey] = useState<RangeKey>("last_30d");
-  const [state, setState] = useState<LoadState>({ kind: "idle" });
+  // Selected range, persisted to the shared pnl_period_default key via
+  // usePersistentState (replaces readStoredRange/writeStoredRange + the
+  // restore-on-mount effect). SSR snapshot = "last_30d"; client restores the
+  // stored default. "custom" is a disabled option (never selectable/persisted);
+  // the deserialize guard maps any non-storable raw back to "last_30d".
+  const [rangeKey, setRangeKey] = usePersistentState<RangeKey>(
+    PNL_RANGE_KEY,
+    "last_30d",
+    {
+      serialize: (v) => v,
+      deserialize: (raw) =>
+        STORABLE_RANGE_KEYS.has(raw as RangeKey)
+          ? (raw as RangeKey)
+          : "last_30d",
+    },
+  );
   // Pin "now" once per mount so range builds don't drift mid-render.
   const nowRef = useRef<Date>(new Date());
   // RANGE_OPTIONS is a stable readonly array; memoize the reference only.
   const options = useMemo(() => RANGE_OPTIONS, []);
-  // Promotes "last fetched in-flight" → renderable; lets us ignore stale
-  // responses if the user flips the dropdown faster than the BE responds.
-  const reqIdRef = useRef(0);
 
-  // Collapse state — mirrors CostSummary pattern.
+  // Collapse state — persisted via usePersistentState (mirrors CostSummary).
+  // SSR snapshot = expanded default (no hydration mismatch); client reads
+  // localStorage. The same-tab StorageEvent is dispatched by the hook's writer.
   const collapsible = defaultCollapsed && storageKey != null;
-  // Default expanded=true so SSR + first paint avoid hydration mismatch.
-  const [expanded, setExpanded] = useState(!defaultCollapsed);
+  const [storedExpanded, setStoredExpanded] = usePersistentState<boolean>(
+    storageKey ?? "pnl-summary:__noop",
+    !defaultCollapsed,
+    { deserialize: (raw) => JSON.parse(raw) !== false },
+  );
+  const expanded = collapsible ? storedExpanded : !defaultCollapsed;
 
-  useEffect(() => {
-    if (!collapsible || !storageKey) return;
-    setExpanded(readPnlExpanded(storageKey, defaultCollapsed));
-    function onStorage(e: StorageEvent) {
-      if (e.key !== storageKey) return;
-      setExpanded(
-        e.newValue !== null ? JSON.parse(e.newValue) !== false : !defaultCollapsed,
-      );
-    }
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, [collapsible, storageKey, defaultCollapsed]);
+  function toggle() {
+    if (!collapsible) return;
+    setStoredExpanded(!expanded);
+  }
 
-  const toggle = useCallback(() => {
-    if (!collapsible || !storageKey) return;
-    const next = !expanded;
-    setExpanded(next);
-    writePnlExpanded(storageKey, next);
-  }, [collapsible, storageKey, expanded]);
-
-  // Restore stored default on mount.
-  useEffect(() => {
-    const stored = readStoredRange();
-    if (stored) setRangeKey(stored);
-  }, []);
-
-  // Fetch on rangeKey change. Custom is a stub — no fetch fires.
-  useEffect(() => {
-    const opt = options.find((o) => o.key === rangeKey);
-    if (!opt || opt.disabled) return;
-    const { period, since, until } = opt.build(nowRef.current);
-    const myReq = ++reqIdRef.current;
-    setState({ kind: "loading" });
-    getProjectPl(projectId, {
-      period,
-      since: since ?? undefined,
-      until: until ?? undefined,
-    })
-      .then((data) => {
-        if (myReq !== reqIdRef.current) return;
-        setState({ kind: "ok", data });
-      })
-      .catch((err: unknown) => {
-        if (myReq !== reqIdRef.current) return;
-        const message =
-          err instanceof HttpError
-            ? `${err.status}: ${err.message}`
-            : err instanceof Error
-              ? err.message
-              : "Unknown error";
-        setState({ kind: "error", message });
+  // #2492 — fetch on rangeKey change via useAsyncData (was a reqIdRef-guarded
+  // effect; the hook's cancel flag provides the same stale-response discard).
+  // "custom"/disabled options are stubs → the fetcher resolves null (no fetch).
+  // The HttpError "<status>: <message>" formatting is preserved by rethrowing a
+  // formatted Error so extractErrorMessage surfaces it verbatim.
+  const {
+    data: pl,
+    loading: plLoading,
+    error: plError,
+  } = useAsyncData<PLSummary | null>(
+    () => {
+      const opt = options.find((o) => o.key === rangeKey);
+      if (!opt || opt.disabled) return Promise.resolve(null);
+      const { period, since, until } = opt.build(nowRef.current);
+      return getProjectPl(projectId, {
+        period,
+        since: since ?? undefined,
+        until: until ?? undefined,
+      }).catch((err: unknown) => {
+        // Preserve the prior "<status>: <message>" formatting for HttpError.
+        if (err instanceof HttpError) throw new Error(`${err.status}: ${err.message}`);
+        throw err;
       });
-  }, [projectId, rangeKey, options]);
+    },
+    [projectId, rangeKey, options],
+    { errorFallback: "Unknown error" },
+  );
+  // Local discriminated view so the render's existing kind-checks keep working
+  // with minimal churn. idle/loading collapse to one "loading" branch (the
+  // render already treats them identically). Memoized so its identity is stable
+  // per fetch — several useMemos below depend on it (exhaustive-deps).
+  const state = useMemo<
+    { kind: "loading" } | { kind: "ok"; data: PLSummary } | { kind: "error"; message: string }
+  >(
+    () =>
+      plError !== null
+        ? { kind: "error", message: plError }
+        : pl !== null
+          ? { kind: "ok", data: pl }
+          : { kind: "loading" },
+    [pl, plError],
+  );
 
   const currentLabel =
     options.find((o) => o.key === rangeKey)?.label ?? "Last 30 days";
 
   function onChangeRange(e: React.ChangeEvent<HTMLSelectElement>) {
     const next = e.target.value as RangeKey;
-    setRangeKey(next);
-    if (next !== "custom") writeStoredRange(next);
+    // "custom" is a disabled option (never selectable); guard preserves the
+    // prior "never persist custom" contract. setRangeKey persists to the shared
+    // pnl_period_default key via usePersistentState (replaces writeStoredRange).
+    if (next !== "custom") setRangeKey(next);
   }
 
   // Compute derived render values from the summary.
@@ -344,7 +327,7 @@ export function PnlSummaryCard({
 
       {expanded && (
         <>
-          {state.kind === "loading" || state.kind === "idle" ? (
+          {state.kind === "loading" ? (
             <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading P&amp;L…</p>
           ) : state.kind === "error" ? (
             <p className="text-sm text-red-700 dark:text-red-300">
@@ -357,7 +340,7 @@ export function PnlSummaryCard({
                 POST a manual record via <code>/api/transactions</code> or configure
                 a Stripe / PayPal webhook in{" "}
                 <Link
-                  href={`/p/${projectName}/settings`}
+                  href={`/settings?project=${encodeURIComponent(projectName)}`}
                   className="text-emerald-700 underline hover:text-emerald-800 dark:text-emerald-300 dark:hover:text-emerald-200"
                 >
                   project settings
@@ -429,14 +412,6 @@ export function PnlSummaryCard({
                     ) : null}
                   </span>
                 </div>
-              </div>
-              <div className="mt-4 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs text-zinc-600 dark:text-zinc-400">
-                <span>
-                  <span className="font-semibold text-zinc-900 dark:text-zinc-100 tabular-nums">
-                    {state.data.transaction_count}
-                  </span>{" "}
-                  transaction{state.data.transaction_count === 1 ? "" : "s"}
-                </span>
               </div>
             </>
           )}

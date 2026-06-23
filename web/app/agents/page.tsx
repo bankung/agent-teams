@@ -15,7 +15,7 @@ import Link from "next/link";
 
 import { getAgents, type AgentSummary } from "@/lib/api";
 import { AgentGallery } from "@/components/AgentGallery";
-import { ThemePicker } from "@/components/ThemePicker";
+import { NewAgentButton } from "@/components/NewAgentButton";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +33,7 @@ export default async function AgentsPage() {
   return (
     <main
       data-agents-page
-      className="flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950"
+      className="glass-board flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950"
     >
       <header className="mb-4 flex flex-wrap items-center gap-2 text-sm">
         <Link
@@ -62,23 +62,24 @@ export default async function AgentsPage() {
             {invalidCount} invalid
           </span>
         ) : null}
-        <span className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
-          <ThemePicker />
-        </span>
+        {/* #2481 — create entry point (client island; opens the gated form). */}
+        <div className="ml-auto">
+          <NewAgentButton />
+        </div>
       </header>
 
       <div className="mx-auto w-full max-w-6xl">
         {errorMessage ? (
           <p
             data-agents-error
-            className="rounded border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300"
+            className="glass-surface rounded border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300"
           >
             Couldn’t load agents: {errorMessage}
           </p>
         ) : agents && agents.length === 0 ? (
           <p
             data-agents-empty
-            className="rounded border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400"
+            className="glass-surface rounded border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400"
           >
             No agents found. Agent definitions live in{" "}
             <code className="font-mono">.claude/agents/*.md</code>.

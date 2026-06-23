@@ -23,6 +23,7 @@ const STATUS_LABEL: Record<number, string> = {
   [TaskStatus.REVIEW]: "Review",
   [TaskStatus.BLOCKED]: "Blocked",
   [TaskStatus.DONE]: "Done",
+  [TaskStatus.HALTED_PENDING_USER]: "Halted / Pending user",
 };
 
 const STATUS_CLASS: Record<number, string> = {
@@ -31,6 +32,7 @@ const STATUS_CLASS: Record<number, string> = {
   [TaskStatus.REVIEW]: "text-yellow-700 bg-yellow-50 dark:text-yellow-300 dark:bg-yellow-900/30",
   [TaskStatus.BLOCKED]: "text-red-700 bg-red-50 dark:text-red-300 dark:bg-red-900/30",
   [TaskStatus.DONE]: "text-green-700 bg-green-50 dark:text-green-300 dark:bg-green-900/30",
+  [TaskStatus.HALTED_PENDING_USER]: "text-amber-700 bg-amber-50 dark:text-amber-300 dark:bg-amber-900/30",
 };
 
 const PRIORITY_LABEL: Record<number, string> = {
@@ -82,6 +84,7 @@ const STATUS_OPTIONS = [
   { value: TaskStatus.IN_PROGRESS, label: "In progress" },
   { value: TaskStatus.REVIEW, label: "Review" },
   { value: TaskStatus.BLOCKED, label: "Blocked" },
+  { value: TaskStatus.HALTED_PENDING_USER, label: "Halted" },
   { value: TaskStatus.DONE, label: "Done" },
 ];
 
@@ -276,8 +279,8 @@ export function ListView({ tasks, onOpenDetail, highlightedTaskId = null }: Prop
         </span>
       </div>
 
-      {/* Table */}
-      <div className="overflow-x-auto overflow-y-auto flex-1 rounded border border-zinc-200 dark:border-zinc-800">
+      {/* Table — #2453: glass-surface frosts the table shell under html.glass. */}
+      <div className="glass-surface overflow-x-auto overflow-y-auto flex-1 rounded border border-zinc-200 dark:border-zinc-800">
         <table className="w-full text-sm border-collapse">
           <thead className="sticky top-0 bg-zinc-50 dark:bg-zinc-900 z-10">
             <tr>
@@ -340,7 +343,7 @@ export function ListView({ tasks, onOpenDetail, highlightedTaskId = null }: Prop
                 {/* Status */}
                 <td className="py-2 px-3 align-middle whitespace-nowrap">
                   <span
-                    className={`inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                    className={`glass-pill inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${
                       STATUS_CLASS[task.process_status] ?? "text-zinc-600 bg-zinc-100 dark:text-zinc-300 dark:bg-zinc-800"
                     }`}
                   >

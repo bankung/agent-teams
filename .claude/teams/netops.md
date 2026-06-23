@@ -1,13 +1,15 @@
-# netops — Network diagnosis team (DRAFT skeleton)
+# netops — Network diagnosis team
 
-> DRAFT in _scratch/ — diagnosis-ONLY scope. No config changes, ever. Move to
-> `.claude/teams/netops.md` only after review. Extends CLAUDE.md universal rules.
+> Diagnosis-ONLY scope. No config changes, ever. Extends CLAUDE.md universal rules.
+> (Updated by Kanban #1643: added a dedicated `netops-triage` agent — keep-original-spec.)
 
 ## Scope guardrail (non-negotiable for this team)
 
-- **READ-ONLY diagnosis only.** Specialists may run *read* commands (ping, traceroute,
-  dig/nslookup, `show` commands, log/metric reads, monitoring-API GETs). They may
-  NEVER push device config, restart services, or mutate infra.
+- **READ-ONLY diagnosis only.** Lane specialists may run *read* commands (ping, traceroute,
+  dig/nslookup, `show`/`print` commands, log/metric reads, monitoring-API GETs). They may
+  NEVER push device config, restart services, or mutate infra. (The `netops-triage` role is
+  **command-free** by design — it classifies + routes only; those read commands are for the
+  lane specialists, not triage. See its agent file.)
 - Any recommended fix is *output as a proposal* for a human to execute. Equivalent of
   the universal "DB writes go through FastAPI only" rule → here: "device changes are
   human-only; agents propose, never apply."
@@ -25,31 +27,37 @@
 Scheduled mode = **clone of the scheduled-auditor pattern** (#1210/#1211): a recurring task
 fires → specialist runs the read-only check battery → emits a structured report →
 flags anomalies → notify/HITL only when something is off (quiet when healthy).
+Today the headless `langgraph` graph has **no netops node**, so a fired sweep is a
+`run_mode=manual` interactive TODO (an operator runs it via a Lead session). Headless
+auto-run is Phase 2 (needs a netops graph node + read-only Zabbix token).
 
 ## Roster (diagnosis specialists — all read-only) — estate: Fortinet fw + MikroTik + Ubiquiti, monitored by Zabbix
 
 | Role | Phase | Lane | Reads |
 |---|---|---|---|
+| `netops-triage` | **P1 (entry)** | Incident classification + lane routing (command-free) | task description / pasted symptom only |
 | `netops-monitoring-reader` | **P1 (start here)** | Zabbix alert correlation across the whole estate | Zabbix JSON-RPC (GET methods only) / pasted export |
 | `netops-l2l3` | P1/P2 | MikroTik switching + routing (interfaces, routes, ARP) | RouterOS read-only `print`/`monitor`, exported config |
 | `netops-firewall` | P2 | Fortinet ACL / NAT / session / policy path | FortiOS read-only `get`/`diagnose`, log search |
 | `netops-wifi` | P2 | Ubiquiti RF, AP health, client assoc, roaming | UniFi controller stats (read), AP status |
 | `netops-dns-dhcp` | P2 | name resolution + addressing | dig/nslookup, DHCP leases/logs |
 
-Lead does triage + integration itself (no dedicated triage agent for the PoC).
-Lead decomposes by OSI layer → spawns the relevant lanes in parallel → integrates into
-one diagnosis with a ranked hypothesis list + recommended (human-executed) fix.
+`netops-triage` classifies the incident + drafts the diagnosis acceptance criteria, then
+hands a routing plan to Lead. Lead fans out the chosen lanes (in parallel where independent)
+and integrates their findings into one diagnosis with a ranked hypothesis list + recommended
+(human-executed) fix.
 
-**PoC roster (TEAM_ROSTERS[netops] for the first onboarding):** start with
-`netops-monitoring-reader` + `netops-l2l3`. Add firewall / wifi / dns-dhcp in P2
-(each addition is just a constants.py roster line + one `.claude/agents/*.md`).
+**PoC roster (TEAM_ROSTERS[netops] for the first onboarding):** `netops-triage` +
+`netops-monitoring-reader` + `netops-l2l3`. Add firewall / wifi / dns-dhcp in P2 (each
+addition is just a constants.py roster line + one `.claude/agents/*.md`).
 
 ## Lifecycle (per incident / per scheduled fire)
 
-1. **Triage** — classify symptom, pick lanes, set acceptance_criteria
-   (e.g. "root cause identified", "evidence cited", "fix proposed + risk-rated").
-2. **Diagnose (parallel)** — each lane runs its read-only battery, returns
-   structured findings (evidence + confidence).
+1. **Triage** — `netops-triage` classifies the symptom (OSI layer + blast radius), picks
+   lanes, and drafts acceptance_criteria (e.g. "root cause identified", "evidence cited",
+   "fix proposed + risk-rated").
+2. **Diagnose (parallel)** — each lane runs its read-only battery, returns structured
+   findings (evidence + confidence).
 3. **Integrate** — Lead merges, ranks hypotheses, picks most-probable root cause.
 4. **Report** — structured output: symptom → evidence → root cause → proposed fix
    (with risk + rollback note) → "execute manually" flag.
@@ -72,7 +80,8 @@ obvious single-lane symptoms.
   the recurrence engine (auditor pattern): quiet when clean, digest on problems.
 - **Phase 2:** live read-only drill-down per vendor — MikroTik RouterOS API / SSH `print`,
   Fortinet FortiOS `get`/`diagnose`, UniFi controller read API (via MCP). Adds the
-  vendor lane agents.
+  vendor lane agents. Also adds a netops node to the langgraph graph so scheduled sweeps
+  can run headlessly (until then, scheduled fires are interactive `run_mode=manual` TODOs).
 - **Phase 3 (optional):** more scheduled batteries + quiet-hours (#1283) + push digest.
 
 ## Anti-patterns (team-specific)

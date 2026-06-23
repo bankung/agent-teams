@@ -16,20 +16,16 @@
 // PWA and re-opens the app (standalone === true on next mount). No
 // localStorage flag — re-render is enough.
 
-import { useEffect, useState } from "react";
-
 import { isIosNonStandalone } from "@/lib/push";
+import { useIsHydrated } from "@/lib/usePersistentState";
 
 export function InstallPwaNudge() {
-  // Default false (SSR safety): the iOS / standalone checks both depend on
-  // `window.navigator`, which is server-undefined. Hydrate the actual value
-  // on mount; first paint omits the nudge (acceptable — the nudge is an
-  // optional secondary surface, not a blocking gate).
-  const [show, setShow] = useState(false);
-
-  useEffect(() => {
-    setShow(isIosNonStandalone());
-  }, []);
+  // SSR safety: the iOS / standalone checks both depend on `window.navigator`,
+  // which is server-undefined. useIsHydrated returns false on the server + the
+  // first hydration render (so first paint omits the nudge — matching the prior
+  // default), then true on the client; the && short-circuit guarantees
+  // isIosNonStandalone() is only ever evaluated client-side. No setState-in-effect.
+  const show = useIsHydrated() && isIosNonStandalone();
 
   if (!show) return null;
 

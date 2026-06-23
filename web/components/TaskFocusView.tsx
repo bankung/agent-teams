@@ -61,6 +61,7 @@ const REJECT_NO_REASON_SUFFIX = "(no reason)";
 const TERMINAL_STATUSES: ReadonlyArray<number> = [
   TaskStatus.DONE,
   TaskStatus.CANCELLED,
+  // #2423: ps=8 (HALTED_PENDING_USER) intentionally excluded — it is an actionable pending-user state, not terminal.
 ];
 
 const STATUS_LABEL: Record<number, string> = {
@@ -70,6 +71,7 @@ const STATUS_LABEL: Record<number, string> = {
   [TaskStatus.BLOCKED]: "blocked",
   [TaskStatus.DONE]: "done",
   [TaskStatus.CANCELLED]: "cancelled",
+  [TaskStatus.HALTED_PENDING_USER]: "halted",
 };
 
 // `options` is typed as string[] on the wire (legacy free-form question
@@ -351,7 +353,7 @@ export function TaskFocusView({ task: initialTask, project, actionHint }: Props)
         data-task-focus-view
         data-interaction-kind={task.interaction_kind}
         data-task-status={task.process_status}
-        className="flex flex-col gap-4"
+        className="glass-surface flex flex-col gap-4"
       >
         {/* Header — id, status badge, title. */}
         <header className="flex flex-col gap-1">
@@ -388,7 +390,7 @@ export function TaskFocusView({ task: initialTask, project, actionHint }: Props)
         {task.interaction_kind !== "work" && task.question_payload?.question && (
           <div
             data-task-question-prompt
-            className="rounded border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-800 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-200"
+            className="glass-card rounded border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-800 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-200"
           >
             <p className="whitespace-pre-wrap">
               {task.question_payload.question}
@@ -415,7 +417,7 @@ export function TaskFocusView({ task: initialTask, project, actionHint }: Props)
                   disabled={submitting}
                   onClick={() => onPickDecisionOption(opt)}
                   data-task-decision-option={opt.id}
-                  className="flex flex-col gap-0.5 rounded border border-violet-200 bg-violet-50 px-3 py-2 text-left text-sm text-violet-800 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-800 dark:bg-violet-900/30 dark:text-violet-200 dark:hover:bg-violet-900/50 min-h-[44px]"
+                  className="glass-glow flex flex-col gap-0.5 rounded border border-violet-200 bg-violet-50 px-3 py-2 text-left text-sm text-violet-800 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-800 dark:bg-violet-900/30 dark:text-violet-200 dark:hover:bg-violet-900/50 min-h-[44px]"
                 >
                   <span className="font-medium">{opt.label}</span>
                   {opt.description && (

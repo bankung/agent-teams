@@ -8,16 +8,19 @@ import dynamic from "next/dynamic";
 import { ListView } from "@/components/ListView";
 
 import {
+  getMilestone,
   listDoneLanePage,
   listMilestones,
   patchTask,
   reorderTask,
+  type MilestoneDetail,
   type MilestoneRead,
   type ProgressStatsResponse,
   type ProjectRead,
   type ProjectStatsEntry,
   type TaskRead,
 } from "@/lib/api";
+import { orderMilestonesForPicker } from "@/lib/milestoneOrder";
 
 // Kanban #2111 Part 3c — @dnd-kit loads only for the board view.
 // BoardDndCanvas owns all dnd-kit imports; this dynamic() call ensures the
@@ -28,30 +31,27 @@ const BoardDndCanvas = dynamic(
 );
 import { TaskStatus, type TaskStatusValue } from "@/lib/constants";
 import { extractErrorMessage } from "@/lib/errors";
+import { useAsyncData } from "@/lib/useAsyncData";
 import { sortDoneLane, sortLaneTasks } from "@/lib/sortLaneTasks";
 import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
 import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
-import { Icon } from "@/components/Icon";
-import { AuditHistorySection } from "@/components/AuditHistorySection";
 import { CostSummary } from "@/components/CostSummary";
+import { Icon } from "@/components/Icon";
 import { PnlSummaryCard } from "@/components/PnlSummaryCard";
 import { ProgressChartsPanel } from "@/components/ProgressChartsPanel";
-import { FINANCE_PANELS_ENABLED } from "@/lib/featureFlags";
 import { KilledBanner } from "@/components/KilledBanner";
 import { KillProjectModal } from "@/components/KillProjectModal";
 import { NewTaskDropdown } from "@/components/NewTaskDropdown";
 import { PausedBanner } from "@/components/PausedBanner";
 import { PauseProjectModal } from "@/components/PauseProjectModal";
 import { ProjectConsentGrantModal } from "@/components/ProjectConsentGrantModal";
-import { PlatformSettingsModal } from "@/components/PlatformSettingsModal";
-import { ResourcesPanel } from "@/components/ResourcesPanel";
 import { ProductTourBoardResume } from "@/components/ProductTourBoardResume";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { SourcesBadge } from "@/components/SourcesBadge";
 import { TaskDetail } from "@/components/TaskDetail";
-import { ThemePicker } from "@/components/ThemePicker";
 import { ToastStack, type ToastMessage } from "@/components/Toast";
 import { ViewSwitcher } from "@/components/ViewSwitcher";
+import { FINANCE_PANELS_ENABLED } from "@/lib/featureFlags";
 
 type Props = {
   initialTasks: TaskRead[];
@@ -71,11 +71,15 @@ type Props = {
 
 type Column = { statuses: TaskStatusValue[]; label: string; key: string };
 
+// #2477 — merged ps=8 (HALTED_PENDING_USER) into Blocked lane (5→5 columns).
+// The separate "Halted / Pending user" lane is dropped; ps=8 tasks render under
+// Blocked with a badge in TaskCard. ALL_STATUSES keeps ps=8 so groupByStatus
+// still buckets it — both 4 and 8 buckets are flatMapped by BoardDndCanvas.
 const COLUMNS: Column[] = [
   { statuses: [TaskStatus.TODO], label: "New tasks", key: "1" },
   { statuses: [TaskStatus.IN_PROGRESS], label: "In progress", key: "2" },
   { statuses: [TaskStatus.REVIEW], label: "Review", key: "3" },
-  { statuses: [TaskStatus.BLOCKED], label: "Blocked", key: "4" },
+  { statuses: [TaskStatus.BLOCKED, TaskStatus.HALTED_PENDING_USER], label: "Blocked", key: "4" },
   { statuses: [TaskStatus.DONE], label: "Done", key: "5" },
 ];
 
@@ -84,15 +88,9 @@ const ALL_STATUSES: TaskStatusValue[] = [
   TaskStatus.IN_PROGRESS,
   TaskStatus.REVIEW,
   TaskStatus.BLOCKED,
+  TaskStatus.HALTED_PENDING_USER,
   TaskStatus.DONE,
 ];
-
-// Nav-row separator — 7 identical occurrences in the header row.
-const Sep = () => (
-  <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
-    ·
-  </span>
-);
 
 // #1726 — recurrence noise: templates (is_template=true) and scheduled-fire
 // instances (title prefix "[schedule:") are excluded from the visible board.
@@ -116,7 +114,13 @@ function groupByStatus(tasks: TaskRead[]) {
   for (const s of ALL_STATUSES) groups.set(s, []);
   for (const task of tasks) {
     const bucket = groups.get(task.process_status);
-    if (bucket) bucket.push(task);
+    if (bucket) {
+      bucket.push(task);
+    } else if (process.env.NODE_ENV !== "production") {
+      console.warn(
+        `Board.groupByStatus: task #${task.id} has process_status=${task.process_status} with no lane — dropped. Add it to ALL_STATUSES/COLUMNS.`,
+      );
+    }
   }
   // #772 #826 — lane sort: sortLaneTasks (TODO..REVIEW), sortDoneLane (DONE); details in shared/decisions.md
   for (const [ps, bucket] of groups.entries()) {
@@ -285,14 +289,51 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
   // the dropdown; loaded once on mount (failure degrades to a no-op filter).
   const [milestoneFilter, setMilestoneFilter] = useState<"all" | "none" | number>("all");
   const [milestones, setMilestones] = useState<MilestoneRead[]>([]);
+  // #2519 — hide cancelled + order active>planned>released for the filter picker.
+  const filterMilestones = useMemo(() => orderMilestonesForPicker(milestones), [milestones]);
+  // Kanban #2347 — when a numeric milestone filter is active, fetch its server
+  // rollup DONE count so the DONE-lane header shows the true total (not just
+  // what's loaded client-side). undefined = still loading or no rollup available.
+  //
+  // #2492 — fetch + cancel-guard via useAsyncData (was a hand-rolled
+  // cancelled-flag effect). The fetcher resolves null for a non-numeric filter
+  // (so the rollup clears immediately on filter change, no stale leak); on a
+  // fetch error it degrades to null → the render falls back to the loaded
+  // count. `data` (number | null) maps back to the prior `undefined` contract.
+  const { data: rollupData } = useAsyncData<number | null>(
+    () => {
+      if (typeof milestoneFilter !== "number") return Promise.resolve(null);
+      return getMilestone(project.id, milestoneFilter).then(
+        (detail: MilestoneDetail) => detail.rollup.by_process_status["5"] ?? 0,
+      );
+    },
+    [milestoneFilter, project.id],
+    { resetDataOnReload: true },
+  );
+  const milestoneDoneRollup = rollupData ?? undefined;
 
   // Kanban #2112 — DONE-lane server pagination state.
   // doneHasMore: server has more DONE rows beyond what's loaded (init from SSR prop).
   // doneLoadingMore: a fetch is in-flight (prevents double-fetch on rapid clicks).
   // visibleDoneCount: how many of the in-memory DONE tasks to render. Grows as
-  //   pages are appended; resets to DONE_PAGE on SSE refresh (accepted behavior).
+  //   pages are appended; resets to DONE_PAGE when filters change (derive during render).
   const DONE_PAGE = 50;
-  const [visibleDoneCount, setVisibleDoneCount] = useState(DONE_PAGE);
+  // Bundled state — count + the filter key that produced it — so filter changes
+  // reset the count during render (React "adjusting state based on props" pattern),
+  // without a setState-in-effect.
+  const [donePagination, setDonePagination] = useState({ count: DONE_PAGE, filterKey: "" });
+  const currentFilterKey = `${milestoneFilter}|${showAudit}|${showOperatorGateOnly}`;
+  if (donePagination.filterKey !== currentFilterKey) {
+    // During-render setState: React re-renders immediately with the new count,
+    // skipping the extra flush that a useEffect reset would require.
+    setDonePagination({ count: DONE_PAGE, filterKey: currentFilterKey });
+  }
+  const visibleDoneCount = donePagination.count;
+  const setVisibleDoneCount = (updater: number | ((n: number) => number)) =>
+    setDonePagination((prev) => ({
+      count: typeof updater === "function" ? updater(prev.count) : updater,
+      filterKey: prev.filterKey,
+    }));
   const [doneHasMore, setDoneHasMore] = useState(initialDoneHasMore);
   const [doneLoadingMore, setDoneLoadingMore] = useState(false);
 
@@ -307,7 +348,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
   useEffect(() => {
     const fromUrl = searchParams?.get("view");
     if (fromUrl === "list" || fromUrl === "board") {
-      setView(fromUrl);
+      setView(fromUrl); // eslint-disable-line react-hooks/set-state-in-effect -- localStorage/URL seed: cannot derive view during SSR render; read-on-mount is the correct pattern
       localStorage.setItem(`kanban-view-${project.name}`, fromUrl);
       return;
     }
@@ -335,6 +376,19 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
       cancelled = true;
     };
   }, [project.id]);
+
+  // Toast helpers — declared before the deep-link effect that consumes
+  // pushToast (react-hooks/immutability: a useCallback must not be referenced
+  // before its declaration). Both close over only the stable toastIdRef +
+  // setToasts setter, so the memoization is preserved across renders.
+  const pushToast = useCallback((text: string) => {
+    const id = toastIdRef.current++;
+    setToasts((prev) => [...prev, { id, text }]);
+  }, []);
+
+  const dismissToast = useCallback((id: number) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
 
   // #1001 follow-up (2026-05-20) — `?task=<id>` deep-link handler.
   //
@@ -366,7 +420,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
       return;
     }
 
-    setHighlightedTaskId(parsed);
+    setHighlightedTaskId(parsed); // eslint-disable-line react-hooks/set-state-in-effect -- deep-link: effect also scrolls DOM + replaces URL; genuine external side effects, cannot derive during render
 
     // Defer the scroll one tick so React commits the card render first.
     // requestAnimationFrame is friendlier than setTimeout(0) for paint sync.
@@ -400,7 +454,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
   // Sync local tasks state to server snapshot on each RSC refresh (SSE router.refresh).
   // Also resets DONE pagination so the next Load-more starts from the fresh SSR cursor.
   useEffect(() => {
-    setTasks(initialTasks);
+    setTasks(initialTasks); // eslint-disable-line react-hooks/set-state-in-effect -- prop-sync on RSC refresh: tasks has local mutations (optimistic drag, SSE), cannot be derived directly from the prop
     setDoneHasMore(initialDoneHasMore);
     setVisibleDoneCount(DONE_PAGE);
     // initialDoneHasMore and DONE_PAGE are intentionally omitted: they always
@@ -418,15 +472,6 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
     onTaskChange: onRowChange,
     onProjectChange: onRowChange,
   });
-
-  const pushToast = useCallback((text: string) => {
-    const id = toastIdRef.current++;
-    setToasts((prev) => [...prev, { id, text }]);
-  }, []);
-
-  const dismissToast = useCallback((id: number) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  }, []);
 
   // Kanban #2111 Part 3c — callbacks passed to BoardDndCanvas (owns dnd-kit).
   // Cross-lane: optimistic setTasks + PATCH; revert on error (mirrors original onDragEnd).
@@ -536,22 +581,6 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
     [tasks],
   );
 
-  const auditTasks = useMemo(
-    () =>
-      [...tasks.filter((t) => t.task_type === "audit")].sort((a, b) => {
-        const aDone = a.completed_at ?? "";
-        const bDone = b.completed_at ?? "";
-        if (aDone === bDone) return b.id - a.id;
-        return aDone < bDone ? 1 : -1;
-      }),
-    [tasks],
-  );
-  // #1726 — scheduled/template task count (computed against full list so the
-  // chip shows the real number even when the board is otherwise filtered).
-  const scheduledTaskCount = useMemo(
-    () => tasks.filter(isScheduledNoise).length,
-    [tasks],
-  );
   const visibleTasks = useMemo(() => {
     const base = showAudit ? tasks : tasks.filter((t) => t.task_type !== "audit");
     const noNoise = base.filter((t) => !isScheduledNoise(t));
@@ -570,27 +599,28 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
 
   const grouped = useMemo(() => groupByStatus(visibleTasks), [visibleTasks]);
 
-  // Kanban #2346 — true DONE total for the column header badge.
+  // Kanban #2346/#2347 — true DONE total for the column header badge.
   // "all": projectStats[0]?.counts["5"] is the server total (SSR-fetched).
-  // "none" (milestone_id IS NULL) and numeric milestone ids: no server rollup
-  // available client-side — return undefined so BoardColumn falls back to the
-  // loaded count (accurate for the filtered subset).
+  // numeric id: use the milestone rollup fetched by the useEffect above (undefined
+  //   while loading → BoardColumn falls back to loaded count; no flicker/overstate).
+  // "none" (milestone_id IS NULL): no server rollup → loaded count fallback.
   // NOTE: client-only toggles (audit/operator-gate) may make "all" approximate.
-  const doneTotalCount = useMemo<number | undefined>(
-    () => computeDoneTotalCount(milestoneFilter, projectStats, project.id),
-    [milestoneFilter, projectStats, project.id],
-  );
+  const doneTotalCount = useMemo<number | undefined>(() => {
+    if (typeof milestoneFilter === "number") return milestoneDoneRollup;
+    return computeDoneTotalCount(milestoneFilter, projectStats, project.id);
+  }, [milestoneFilter, milestoneDoneRollup, projectStats, project.id]);
 
-  // Reset the client-side DONE display window (visibleDoneCount) ONLY when the
-  // filter inputs change. Keyed on the filter state directly — NOT on the DONE
-  // bucket contents — so appending a server page (which grows doneTasks) does
-  // NOT reset, and Load-more terminates correctly. doneHasMore is NOT reset here;
-  // it reflects the server's has-more for the lane and is owned by the
-  // initialTasks-sync effect (SSE refresh) + handleLoadMoreDone. (#2112 regression
-  // fix: the prior content-keyed effect reverted both on every append.)
-  useEffect(() => {
-    setVisibleDoneCount(DONE_PAGE);
-  }, [milestoneFilter, showAudit, showOperatorGateOnly]);
+  // #2412 — blocker-badge suppression. Build the set of task ids that are
+  // still active (non-terminal). A blocker ABSENT from this set is necessarily
+  // terminal (DONE/CANCELLED or beyond the first-50 loaded DONE rows) and must
+  // NOT show the red chip. Terminal = DONE(5) or CANCELLED(6).
+  const blockingTaskIds = useMemo(() => {
+    const s = new Set<number>();
+    for (const t of tasks) {
+      if (t.process_status !== TaskStatus.DONE && t.process_status !== TaskStatus.CANCELLED) s.add(t.id);
+    }
+    return s;
+  }, [tasks]);
 
   const selectedTask = useMemo(
     () =>
@@ -610,114 +640,63 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
 
   return (
     // #954 — mobile: page scrolls (h-auto, overflow-y-auto); desktop preserves the fixed-viewport board (h-screen, overflow-hidden)
-    <main className="flex min-h-screen flex-col overflow-y-auto bg-white dark:bg-zinc-950 px-4 py-4 sm:px-6 sm:py-5 lg:h-screen lg:min-h-0 lg:overflow-hidden">
-      {/* #1781 — header is height-capped on desktop (lg:max-h-[40vh] +
-          overflow-y-auto) so the flex-1 board below is GUARANTEED >=60vh of
-          the lg:h-screen main. The single nav row + compact panels band keep
-          the header well under the cap; the cap is the hard structural floor. */}
+    // #2453 — `glass-board` is the hook for the glass theme: under html.glass it
+    // anchors the single page-level blob backdrop (the ::before pseudo) and frosts
+    // the board surface. No-op when glass is off (flat theme renders unchanged).
+    <main className="glass-board relative flex min-h-screen flex-col overflow-y-auto bg-white dark:bg-zinc-950 px-4 py-4 sm:px-6 sm:py-5 lg:h-screen lg:min-h-0 lg:overflow-hidden">
+      {/* #1781 capped the header (lg:max-h-[40vh] + overflow-y-auto) to floor
+          the board at >=60vh. #2404 (operator decision 2026-06-15) — cap REMOVED
+          so the usage/P&L/Graph band never shows a scrollbar when expanded.
+          Panels stay VISIBLE (defaultCollapsed=false) + collapsible. Trade-off:
+          the header takes natural height; the board below gets the remaining
+          flex-1 space (no longer a guaranteed >=60vh floor). */}
       <header
-        className="mb-4 flex flex-col gap-2 lg:max-h-[40vh] lg:overflow-y-auto lg:pr-1"
+        className="mb-4 flex flex-col gap-2"
         data-board-header
         tabIndex={-1}
       >
         {/* #1781 — single nav row on desktop; flex-wrap still drops controls
-            to extra rows on mobile. */}
+            to extra rows on mobile. #2404 — 3-zone layout: left cluster (flex-1)
+            · centered ViewSwitcher (shrink-0) · right cluster (flex-1 + justify-end). */}
         <div
           className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm"
           data-board-nav-row
         >
-          <ProjectSwitcher current={project.name} />
-          <Sep />
-          <Link
-            href="/dashboard"
-            className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
-          >
-            Dashboard
-          </Link>
-          <Sep />
-          {/* Wave A.2c — the dedicated /milestones page was removed; milestone
-              management now lives in the Gantt view (reachable via the
-              ViewSwitcher below). The former "Milestones" nav link is gone. */}
-          <span className="text-zinc-600 dark:text-zinc-400">
-            team: <span className="text-zinc-900 dark:text-zinc-100">{project.team}</span>
-          </span>
-          {project.sources.length > 0 && (
-            <>
-              <Sep />
+          <span className="flex flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+            <Link
+              href="/dashboard"
+              className="text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
+            >
+              Dashboard
+            </Link>
+            <ProjectSwitcher current={project.name} />
+            <ConnectionStateBadge
+              state={connectionState}
+              lastEventAt={lastEventAt}
+            />
+            {project.sources.length > 0 && (
               <SourcesBadge sources={project.sources} />
-            </>
-          )}
-          <Sep />
-          {/* Wave A (#5/#3a) — the "NNN tasks" count moved OUT of the nav row
-              into the toolbar row directly under the consent banner (alongside
-              +New). See data-board-toolbar-row below. */}
-          {/* #1868 v1.1 — milestone filter dropdown. Self-hides when the project
-              has no milestones (mirrors the audit-toggle's count>0 self-hide).
-              "All milestones" = no filter; "No milestone" = milestone_id null;
-              each option filters the board's task cards client-side. */}
-          {milestones.length > 0 && (
-            <label className="inline-flex items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
-              <span className="sr-only sm:not-sr-only">Milestone</span>
-              <select
-                value={
-                  milestoneFilter === "all" || milestoneFilter === "none"
-                    ? milestoneFilter
-                    : String(milestoneFilter)
-                }
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setMilestoneFilter(
-                    v === "all" || v === "none" ? v : Number(v),
-                  );
-                }}
-                className="rounded-md border border-zinc-200 bg-transparent px-2 py-1.5 text-xs text-zinc-600 focus:border-zinc-400 focus:outline-none min-h-[44px] sm:min-h-0 dark:border-zinc-700 dark:text-zinc-300 dark:focus:border-zinc-500"
-                data-milestone-filter
-              >
-                <option value="all">All milestones</option>
-                <option value="none">No milestone</option>
-                {milestones.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.title}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          <Sep />
-          <ConnectionStateBadge
-            state={connectionState}
-            lastEventAt={lastEventAt}
-          />
-          <Sep />
-          {/* Wave A (#1) — unified Board · List · Calendar · Gantt switcher
-              replaces the former Board|List toggle. On the board page List is
-              the local `view` state (no navigation): clicking List/Board here
-              updates the view in place via onSelect; Calendar/Gantt are real
-              route links handled inside ViewSwitcher. `active` reflects the live
-              board/list view. */}
-          <ViewSwitcher
-            projectName={project.name}
-            active={view}
-            onSelect={handleViewChange}
-          />
-          {/* #1781 — right cluster: +New moved to the toolbar row (#5/#3a);
-              this cluster now holds pause/terminate icon buttons, Integrations,
-              ThemePicker. (Bell/FlagBellBadge removed in Wave A #6.) ml-auto
-              pushes them right on desktop, full-width wrap on mobile. */}
+            )}
+          </span>
+          {/* CENTER zone — ViewSwitcher horizontally centered (#2404). Wave A (#1)
+              On the board page List is the local `view` state (no navigation):
+              clicking List/Board updates the view in place via onSelect;
+              Calendar/Gantt are real route links handled inside ViewSwitcher. */}
+          <span className="shrink-0">
+            <ViewSwitcher
+              projectName={project.name}
+              active={view}
+              onSelect={handleViewChange}
+            />
+          </span>
           <span
-            className="ml-auto flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto"
+            className="flex flex-1 flex-wrap items-center justify-end gap-2"
             data-board-actions-cluster
           >
-            {/* Wave A.2a (#1) — Inbox + Settings icon links moved to the right
-                cluster so the left nav stays lean (Dashboard · Milestones).
-                Inbox = cross-project approval inbox; Settings = per-project
-                knobs (#1349). Distinct from platform Integrations (plug icon). */}
+            {/* Wave A.2a (#1) — Inbox icon link in the right cluster so the
+                left nav stays lean (Dashboard · Milestones). Inbox =
+                cross-project approval inbox. (Settings consolidated below.) */}
             <HeaderIconLink href="/inbox" icon="mail" label="Inbox" />
-            <HeaderIconLink
-              href={`/p/${encodeURIComponent(project.name)}/settings`}
-              icon="agent-config"
-              label="Settings"
-            />
             {/* Pause / Terminate — icon buttons. Hidden when killed (mutex with
                 the KilledBanner revive). Each opens the SAME modal via the
                 existing externalOpen state. */}
@@ -762,53 +741,63 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
                 notification) removed from the board nav. /review remains
                 reachable from the dashboard + ReviewClient's own header. */}
 
-            {/* ── PlatformSettingsModal — #1655 / #1781 Integrations (plug
-                icon, platform-wide; distinct from the per-project Settings
-                nav link) ─────────────────────────────────────────────────── */}
-            <PlatformSettingsModal />
-
-            {/* ── ThemePicker — user preference ─────────────────────────── */}
-            <ThemePicker />
+            {/* #2380 (R-merge) — single consolidated Settings gear. Opens the
+                global /settings page WITH this project's section pre-rendered
+                via ?project= (theme + integrations + push live there too; the
+                per-project gear was merged in). The dashboard gear stays plain
+                /settings = global only. */}
+            <HeaderIconLink
+              href={`/settings?project=${encodeURIComponent(project.name)}`}
+              icon="agent-config"
+              label="Settings"
+            />
           </span>
         </div>
-        {/* #1781 — compact panels band: Usage / P&L / Progress in ONE row on
-            desktop. Usage + P&L are collapsed by default (short); Progress is
-            the new compact strip (small charts, tight padding). Grid is
-            3-col when finance is on, 2-col (Usage + Progress) when off.
-            Wave A (#7) — items-stretch + each panel `h-full` makes the three
-            equal height inside the row (gap via the band's gap-3, no per-panel
-            mb-5). */}
+        {/* #2380 (R-merge) — 3-column panels band: Usage (40%) · P&L (40%) ·
+            Progress charts (20%). Usage + P&L moved back from the project
+            settings page; ProgressChartsPanel kept in the narrow 3rd column. */}
         <div
-          className={`grid grid-cols-1 items-stretch gap-3 ${
-            FINANCE_PANELS_ENABLED ? "lg:grid-cols-3" : "lg:grid-cols-2"
-          }`}
+          className="grid grid-cols-1 gap-3 items-stretch lg:grid-cols-[2fr_2fr_1fr]"
           data-board-panels-band
         >
-          {/* Kanban #1289 — per-project usage panel. Collapsed by default. */}
+          {/* Col 1 (40%) — Kanban #1289 per-project usage panel.
+              #2404 — defaultCollapsed=false (operator: panels visible by default);
+              still collapsible, storageKey persists per-project preference. */}
           <CostSummary
             stats={projectStats}
             ariaLabel={`Usage for ${project.name}`}
-            defaultCollapsed={true}
+            defaultCollapsed={false}
             storageKey={`project.${project.id}.panels.usage.expanded`}
-            className="h-full"
+            className="h-full min-w-0"
           />
-          {/* Kanban #1329 (M6 FE) — per-project P&L card (finance-gated). */}
-          {FINANCE_PANELS_ENABLED && (
+          {/* Col 2 (40%) — Kanban #1329 per-project P&L card (finance-gated).
+              FINANCE_PANELS_ENABLED is a GLOBAL env flag; when off, every
+              project shows the placeholder (expected with current infra).
+              #2404 — defaultCollapsed=false to match Usage panel; storageKey persists per-project. */}
+          {FINANCE_PANELS_ENABLED ? (
             <PnlSummaryCard
               projectId={project.id}
               projectName={project.name}
-              defaultCollapsed={true}
+              defaultCollapsed={false}
               storageKey={`project.${project.id}.panels.pnl.expanded`}
-              className="h-full"
+              className="h-full min-w-0"
             />
+          ) : (
+            <div
+              className="flex h-full min-w-0 items-center justify-center rounded-md border border-zinc-200 p-3 text-center text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400"
+              data-pnl-placeholder
+            >
+              P&amp;L not available for this project
+            </div>
           )}
-          {/* Kanban #1292 / #1781 — burndown + velocity in compact strip form,
-              folded into the same band. Click→full modal unchanged. */}
-          <ProgressChartsPanel
-            data={progressStats}
-            projectId={project.id}
-            compact
-          />
+          {/* Col 3 (20%) — Kanban #1292 / #1781 burndown + velocity. */}
+          <div className="min-w-0 h-full">
+            <ProgressChartsPanel
+              data={progressStats}
+              projectId={project.id}
+              compact
+            />
+          </div>
         </div>
         {/* #1209 GOV1 D5 — red strip above the consent banner when killed.
             (Renders nothing when is_killed=false.) */}
@@ -825,7 +814,6 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
         className="mb-3 flex flex-wrap items-center gap-2"
         data-board-toolbar-row
       >
-        {/* Audit-filter chip — amber toggle; hidden when count=0. */}
         {auditTaskCount > 0 && (
           <HeaderIconBtn
             icon="shield-filter"
@@ -859,14 +847,35 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
             dataAttr="data-operator-gate-toggle"
           />
         )}
-        {/* Scheduled/template chip — display-only; hidden when count=0. */}
-        {scheduledTaskCount > 0 && (
-          <HeaderIconBtn
-            icon="clock"
-            label={`Scheduled / template tasks (${scheduledTaskCount})`}
-            count={scheduledTaskCount}
-            dataAttr="data-scheduled-task-badge"
-          />
+        {/* #1868 v1.1 — milestone filter; moved from nav row to toolbar (v0.7.0 UX). */}
+        {/* #2519 — filterMilestones hides cancelled + orders active>planned>released. */}
+        {filterMilestones.length > 0 && (
+          <label className="inline-flex items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+            <span className="sr-only sm:not-sr-only">Milestone</span>
+            <select
+              value={
+                milestoneFilter === "all" || milestoneFilter === "none"
+                  ? milestoneFilter
+                  : String(milestoneFilter)
+              }
+              onChange={(e) => {
+                const v = e.target.value;
+                setMilestoneFilter(
+                  v === "all" || v === "none" ? v : Number(v),
+                );
+              }}
+              className="rounded-md border border-zinc-200 bg-transparent px-2 py-1.5 text-xs text-zinc-600 focus:border-zinc-400 focus:outline-none min-h-[44px] sm:min-h-0 dark:border-zinc-700 dark:text-zinc-300 dark:focus:border-zinc-500"
+              data-milestone-filter
+            >
+              <option value="all">All milestones</option>
+              <option value="none">No milestone</option>
+              {filterMilestones.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.title}
+                </option>
+              ))}
+            </select>
+          </label>
         )}
         {/* Inline headless control — replaces the standalone
             ProjectConsentBanner section. Shows consent date when granted;
@@ -923,21 +932,11 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
           onCrossLaneDrop={onCrossLaneDrop}
           onSameLaneReorder={onSameLaneReorder}
           projectId={project.id}
+          blockingTaskIds={blockingTaskIds}
         />
       )}
-      {/* #1238 GOV3 — Audit History archive below the lanes. Self-collapses;
-          shows "No audit history yet." when the project has no audit_task rows.
-          Sources from the in-memory tasks snapshot (no extra fetch — every
-          audit task is already in `tasks` via the initial /api/tasks limit=500
-          fetch + SSE refresh). */}
-      <AuditHistorySection auditTasks={auditTasks} />
-      {/* #1315 — collapsible Resources footer (files + links). Below the lanes
-          + Audit History so it never competes with the kanban for vertical
-          space; default collapsed, persisted per-user per-project. */}
-      {/* #1315 — collapsible Resources footer (files + links). Below the lanes
-          + Audit History so it never competes with the kanban for vertical
-          space; default collapsed, persisted per-user per-project. */}
-      <ResourcesPanel projectId={project.id} />
+      {/* #2371 (R1) — AuditHistorySection moved to project settings page. */}
+      {/* #2358 — ResourcesPanel moved to /settings?project=<name>. */}
       {selectedTask && (
         <TaskDetail
           task={selectedTask}

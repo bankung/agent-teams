@@ -194,37 +194,6 @@ describe("AgentGallery — filters", () => {
   });
 });
 
-describe("AgentGallery — sort", () => {
-  it("sort=domain orders by domain then name", () => {
-    render(<AgentGallery agents={listing()} />);
-    fireEvent.change(document.querySelector("[data-agent-sort]")!, {
-      target: { value: "domain" },
-    });
-    expect(cardNames()).toEqual([
-      "dev-backend", // dev
-      "dev-frontend", // dev
-      "novel-writer", // novel
-      "broken-agent", // other
-      "secretary", // secretary
-    ]);
-  });
-
-  it("sort=model orders heaviest tier first, default last", () => {
-    render(<AgentGallery agents={listing()} />);
-    fireEvent.change(document.querySelector("[data-agent-sort]")!, {
-      target: { value: "model" },
-    });
-    const names = cardNames();
-    // opus agents first (dev-backend, novel-writer), then sonnet (dev-frontend),
-    // then haiku (broken-agent), then null-model "default" (secretary) last.
-    expect(names[0]).toBe("dev-backend");
-    expect(names[1]).toBe("novel-writer");
-    expect(names[2]).toBe("dev-frontend");
-    expect(names[3]).toBe("broken-agent");
-    expect(names[4]).toBe("secretary");
-  });
-});
-
 describe("AgentGallery — invalid marking", () => {
   it("marks invalid agents and surfaces the first error inline", () => {
     render(<AgentGallery agents={listing()} />);

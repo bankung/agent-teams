@@ -29,6 +29,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import type { MilestoneRead } from "@/lib/api";
+import { orderMilestonesForPicker } from "@/lib/milestoneOrder";
 
 type Props = {
   // Current milestone_id, or null for unassigned.
@@ -77,12 +78,20 @@ export function MilestoneCombobox({
   // committed selection until they pick (or clear) something.
   const inputValue = open ? query : selectedLabel;
 
+  // #2496 — hide cancelled + order active>planned>released for the option list.
+  // selectedLabel below intentionally still uses the FULL `milestones` prop so a
+  // currently-assigned cancelled/hidden milestone keeps showing its title.
+  const orderedMilestones = useMemo(
+    () => orderMilestonesForPicker(milestones),
+    [milestones],
+  );
+
   // Filtered matches (case-insensitive substring on title). Empty query → all.
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (q === "") return milestones;
-    return milestones.filter((m) => m.title.toLowerCase().includes(q));
-  }, [query, milestones]);
+    if (q === "") return orderedMilestones;
+    return orderedMilestones.filter((m) => m.title.toLowerCase().includes(q));
+  }, [query, orderedMilestones]);
 
   // Option rows = a leading "None" row (index 0) + each match. Keeping None in
   // the same roving-focus list means ↑/↓/Enter can select it too.
@@ -123,10 +132,8 @@ export function MilestoneCombobox({
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [open, closePopover]);
 
-  // Keep the highlight within range as the match list shrinks/grows.
-  useEffect(() => {
-    setHighlight((h) => Math.min(h, optionCount - 1));
-  }, [optionCount]);
+  // Clamp the highlight within range during render — no effect needed.
+  const safeHighlight = Math.min(highlight, optionCount - 1);
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "ArrowDown") {
@@ -146,7 +153,7 @@ export function MilestoneCombobox({
     } else if (e.key === "Enter") {
       if (open) {
         e.preventDefault();
-        commit(highlight);
+        commit(safeHighlight);
       }
     } else if (e.key === "Escape") {
       if (open) {
@@ -167,6 +174,7 @@ export function MilestoneCombobox({
         aria-expanded={open}
         aria-controls={listboxId}
         aria-autocomplete="list"
+        aria-activedescendant={open ? `${listboxId}-opt-${safeHighlight}` : undefined}
         autoComplete="off"
         value={inputValue}
         placeholder={NONE_LABEL}
@@ -190,6 +198,7 @@ export function MilestoneCombobox({
           data-milestone-combobox-list
         >
           <li
+            id={`${listboxId}-opt-0`}
             role="option"
             aria-selected={value === null}
             onMouseDown={(e) => {
@@ -199,7 +208,7 @@ export function MilestoneCombobox({
             }}
             onMouseEnter={() => setHighlight(0)}
             className={`cursor-pointer px-3 py-1.5 text-sm ${
-              highlight === 0
+              safeHighlight === 0
                 ? "bg-zinc-100 dark:bg-zinc-800"
                 : ""
             } text-zinc-500 dark:text-zinc-400`}
@@ -217,6 +226,7 @@ export function MilestoneCombobox({
               return (
                 <li
                   key={m.id}
+                  id={`${listboxId}-opt-${idx}`}
                   role="option"
                   aria-selected={value === m.id}
                   onMouseDown={(e) => {
@@ -225,7 +235,7 @@ export function MilestoneCombobox({
                   }}
                   onMouseEnter={() => setHighlight(idx)}
                   className={`cursor-pointer px-3 py-1.5 text-sm text-zinc-700 dark:text-zinc-200 ${
-                    highlight === idx
+                    safeHighlight === idx
                       ? "bg-zinc-100 dark:bg-zinc-800"
                       : ""
                   } ${value === m.id ? "font-medium" : ""}`}

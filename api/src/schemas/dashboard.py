@@ -56,6 +56,7 @@ class DashboardActiveTaskRow(BaseModel):
     priority: int
     updated_at: datetime
     blocked_by: int | None
+    blocked_by_terminal: bool  # #2419/#2412: True when blocker is DONE/CANCELLED or absent (suppress red chip)
 
 
 class DashboardActiveTasks(BaseModel):

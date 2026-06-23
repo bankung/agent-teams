@@ -13,9 +13,8 @@
 // default = visible, there is no layout flash or hydration mismatch.
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
 import type { AuditDailyRollupEntry } from "@/lib/api";
-import { readExpanded, writeExpanded } from "@/lib/collapseState";
+import { usePersistentState } from "@/lib/usePersistentState";
 
 const LS_KEY = "dashboard.panels.auditor.visible";
 const LS_EXPANDED_KEY = "dashboard.panels.auditor.expanded";
@@ -56,16 +55,6 @@ function ChevronRightIcon() {
       <polyline points="6 4 10 8 6 12" />
     </svg>
   );
-}
-
-function readVisible(): boolean {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (raw === null) return true;
-    return JSON.parse(raw) !== false;
-  } catch {
-    return true;
-  }
 }
 
 // Verdict configuration — mirrors the inline constants in page.tsx.
@@ -112,43 +101,23 @@ export function AuditorActivityPanel({
   defaultCollapsed = false,
   storageKey,
 }: Props) {
-  const [visible, setVisible] = useState(true);
+  // Visibility — shared LS_KEY written by AuditorVisibilityToggle. Server
+  // snapshot = true (visible) so SSR + first paint match; absent → true.
+  const [visible] = usePersistentState<boolean>(LS_KEY, true, {
+    deserialize: (raw) => JSON.parse(raw) !== false,
+  });
 
   // Expanded state — independent of visible. When visible=false the whole
   // section is hidden. When visible=true, expanded gates the body content.
   const collapsible = storageKey != null;
-  const [expanded, setExpanded] = useState(!defaultCollapsed);
-
-  useEffect(() => {
-    setVisible(readVisible());
-
-    function onStorage(e: StorageEvent) {
-      if (e.key !== LS_KEY) return;
-      setVisible(e.newValue !== null ? JSON.parse(e.newValue) !== false : true);
-    }
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
-
-  useEffect(() => {
-    const key = storageKey ?? LS_EXPANDED_KEY;
-    setExpanded(readExpanded(key, defaultCollapsed));
-
-    function onStorage(e: StorageEvent) {
-      if (e.key !== key) return;
-      setExpanded(
-        e.newValue !== null ? JSON.parse(e.newValue) !== false : !defaultCollapsed,
-      );
-    }
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, [storageKey, defaultCollapsed]);
+  const [expanded, setExpanded] = usePersistentState<boolean>(
+    storageKey ?? LS_EXPANDED_KEY,
+    !defaultCollapsed,
+    { deserialize: (raw) => JSON.parse(raw) !== false },
+  );
 
   function toggle() {
-    const key = storageKey ?? LS_EXPANDED_KEY;
-    const next = !expanded;
-    setExpanded(next);
-    writeExpanded(key, next);
+    setExpanded(!expanded);
   }
 
   // When the rollup is empty the section is hidden regardless of toggle state —
@@ -176,9 +145,9 @@ export function AuditorActivityPanel({
     <section
       data-auditor-activity
       aria-label="Auditor verdict rollup across projects (last 7 days)"
-      className="mb-5 rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900"
+      className="mb-5 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900"
     >
-      <div className="mb-3 flex items-center gap-2">
+      <div className="flex items-center gap-2" style={{ marginBottom: expanded ? "0.75rem" : 0 }}>
         {collapsible ? (
           <button
             type="button"

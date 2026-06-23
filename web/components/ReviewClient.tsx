@@ -15,7 +15,6 @@ import { ConnectionStateBadge } from "./ConnectionStateBadge";
 import { FlagBellBadge } from "./FlagBellBadge";
 import { MassActionBar } from "./MassActionBar";
 import { ProjectFlagCard } from "./ProjectFlagCard";
-import { ThemePicker } from "./ThemePicker";
 import {
   TerminateFlagModal,
   type TerminateTarget,
@@ -187,7 +186,7 @@ export function ReviewClient({ initialFlags }: Props) {
   );
 
   return (
-    <main className="flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950">
+    <main className="glass-board flex min-h-screen flex-col overflow-y-auto bg-white px-4 py-4 sm:px-6 sm:py-5 dark:bg-zinc-950">
       <header className="mb-4 flex flex-wrap items-center gap-2 text-sm">
         <span className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
           Review
@@ -204,7 +203,7 @@ export function ReviewClient({ initialFlags }: Props) {
         </span>
         <Link
           href="/dashboard"
-          className="ml-2 rounded border border-zinc-200 bg-white px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+          className="glass-glow ml-2 rounded border border-zinc-200 bg-white px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
         >
           Dashboard
         </Link>
@@ -214,13 +213,12 @@ export function ReviewClient({ initialFlags }: Props) {
             lastEventAt={lastEventAt}
           />
           <FlagBellBadge />
-          <ThemePicker />
         </span>
       </header>
 
       {flags.length === 0 ? (
         <div
-          className="flex flex-col items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 p-8 text-center dark:border-zinc-800 dark:bg-zinc-900"
+          className="glass-surface flex flex-col items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 p-8 text-center dark:border-zinc-800 dark:bg-zinc-900"
           data-review-empty
         >
           <span aria-hidden className="text-3xl text-emerald-500">

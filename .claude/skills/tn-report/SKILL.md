@@ -11,6 +11,10 @@ allowed-tools:
   - Bash(curl:*)
   - Read
   - Write
+metadata:
+  version: 1.0.0
+  category: kanban
+  tags: [kanban, activity-rail, report, mutate, audit]
 ---
 
 # /tn-report — paved-path Lead activity checkpoint
@@ -139,3 +143,7 @@ This is a Claude Code **skill**: a `SKILL.md` under `.claude/skills/tn-report/`.
 directory name becomes the invoked name (`/tn-report`). Part of the flat `tn-` skill
 family (no plugin / colon namespace in v1). New skill files are picked up after a Claude
 Code **restart**.
+
+## Related skills
+- `tn-tasks-next` — find which task to report on next (what is the current active work)
+- `tn-task` — inspect a task's full detail and existing rail before appending a checkpoint

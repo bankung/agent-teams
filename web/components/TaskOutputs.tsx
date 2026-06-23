@@ -6,7 +6,7 @@
 // renderer and a Download button. Empty → shows a muted empty-state message.
 // Chart (png/svg) and html files support click-to-expand via ModalShell.
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 
@@ -15,7 +15,7 @@ import {
   getTaskOutputs,
   type TaskOutputEntry,
 } from "@/lib/api";
-import { extractErrorMessage } from "@/lib/errors";
+import { useAsyncData } from "@/lib/useAsyncData";
 import { ModalShell } from "./ModalShell";
 
 type Props = {
@@ -104,14 +104,17 @@ function formatBytes(n: number): string {
 function parseCsvNaive(raw: string): { headers: string[]; rows: string[][]; totalDataRows: number } {
   const lines = raw.trim().split(/\r?\n/).filter((l) => l.trim().length > 0);
   if (lines.length === 0) return { headers: [], rows: [], totalDataRows: 0 };
-  const headers = lines[0].split(",").map((c) => c.trim());
+  const headers = lines[0].split(",").map((c) => c.replace(/\r/g, "").trim());
   const dataLines = lines.slice(1);
-  const rows = dataLines.slice(0, 10).map((l) => l.split(",").map((c) => c.trim()));
+  const rows = dataLines.slice(0, 10).map((l) => l.split(",").map((c) => c.replace(/\r/g, "").trim()));
   return { headers, rows, totalDataRows: dataLines.length };
 }
 
-// OutputRow — one file row: header + kind-specific content + Download button.
-function OutputRow({
+// OutputRowBody — fetches bytes and renders content; only mounted when the row
+// is expanded. Keeping the hook call in a child that is conditionally rendered
+// makes the lazy-load straightforward: the hook simply does not run until the
+// user expands the row.
+function OutputRowBody({
   entry,
   projectId,
   taskId,
@@ -120,62 +123,40 @@ function OutputRow({
   projectId: number;
   taskId: number;
 }) {
-  // Loaded state: blobUrl for img/download, text for text-based renderers.
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  const [text, setText] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
-
   const modalTitleId = useId();
-  // Track the blob URL for cleanup (revoke on unmount to avoid memory leaks).
-  const blobUrlRef = useRef<string | null>(null);
 
-  // v1 limitation: every listed row fetches its bytes eagerly on mount with no
-  // concurrency cap or lazy-load. Fan-out is bounded because the BE caps the
-  // listing at 50 entries (MAX_OUTPUT_FILES), so at most 50 parallel fetches.
+  const needsText =
+    entry.kind === "doc" ||
+    entry.kind === "text" ||
+    entry.kind === "export" ||
+    (entry.kind === "chart" && entry.filename.toLowerCase().endsWith(".html"));
+  const {
+    data: bytes,
+    loading,
+    error: fetchError,
+  } = useAsyncData<{ blob: Blob; text: string | null }>(
+    async () => {
+      const blob = await fetchTaskOutputBytes(projectId, taskId, entry.filename);
+      const text = needsText ? await blob.text() : null;
+      return { blob, text };
+    },
+    [projectId, taskId, entry.filename, entry.kind],
+    { errorFallback: "Failed to load", resetDataOnReload: true },
+  );
+  const text = bytes?.text ?? null;
+
+  // Derive the object URL from the fetched blob (stable per fetch result) and
+  // revoke it on change/unmount — the canonical leak-free blob-URL lifecycle.
+  const blobUrl = useMemo(
+    () => (bytes ? URL.createObjectURL(bytes.blob) : null),
+    [bytes],
+  );
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setFetchError(null);
-    setBlobUrl(null);
-    setText(null);
-
-    fetchTaskOutputBytes(projectId, taskId, entry.filename)
-      .then(async (blob) => {
-        if (cancelled) return;
-        // Create download blob URL (used by both download button and img/iframe).
-        const url = URL.createObjectURL(blob);
-        blobUrlRef.current = url;
-        setBlobUrl(url);
-
-        // For text-based kinds, also decode as text for the content renderer.
-        if (
-          entry.kind === "doc" ||
-          entry.kind === "text" ||
-          entry.kind === "export" ||
-          (entry.kind === "chart" && entry.filename.toLowerCase().endsWith(".html"))
-        ) {
-          const t = await blob.text();
-          if (!cancelled) setText(t);
-        }
-        if (!cancelled) setLoading(false);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setFetchError(extractErrorMessage(err, "Failed to load"));
-        setLoading(false);
-      });
-
     return () => {
-      cancelled = true;
-      if (blobUrlRef.current) {
-        URL.revokeObjectURL(blobUrlRef.current);
-        blobUrlRef.current = null;
-      }
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- entry.* fields are the logical deps; fetch helper is module-stable. #1305
-  }, [projectId, taskId, entry.filename, entry.kind]);
+  }, [blobUrl]);
 
   function renderContent() {
     if (loading) {
@@ -348,13 +329,53 @@ function OutputRow({
     return null;
   }
 
+  // Download: blob URL + <a download> — avoids ?download=1 round-trip.
+  // Rendered inside OutputRowBody so the blob is available; collapsed rows show
+  // the placeholder Download span in OutputRow instead.
+  return (
+    <>
+      {blobUrl ? (
+        <a
+          href={blobUrl}
+          download={entry.filename}
+          className="shrink-0 rounded border border-zinc-200 bg-white px-2 py-0.5 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600"
+          data-output-download
+        >
+          Download
+        </a>
+      ) : (
+        <span className="shrink-0 rounded border border-zinc-100 px-2 py-0.5 text-xs text-zinc-400 dark:border-zinc-800">
+          Download
+        </span>
+      )}
+      {renderContent()}
+    </>
+  );
+}
+
+// OutputRow — shell that owns the card frame + expand toggle.
+// Bytes are NOT fetched until the user expands the row (lazy-load Fix 2 #2502).
+// shortcut: no IntersectionObserver auto-expand; user click is sufficient for
+//   the current "≤50 rows per task" use-case. Upgrade path: add IO hook if
+//   auto-reveal on scroll is ever requested.
+function OutputRow({
+  entry,
+  projectId,
+  taskId,
+}: {
+  entry: TaskOutputEntry;
+  projectId: number;
+  taskId: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
   return (
     <div
       data-output-row
       data-output-kind={entry.kind}
       className="flex flex-col gap-1.5 rounded border border-zinc-100 bg-white p-2 dark:border-zinc-800 dark:bg-zinc-900/40"
     >
-      {/* Row header: filename + size + kind chip + Download */}
+      {/* Row header: filename + size + kind chip + expand + Download */}
       <div className="flex flex-wrap items-center gap-2">
         <span className="flex-1 truncate font-mono text-xs text-zinc-800 dark:text-zinc-200">
           {entry.filename}
@@ -365,46 +386,39 @@ function OutputRow({
         <span className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
           {entry.kind}
         </span>
-        {/* Download: blob URL + <a download> — avoids ?download=1 round-trip */}
-        {blobUrl ? (
-          <a
-            href={blobUrl}
-            download={entry.filename}
-            className="shrink-0 rounded border border-zinc-200 bg-white px-2 py-0.5 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600"
-          >
-            Download
-          </a>
-        ) : (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((v) => !v)}
+          className="shrink-0 rounded border border-zinc-200 bg-white px-2 py-0.5 text-xs font-medium text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600"
+          data-output-expand
+        >
+          {expanded ? "Hide" : "Show"}
+        </button>
+        {/* Placeholder Download shown when collapsed; real link appears inside
+            OutputRowBody once the blob is fetched. */}
+        {!expanded && (
           <span className="shrink-0 rounded border border-zinc-100 px-2 py-0.5 text-xs text-zinc-400 dark:border-zinc-800">
             Download
           </span>
         )}
       </div>
-      {renderContent()}
+      {expanded && (
+        <OutputRowBody entry={entry} projectId={projectId} taskId={taskId} />
+      )}
     </div>
   );
 }
 
 // TaskOutputs — the section component mounted inside TaskDetail (#1305).
 export function TaskOutputs({ projectId, taskId }: Props) {
-  const [entries, setEntries] = useState<TaskOutputEntry[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setEntries(null);
-    setError(null);
-    getTaskOutputs(projectId, taskId)
-      .then((data) => {
-        if (!cancelled) setEntries(data);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(extractErrorMessage(err, "Failed to load outputs"));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId, taskId]);
+  // #2492 — fetch + cancel-guard via useAsyncData. resetDataOnReload keeps the
+  // prior "entries=null while a new task's outputs load" placeholder behavior.
+  const { data: entries, error } = useAsyncData<TaskOutputEntry[]>(
+    () => getTaskOutputs(projectId, taskId),
+    [projectId, taskId],
+    { errorFallback: "Failed to load outputs", resetDataOnReload: true },
+  );
 
   return (
     <section className="flex flex-col gap-2" data-outputs-section>
@@ -428,9 +442,9 @@ export function TaskOutputs({ projectId, taskId }: Props) {
 
       {entries !== null && entries.length > 0 && (
         <div className="flex flex-col gap-2">
-          {entries.map((entry) => (
+          {entries.map((entry, idx) => (
             <OutputRow
-              key={entry.filename}
+              key={`${entry.filename}-${idx}`}
               entry={entry}
               projectId={projectId}
               taskId={taskId}

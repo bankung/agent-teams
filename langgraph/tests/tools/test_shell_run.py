@@ -145,3 +145,52 @@ async def test_denylist_contents_locked():
         "mv",
         "cp",
     )
+
+
+# ---------------------------------------------------------------------------
+# Kanban #2503 — Fix 3: docker compose exec removed from allowlist
+# ---------------------------------------------------------------------------
+
+
+async def test_docker_compose_exec_rejected(tmp_path):
+    """Fix 3: 'docker compose exec <service> <cmd>' must be rejected.
+
+    The prefix ("docker", "compose", "exec") was removed from ALLOWLIST because
+    it permitted ANY sub-command — including denylist-bypassing ones like
+    'docker compose exec api rm -rf /'. (Kanban #2503)
+
+    NEGATIVE (the lock): any docker compose exec variant must return
+    command_not_allowed, not pass through.
+    """
+    tool = GLOBAL_REGISTRY.get("shell_run")
+    ctx = InvokeContext(repo_root=str(tmp_path))
+
+    for cmd in [
+        "docker compose exec api python -m scripts.seed",
+        "docker compose exec api alembic upgrade head",
+        "docker compose exec api bash",
+    ]:
+        result = await tool.invoke({"cmd": cmd}, context=ctx)
+        assert result.success is False, f"expected failure for: {cmd!r}"
+        assert result.error_code == "command_not_allowed", (
+            f"expected command_not_allowed, got {result.error_code!r} for: {cmd!r}"
+        )
+
+
+async def test_allowlist_contents_locked():
+    """Pin the allowlist tuple — any addition must update this test, ensuring
+    code review sees the security implication. (Kanban #2503: removed docker
+    compose exec.)"""
+    from tools.shell.shell_run import ALLOWLIST
+
+    assert ALLOWLIST == (
+        ("pytest",),
+        ("pnpm", "test"),
+        ("npm", "test"),
+        ("tsc",),
+        ("npm", "run", "build"),
+        ("pnpm", "run", "build"),
+        ("python", "-m", "pytest"),
+        ("git", "status"),
+        ("git", "diff"),
+    )

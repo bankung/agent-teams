@@ -1,197 +1,268 @@
-# agent-teams
+<!--
+  SCREENSHOTS / GIF TO ADD before going public (drop files into docs/media/):
+    docs/media/hero.png         — project board, hero shot (≈820px wide)
+    docs/media/kanban.png       — Kanban board view
+    docs/media/task-detail.png  — a task with acceptance criteria + verification status
+    docs/media/gantt.png        — Gantt timeline (optional)
+    docs/media/demo.gif         — 15-30s: Create Project -> Create Task -> Execute -> Done (optional)
+  Public repos should NOT ship placeholder images — replace these before flipping the repo public.
+-->
 
-**A self-hosted orchestration and governance layer that turns Claude Code or OpenAI Codex into a persistent, governed, multi-domain agent team.**
+<h1 align="center">Agent Teams</h1>
 
-You know the feeling: the coding session that started sharp is now drifting, re-explaining itself, and holding your entire plan hostage. A single CLI is a powerful brain with no memory across sessions, no project structure, and no safety rails.
+<p align="center"><strong>Run AI agents like a real engineering team.</strong></p>
 
-agent-teams closes that gap. It wraps your coding CLI with a Postgres-backed Kanban, a Lead meta-orchestrator that spawns fresh domain specialists per task, a five-zone context model, and a defense-in-depth safety layer. File the queue, step away, trust it's handled — the leverage of a whole team, without the burnout of being one.
+<p align="center">
+  Lead plans &nbsp;·&nbsp; Specialists execute &nbsp;·&nbsp; Acceptance criteria validate &nbsp;·&nbsp; Everything is tracked &amp; audited
+</p>
 
-Everything runs locally in Docker. No cloud sign-up, no SaaS subscription, no code leaving your network.
+<p align="center">
+  <code>pre-0.7.0</code> &nbsp;·&nbsp; 8 teams · 40 agents · 21 skills &nbsp;·&nbsp; FastAPI + PostgreSQL · Next.js · LangGraph · Docker
+</p>
 
-It is also **dogfooded**: agent-teams builds agent-teams. The repo's own commit history and Kanban are living proof.
+<p align="center">
+  <img src="docs/media/hero.png" alt="Agent Teams — project board (Kanban + Gantt + calendar)" width="820">
+</p>
 
----
+Agent Teams turns a single instruction into coordinated work across a roster of specialist agents. A **Lead orchestrator** resolves the active project, loads the right domain playbook, spawns the right specialists, integrates their output, and tracks everything on a Kanban board with acceptance-criteria.
 
-## Why it's different
-
-Claude Code already gives you sub-agents, and you can keep several sessions open. agent-teams is the layer that makes that raw power actually land: every task becomes a clean, scoped contract instead of one sprawling chat you keep having to wrangle.
-
-| | Self-hosted | Persistent task/project state | Beyond code | Governance/safety layer | Form |
-|---|:--:|:--:|:--:|:--:|---|
-| Cloud SWE agents (Devin, Cursor, Devin Desktop — ex-Windsurf) | ✗ | ~ per-run cloud agents, no project board | ✗ code-only | black-box | product / IDE |
-| GitHub Copilot (incl. coding agent) | ✗ | ~ issue→PR runs, no project board | ✗ code-only | black-box | product |
-| Agent frameworks (CrewAI, AG2/AutoGen, LangGraph) | ✓ lib | ~ lib checkpointers (LangGraph); app/task state DIY | ✓ DIY | ~ platform tiers (CrewAI AMP); OSS DIY | library (+ managed platforms) |
-| Self-hosted platform (OpenHands) | ✓ | ~ less structured | ~ dev-focused | local isolation | product / SDK / cloud |
-| **agent-teams** | ✓ | ✓ Postgres Kanban + 5-zone context | ✓ team playbooks (dev/content/SEO/…) | ✓ defense-in-depth + AC + HITL + cost | **layer on Claude Code / Codex** |
-
-*Competitor capabilities last verified 2026-06 — Copilot coding agent (GA 2025-09), LangGraph checkpointers + LangSmith Deployment (platform GA 2025-05), CrewAI AMP (v1.9.x), Windsurf renamed Devin Desktop (2026-06), AutoGen in maintenance mode (v0.7.5) with Microsoft Agent Framework / AG2 as successors, OpenHands v1.16.*
-
-The gap it fills: a **self-hosted, persistent, governed, multi-domain orchestration layer** — the cloud agents and IDEs aren't self-hosted and carry no cross-session project state; the frameworks give you primitives (some now ship checkpointing), but the operating layer — task contracts with verified acceptance criteria, HITL gates, budgets, multi-domain playbooks, the board itself — is still yours to build. agent-teams ships that part, already wired.
-
----
-
-## What's genuinely special
-
-- **Tasks are contracts — with proof.** Every task carries structured acceptance criteria. Before a task can be marked done, each criterion is verified with evidence and stamped passed/failed. The system proves the work met the contract; it doesn't just claim "done." Hard cost guardrails (daily/monthly budget caps → `429`) and a full `tasks_history` audit trail are built in.
-
-- **Batch and parallel without context rot.** Queue tasks, run them back-to-back or in parallel — each spawns a fresh domain specialist with scoped context. No sprawling conversation, no bleed-through. The Kanban holds the plan; the agents hold nothing stale.
-
-- **Two execution modes.** Mode A (production today): Claude Code or Codex drives each specialist interactively with per-action approval — you keep control. Mode B (actively in development): flip a task to `auto_headless` and the LangGraph engine runs it with no terminal open, Postgres-checkpointed.
-
-- **Governed real-world tool layer — email and calendar behind tiered gates.** Agents can read, triage, draft, reply, forward, and send email across Gmail and Outlook — and read/create/respond to calendar events on both. Every action passes a three-tier gate: auto-approved safe operations, an operator-proof token for destructive or send-class actions, and forced human escalation for anything that crosses an external send boundary. Every action lands in an audit trail. This is what "beyond code" means in practice.
-
-- **Rich planning views.** Board · List · Calendar · Gantt in one switcher. Calendar supports week/month with drag-to-reschedule. Gantt doubles as the milestone home — drag a task straight onto a milestone and watch the progress rollup update.
-
-- **Extend without migrations.** Add a new team or new agent types by editing constants and dropping a markdown file — no DB migration required. 8 teams and ~39 specialist agent definitions ship today. → [How to add a team](readme_dev.md#team-roster--dev-team) · [Full onboarding runbook](context/teams/dev/team-onboarding-runbook.md)
-
-- **Self-hosted, local-first, dogfooded.** Runs in Docker on your machine. Anthropic, OpenAI, Google Gemini, or fully-local Ollama — your choice, one `.env` variable. No code leaves your network. And the system building itself is the system you're reading about: the commit log and live Kanban are the proof.
+> **Two execution modes, one platform.** Drive agents **interactively** (attended, in Claude Code) or hand tasks to an **autonomous LangGraph worker** (headless). Same roster, tasks, guardrails, and cost controls in both.
 
 ---
 
-## What's new in v0.6.3
+## Example use cases
 
-- **Context metering and lifecycle tracking.** Mode-A token and cost metering ships with a new append-only `usage_events` ledger. Claude Code `SubagentStop` and `SessionEnd` hooks capture task-scoped token usage (per subagent run and at session end); the API computes cost server-side, idempotent-deduped on `dedup_key`. Early warning on per-project rate limits (60 requests per 10s, 429-before-DB-work) gates runaway capture loops. Files: `usage_events.py`, `cost_tracker.py`, lifecycle hooks in `.claude/hooks/`.
-- **Cross-session context — story docs and activity rail.** `context/projects/<p>/shared/stories/` holds living per-thread state (Lead-only writer, in-file versioning with optimistic lock) that survives sessions and compactions. A separate activity rail records immutable per-task events. This is what lets a task be picked up cleanly in a fresh session — no context bloat, no re-explaining. Files: the `_template.md` story scaffold + the story-context decisions lock.
-- **Leaner task queries.** The `/tn-tasks-next` skill now reads the slim `GET /api/tasks/summary` projection (board and ordering fields only, ~8× smaller payloads). Lead reads shrink from 421 KB to 52 KB at list-500, keeping context windows comfortably small.
-- **Agent gallery — browse specialist definitions.** A new `/agents` page (+ detail cards) and `GET /api/agents` endpoint let you explore the 38+ specialist agent definitions, view their tools, hooks, and spawn history across projects. See who does what and which agents are in-flight.
-- **Task output viewer.** In-progress tasks now surface their generated artifacts (code files, HTML, CSVs, logs, markdown). `GET /api/tasks/{id}/outputs` lists files; the TaskDetail Outputs section previews them (images, HTML in a sandbox iframe, CSV tables, raw downloads). Guards against traversal and header injection; 50-file cap per task.
-- **Board activity feed.** IN_PROGRESS cards show a live 3-row activity strip — recent tool calls, running/idle state, relative timestamps. 10-second visibility-aware polling keeps you abreast without noise. `GET /api/tool-calls?limit` supports optional paging.
-- **Per-role effort overrides.** Mode-B engine now respects `_runtime/effort-overrides.json` (operator-authored, TTL-cached) to dial specialist effort level per role (e.g. a tester gets more thorough reasoning). Falls back gracefully to project mode or off if the file is missing or unparseable.
-- **Hardening.** API host port now binds to `127.0.0.1` (localhost-only by default) to close unintended LAN exposure. Token inputs are bounded server-side so computed cost stays within the ledger's numeric column. Capture hooks drop conversation content from entry logs.
-
----
-
-## What's new in v0.6.2
-
-- **Lighter task-list API.** A new `GET /api/tasks/summary` endpoint returns a slim projection — board and ordering fields only, omitting the heavy `description` and `acceptance_criteria` payloads. List responses are ~8× smaller, keeping the Lead and the board fast and comfortably inside smaller models' context windows.
-- **Kanban DONE-lane count fix.** The DONE column header now shows the true project total (from the project stats) instead of just the first loaded page, which was capped at 50.
+| Domain | What a team does |
+|---|---|
+| 🧑‍💻 Software development | feature work, reviews, tests, migrations, DevOps |
+| 🔍 SEO audits | keyword + SERP + technical audits, reporting |
+| 📣 SEM campaigns | Google / Meta / secondary paid-media build-out |
+| 📊 BI analysis | metrics, SQL, dashboards |
+| ✍️ Content production | drafting, editing, fact-check, proofread |
+| 🌐 Network operations | read-only monitoring & diagnosis |
 
 ---
 
-## What's new in v0.6.0
+## How it works
 
-- **Email actions grew from triage to the full send ladder.** Reply, forward, send-to-internal, and external-send routes landed for both Gmail and Outlook — all behind the operator-proof gate, with external-send additionally forcing an out-of-band human confirmation. A Kanban audit step records every send action. An `INTERNAL_EMAIL_DOMAIN` guard and header-injection hardening ship alongside.
-
-- **Calendar: read, free/busy, create, and respond — Google and Outlook.** Agents can list events, query availability, create events, and respond to invitations. Read endpoints are auto-approved; create/respond pass the operator-proof gate. Both providers share a unified `/api/tools/calendar` router.
-
-- **One-command install.** `npx @bankung/agent-teams up --images` (Node 18+, Docker required) pulls pre-built images from GHCR and starts the full stack — no clone, no local build. Production images slimmed from ~847 MiB to ~216 MiB (~75% reduction).
-
-- **Board and UX.** First-run product tour (resumable, dark-mode), task templates in the New Task modal, append-only task comments, a file resources panel, calendar week view with drag-to-reschedule, editable acceptance criteria in the task drawer, an "On you (N)" chip surfacing tasks waiting on the operator's decision, DONE-lane keyset pagination, and shared-SSE + code-splitting for a faster board.
-
-- **Headless engine (Mode B) — progress and honest status.** One worker now serves multiple project boards concurrently. A local-model rig (Ollama) with a regression pack and capability probe hardens the engine, and a filesystem destination guard keeps file writes inside each project's declared working folder. Native Google Gemini provider added. Mode B remains actively in development — don't rely on it for critical work yet.
-
-- **Operations.** Per-task cost metering for Mode A runs captures prompt-cache token counts against each session. A `/tn-release` slash-command skill encodes the full weekly release flow end-to-end so milestone flips are never skipped. `/tn-email` and `/tn-jobs` skills bring secretary email and job-search operations into the paved-path skill family.
-
----
-
-## What it is — and isn't
-
-**It is:** an orchestration and governance layer on top of a coding CLI. Works today with **Claude Code** and **OpenAI Codex**.
-
-**It isn't:**
-- a frontier autonomous SWE agent like **Devin** — it orchestrates your coding agent, it doesn't replace one;
-- an IDE like **Cursor** or **Devin Desktop** (formerly Windsurf) — no editor here; keep your own;
-- a from-scratch agent framework like **CrewAI** / **AG2 (AutoGen)** / **LangGraph** — it actually *uses* LangGraph for its headless engine rather than reinventing it.
-
-**Honest status on the headless engine:** today the production path is Mode A — Claude Code / Codex CLI driven interactively (per-action approval). The `langgraph` service (supervisor → specialist graph, Postgres-checkpointed) is the Mode B path and is **actively in development**. One worker now serves multiple project boards concurrently, a regression pack and capability probe run against a local-model (Ollama) rig to harden it, and a filesystem destination guard keeps writes inside each project's declared working folder. Don't rely on it for critical work yet.
-
----
-
-## Architecture at a glance
-
-```mermaid
-flowchart TD
-    Operator([Operator]) -->|files tasks, answers HITL| Kanban[(Kanban · Postgres)]
-    Operator -->|talks to| Lead[Lead · meta-orchestrator]
-    Lead -->|reads| Playbook[Team playbook]
-    Lead -->|resolves project, spawns| Specialists[Specialists: backend / frontend / tester / reviewer / …]
-    Specialists -->|run on| CLI[Claude Code / Codex CLI]
-    Lead <-->|read/write state| Context[(5-zone context:<br/>standards · team · project · role)]
-    Specialists -->|update| Kanban
-    CLI -.headless path.-> Engine[LangGraph engine · Postgres checkpoints]
+```
+You:    "Run an SEO audit for example.com"
+          │
+Lead:   plans the work → opens 5 tasks, each with acceptance criteria
+          ├─ seo-strategist            → keyword + competitor SERP + content-gap analysis
+          ├─ technical-seo-specialist  → crawlability · Core Web Vitals · schema audit
+          ├─ content-editor            → reviews the recommendations
+          └─ project-auditor           → validates output against the acceptance criteria
+          │
+Board:  each task flips DONE only when its acceptance criteria pass — tracked & audited
 ```
 
-The Lead reads the team playbook, resolves the active project, and spawns the right specialists. Specialists run on your coding CLI and write their results back to the Kanban and five context zones — no context leaks between tasks.
+The Lead picks the right specialists from the active team's playbook; you stay in control on the board.
 
 ---
 
-## CLI-agnostic by design
+## Why Agent Teams?
 
-The orchestration works across coding CLIs because the rules live in portable instruction files: [`CLAUDE.md`](CLAUDE.md) for Claude Code and [`AGENTS.md`](AGENTS.md) for Codex. Same governance, same lanes, same team structure — whichever CLI you run. You're not locked to one vendor.
+Most agent frameworks focus on **execution** — wiring up a graph of LLM calls and tools.
+
+**Agent Teams focuses on operating AI work like a real organization** — the layer most frameworks leave to you:
+
+- **Tasks & milestones** — every unit of work is tracked, not ephemeral
+- **Acceptance criteria** — work is *verified* before it counts as done
+- **Audit trail** — a per-task record of exactly what happened
+- **Cost tracking** — per-task and monthly, across providers
+- **Team playbooks** — a domain-specific roster + workflow, not one generic agent
+
+If you've ever wished your agent runs were a **board you can manage** instead of a **script you re-run**, that's the gap this fills.
 
 ---
 
-## Get started
+## Who is this for?
 
-**Quickest path — no clone needed (Node 18 + Docker required):**
+**Great fit**
+- Technical founders & solo builders
+- Agencies running repeatable client work (SEO, content, SEM)
+- Engineering teams that want AI work tracked like real work
+- AI operators who want control, cost visibility, and an audit trail
+
+**Not (yet) for**
+- Teams wanting a zero-setup **hosted SaaS** — Agent Teams is self-hosted today
+- Environments without **Docker**
+
+---
+
+## Requirements
+
+- **Docker** + Docker Compose
+- An **Anthropic API key** (Claude) — or another supported provider
+
+Optional providers (set one to switch): **OpenAI** · **Google (Gemini)** · **DeepSeek** · **Ollama** (local, no key).
+
+---
+
+## Quickstart (self-host)
 
 ```bash
-npx @bankung/agent-teams up --images
+bin/install.ps1        # Windows   (bin/install.sh on macOS / Linux / WSL)
 ```
 
-Pulls pre-built images from GHCR and starts the full stack. Then skip to step 3 below.
+**The installer does the whole first run for you:**
+1. Checks Docker is installed and the daemon is running
+2. Creates `.env` (from `.env.example`) and generates the required security key (`CREDENTIALS_MASTER_KEY`)
+3. Builds and starts the stack in **production mode** (`next build` → `node server.js`, no hot-reload)
+4. Runs the database migration + seed
+5. Waits for the API to come up, then opens the board
 
-**From a clone (contributor / source-build path):**
+Then add your provider key to `.env`:
 
-1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) and restart your computer.
-2. Open a terminal **in this folder** and run the installer:
-   - **macOS / Linux / WSL:** `./bin/install.sh`
-   - **Windows (PowerShell):** `.\bin\install.ps1` *(if scripts are blocked, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once first)*
-3. Open **http://localhost:5431** — your Kanban board. The installer seeds a `demo-tour` project to explore. Create tasks, queue them, and answer agent questions as they come up.
+```env
+ANTHROPIC_API_KEY=sk-ant-...      # or set LANGGRAPH_LLM_PROVIDER + the matching key
+# CREDENTIALS_MASTER_KEY — generated for you by the installer
+# SECRET_KEY            — set a strong value for non-dev use
+# DATABASE_URL · REPO_ROOT · WEB_PORT (5431) · API_PORT (8456) — sane compose defaults
+```
 
-Two ways to put agents to work:
+Prefer manual?
+```bash
+# Production (default — fast, no bind-mount):
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 
-- **Mode A — Claude Code / Codex session (production today).** Open this repo in Claude Code or OpenAI Codex. The Lead resolves your project, loads the team playbook, and orchestrates specialists end-to-end. → **[CLAUDE-CODE-START.md](CLAUDE-CODE-START.md)**
-- **Mode B — One-click "Start" on the board *(in active development)*.** Flip a task to auto-run and the headless `langgraph` engine handles it with no terminal open. See "What it is — and isn't" above for the honest status.
-
-The installer is safe to re-run; services keep running after you close the terminal.
-
-**Multi-provider, local-first.** Switch models with one `.env` variable (`LANGGRAPH_LLM_PROVIDER`): **Anthropic** (default), **OpenAI**, **Google Gemini**, or **Ollama** for fully local inference — no API key, no network egress. With Ollama, nothing leaves your machine.
-
-**Stop / reset:** `docker compose down` to stop; `.\bin\reset.ps1` (or `./bin/reset.sh`) to wipe and start fresh.
-
----
-
-## Slash-command skills (tn-*)
-
-These are reusable Claude Code commands that encode Kanban API conventions, preventing common mistakes (missing project_id, incomplete acceptance criteria, status-change guard violations). 16 skills ship today. They activate after a Claude Code restart and are auto-detected on live-reload.
-
-| Command | What it does |
-|---------|-------------|
-| **Tasks** | |
-| `/tn-task-create <description>` | Create a Kanban task correctly (project_id in request body, acceptance_criteria at creation). |
-| `/tn-task <id>` | Show one task with its acceptance criteria (read-only). |
-| `/tn-tasks-next [N]` | List the next N actionable tasks (current milestone first, blockers first, then priority; N defaults 10). |
-| `/tn-task-done <id>` | Verify every acceptance criterion, then flip the task to DONE (refuses if any criterion is unmet). |
-| `/tn-task-update <id> <changes>` | Guarded status/priority update (BLOCKED only via blocked_by; status changes carry a reason; DONE is redirected to /tn-task-done). |
-| `/tn-task-attach <task> <milestone>` | Attach a task to a milestone (same-project checked). |
-| **Milestones** | |
-| `/tn-milestone-create <title>` | Create a milestone (defaults to "planned"). |
-| `/tn-milestone-done <id>` | Release a milestone after checking its child tasks are complete. |
-| `/tn-milestones` | List milestones with their task rollup (done/total, progress %). |
-| **Workflow** | |
-| `/tn-intense-review <scope>` | 2-round adversarial review + test-hardening pass (reviewers + determinism loop). |
-| `/tn-spec <idea>` | 2 rounds of spec pushback + revision before creating a task. |
-| `/tn-release [vX.Y.Z]` | Run the full weekly release flow — Tier-2 gate, merge dev→main, version bump, annotated tag, push, milestone flips (released + activate next), resume dev. |
-| **Project** | |
-| `/tn-bind <project>` | Bind the session to a project by name (resolves + persists the active project). |
-| `/tn-audit [project]` | On-demand project health audit (3 metrics + continue/review/pause). |
-| **Secretary** | |
-| `/tn-email <verb>` | Secretary email operations across Gmail and Outlook — search, read, triage, archive, mark, draft, trash. All mutation actions are HITL-gated. |
-| `/tn-jobs <verb>` | Job-search operations — mine alert emails, sweep application responses, reconcile against the tracker, deep-dive a role, check live posting status, log a status update. |
-
-Each skill lives at `.claude/skills/<name>/SKILL.md` and is invoked as `/<name>` in Claude Code.
+# Developer mode (hot-reload):
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+```
+Web on **:5431**, API on **:8456**.
+Optional autonomous worker (Mode B): `docker compose --profile langgraph -f docker-compose.yml -f docker-compose.prod.yml up -d` → **:8465**.
 
 ---
 
-## Learn more
+## First run — in about 5 minutes
 
-Companion docs go deep so this README stays scannable:
+1. **Open the Web UI** → http://localhost:5431
+2. **Open a project** — the installer seeds a demo project to explore
+3. **Create a task** — give it acceptance criteria (what "done" means)
+4. **Run the Lead** — it plans the work and spawns the right specialists
+5. **Review on the board** — the task flips **DONE only when its acceptance criteria pass**
 
-- **[QUICKSTART.md](QUICKSTART.md)** — 5-minute tour via the browser UI.
-- **[CLAUDE-CODE-START.md](CLAUDE-CODE-START.md)** — driving the team from a Claude Code terminal session.
-- **[USAGE-POWER.md](USAGE-POWER.md)** — parallel agents, auto-mode, multi-project workflows, mobile remote access.
-- **[readme_dev.md](readme_dev.md)** — architecture deep-dive: storage zones, team rosters, configuration, and extensibility (including how to add a new team or agent type).
-- **[context/teams/dev/team-onboarding-runbook.md](context/teams/dev/team-onboarding-runbook.md)** — full step-by-step runbook for adding teams and agents.
+<p align="center">
+  <img src="docs/media/kanban.png" alt="Kanban board" width="32%">
+  <img src="docs/media/task-detail.png" alt="Task detail — acceptance criteria with verification status" width="32%">
+  <img src="docs/media/gantt.png" alt="Gantt timeline" width="32%">
+</p>
 
-For the full development history, browse the git log and the Kanban that drove it — dogfooding in action.
+---
+
+## Features
+
+**Three capabilities set Agent Teams apart:**
+
+### ✅ Acceptance-Criteria Gating
+**"Looks done" ≠ actually done → work is verified before it counts.**
+Every task carries structured criteria, and it *cannot be marked DONE until each one is verified* — the guardrail against plausible-but-wrong AI output.
+
+### 🧠 Story-Based Memory
+**Stop re-deriving project state every session → pick work back up with context intact.**
+A living "what's true now" record per workstream, plus an immutable event log. Every durable line is artifact-backed (commit / task id / `file:line`), not vibes.
+
+### 🔭 Activity Rail
+**Never wonder what the agents did → a full, auditable trail of every step.**
+An append-only, per-task telemetry record of every spawn, result, commit, and status change.
+
+---
+
+**And the rest:**
+
+### 🎛️ Cost & Quality Control
+**One-size LLM spend on every task → dial cost vs quality per task.**
+Per-agent model tiers (`opus` / `sonnet` / `haiku`), per-task `model_override` + `effort_override` (the Mode B worker drives the Anthropic effort lever — auto-resolved or manual), multi-provider (Anthropic / OpenAI / Google / DeepSeek / Ollama), and a per-task + monthly cost view.
+
+### 🖥️ Web Workspace
+**Agent runs scattered across logs → one board you can manage.**
+A Next.js workspace: Kanban board, Gantt timeline, calendar, and milestone roll-ups — visual project management, not just a CLI.
+
+### 🔍 Self-Maintaining Knowledge Base
+**Docs and memory rot over time → continuous, review-gated hygiene.**
+The auditor flags stale docs, proposes skill stubs from recurring task patterns, and *(new)* proposes a de-duplicated compaction of the memory + decision log — all HITL, never auto-applied.
+
+### 🛡️ Safe by Default
+**Agents with unchecked access → propose-don't-apply, with structural guardrails.**
+HITL (agents propose, humans apply), humans-only zones, read-only agents constrained by tool-grant (not just prompts), a gated email path, PreToolUse hooks blocking raw SQL DML, and a treat-input-as-data prompt-injection posture.
+
+### 🔐 Secrets Management *(rolling out)*
+**Secrets sprinkled across `.env` files → centralized, auditable secrets.**
+Moving to **Infisical** (primary) with `.env` fallback.
+
+### ⚙️ Standards-Driven Output
+**Inconsistent AI output → every agent follows the same committed standards.**
+A standards library (~28 docs: FastAPI, Next.js, React, SQLAlchemy, Pydantic, Docker…), the **Karpathy lane** on every change (think-before-code, minimum-viable-change, verify), and a skill-authoring standard + validator.
+
+---
+
+## Project layout
+
+```
+api/         FastAPI + PostgreSQL backend (tasks, milestones, usage, activity rail)
+web/         Next.js workspace (board, Gantt, calendar)
+langgraph/   autonomous worker engine (Mode B)
+.claude/     agents/ · teams/ · skills/ · hooks/      (operator-applied)
+context/     standards/ (engineering rules) · projects/<p>/shared/ · teams/
+bin/         install / bring-up / reset helpers
+```
+
+---
+
+## Status
+
+`pre-0.7.0`
+
+- **Production use:** yes — self-host and run it today
+- **Breaking changes:** expected before 1.0
+- Some features are still rolling out (marked above)
+
+See `context/projects/agent-teams/shared/decisions.md` for the decision log.
+
+---
+
+## Roadmap
+
+| Version | Focus |
+|---|---|
+| **0.7** | Story-based memory · Auditor (skill / decision / memory) · cost & control levers |
+| **0.8** | Multi-workspace · secrets (Infisical) · MCP integration |
+| **1.0** | Stable release |
+
+Forward-looking; subject to change.
+
+---
+
+## Architecture
+
+```
+              ┌──────────────┐
+   Browser →  │  Next.js web │   Kanban · Gantt · calendar · milestones      (:5431)
+              └──────┬───────┘
+                     │ REST
+              ┌──────┴───────┐        ┌──────────────────────────────────────┐
+              │   FastAPI    │──────→ │  PostgreSQL                          │
+              │   (API)      │ (:8456)│  tasks · milestones · usage ledger · │
+              └──────┬───────┘        │  activity rail                       │
+                     │                └──────────────────────────────────────┘
+          ┌──────────┴───────────┐
+   Mode A: Claude Code      Mode B: LangGraph worker
+   (interactive Lead +      (autonomous task execution,
+    spawned subagents)       headless)                                       (:8465)
+```
+
+Both modes share the same task store, agent roster, team playbooks, skills, and guardrails.
+
+---
+
+## License
+
+**Business Source License 1.1 (BSL 1.1)** — source-available, not (yet) OSI open-source.
+
+- ✅ **Self-host and run it in production** — for your own work or your clients', free of charge.
+- ✅ **Read, modify, and contribute** to the source.
+- 🚫 **No competing hosted service** — you may not offer Agent Teams to third parties as a hosted or managed service that competes with the Licensor.
+- 🔄 **Becomes open source over time** — each release converts to the **Apache License 2.0** four years after it ships (the BSL "Change Date").
+
+Want to offer a hosted service, or need terms beyond the above? Contact the Licensor for a commercial license. Full terms: [LICENSE](LICENSE).

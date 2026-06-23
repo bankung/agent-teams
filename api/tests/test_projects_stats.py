@@ -132,8 +132,9 @@ async def test_stats_project_with_zero_tasks_all_zero_buckets(
         assert entry["name"] == project["name"]
         assert entry["team"] == "dev"
 
-        # counts — exactly the five string keys, every value 0.
-        assert set(entry["counts"].keys()) == {"1", "2", "3", "4", "5", "6"}, entry
+        # counts — exactly seven string keys (1-6 + 8; 7 is reserved/skipped),
+        # every value 0. Kanban #1839 added HALTED_PENDING_USER=8 to TaskStatus.ALL.
+        assert set(entry["counts"].keys()) == {"1", "2", "3", "4", "5", "6", "8"}, entry
         assert all(v == 0 for v in entry["counts"].values()), entry
 
         # run_mode_breakdown — exactly the three keys, every value 0.
@@ -222,6 +223,7 @@ async def test_stats_counts_and_breakdown_and_last_activity(
 
         # Counts per process_status. Kanban #854: "6" (CANCELLED) bucket
         # always present (0 here — no cancellations in this fixture).
+        # Kanban #1839: "8" (HALTED_PENDING_USER) bucket always present (0 here).
         assert entry["counts"] == {
             "1": 3,  # 3 TODO
             "2": 1,
@@ -229,6 +231,7 @@ async def test_stats_counts_and_breakdown_and_last_activity(
             "4": 1,
             "5": 1,
             "6": 0,
+            "8": 0,
         }, entry
 
         # Run-mode breakdown — 4 manual, 3 auto_pickup, 0 auto_headless.
@@ -299,6 +302,7 @@ async def test_stats_cancelled_excluded_from_last_activity_in_counts(
         assert entry is not None
 
         # counts: 1 TODO keeper + 1 CANCELLED victim → "1": 1, "6": 1, rest 0.
+        # Kanban #1839: "8" (HALTED_PENDING_USER) bucket always present.
         assert entry["counts"] == {
             "1": 1,
             "2": 0,
@@ -306,6 +310,7 @@ async def test_stats_cancelled_excluded_from_last_activity_in_counts(
             "4": 0,
             "5": 0,
             "6": 1,
+            "8": 0,
         }, entry
 
         # last_activity_at must reflect the keeper (older updated_at) — NOT
@@ -351,8 +356,8 @@ async def test_stats_excludes_soft_deleted_tasks(client, scaffold_cleanup) -> No
         entry = await _stats_entry_for(client, project_id)
         assert entry is not None
 
-        # Only the keeper counts.
-        assert entry["counts"] == {"1": 1, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0}, entry
+        # Only the keeper counts. Kanban #1839: "8" bucket always present.
+        assert entry["counts"] == {"1": 1, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "8": 0}, entry
         assert entry["run_mode_breakdown"] == {
             "manual": 1,
             "auto_pickup": 0,
@@ -491,8 +496,9 @@ async def test_stats_entry_shape_always_full(client) -> None:
             "run_mode_breakdown",
             "last_activity_at",
         }, entry
-        # counts: 5 string keys, all int.
-        assert set(entry["counts"].keys()) == {"1", "2", "3", "4", "5", "6"}, entry
+        # counts: 7 string keys (1-6 + 8; 7 reserved/skipped), all int.
+        # Kanban #1839: "8" (HALTED_PENDING_USER) added to TaskStatus.ALL.
+        assert set(entry["counts"].keys()) == {"1", "2", "3", "4", "5", "6", "8"}, entry
         assert all(isinstance(v, int) for v in entry["counts"].values()), entry
         # run_mode_breakdown: 3 keys, all int.
         assert set(entry["run_mode_breakdown"].keys()) == {

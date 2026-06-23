@@ -443,3 +443,86 @@ async def test_empty_answer_returns_422(client, scaffold_cleanup) -> None:
     resp = await _patch_task(client, pid, tid, {"new_answer": "   "})
     assert resp.status_code == 422, resp.text
     assert resp.json()["detail"].startswith("invalid_answer:"), resp.text
+
+
+# ---------------------------------------------------------------------------
+# #2427 regression: independent halt_reason survives question-DONE
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_auto_unblock_clears_only_question_halt_reason(
+    client, scaffold_cleanup
+) -> None:
+    """auto_unblock_dependents clears blocked_by for ALL dependents but clears
+    halt_reason ONLY for dependents halted with 'Question:...' prefix.
+    Independent halts (e.g. 'budget_exceeded:monthly') must survive. (#2427)
+
+    Setup:
+      Q   -- question task (interaction_kind='question')
+      A   -- dependent; halt_reason='Question: awaiting X'; blocked_by=Q
+      B   -- dependent; halt_reason='budget_exceeded:monthly'; blocked_by=Q
+
+    Mark Q DONE (process_status=5). auto_unblock_dependents runs.
+
+    Expected state:
+      A -> blocked_by=NULL, halt_reason=NULL  (resumes -- HITL halt cleared)
+      B -> blocked_by=NULL, halt_reason='budget_exceeded:monthly'
+                                              (stays halted for independent reason)
+
+    Static trace:
+      _make_task Q with interaction_kind='question'          -> q_id
+      _make_task A with blocked_by=q_id, halt_reason='Question: awaiting X' -> a_id
+      _make_task B with blocked_by=q_id, halt_reason='budget_exceeded:monthly' -> b_id
+      PATCH Q to process_status=5 -> 200
+      GET A -> blocked_by=None, halt_reason=None
+      GET B -> blocked_by=None, halt_reason='budget_exceeded:monthly'
+    """
+    pid = await _make_fresh_project(client, scaffold_cleanup, "k2427")
+
+    q_id = await _make_task(
+        client, pid, "k2427 question gate",
+        interaction_kind="question",
+        question_payload=_QUESTION_PAYLOAD,
+    )
+    a_id = await _make_task(
+        client, pid, "k2427 dependent A -- question halt",
+        blocked_by=q_id,
+        halt_reason="Question: awaiting design decision",
+    )
+    b_id = await _make_task(
+        client, pid, "k2427 dependent B -- independent halt",
+        blocked_by=q_id,
+        halt_reason="budget_exceeded:monthly",
+    )
+
+    # Verify setup: both dependents are blocked by Q.
+    a_before = await _get_task(client, pid, a_id)
+    b_before = await _get_task(client, pid, b_id)
+    assert a_before["blocked_by"] == q_id, "setup: A must be blocked by Q"
+    assert a_before["halt_reason"] == "Question: awaiting design decision"
+    assert b_before["blocked_by"] == q_id, "setup: B must be blocked by Q"
+    assert b_before["halt_reason"] == "budget_exceeded:monthly"
+
+    # Mark Q DONE -- triggers auto_unblock_dependents.
+    r = await _patch_task(client, pid, q_id, {"process_status": 5})
+    assert r.status_code == 200, r.text
+
+    # --- Assert A: HITL halt fully cleared ---
+    a_after = await _get_task(client, pid, a_id)
+    assert a_after["blocked_by"] is None, (
+        "A: blocked_by must be cleared after Q is DONE"
+    )
+    assert a_after["halt_reason"] is None, (
+        "A: halt_reason 'Question:...' must be cleared when Q is DONE"
+    )
+
+    # --- Assert B: blocked_by cleared, but independent halt_reason survives ---
+    b_after = await _get_task(client, pid, b_id)
+    assert b_after["blocked_by"] is None, (
+        "B: blocked_by must be cleared after Q is DONE (blocker resolved)"
+    )
+    assert b_after["halt_reason"] == "budget_exceeded:monthly", (
+        "B: independent halt_reason must NOT be cleared by question-DONE -- "
+        "it persists until the budget condition resets"
+    )

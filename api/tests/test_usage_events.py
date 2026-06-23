@@ -21,7 +21,7 @@ negative tokens 422, etc.) is dev-tester's.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -206,8 +206,17 @@ async def test_occurred_at_defaults_now_when_omitted(client) -> None:
     # Default lands within the request window (small slack for clock skew).
     assert before.timestamp() - 5 <= occurred.timestamp() <= after.timestamp() + 5
 
-    # Supplied value is honored (a clearly-not-now timestamp).
-    supplied = "2025-01-15T08:30:00+00:00"
+    # Supplied value is honored (a clearly-not-now timestamp). Kanban #2356
+    # added an occurred_at clamp to [now-30d, now+5min], so the supplied value
+    # must sit INSIDE that window — use 10 days ago (was a fixed 2025-01-15,
+    # which the clamp now correctly 422s). Fixed sub-second + odd time-of-day so
+    # it cannot collide with the default-now value.
+    from datetime import timedelta
+
+    supplied_dt = (datetime.now(timezone.utc) - timedelta(days=10)).replace(
+        hour=8, minute=30, second=0, microsecond=0
+    )
+    supplied = supplied_dt.isoformat()
     honored = await client.post(
         "/api/usage/events",
         json={"model": "claude-opus-4-8", "occurred_at": supplied},
@@ -215,9 +224,10 @@ async def test_occurred_at_defaults_now_when_omitted(client) -> None:
     )
     assert honored.status_code == 201, honored.text
     got = datetime.fromisoformat(honored.json()["occurred_at"])
-    assert got == datetime.fromisoformat(supplied)
-    # NEGATIVE lock: the honored value is NOT the default-now value.
-    assert got.year == 2025
+    assert got == supplied_dt
+    # NEGATIVE lock: the honored value is NOT the default-now value (it is ~10
+    # days in the past, well outside the request-window slack).
+    assert got < datetime.now(timezone.utc) - timedelta(days=9)
 
 
 @pytest.mark.asyncio
@@ -455,3 +465,90 @@ async def test_token_60m_is_accepted(client) -> None:
     # POSITIVE: 60M is well within the 1B ceiling.
     assert resp.status_code == 201, resp.text
     assert resp.json()["cache_read_input_tokens"] == 60_000_000
+
+
+# ---------------------------------------------------------------------------
+# Pure-unit clamp boundary tests (Kanban #2356, AC2 exact boundaries).
+# NO DB — instantiate UsageEventCreate directly and check the Pydantic validator.
+# The validator's condition is strict-less-than on both ends:
+#   reject if cmp < now-30d  OR  cmp > now+5min
+# So the exact boundary points (now-30d and now+5min) PASS; one second/minute
+# beyond each boundary FAILS.
+# ---------------------------------------------------------------------------
+
+
+def test_clamp_boundary_exactly_30d_ago_accepted() -> None:
+    """occurred_at = now - 30d (exact boundary) → ACCEPTED.
+
+    The validator condition is strict ``<``, so the boundary point itself is
+    NOT rejected. We use ``now - 30d + 2s`` as the submitted value to avoid
+    a wall-clock race where the validator's own ``now()`` call is slightly later
+    than the test's ``now()`` call, which could cause the exact-minus-30d value
+    to fall 1–2 microseconds past the boundary inside the validator.
+
+    Note: using ``+2s`` offset means we're testing 2 seconds inside the boundary,
+    not the exact point. The exact-boundary contract (strict-<) is covered
+    structurally by the reject test below: if ``now-30d-1s`` is rejected, the
+    boundary must be at ``now-30d`` and the ``+2s`` offset is clearly inside.
+    """
+    from src.schemas.usage_event import UsageEventCreate
+
+    now = datetime.now(timezone.utc)
+    # 2s inside the boundary to absorb wall-clock drift between test's now() and
+    # the validator's own now() call.
+    accepted_dt = now - timedelta(days=30) + timedelta(seconds=2)
+    # Must not raise.
+    obj = UsageEventCreate(model="claude-opus-4-8", occurred_at=accepted_dt)
+    assert obj.occurred_at == accepted_dt
+
+
+def test_clamp_boundary_30d_minus_1s_rejected() -> None:
+    """occurred_at = now - 30d - 1s → ValidationError (strictly before the window).
+
+    NEGATIVE: one second beyond the back-boundary is rejected. Paired with the
+    accept test above, this locks the exact position of the 30-day cutoff.
+    """
+    import pydantic
+
+    from src.schemas.usage_event import UsageEventCreate
+
+    now = datetime.now(timezone.utc)
+    # 1 second BEFORE the boundary — must be rejected.
+    too_old = now - timedelta(days=30) - timedelta(seconds=1)
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        UsageEventCreate(model="claude-opus-4-8", occurred_at=too_old)
+    # The error message must mention the window, not just a generic error.
+    assert "occurred_at" in str(exc_info.value).lower()
+
+
+def test_clamp_boundary_exactly_plus_5min_accepted() -> None:
+    """occurred_at = now + 5min (exact upper boundary) → ACCEPTED.
+
+    The validator condition is strict ``>``, so ``now + 5min`` is NOT rejected.
+    We use ``now + 5min - 2s`` to absorb the same wall-clock drift concern as the
+    lower boundary accept test.
+    """
+    from src.schemas.usage_event import UsageEventCreate
+
+    now = datetime.now(timezone.utc)
+    # 2s inside the upper boundary.
+    accepted_dt = now + timedelta(minutes=5) - timedelta(seconds=2)
+    obj = UsageEventCreate(model="claude-opus-4-8", occurred_at=accepted_dt)
+    assert obj.occurred_at == accepted_dt
+
+
+def test_clamp_boundary_plus_6min_rejected() -> None:
+    """occurred_at = now + 6min → ValidationError (beyond the +5min skew bound).
+
+    NEGATIVE: one full minute beyond the upper boundary is rejected. Paired with
+    the accept test above, this locks the position of the 5-minute future bound.
+    """
+    import pydantic
+
+    from src.schemas.usage_event import UsageEventCreate
+
+    now = datetime.now(timezone.utc)
+    too_future = now + timedelta(minutes=6)
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        UsageEventCreate(model="claude-opus-4-8", occurred_at=too_future)
+    assert "occurred_at" in str(exc_info.value).lower()

@@ -23,6 +23,10 @@ type Props = {
   highlighted?: boolean;
   // Kanban #2334 — project id needed to fetch the activity rail for IN_PROGRESS cards.
   projectId?: number;
+  // #2412 — set of non-terminal task ids. Chip is suppressed when the blocker
+  // is absent (terminal) or explicitly DONE/CANCELLED. Optional for backwards
+  // compat (renders chip when not provided, preserving old behaviour).
+  blockingTaskIds?: Set<number>;
 };
 
 const PRIORITY_LABEL: Record<number, string> = {
@@ -57,7 +61,7 @@ const ROLE_CLASS: Record<number, string> = {
   [TaskRole.SECURITY_REVIEWER]: "text-rose-700 bg-rose-50 dark:text-rose-300 dark:bg-rose-900/30",
 };
 
-export function TaskCard({ task, onOpenDetail, highlighted = false, projectId }: Props) {
+export function TaskCard({ task, onOpenDetail, highlighted = false, projectId, blockingTaskIds }: Props) {
   const isAi = task.task_kind === "ai";
   const isPending = task.is_pending && task.process_status === TaskStatus.IN_PROGRESS;
   const inProgress = task.process_status === TaskStatus.IN_PROGRESS;
@@ -82,7 +86,10 @@ export function TaskCard({ task, onOpenDetail, highlighted = false, projectId }:
     task.task_type === "bug"
       ? "border-l-4 border-l-red-500 dark:border-l-red-400"
       : "";
-  const baseCard = `rounded-md border border-zinc-200 dark:border-zinc-800 ${cardBg} ${bugAccent} p-2.5 transition-colors`;
+  // #2453 — `glass-card` is the frosted-surface hook (no-op when glass is off).
+  // Under html.glass it applies backdrop-filter + a translucent fill + a text
+  // scrim so titles stay AA-legible over the busy blob backdrop.
+  const baseCard = `glass-card rounded-md border border-zinc-200 dark:border-zinc-800 ${cardBg} ${bugAccent} p-2.5 transition-colors`;
   const cursor = draggable ? " cursor-grab active:cursor-grabbing" : " cursor-not-allowed";
   // #1001 follow-up — deep-link ring-pulse. Class defined in globals.css
   // (animation-deep-link-pulse — 2s, ring-violet-500). Append after base so
@@ -118,11 +125,13 @@ export function TaskCard({ task, onOpenDetail, highlighted = false, projectId }:
         <span className="font-mono text-[11px] text-zinc-400 dark:text-zinc-500">#{task.id}</span>
         <div className="flex flex-wrap items-center gap-1.5">
           {steps && <StepCounter done={steps.done} total={steps.total} />}
-          {task.blocked_by !== null && (
+          {/* #2412 — suppress chip when blocker is terminal (DONE/CANCELLED or absent
+              from the loaded set, which means it's beyond the first-50 DONE rows). */}
+          {task.blocked_by !== null && (blockingTaskIds === undefined || blockingTaskIds.has(task.blocked_by)) && (
             <span
               title={`Blocked by #${task.blocked_by}`}
               data-blocked-by-chip
-              className="inline-flex items-center gap-1 rounded bg-red-50 px-1.5 py-0.5 text-[11px] font-medium text-red-700 dark:bg-red-900/30 dark:text-red-300"
+              className="glass-pill inline-flex items-center gap-1 rounded bg-red-50 px-1.5 py-0.5 text-[11px] font-medium text-red-700 dark:bg-red-900/30 dark:text-red-300"
             >
               <Icon name="status-blocked" size={11} />
               #{task.blocked_by}
@@ -144,8 +153,8 @@ export function TaskCard({ task, onOpenDetail, highlighted = false, projectId }:
                 ? "Decision needed"
                 : "Question for user";
             const chipClass = awaiting
-              ? "inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
-              : "inline-flex items-center gap-1 rounded bg-violet-50 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300";
+              ? "glass-pill inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+              : "glass-pill inline-flex items-center gap-1 rounded bg-violet-50 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300";
             return (
               <span
                 title={tooltip}
@@ -154,6 +163,22 @@ export function TaskCard({ task, onOpenDetail, highlighted = false, projectId }:
                 className={chipClass}
               >
                 {task.interaction_kind === "decision" ? <Icon name="alert" size={11} /> : <Icon name="tooltip" size={11} />}
+              </span>
+            );
+          })()}
+          {/* #2477 — HALTED_PENDING_USER badge (ps=8 tasks merged into Blocked lane). */}
+          {task.process_status === TaskStatus.HALTED_PENDING_USER && (() => {
+            const isPendingUser =
+              task.interaction_kind === "question" ||
+              task.interaction_kind === "decision";
+            const label = isPendingUser ? "Pending user" : "Halted";
+            return (
+              <span
+                data-halted-badge={isPendingUser ? "pending-user" : "halted"}
+                title={isPendingUser ? undefined : (task.halt_reason ?? undefined)}
+                className="glass-pill inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium text-amber-700 bg-amber-50 dark:text-amber-300 dark:bg-amber-900/30"
+              >
+                {label}
               </span>
             );
           })()}
@@ -168,7 +193,7 @@ export function TaskCard({ task, onOpenDetail, highlighted = false, projectId }:
       <RecurrenceIndicator task={task} />
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         <span
-          className={`inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${
+          className={`glass-pill inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${
             PRIORITY_CLASS[task.priority] ?? "text-zinc-600 bg-zinc-100 dark:text-zinc-300 dark:bg-zinc-800"
           }`}
         >
@@ -176,7 +201,7 @@ export function TaskCard({ task, onOpenDetail, highlighted = false, projectId }:
         </span>
         {task.assigned_role !== null && (
           <span
-            className={`inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${
+            className={`glass-pill inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${
               ROLE_CLASS[task.assigned_role] ?? "text-indigo-700 bg-indigo-50 dark:text-indigo-300 dark:bg-indigo-900/30"
             }`}
           >

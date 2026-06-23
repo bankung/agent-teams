@@ -3,3 +3,6 @@ node_modules/
 out/
 *.tsbuildinfo
 .env*.local
+
+# Runtime usage-capture log (web/_runtime/usage_capture.log) — local artifact, never committed
+_runtime/

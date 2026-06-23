@@ -63,6 +63,7 @@ from src.schemas.project import (
 )
 from src.services.budget_gate import reconcile_budget
 from src.services.kill_switch import kill_project, revive_project
+from src.services.operator_auth import OperatorDecision, require_operator_proof
 from src.services.pause_switch import pause_project, unpause_project
 from src.services.project_scaffold import scaffold_project_folder
 from src.services.session_project import require_project_id_header
@@ -76,8 +77,21 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
+# Source-text-locked 403 detail for the project kill/revive/consent gate.
+_OPERATOR_PROOF_REQUIRED_MSG = (
+    "operator_proof_required: project kill/revive/consent is an operator-only action"
+)
 
-# #793 — settings.json substitution after scaffold; see substitute_settings_json service
+
+def _require_operator(operator_proof: OperatorDecision) -> None:
+    """Raise 403 unless the request is operator-backed.
+
+    No-op when OPERATOR_ACTION_KEY is unset (`require_operator_proof` returns
+    OPERATOR for any request while the key is absent), so these routes stay
+    functional on deployments that have not activated the gate.
+    """
+    if operator_proof is not OperatorDecision.OPERATOR:
+        raise HTTPException(status_code=403, detail=_OPERATOR_PROOF_REQUIRED_MSG)
 
 
 def _substitute_settings_json(target: Path, project: Project) -> None:
@@ -267,8 +281,8 @@ async def list_projects_stats(
         .where(
             Project.status == RecordStatus.ACTIVE,
             Task.status == RecordStatus.ACTIVE,
-            Task.process_status != TaskStatus.CANCELLED,  # exclude process_status=6
-            Task.estimated_cost_usd.is_not(None),  # only rows with an estimate
+            Task.process_status != TaskStatus.CANCELLED,
+            Task.estimated_cost_usd.is_not(None),
         )
         .group_by(Task.project_id)
     )
@@ -359,7 +373,6 @@ async def list_projects_stats(
         if bucket is None:
             continue
         ec = bucket["estimated_cost"]
-        # SQL-side COALESCE(SUM(...), 0) on Numeric column → Decimal, never None.
         ec["total_cost_usd"] = sum_estimated_cost_usd
         ec["total_input_tokens"] = int(sum_estimated_input_tokens)
         ec["total_output_tokens"] = int(sum_estimated_output_tokens)
@@ -652,6 +665,11 @@ async def create_project(
         # Kanban #2300 — per-project effort lever. Plain nullable TEXT, no DB
         # server_default, so passing None lands SQL NULL (= global default off).
         "effort_mode": payload.effort_mode,
+        # Kanban #1304 AC5 — plain nullable NUMERIC(10,2). ProjectCreate defaults to
+        # Decimal("1.00") so omitting the field from the request lands $1 (gates);
+        # an explicit null from the client opts out (no modal). Mirror effort_mode
+        # passthrough exactly.
+        "cost_forecast_threshold_usd": payload.cost_forecast_threshold_usd,
     }
     if payload.agent_overrides is not None:
         data["agent_overrides"] = payload.agent_overrides
@@ -669,6 +687,19 @@ async def create_project(
     # tier strings by this point — server side is just shuttling bytes.
     if payload.tools_config is not None:
         data["tools_config"] = payload.tools_config.model_dump()
+
+    # Kanban #1840 — full-auto decision-policy override. OMIT when None so the
+    # DB column lands NULL (= "no policy"; the full-auto Lead uses the hardcoded
+    # top-5 matrix). An explicit AutoDecisionPolicy is model_dump()'d to a plain
+    # dict for JSONB persistence — exclude_none so partial policies don't store
+    # null-valued keys (an unset reviewer_nit etc. stays absent, NOT JSON null).
+    # The typed boundary validator (extra="forbid" + per-field Literals) already
+    # fired by this point. Unlike approval_policies, the POST path DOES persist
+    # this — required for the #1840 POST→GET round-trip AC.
+    if payload.auto_decision_policy is not None:
+        data["auto_decision_policy"] = payload.auto_decision_policy.model_dump(
+            exclude_none=True
+        )
 
     # Kanban #1224 — push-notification targets. OMIT when None so the DB
     # column lands NULL (= "no default configured"; router falls back to
@@ -836,6 +867,22 @@ async def update_project(
     # REPLACES the prior value (no merge). The strict `_BINARY_NAME_RE` validator
     # already fired at the Pydantic boundary.
 
+    # Kanban #1840: PATCH explicit-null on auto_decision_policy CLEARS to NULL
+    # (= "no policy"; full-auto Lead falls back to the hardcoded matrix). The DB
+    # column IS nullable — null-stays-null, like notification_targets, NOT
+    # coerced to {}. When present + non-null, `model_dump(exclude_unset=True)`
+    # has already serialized the nested AutoDecisionPolicy to a plain dict, but
+    # it does NOT apply exclude_none to that nested model — so unset Literal
+    # knobs would persist as JSON `null`. Strip them for POST/PATCH parity
+    # (mirrors the `sources` None-key strip above) so a partial PATCH stores
+    # only the keys the operator set.
+    if updates.get("auto_decision_policy") is not None:
+        updates["auto_decision_policy"] = {
+            k: v
+            for k, v in updates["auto_decision_policy"].items()
+            if v is not None
+        }
+
     # M10: cannot reactivate a soft-deleted project via PATCH — restore is a
     # separate (not-yet-built) admin path. Other fields ARE editable on a
     # soft-deleted row (admin edit / metadata correction).
@@ -884,6 +931,7 @@ async def grant_project_consent(
     project_id: int,
     payload: ProjectGrantConsent,
     session: AsyncSession = Depends(get_session),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
 ) -> Project:
     """Grant per-project consent for Mode B (auto_headless) tasks (Kanban #481/#483).
 
@@ -895,7 +943,9 @@ async def grant_project_consent(
     404 on missing/soft-deleted project (active-only — `status=1`).
     400 on `confirm_name` mismatch — detail string pinned by source-text-lock
     test in test_routes_smoke.py.
+    403 on operator-proof gate active without a valid X-Operator-Token.
     """
+    _require_operator(operator_proof)
     project = await get_or_404(
         session,
         Project,
@@ -942,6 +992,7 @@ async def kill_project_endpoint(
     ),
     x_actor: str | None = Header(default=None, alias="X-Actor"),
     session: AsyncSession = Depends(get_session),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
 ) -> KillProjectResponse:
     """Hard-pause a project (Kanban #1209, GOV1).
 
@@ -962,7 +1013,9 @@ async def kill_project_endpoint(
     mode (v1 scope) friction-free. Truncated at 200 chars (P1-4 audit on
     #1209) to match the hook-layer precedent — an adversarial / runaway
     caller can otherwise stuff arbitrarily long strings into the audit row.
+    403 on operator-proof gate active without a valid X-Operator-Token.
     """
+    _require_operator(operator_proof)
     # P1-4: cap at 200 chars; `or "operator"` after the slice handles a
     # purely-whitespace header where .strip() returns empty.
     actor = (x_actor or "operator").strip()[:200] or "operator"
@@ -985,6 +1038,7 @@ async def revive_project_endpoint(
     payload: ReviveProjectRequest,  # noqa: ARG001 — schema present for OpenAPI + forward-compat
     x_actor: str | None = Header(default=None, alias="X-Actor"),
     session: AsyncSession = Depends(get_session),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
 ) -> ReviveProjectResponse:
     """Inverse of /kill — restore a project to runnable state (Kanban #1209).
 
@@ -1001,7 +1055,9 @@ async def revive_project_endpoint(
 
     `X-Actor` truncated at 200 chars (P1-4 audit on #1209) for the same
     reason as the kill endpoint.
+    403 on operator-proof gate active without a valid X-Operator-Token.
     """
+    _require_operator(operator_proof)
     # P1-4: cap at 200 chars; `or "operator"` after the slice handles a
     # purely-whitespace header where .strip() returns empty.
     actor = (x_actor or "operator").strip()[:200] or "operator"

@@ -11,7 +11,7 @@ export function StepCounter({ done, total }: Props) {
       data-step-done={done}
       data-step-total={total}
       title={`${done} of ${total} checklist steps done`}
-      className={`inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[11px] font-medium tabular-nums ${cls}`}
+      className={`glass-pill inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[11px] font-medium tabular-nums ${cls}`}
     >
       {done}/{total}
     </span>

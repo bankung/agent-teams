@@ -8,6 +8,10 @@ allowed-tools:
   - Bash(curl:*)
   - Read
   - Write
+metadata:
+  version: 1.0.0
+  category: kanban
+  tags: [kanban, task, update, mutate]
 ---
 
 # /tn-task-update — guarded PATCH of a task
@@ -45,3 +49,7 @@ PATCH `/api/tasks/<id>`, then GET-verify the new values persisted. Report old �
 ```
 /tn-task-update 1842 status=in_progress priority=high
 ```
+
+## Related skills
+- `tn-task-done` — the only correct path to set status=DONE (AC-verify gate)
+- `tn-task-create` — create a new task before there is anything to update

@@ -69,6 +69,16 @@ export function readTourPhase(): TourPhase | null {
   }
 }
 
+export function clearTourCompleted(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(TOUR_COMPLETED_KEY);
+    clearTourPhase();
+  } catch {
+    /* ignore */
+  }
+}
+
 export function clearTourPhase(): void {
   if (typeof window === "undefined") return;
   try {

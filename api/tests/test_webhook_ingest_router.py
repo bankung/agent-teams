@@ -368,10 +368,15 @@ async def test_webhook_rate_limit_60_per_minute_returns_429(client):
         r = await client.post(f"/api/ingest/webhook/1/{tag}", json=payload, headers=headers)
         assert r.status_code == 200, f"hit {i} returned {r.status_code}: {r.text}"
 
-    # 61st must be 429.
+    # 61st must be 429 with the static detail (Kanban #2503 — no internal leak).
     r = await client.post(f"/api/ingest/webhook/1/{tag}", json=payload, headers=headers)
     assert r.status_code == 429, r.text
-    assert "rate limit exceeded" in r.json()["detail"]
+    # POSITIVE: static stable detail string.
+    assert r.json()["detail"] == "rate_limit_exceeded", r.json()
+    # NEGATIVE: the internal RateLimitError message must NOT be in the response.
+    assert "RateLimitError" not in r.text and "bucket" not in r.text, (
+        f"internal error detail leaked: {r.text}"
+    )
 
 
 @pytest.mark.asyncio

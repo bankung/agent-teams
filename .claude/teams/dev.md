@@ -118,55 +118,29 @@ The active project may carry `config.enabled_roles: int[]` — a whitelist of ro
 
 ## Subagent model logging (Kanban #887, 2026-05-13)
 
-Dev team tracks subagent tier in `tasks.subagent_models` per universal Lead rules. Every state-transition PATCH Lead sends to the tasks API **must include the full `subagent_models` list** accumulated for that task so far. Bundle it into the same PATCH body as `process_status`, `acceptance_criteria`, `completed_at`, etc.
+Dev team tracks subagent tier in `tasks.subagent_models`. Every state-transition PATCH **must include the full accumulated list** (REPLACE semantics — Lead appends on its side), bundled with `process_status` / `completed_at` / `acceptance_criteria` / etc. in the same PATCH body.
 
-**What counts as a spawn (include in list):**
-- Any `Agent({subagent_type: "<name>", ...})` call that returns real work output — dev-backend, dev-tester, dev-reviewer, etc.
-
-**What does NOT count (do not include):**
-- Lead's own Read / Grep / Glob / Bash exploration
-- Skill invocations
-
-**Element shape** (REPLACE semantics — Lead sends full accumulated list each PATCH; append is on Lead's side):
-```json
-{"agent": "dev-backend", "model": "opus", "at": "2026-05-13T09:00:00Z"}
-```
-- `agent`: the agent's frontmatter `name` (e.g., `dev-backend`, `dev-sr-backend`)
-- `model`: one of `"opus"`, `"sonnet"`, `"haiku"` — mirrors the `model:` field in agent frontmatter (no frontmatter `model:` line → Opus default)
-- `at`: UTC ISO-8601 timestamp when Lead initiated the spawn
-
-**Example DONE-flip PATCH:**
-```json
-{
-  "process_status": 5,
-  "completed_at": "2026-05-13T10:00:00Z",
-  "acceptance_criteria": [...],
-  "subagent_models": [
-    {"agent": "dev-backend", "model": "opus", "at": "2026-05-13T09:00:00Z"},
-    {"agent": "dev-tester", "model": "sonnet", "at": "2026-05-13T09:30:00Z"}
-  ]
-}
-```
-
-If a task loops back (DONE → rework → DONE again), keep accumulating — the field records all spawns across the full task lifetime.
+- **Counts:** any `Agent({subagent_type, ...})` call that returns real work output. **Not:** Lead's own Read/Grep/Glob/Bash, or Skill invocations.
+- **Element shape:** `{"agent": "<frontmatter name>", "model": "opus"|"sonnet"|"haiku", "at": "<UTC ISO-8601 spawn time>"}` — no frontmatter `model:` line → opus default.
+- Task loops back (DONE → rework → DONE) → keep accumulating across the full task lifetime.
 
 ## Lifecycle (per task)
 
 1. **Active project + team** are already resolved by the meta-Lead before this playbook is loaded.
 2. **Read relevant context** — *lazy-read doctrine (Kanban #1798, 2026-06-02): keep the per-session bootstrap read lean; pull big reference files on demand, not preemptively.*
-   - `shared/decisions.md` (always — kept compact; older entries are in `decisions-archive-2026-05.md`, grep on demand)
+   - `shared/decisions-index.md` (always, **when present** — the 1-line-per-decision hot index, ~7KB; **pull a full entry's body on demand by #id** via `grep -n '#<id>' decisions.md` or the #1678 BM25 `/shared/search`. If a project has no index yet, fall back to the floor `grep -E '^## [0-9]{4}-' shared/decisions.md`, or full-read a short `decisions.md`. Generated for agent-teams in #2530)
    - `shared/api-contracts-core.md` (always — the hot endpoints: projects read + tasks CRUD/PATCH)
    - `shared/component-status.md` + `shared/backlog-roadmap.md` (cheap state digest)
    - `<role>/current-state.md` for each role about to be spawned
    - `standards/general.md` always; `standards/<framework>/` per the lane mapping
-   - **On-demand ONLY — do NOT full-read at bootstrap:** `shared/api-contracts.md` (full reference — read/grep the relevant SECTION when a task touches a non-hot endpoint); `shared/db-schema.md` (read the relevant section when a task touches the data layer); `decisions-archive-2026-05.md` (grep for historical decisions).
-   - **Missing-context guard:** before acting on a non-hot API surface or the data layer, grep/read the relevant `api-contracts.md` / `db-schema.md` section first — don't assume a contract/decision doesn't exist just because it wasn't loaded at bootstrap.
+   - **On-demand ONLY — do NOT full-read at bootstrap:** `shared/decisions.md` (full decision BODIES — read/grep the relevant `#<id>` entry when a task touches its area; off the hot path since #2530, see `decisions-index.md`); `shared/api-contracts.md` (full reference — read/grep the relevant SECTION when a task touches a non-hot endpoint); `shared/db-schema.md` (read the relevant section when a task touches the data layer); `decisions-archive-2026-05.md` (grep for historical decisions).
+   - **Missing-context guard:** before acting on a non-hot API surface or the data layer, grep/read the relevant `api-contracts.md` / `db-schema.md` section — and the relevant `decisions.md #<id>` entry (scan `decisions-index.md` to find it) — first; don't assume a contract/decision doesn't exist just because it wasn't loaded at bootstrap.
 3. **Decide which roles to spawn.** UI only → dev-frontend. API only → dev-backend. Full feature → dev-backend then dev-frontend (sequential if unstable contract; parallel if independent). Migration / deploy / Docker / CI → dev-devops. After implementation → dev-tester + dev-reviewer.
 4. **Spawn via the Agent tool** — see [.claude/docs/spawn-template.md](.claude/docs/spawn-template.md). Independent roles can spawn in parallel.
 5. **Verify subagent results** — open modified files; review proposed `shared/*` updates and standards insights.
 5b. **Tier-1 smoke probe (live API).** When the task touched `api/src/routers/`, `api/alembic/versions/`, `api/src/schemas/`, `api/src/models/`, `api/src/templates/`, `api/src/main.py`, `docker-compose.yml`, or any env / settings file: spawn dev-tester to run scoped `curl localhost:<api-port>` probes. Probes assert behavior (e.g., `updated_at` advances, idempotent re-DELETE, response field shape), not just HTTP status. Methodology: [`context/teams/dev/smoke-methodology.md`](../../context/teams/dev/smoke-methodology.md). Project-specific endpoints / canonical seed values: each project's `shared/smoke-matrix.md`.
 5c. **Headless question-gate loop.** When a task runs under `run_mode IN auto_pickup/auto_headless`, subagents must include the ambiguity gate section in every spawn brief (see [`context/teams/dev/autorun-spawn-convention.md`](../../context/teams/dev/autorun-spawn-convention.md)). If a subagent returns a HALT report: create a question/decision blocker task, store `resume_context`, and pick up the next ready task.
-6. **Apply per-project shared updates yourself.** Question proposals that conflict with prior decisions; ask the user when unsure. Stamp `decisions.md` entries with date + proposing role.
+6. **Apply per-project shared updates yourself.** Question proposals that conflict with prior decisions; ask the user when unsure. Stamp `decisions.md` entries with date + proposing role, **and append a matching 1-line entry to `shared/decisions-index.md`** (the hot index — its floor is `grep -E '^## [0-9]{4}-'`-derivable, but append the line so the curated index stays current; #2530).
 7. **Update task status in the DB** (Kanban-tracked tasks): `PATCH /api/tasks/<id>` with `process_status=2` + `started_at` on start; `process_status=5` + `completed_at` on done; `process_status=4` + comment on block.
 8. **Handoff or close** — spawn the next role if the previous one flagged a handoff; otherwise summarize to the user (2-3 sentences).
 9. **Compaction is automatic** — every subagent updates its own `current-state.md` before returning.

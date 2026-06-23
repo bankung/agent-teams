@@ -24,6 +24,7 @@ import {
   type ProjectUpdateBody,
 } from "@/lib/api";
 import { extractErrorMessage } from "@/lib/errors";
+import { ApprovalPoliciesEditor } from "./ApprovalPoliciesEditor";
 
 // Effort mode select options. null encodes "use global default (= off)".
 type EffortValue = "off" | "low" | "medium" | "high" | "extra" | "auto" | null;
@@ -46,6 +47,9 @@ function decodeEffort(s: string): EffortValue {
 
 type Props = {
   project: ProjectRead;
+  // When true the ApprovalPoliciesEditor is not rendered here; the caller
+  // is responsible for rendering it (e.g. inside an AdvancedSettingsDisclosure).
+  hideApprovalPolicies?: boolean;
 };
 
 // Decode the wire value into a string for the input. NULL = empty
@@ -55,7 +59,7 @@ function decodeThreshold(value: number | null | undefined): string {
   return String(value);
 }
 
-export function ProjectSettingsPanel({ project }: Props) {
+export function ProjectSettingsPanel({ project, hideApprovalPolicies = false }: Props) {
   const router = useRouter();
   const initialNudge = decodeThreshold(project.hitl_nudge_threshold_hours);
   const [nudgeRaw, setNudgeRaw] = useState(initialNudge);
@@ -236,6 +240,8 @@ export function ProjectSettingsPanel({ project }: Props) {
         </div>
       </form>
     </section>
+
+    {!hideApprovalPolicies && <ApprovalPoliciesEditor project={project} />}
 
     {/* Kanban #2300 — Thinking effort per-project override */}
     <section

@@ -132,7 +132,7 @@ export function AgentDetail({ agent }: { agent: AgentDetailType }) {
         </h2>
         <pre
           data-agent-frontmatter
-          className="max-h-80 overflow-auto rounded-md border border-zinc-200 bg-zinc-50 p-3 font-mono text-xs leading-relaxed text-zinc-800 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200"
+          className="glass-surface max-h-80 overflow-auto rounded-md border border-zinc-200 bg-zinc-50 p-3 font-mono text-xs leading-relaxed text-zinc-800 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200"
         >
           {agent.raw_frontmatter}
         </pre>

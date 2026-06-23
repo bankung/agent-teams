@@ -1437,7 +1437,8 @@ async def test_outlook_search_success_returns_metadata_shape(client, monkeypatch
 
     fake_items = [
         {"id": "olMsg001", "thread_id": "olConv001", "from": "alice@x.com",
-         "subject": "Invoice Q1", "date": "2024-01-01T10:00:00Z", "snippet": "Please find"},
+         "subject": "Invoice Q1", "date": "2024-01-01T10:00:00Z", "snippet": "Please find",
+         "is_read": True, "parent_folder_id": "AQMkADFolder=="},
     ]
     monkeypatch.setattr(
         outlook_client, "search_messages",
@@ -1458,6 +1459,8 @@ async def test_outlook_search_success_returns_metadata_shape(client, monkeypatch
     assert item["from"] == "alice@x.com"
     assert item["subject"] == "Invoice Q1"
     assert item["snippet"] == "Please find"
+    assert item["is_read"] is True
+    assert item["parent_folder_id"] == "AQMkADFolder=="
     assert "body_text" not in item
 
 
@@ -1537,6 +1540,7 @@ async def test_outlook_get_success_returns_body(client, monkeypatch, _actions_to
         "from": "alice@x.com", "to": "bob@y.com",
         "subject": "Invoice", "date": "2024-01-01T10:00:00Z",
         "body_text": secret_body,
+        "is_read": False, "parent_folder_id": "AQMkADFolder==",
     }
     monkeypatch.setattr(
         outlook_client, "get_message",
@@ -1561,6 +1565,8 @@ async def test_outlook_get_success_returns_body(client, monkeypatch, _actions_to
     assert body["id"] == "olMsg001"
     assert body["body_text"] == secret_body
     assert body["from"] == "alice@x.com"
+    assert body["is_read"] is False
+    assert body["parent_folder_id"] == "AQMkADFolder=="
 
     # PRIVACY: audit rows must NOT contain body_text.
     for row in audit_rows:
