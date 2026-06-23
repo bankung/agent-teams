@@ -61,7 +61,6 @@ function formatTokens(n: number): string {
   return `${Math.round(n / 100_000) / 10}M`.replace(/\.0M$/, "M");
 }
 
-// TaskDetail — right-side drawer (#771); backdrop + Escape + click-outside, #818
 export function TaskDetail({
   task,
   allTasks,
@@ -72,10 +71,10 @@ export function TaskDetail({
 }: Props) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  // Q9 (v0.7.0) — lazy: don't fetch until the user expands the disclosure.
+  // lazy: don't fetch until the user expands the disclosure.
   const [alsoBlocksOpen, setAlsoBlocksOpen] = useState(false);
   const [alsoBlocks, setAlsoBlocks] = useState<TaskRead[] | null>(null);
-  // #854 — inline cancel; state: cancelOpen / cancelReason
+  // #854 — inline cancel
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
   // #1677 — local model-tier selection; syncs from task.model_override on mount
@@ -83,16 +82,13 @@ export function TaskDetail({
     task.model_override,
   );
 
-  // #1677 — keep local model-override in sync when the task prop changes
-  // (e.g. drawer re-used for a different task after an onPatch update).
+  // #1677 — sync on task switch (e.g. drawer re-used for a different task after onPatch)
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- optimistic-patch sync: modelOverride is editable local state that must track the server value on task switch
     setModelOverride(task.model_override);
   }, [task.id, task.model_override]);
 
-  // #1868 — milestone grouping + due date. `milestones` populates the picker;
-  // milestoneId / dueDate mirror the task and sync on prop change. Both are
-  // optional optimistic-PATCH mutators (same posture as model_override above).
+  // #1868 — milestone + due date optimistic-PATCH state (same posture as model_override)
   const [milestones, setMilestones] = useState<MilestoneRead[]>([]);
   const [milestoneId, setMilestoneId] = useState<number | null>(
     task.milestone_id ?? null,
@@ -104,7 +100,6 @@ export function TaskDetail({
     setDueDate(task.due_date ?? "");
   }, [task.id, task.milestone_id, task.due_date]);
 
-  // #2181 — inline description editing state
   const [descEditing, setDescEditing] = useState(false);
   const [descDraft, setDescDraft] = useState(task.description ?? "");
 
@@ -139,8 +134,7 @@ export function TaskDetail({
     onPatch(patched);
   };
 
-  // Fetch the project's active milestones once for the picker. Failure degrades
-  // to an empty list (picker still shows "None" + the current assignment).
+  // Fetch milestones once for the picker; failure degrades to empty list.
   useEffect(() => {
     let cancelled = false;
     listMilestones(projectId, { limit: 500 })
@@ -155,9 +149,8 @@ export function TaskDetail({
     };
   }, [projectId]);
 
-  // MED-2: stash the handler's deps in refs so the keydown listener subscribes
-  // ONCE ([] deps) rather than re-subscribing on every SSE tick that re-creates
-  // the inline onClose arrow in Board.
+  // MED-2: stash deps in refs so the keydown listener subscribes ONCE ([] deps),
+  // not on every SSE tick that re-creates the onClose arrow in Board.
   const cancelOpenRef = useRef(cancelOpen);
   const pickerOpenRef = useRef(pickerOpen);
   const submittingRef = useRef(submitting);
@@ -171,7 +164,7 @@ export function TaskDetail({
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (submittingRef.current) return;
-      // Nested ESC precedence: inner UIs absorb ESC before drawer (#854)
+      // #854 — inner UIs absorb ESC before drawer
       if (cancelOpenRef.current) {
         setCancelOpen(false);
         setCancelReason("");
@@ -229,7 +222,6 @@ export function TaskDetail({
     }
   };
 
-  // #854 — PATCH ps=6 + reason; close drawer on success
   const handleCancelTask = async () => {
     if (submitting) return;
     const reason = cancelReason.trim();
@@ -250,7 +242,7 @@ export function TaskDetail({
 
   const isTerminal = ([TaskStatus.DONE, TaskStatus.CANCELLED] as number[]).includes(task.process_status);
 
-  // #860 — show Run for TODO+ai+manual; auto_pickup over auto_headless skips consent gate. Details: shared/decisions.md 2026-05-14
+  // #860 — show Run for TODO+ai+manual; auto_pickup skips consent gate (decisions.md 2026-05-14)
   const canRun =
     task.process_status === TaskStatus.TODO &&
     task.task_kind === TaskKind.AI &&
@@ -272,7 +264,6 @@ export function TaskDetail({
     }
   };
 
-  // #1677 — PATCH model_override; null clears back to inherit.
   const handleModelOverrideChange = async (
     tier: "haiku" | "sonnet" | "opus" | null,
   ) => {
@@ -294,7 +285,6 @@ export function TaskDetail({
     }
   };
 
-  // #1868 — PATCH milestone_id; null unassigns. Optimistic + revert on error.
   const handleMilestoneChange = async (newId: number | null) => {
     if (submitting) return;
     const prev = milestoneId;
@@ -314,7 +304,6 @@ export function TaskDetail({
     }
   };
 
-  // #1868 — PATCH due_date; "" clears to null. Optimistic + revert on error.
   const handleDueDateChange = async (value: string) => {
     if (submitting) return;
     const prev = dueDate;
@@ -352,7 +341,6 @@ export function TaskDetail({
         className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[90vw] flex-col overflow-y-auto border-l border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 sm:max-w-[480px] md:max-w-[640px] lg:max-w-[720px]"
         onMouseDown={(e) => e.stopPropagation()}
       >
-        {/* Header */}
         <header className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -371,7 +359,6 @@ export function TaskDetail({
             </h2>
             <CostStrip task={task} />
           </div>
-          {/* #954 — 44px min tap target on mobile; desktop restores px-2 py-1 chip size */}
           <button
             type="button"
             onClick={onClose}
@@ -384,11 +371,7 @@ export function TaskDetail({
           </button>
         </header>
 
-        {/* Body */}
-        {/* #859 — gap-6 between sections; see Section/QuestionInteractionSection */}
-        {/* #2372 (R2) — isHitl: question/decision tasks surface HITL content above Controls */}
         <div className="flex flex-col gap-6 px-4 py-4 text-sm">
-          {/* #2372 (R2) — Metadata strip (read-only): Status/Priority/Role + reason */}
           {/* #818 — fixed 120px label column */}
           <Section label="Status">
             <dl className="grid grid-cols-[120px_1fr] gap-y-1 text-sm">
@@ -409,7 +392,6 @@ export function TaskDetail({
                 </>
               )}
             </dl>
-            {/* #854 — reason display; truncated, italic */}
             {task.status_change_reason && (
               <p
                 data-status-change-reason
@@ -424,15 +406,11 @@ export function TaskDetail({
             )}
           </Section>
 
-          {/* #2372 (R2) — Controls block extracted from Status section */}
-          {/* Defined here for reuse in both HITL and work branches below */}
           {(() => {
             const controlsBlock = (
               <Section label="Controls">
-                {/* #860 — Run: flips run_mode manual→auto_pickup; see canRun guard above */}
                 {canRun && (
                   <div className="mt-2" data-run-task-control>
-                    {/* #954 — 44px min tap target on mobile */}
                     <button
                       type="button"
                       onClick={handleRun}
@@ -444,9 +422,7 @@ export function TaskDetail({
                     </button>
                   </div>
                 )}
-                {/* #1349 — per-task HITL nudge toggle. Visible on non-terminal
-                    tasks (terminal tasks no longer fire nudges anyway, so the
-                    toggle would be cosmetic). Optimistic flip + revert on error. */}
+                {/* #1349 — HITL nudge toggle; terminal tasks don't fire nudges so hidden there */}
                 {!isTerminal && (
                   <div className="mt-2" data-task-mute-control>
                     <TaskMuteToggle
@@ -457,7 +433,6 @@ export function TaskDetail({
                     />
                   </div>
                 )}
-                {/* #1677 — Model tier override: always visible, optimistic PATCH on change */}
                 <div className="mt-2" data-model-override-control>
                   <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
                     Model tier
@@ -475,10 +450,7 @@ export function TaskDetail({
                   </label>
                 </div>
 
-                {/* #1868 — Milestone grouping: optimistic PATCH on change.
-                    Wave C (#8) — searchable combobox; the defensive "#<id>"
-                    fallback for a filtered-out / unfetched milestone is now owned
-                    by MilestoneCombobox (its closed-input label). */}
+                {/* #1868 — milestone; defensive "#<id>" fallback owned by MilestoneCombobox */}
                 <div className="mt-2" data-task-milestone-control>
                   <span className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
                     Milestone
@@ -492,9 +464,7 @@ export function TaskDetail({
                   />
                 </div>
 
-                {/* #1868 — Due date: optimistic PATCH on change; clear sends null.
-                    Wave C (#9) — calendar-popover; emitEmptyString=false so Clear
-                    sends real null straight into the null-aware PATCH handler. */}
+                {/* #1868 — due date; emitEmptyString=false so Clear sends null into PATCH handler */}
                 <div className="mt-2" data-task-due-date-control>
                   <span className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
                     Due date
@@ -508,11 +478,9 @@ export function TaskDetail({
                   />
                 </div>
 
-                {/* #854 — Cancel: hidden on terminal states */}
                 {!isTerminal && (
                   <div className="mt-2" data-cancel-task-control>
                     {!cancelOpen ? (
-                      // #954 — 44px min tap target on mobile
                       <button
                         type="button"
                         onClick={() => {
@@ -544,7 +512,6 @@ export function TaskDetail({
                           data-cancel-task-reason-input
                           className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
                         />
-                        {/* #954 — 44px min tap target on mobile for the cancel confirm pair */}
                         <div className="flex gap-2">
                           <button
                             type="button"
@@ -575,7 +542,7 @@ export function TaskDetail({
               </Section>
             );
 
-            {/* #2372 (R2) — Description block (shared between branches) */}
+            // #2372 (R2) — description block (shared between branches)
             const descriptionBlock = (
               <section className="flex flex-col gap-2" data-description-section>
                 <div className="flex items-center justify-between gap-2">
@@ -647,11 +614,7 @@ export function TaskDetail({
               </section>
             );
 
-            {/* #834 / #1335 — question/decision section; hidden for work tasks.
-                Decision tasks (interaction_kind='decision') render the
-                full OptionCard variant from DecisionInteractionView; question
-                tasks (free-text answers / legacy string-options) render the
-                original QuestionInteractionSection chip variant. */}
+            // #834/#1335 — decision renders DecisionInteractionView; question renders QuestionInteractionSection
             const hitlBlock = (
               <>
                 {task.interaction_kind === "decision" && (
@@ -675,8 +638,7 @@ export function TaskDetail({
               </>
             );
 
-            {/* #827 — AC section always rendered (discipline gate) */}
-            {/* #2181 — AcEditor replaces read-only AcceptanceCriteriaSection */}
+            // #827/#2181 — AcEditor always rendered (discipline gate; replaces read-only AcceptanceCriteriaSection)
             const acEditor = (
               <AcEditor
                 criteria={task.acceptance_criteria}
@@ -686,9 +648,7 @@ export function TaskDetail({
               />
             );
 
-            {/* #2372 (R2) — HITL-reorder branch:
-                HITL tasks: Metadata → Decision/Question + AcEditor → Description → Controls
-                work tasks: Metadata → Controls → Description → AcEditor */}
+            // #2372 (R2) — HITL: Metadata→HITL+AC→Desc→Controls; work: Metadata→Controls→Desc→AC
             const isHitl = task.interaction_kind !== "work";
             if (isHitl) {
               return <>{hitlBlock}{acEditor}{descriptionBlock}{controlsBlock}</>;
@@ -704,7 +664,6 @@ export function TaskDetail({
             </Section>
           )}
 
-          {/* Blocked-by mutator */}
           <Section label="Blocked by">
             {!pickerOpen ? (
               <div
@@ -763,7 +722,7 @@ export function TaskDetail({
             )}
           </Section>
 
-          {/* Also blocks — expand-on-demand to avoid per-open API call */}
+          {/* expand-on-demand to avoid per-open API call */}
           <Section label="Also blocks">
             <details
               onToggle={(e) => {
@@ -798,7 +757,6 @@ export function TaskDetail({
             </details>
           </Section>
 
-          {/* Timestamps — collapsed by default */}
           <Section label="Timestamps">
             <details>
               <summary className="cursor-pointer text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200">
@@ -825,15 +783,9 @@ export function TaskDetail({
             </details>
           </Section>
 
-          {/* #1305 — task output files section */}
           <TaskOutputs projectId={projectId} taskId={task.id} />
-
-          {/* #980 — per-task tool-call audit; self-hides when 0 rows */}
+          {/* #980 — self-hides when 0 rows */}
           <TaskToolCalls projectId={projectId} taskId={task.id} />
-
-          {/* #1005 — append-only comment thread at the bottom of task detail.
-              Collapsible (default-expanded when >0 comments); compose box posts
-              author_kind="user"; bodies render via the XSS-safe markdown path. */}
           <TaskComments projectId={projectId} taskId={task.id} />
         </div>
       </aside>
@@ -841,9 +793,7 @@ export function TaskDetail({
   );
 }
 
-// #944 — compact cost strip rendered under the task title in the header.
-// Hidden entirely when all 3 estimate fields are null (legacy / never-closed tasks).
-// Format: "~$0.0001 · 12k in / 4k out" — primary cost left, token breakdown right.
+// #944 — hidden when all 3 estimate fields are null (legacy tasks never closed by BE estimator)
 function CostStrip({ task }: { task: TaskRead }) {
   const cost = task.estimated_cost_usd;
   const inTok = task.estimated_input_tokens;
@@ -868,7 +818,7 @@ function CostStrip({ task }: { task: TaskRead }) {
   );
 }
 
-// #818 #859 — heavier header + gap-2 for scan-ability; mirrored on Question/AC sections
+// #818/#859 — fixed label column + gap-2 for scan-ability
 function Section({
   label,
   children,
@@ -886,7 +836,6 @@ function Section({
   );
 }
 
-// #834 — answer UI for question/decision tasks
 function QuestionInteractionSection({
   task,
   projectId,
@@ -973,8 +922,6 @@ function QuestionInteractionSection({
             {sectionLabel} resolved
           </p>
         ) : payload?.options != null && payload.options.length > 0 && !otherMode ? (
-          // Options mode — full-width cards; clicking one immediately submits.
-          // #1183 — replaced chip layout with stacked full-width cards (label + optional description).
           // #1335 — `options` is heterogeneous (string | OptionItem); narrow defensively.
           <div className="flex flex-col gap-2" data-question-options>
             {payload.options.map((opt, idx) => {
@@ -1017,10 +964,8 @@ function QuestionInteractionSection({
             </button>
           </div>
         ) : (
-          // Free-text mode — shown when no options OR when "Other" card is clicked.
-          // #1183 — shared freetext block used by both pure freetext and Other-mode paths.
+          // #1183 — freetext: no options, or "Other" escape hatch
           <div className="flex flex-col gap-2" data-question-freetext>
-            {/* Back link only visible when operator chose "Other" from an options list */}
             {otherMode && (
               <button
                 type="button"
@@ -1039,7 +984,6 @@ function QuestionInteractionSection({
               data-question-textarea
               className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-500 focus:outline-none disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
             />
-            {/* #988 — 44px tap target on all viewports for the answer submit (HITL workflow critical path) */}
             <button
               type="button"
               disabled={submittingAnswer || answerValue.trim() === ""}
@@ -1052,7 +996,6 @@ function QuestionInteractionSection({
           </div>
         )}
 
-        {/* Answer history */}
         {history.length > 0 && (
           <div className="flex flex-col gap-1.5" data-answer-history>
             <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
@@ -1093,7 +1036,6 @@ function QuestionInteractionSection({
                     </div>
                   </div>
 
-                  {/* Invalidate button — only on last valid answer, only when not done */}
                   {!isDone && idx === lastValidIdx && (
                     invalidateReasonFor === idx ? (
                       <div className="mt-1 flex flex-col gap-1.5 pl-7">
@@ -1155,7 +1097,6 @@ function QuestionInteractionSection({
   );
 }
 
-// BlockerPicker — single-select filterable list.
 function BlockerPicker({
   task,
   allTasks,

@@ -192,10 +192,8 @@ export function CalendarView({
   // so there's no flicker back to the old day in the gap before the fetch lands.
   const [dueOverride, setDueOverride] = useState<Record<number, string>>({});
 
-  // Apply overrides on top of the server task list before placement.
-  // Stale overrides (where the server task already reflects the value) are
-  // no-ops: the spread replaces due_date with the same value. Error-reverts
-  // clean up explicitly in onDragEnd/onPickExisting catch blocks.
+  // Apply overrides before placement; stale overrides are no-ops (spread replaces same value).
+  // Error-reverts clean up explicitly in onDragEnd/onPickExisting catch blocks.
   const effectiveTasks = useMemo(() => {
     if (Object.keys(dueOverride).length === 0) return tasks;
     return tasks.map((t) =>
@@ -205,7 +203,6 @@ export function CalendarView({
     );
   }, [tasks, dueOverride]);
 
-  // #14 — resolve every task to a placement cell (or drop it).
   const placed = useMemo(
     () =>
       effectiveTasks
@@ -225,7 +222,6 @@ export function CalendarView({
     return map;
   }, [placed]);
 
-  // Milestones index (unchanged behaviour — deadline markers by target_date).
   const milestonesByDay = useMemo(() => {
     const map = new Map<string, MilestoneRead[]>();
     for (const m of milestones) {
@@ -240,8 +236,7 @@ export function CalendarView({
   }, [milestones]);
 
   const boardHref = `/p/${encodeURIComponent(projectName)}`;
-  // Wave A.2c — the dedicated /milestones page was removed; the Gantt view is
-  // now the milestone home. Milestone deadline chips deep-link there.
+  // Wave A.2c — /milestones removed; Gantt is the milestone home
   const milestonesHref = `/p/${encodeURIComponent(projectName)}/gantt`;
   const calendarHref = `/p/${encodeURIComponent(projectName)}/calendar`;
 
@@ -249,9 +244,8 @@ export function CalendarView({
     router.push(`${calendarHref}?month=${monthParamKey(target)}`);
   };
 
-  // ── #11 context menu ───────────────────────────────────────────────────────
+  // #11 — context menu
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
-  // The day a "New task on this date" / picker action targets.
   const [createForDay, setCreateForDay] = useState<string | null>(null);
   const [pickerForDay, setPickerForDay] = useState<string | null>(null);
 
@@ -281,7 +275,7 @@ export function CalendarView({
     };
   }, [menu, closeMenu]);
 
-  // ── #12 drag-to-reschedule (dnd-kit; mirrors MilestonesView) ───────────────
+  // #12 — drag-to-reschedule (mirrors MilestonesView dnd-kit pattern)
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor),
@@ -339,7 +333,6 @@ export function CalendarView({
     [projectId, router],
   );
 
-  // #11 picker commit — PATCH the chosen task's due_date to the target day.
   const onPickExisting = useCallback(
     (task: TaskRead, dayKey: string) => {
       setPickerForDay(null);
@@ -365,13 +358,10 @@ export function CalendarView({
     [projectId, router],
   );
 
-  const totalPlaced = placed.length;
-  const totalMilestones = milestones.filter((m) =>
-    normalizeDateOnly(m.target_date),
-  ).length;
-  const totalItems = totalPlaced + totalMilestones;
+  const totalItems =
+    placed.length +
+    milestones.filter((m) => normalizeDateOnly(m.target_date)).length;
 
-  // Nav handlers branch on mode.
   const onPrev = () =>
     mode === "month"
       ? goToMonth(addMonths(ym, -1))
@@ -395,7 +385,6 @@ export function CalendarView({
       onDragCancel={() => setActiveTask(null)}
     >
       <section data-calendar-view aria-label={`Calendar for ${projectName}`}>
-        {/* Heading + Month|Week toggle + Prev / Today / Next nav. */}
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <h2
@@ -406,7 +395,6 @@ export function CalendarView({
             </h2>
           </div>
           <div className="flex items-center gap-1.5">
-            {/* #13 — Month | Week segmented toggle. */}
             <div
               role="tablist"
               aria-label="Calendar range"
@@ -475,7 +463,6 @@ export function CalendarView({
           </div>
         </div>
 
-        {/* #12 — inline DnD/PATCH failure notice (revert already happened). */}
         {dndError !== null && (
           <p
             className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300"
@@ -526,7 +513,6 @@ export function CalendarView({
           />
         )}
 
-        {/* #11 — day-cell context menu (portal-free; absolutely positioned). */}
         {menu && (
           <DayContextMenu
             state={menu}
@@ -542,7 +528,6 @@ export function CalendarView({
           />
         )}
 
-        {/* DragOverlay — floating preview of the dragged task chip (#12). */}
         <DragOverlay dropAnimation={null}>
           {activeTask ? (
             <div className="pointer-events-none rounded border border-zinc-300 bg-white px-2 py-1 text-xs shadow-lg dark:border-zinc-600 dark:bg-zinc-800">
@@ -553,8 +538,7 @@ export function CalendarView({
           ) : null}
         </DragOverlay>
 
-        {/* #11 — "New task on this date": NewTaskModal pre-filled with due_date.
-            Keyed on the day so the modal re-seeds per target date. */}
+        {/* #11 — keyed on the day so the modal re-seeds per target date */}
         {createForDay !== null && (
           <NewTaskModal
             key={`new-${createForDay}`}
@@ -565,7 +549,6 @@ export function CalendarView({
           />
         )}
 
-        {/* #11 — "Add existing task to this date": searchable picker → PATCH. */}
         {pickerForDay !== null && (
           <CalendarTaskPicker
             projectId={projectId}
@@ -579,7 +562,7 @@ export function CalendarView({
   );
 }
 
-// ── #11 day-cell context menu ───────────────────────────────────────────────
+// #11 — day-cell context menu
 function DayContextMenu({
   state,
   onNewTask,
@@ -592,8 +575,7 @@ function DayContextMenu({
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
-  // Clamp the menu inside the viewport (a right/bottom-edge right-click would
-  // otherwise render it partly off-screen), then focus the first item.
+  // Clamp to viewport; right/bottom-edge right-click would otherwise overflow.
   const [pos, setPos] = useState({ top: state.y, left: state.x });
   useEffect(() => {
     const el = ref.current;
@@ -606,7 +588,6 @@ function DayContextMenu({
     el.querySelector<HTMLButtonElement>("button")?.focus();
   }, [state.x, state.y]);
 
-  // Arrow-key roving focus between the two items.
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const items = Array.from(
       ref.current?.querySelectorAll<HTMLButtonElement>("button") ?? [],
@@ -661,8 +642,7 @@ function DayContextMenu({
 
 // ── Shared chip + cell building blocks ──────────────────────────────────────
 
-// TaskChip — a draggable task chip (#12). Right-click bubbles to the day cell
-// (the cell owns the context menu), so we don't stop propagation here.
+// TaskChip — #12 draggable. Right-click propagates up to day cell (context menu owner).
 function TaskChip({
   placed,
   sourceKey,
@@ -696,9 +676,7 @@ function TaskChip({
         isDragging ? "opacity-40" : ""
       }`}
     >
-      {/* Drag handle carries the dnd listeners so the chip link stays clickable.
-          Focusable (no tabIndex=-1) so the KeyboardSensor can start a keyboard
-          drag — mirrors MilestonesView's handle. */}
+      {/* drag handle keeps dnd listeners off the link; focusable for KeyboardSensor */}
       <button
         type="button"
         {...attributes}
@@ -720,7 +698,6 @@ function TaskChip({
   );
 }
 
-// MilestoneChip — deadline marker (unchanged vocabulary).
 function MilestoneChip({
   milestone,
   milestonesHref,
@@ -741,8 +718,7 @@ function MilestoneChip({
   );
 }
 
-// DroppableDay — a day cell that accepts task-chip drops (#12) + opens the
-// context menu on right-click (#11). Shared by month + week renderers.
+// DroppableDay — accepts drops (#12) + context menu (#11); shared by month + week.
 function DroppableDay({
   dayKey,
   isToday,
@@ -797,7 +773,7 @@ function DroppableDay({
   );
 }
 
-// ── Month grid renderer ─────────────────────────────────────────────────────
+// ── Month grid ─────────────────────────────────────────────────────────────
 function MonthGrid({
   ym,
   today,
@@ -911,7 +887,7 @@ function MonthGrid({
   );
 }
 
-// ── Week strip renderer (#13) ───────────────────────────────────────────────
+// ── Week strip (#13) ───────────────────────────────────────────────────────
 function WeekStrip({
   anchor,
   today,
