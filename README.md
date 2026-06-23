@@ -114,7 +114,27 @@ Optional providers (set one to switch): **OpenAI** · **Google (Gemini)** · **D
 
 ## Quickstart (self-host)
 
+**Prerequisite:** Docker Desktop (or Docker Engine) running.
+
+### Fastest — one command, no clone
+
+The published CLI launcher does the whole first run (scaffolds `.env`, starts the stack, migrates + seeds, opens the board):
+
 ```bash
+# Build from source — clones the repo for you (needs git + Docker):
+npx @bankung/agent-teams up
+
+# …or pull pre-built images instead — Docker only, no clone, no build:
+npx @bankung/agent-teams up --images
+```
+
+`status` · `down` · `reset` manage the stack afterward. Prefer a global install?
+`npm install -g @bankung/agent-teams` → `agent-teams up`.
+
+### Or clone + run the installer
+
+```bash
+git clone https://github.com/bankung/agent-teams.git && cd agent-teams
 bin/install.ps1        # Windows   (bin/install.sh on macOS / Linux / WSL)
 ```
 
