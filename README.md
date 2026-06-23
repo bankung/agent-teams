@@ -3,11 +3,21 @@
 <p align="center"><strong>Run AI agents like a real engineering team.</strong></p>
 
 <p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSL%201.1-blue.svg" alt="License: BSL 1.1"></a>
+  &nbsp;
+  <img src="https://img.shields.io/badge/version-0.7.1-brightgreen.svg" alt="Version 0.7.1">
+  &nbsp;
+  <img src="https://img.shields.io/badge/deploy-self--hosted-orange.svg" alt="Self-hosted">
+  &nbsp;
+  <img src="https://img.shields.io/badge/Docker-required-2496ED.svg?logo=docker&logoColor=white" alt="Docker required">
+</p>
+
+<p align="center">
   Lead plans &nbsp;·&nbsp; Specialists execute &nbsp;·&nbsp; Acceptance criteria validate &nbsp;·&nbsp; Everything is tracked &amp; audited
 </p>
 
 <p align="center">
-  <code>pre-0.7.0</code> &nbsp;·&nbsp; 8 teams · 40 agents · 21 skills &nbsp;·&nbsp; FastAPI + PostgreSQL · Next.js · LangGraph · Docker
+  <code>v0.7.1</code> &nbsp;·&nbsp; 8 teams · 40 agents · 21 skills &nbsp;·&nbsp; FastAPI + PostgreSQL · Next.js · LangGraph · Docker
 </p>
 
 <p align="center">
@@ -17,6 +27,20 @@
 Agent Teams turns a single instruction into coordinated work across a roster of specialist agents. A **Lead orchestrator** resolves the active project, loads the right domain playbook, spawns the right specialists, integrates their output, and tracks everything on a Kanban board with acceptance-criteria.
 
 > **Two execution modes, one platform.** Drive agents **interactively** (attended, in Claude Code) or hand tasks to an **autonomous LangGraph worker** (headless). Same roster, tasks, guardrails, and cost controls in both.
+
+---
+
+## Three ideas behind Agent Teams
+
+Most of the platform is plumbing. **These three are the point:**
+
+**1. 🧠 Story-Based Memory** — stop re-deriving project state every session. A living "what's-true-now" record per workstream lets you pick work back up with context intact, instead of from scratch.
+
+**2. ✅ Acceptance-Criteria Gating** — *AI "completed" ≠ work completed.* Every task carries structured criteria and **cannot be marked DONE until each one is verified** — the guardrail against plausible-but-wrong AI output.
+
+**3. 🔭 Activity Rail** — **know exactly what happened, who did it, and why.** An append-only, per-task trail of every spawn, result, commit, and status change.
+
+<sub>Each is detailed below — with the rest of the platform — in [Features](#features).</sub>
 
 ---
 
@@ -53,9 +77,7 @@ The Lead picks the right specialists from the active team's playbook; you stay i
 
 ## Why Agent Teams?
 
-Most agent frameworks focus on **execution** — wiring up a graph of LLM calls and tools.
-
-**Agent Teams focuses on operating AI work like a real organization** — the layer most frameworks leave to you:
+**Most frameworks help agents _execute_** — wiring up a graph of LLM calls and tools. **Agent Teams helps you _operate_ AI work** like a real organization — the layer most frameworks leave to you:
 
 - **Tasks & milestones** — every unit of work is tracked, not ephemeral
 - **Acceptance criteria** — work is *verified* before it counts as done
@@ -70,7 +92,7 @@ If you've ever wished your agent runs were a **board you can manage** instead of
 ## Who is this for?
 
 **Great fit**
-- Technical founders & solo builders
+- CTOs, technical founders & solo builders
 - Agencies running repeatable client work (SEO, content, SEM)
 - Engineering teams that want AI work tracked like real work
 - AI operators who want control, cost visibility, and an audit trail
@@ -139,14 +161,16 @@ Optional autonomous worker (Mode B): `docker compose --profile langgraph -f dock
   <img src="docs/media/gantt.jpg" alt="Gantt timeline" width="32%">
 </p>
 
+<p align="center"><sub>Kanban board · task detail (acceptance criteria + verification status) · Gantt timeline</sub></p>
+
 ---
 
 ## Features
 
-**Three capabilities set Agent Teams apart:**
+**The three ideas above — in depth:**
 
 ### ✅ Acceptance-Criteria Gating
-**"Looks done" ≠ actually done → work is verified before it counts.**
+**AI "completed" ≠ work completed → every criterion is verified before a task counts as done.**
 Every task carries structured criteria, and it *cannot be marked DONE until each one is verified* — the guardrail against plausible-but-wrong AI output.
 
 ### 🧠 Story-Based Memory
@@ -154,7 +178,7 @@ Every task carries structured criteria, and it *cannot be marked DONE until each
 A living "what's true now" record per workstream, plus an immutable event log. Every durable line is artifact-backed (commit / task id / `file:line`), not vibes.
 
 ### 🔭 Activity Rail
-**Never wonder what the agents did → a full, auditable trail of every step.**
+**Know exactly what happened, who did it, and why → a full, auditable trail of every step.**
 An append-only, per-task telemetry record of every spawn, result, commit, and status change.
 
 ---
@@ -202,7 +226,7 @@ bin/         install / bring-up / reset helpers
 
 ## Status
 
-`pre-0.7.0`
+`v0.7.1`
 
 - **Production use:** yes — self-host and run it today
 - **Breaking changes:** expected before 1.0
@@ -214,11 +238,11 @@ See `context/projects/agent-teams/shared/decisions.md` for the decision log.
 
 ## Roadmap
 
-| Version | Focus |
-|---|---|
-| **0.7** | Story-based memory · Auditor (skill / decision / memory) · cost & control levers |
-| **0.8** | Multi-workspace · secrets (Infisical) · MCP integration |
-| **1.0** | Stable release |
+| Version | Focus | Status |
+|---|---|---|
+| **0.7** | Story-based memory · Auditor (skill / decision / memory) · cost & control levers | ✅ shipped (v0.7.1) |
+| **0.8** | Multi-workspace · secrets (Infisical) · MCP integration | 🚧 in progress |
+| **1.0** | Stable release | planned |
 
 Forward-looking; subject to change.
 
