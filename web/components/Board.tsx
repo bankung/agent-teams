@@ -662,7 +662,6 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
           className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm"
           data-board-nav-row
         >
-          {/* LEFT zone — Dashboard first, then ProjectSwitcher, then status dot, then SourcesBadge */}
           <span className="flex flex-1 flex-wrap items-center gap-x-2 gap-y-1">
             <Link
               href="/dashboard"
@@ -690,8 +689,6 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
               onSelect={handleViewChange}
             />
           </span>
-          {/* RIGHT zone — #1781: pause/terminate icon buttons, Integrations, ThemePicker.
-              flex-1 + justify-end pins this cluster to the right edge. */}
           <span
             className="flex flex-1 flex-wrap items-center justify-end gap-2"
             data-board-actions-cluster
@@ -817,7 +814,6 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
         className="mb-3 flex flex-wrap items-center gap-2"
         data-board-toolbar-row
       >
-        {/* Audit-filter chip — amber toggle; hidden when count=0. */}
         {auditTaskCount > 0 && (
           <HeaderIconBtn
             icon="shield-filter"
