@@ -39,7 +39,7 @@ RUN if [ "$INSTALL_INFISICAL_CLI" = "true" ]; then \
    && INFISICAL_DEB_SHA256="bf563a5b9f1ac5aac29aeeab7c45d455ff18f175f01aea144743768271f1d10c" \
    && curl -fsSL -o /tmp/infisical.deb "$INFISICAL_DEB_URL" \
    && echo "${INFISICAL_DEB_SHA256}  /tmp/infisical.deb" | sha256sum -c - \
-   && dpkg -i /tmp/infisical.deb || apt-get install -y -f \
+   && (dpkg -i /tmp/infisical.deb || apt-get install -y -f) \
    && rm -f /tmp/infisical.deb \
    && rm -rf /var/lib/apt/lists/* ; \
     fi
