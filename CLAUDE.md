@@ -87,7 +87,7 @@ Each session is **bound to one project** for its entire lifetime.
 2. **Resolve via API:** `curl --silent http://localhost:8456/api/projects/by-name/<name>`. 404 → list live projects, ask again. API down → run seed `docker compose exec -T api python -m scripts.seed`, retry; still failing → check Docker + FastAPI logs, stop and wait.
 3. **Announce binding:** "Session bound to <name> (team=<team>, id=<id>)." From here every `/api/tasks*` call includes `-H "X-Project-Id: <id>"` (spawn briefs mention the convention — see [.claude/docs/spawn-template.md](.claude/docs/spawn-template.md)).
 4. **Persist:** write `<id>` to `_runtime/lead_project_id.txt` (single integer; read by [block-spawn-on-killed-project.ps1](.claude/hooks/block-spawn-on-killed-project.ps1)).
-5. **Read the team playbook** `.claude/teams/<team>.md` — authoritative for roster, lane mapping, lifecycle, anti-patterns. Read only the hot set at bootstrap (decisions + api-contracts-core + state digest); pull big refs on demand (lazy-read doctrine #1798).
+5. **Read the team playbook** `.claude/teams/<team>.md` — authoritative for roster, lane mapping, lifecycle, anti-patterns. Read only the hot set at bootstrap (decisions-index + api-contracts-core + state digest); pull big refs on demand (lazy-read doctrine #1798).
 6. **Explicit mid-session switch:** RE-bootstrap from step 2 — discard prior context, re-read the new project's `shared/*` + team playbook (if team differs), re-write `_runtime/lead_project_id.txt`.
 
 ## Subagent model logging (dev team)
