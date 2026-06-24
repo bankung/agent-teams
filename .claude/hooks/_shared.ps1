@@ -65,6 +65,7 @@ function Fail-Open-Ask {
 # Resolves the bound project_id.  Returns $null on any failure (caller decides).
 # ---------------------------------------------------------------------------
 function Get-ProjectId {
+    param([string]$SessionId = $null)
     $projectIdFile = $env:APPROVAL_POLICIES_GATE_PROJECT_FILE
     if (-not $projectIdFile) {
         # Derive repo root from caller's $PSScriptRoot or fallback to CLAUDE_PROJECT_DIR.
@@ -77,7 +78,19 @@ function Get-ProjectId {
             $repoRoot = $env:CLAUDE_PROJECT_DIR
         }
         if (-not $repoRoot) { return $null }
-        $projectIdFile = Join-Path $repoRoot '_runtime\lead_project_id.txt'
+        # #2692: per-session binding when a SessionId is supplied — read
+        # lead_project_id_<sid>.txt and NEVER fall back to the global file (the
+        # global value belongs to whichever session bound last, possibly another
+        # project — that is the cross-session bug). A session-less caller (omits
+        # SessionId, e.g. a scheduled hook) keeps the legacy global read.
+        if ($SessionId) {
+            # Defense-in-depth (#2692 review MINOR-1): only UUID-shaped session ids,
+            # so a crafted value can't traverse out of _runtime via the filename.
+            if ($SessionId -notmatch '^[a-zA-Z0-9\-]{8,64}$') { return $null }
+            $projectIdFile = Join-Path $repoRoot ("_runtime\lead_project_id_$SessionId.txt")
+        } else {
+            $projectIdFile = Join-Path $repoRoot '_runtime\lead_project_id.txt'
+        }
     }
 
     if (-not (Test-Path $projectIdFile)) { return $null }

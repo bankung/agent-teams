@@ -66,24 +66,13 @@ try {
 $toolName = $payload.tool_name
 if ($toolName -ne 'Agent') { exit 0 }
 
-# Resolve repo root from this script's location: .claude/hooks/<script>.ps1 -> ..\..
-$repoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..')
-$projectIdFile = Join-Path $repoRoot '_runtime\lead_project_id.txt'
-
-if (-not (Test-Path $projectIdFile)) {
-    [Console]::Error.WriteLine("WARN: _runtime/lead_project_id.txt not found; spawn block hook inactive - Lead bootstrap may be incomplete")
-    exit 0
-}
-
-# Parse the file. Must be a positive integer; anything else = fail-open.
-$raw = (Get-Content -Raw -Path $projectIdFile).Trim()
-$projectId = 0
-if (-not [int]::TryParse($raw, [ref]$projectId)) {
-    [Console]::Error.WriteLine("WARN: _runtime/lead_project_id.txt contains non-integer content '$raw'; spawn block hook inactive")
-    exit 0
-}
-if ($projectId -le 0) {
-    [Console]::Error.WriteLine("WARN: _runtime/lead_project_id.txt project_id '$projectId' is not positive; spawn block hook inactive")
+# Resolve project PER SESSION (#2692): the binding belongs to THIS session only;
+# a miss -> hook inactive (fail-open), never another session's project. No global
+# fallback (a global value could be a different concurrent session's project).
+. (Join-Path $PSScriptRoot '_shared.ps1')
+$projectId = Get-ProjectId -SessionId $payload.session_id
+if ($null -eq $projectId) {
+    [Console]::Error.WriteLine("WARN: no per-session project binding (session may need re-bind); spawn block hook inactive")
     exit 0
 }
 
@@ -94,7 +83,7 @@ if ($projectId -le 0) {
 #
 # Staleness note: the cache TTL is 60s, so a fresh kill can take up to 60s to gate spawns
 # here; the live 423 API gate still blocks the spawned agent's first write immediately.
-. (Join-Path $PSScriptRoot '_shared.ps1')
+# (_shared.ps1 already dot-sourced above for Get-ProjectId.)
 
 $fetch = Invoke-CachedPolicyFetch -ProjectId $projectId
 if ($fetch.failed) {
@@ -133,8 +122,8 @@ If you need to spawn a specialist under this project, the user must revive it fi
 POST /api/projects/$projectId/revive (Kanban #1209 — kill switch).
 
 If you are working on a DIFFERENT project this session, the bootstrap project binding is
-stale. Re-bind by re-running the bootstrap flow ('Which project are we working on?') and
-the new project_id will be written to _runtime/lead_project_id.txt.
+stale or missing. Re-bind by re-running the bootstrap flow ('Which project are we working
+on?'); the per-session binding _runtime/lead_project_id_<session_id>.txt will be written.
 
 See: .claude/hooks/block-spawn-on-killed-project.ps1
 "@

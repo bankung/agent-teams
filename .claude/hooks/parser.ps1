@@ -187,6 +187,12 @@ function Resolve-LeadProjectId {
         if ($LogPath) { Write-UsageLog $LogPath "[ResolveProj] no session_id -> NULL" }
         return $null
     }
+    # Defense-in-depth (#2692 review MINOR-1): session_id is a Claude-generated UUID;
+    # reject any non-UUID-shaped value so a crafted id can't traverse out of _runtime.
+    if ($SessionId -notmatch '^[a-zA-Z0-9\-]{8,64}$') {
+        if ($LogPath) { Write-UsageLog $LogPath "[ResolveProj] non-UUID session_id -> NULL" }
+        return $null
+    }
 
     $path = Join-Path $RuntimeDir "lead_project_id_$SessionId.txt"
     $val = Read-MarkerValue $path

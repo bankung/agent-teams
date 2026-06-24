@@ -301,14 +301,14 @@ and emits a warning marker for audit.
 # GUARD 5 — approval-policies-gate  (LAST: runs only if no local block-* guard
 # denied above — does the Lever B project fetch, so deny paths skip it. #2541)
 # ---------------------------------------------------------------------------
-$projectId = Get-ProjectId
+$projectId = Get-ProjectId -SessionId $payload.session_id
 $policies = $null
 if ($null -eq $projectId) {
     # Infra error at the approval stage — record an ask candidate but DO NOT exit.
     # The local block-* deny guards above already ran (none denied, else we'd have
     # exited 2), so recording an ask here cannot mask a deny.
-    [Console]::Error.WriteLine("WARN: pretooluse-bash-gate: _runtime/lead_project_id.txt missing or invalid ; ask candidate")
-    if (-not $askReason) { $askReason = 'pretooluse-bash-gate fallthrough: _runtime/lead_project_id.txt missing or invalid' }
+    [Console]::Error.WriteLine("WARN: pretooluse-bash-gate: no per-session project binding (session may need re-bind) ; ask candidate")
+    if (-not $askReason) { $askReason = 'pretooluse-bash-gate fallthrough: no per-session project binding (session may need re-bind)' }
 } else {
     $fetchResult = Invoke-CachedPolicyFetch -ProjectId $projectId
     if ($fetchResult.failed) {

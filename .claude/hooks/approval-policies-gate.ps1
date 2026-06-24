@@ -42,9 +42,9 @@ if (-not $toolName) { Fail-Open-Ask -WarnMsg 'tool_name missing from payload' }
 # ---------------------------------------------------------------------------
 # Resolve project_id
 # ---------------------------------------------------------------------------
-$projectId = Get-ProjectId
+$projectId = Get-ProjectId -SessionId $payload.session_id
 if ($null -eq $projectId) {
-    Fail-Open-Ask -WarnMsg "_runtime/lead_project_id.txt not found or invalid"
+    Fail-Open-Ask -WarnMsg "no per-session project binding (session may need re-bind)"
 }
 
 # ---------------------------------------------------------------------------
