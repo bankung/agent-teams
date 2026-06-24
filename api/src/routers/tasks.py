@@ -1991,6 +1991,169 @@ def _resolved(updates: dict[str, Any], task: Task, field: str) -> Any:
     return updates[field] if field in updates else getattr(task, field)
 
 
+async def _fire_post_patch_notifications(
+    *,
+    session: AsyncSession,
+    task_id: int,
+    updates: dict[str, Any],
+    _resolved_interaction_kind_for_done: Any,
+    _resolved_ps_for_done: Any,
+    _pre_patch_interaction_kind: Any,
+    _pre_patch_process_status: Any,
+    _pre_patch_halt_reason: Any,
+    _notify_task_title: Any,
+    _notify_status_change_reason: Any,
+    _notify_question_payload: Any,
+    _notify_new_halt_reason: Any,
+) -> None:
+    """Kanban #955.B post-commit push + telegram notification matrix (#2677, slice 5/5).
+
+    Runs AFTER all PATCH commits, so it operates ONLY on pre-captured values
+    passed in as params — it must NEVER read task.X (the ORM object is expired
+    post-commit; a lazy-load would raise MissingGreenlet). Soft-fail: any push/
+    telegram delivery failure is swallowed so it never crashes the PATCH.
+    """
+    # Kanban #955.B: push-notification event hooks. Fire AFTER all PATCH commits
+    # so the mutation is durable before any delivery attempt. Three transitions:
+    #
+    #   (1) HITL needed — interaction_kind transitions from 'work'/'None' →
+    #       'question' or 'decision'. Does NOT fire on reverse transition.
+    #   (2) Task done  — process_status transitions to 5 (DONE).
+    #   (3) Task failed — process_status transitions to 6 (CANCELLED/FAIL).
+    #
+    # Pattern: "field in updates AND old value differs from new value" — same
+    # idempotent-re-PATCH guard used by #1007, #1211, #1004.
+    #
+    # deliver() is fire-and-await but adapter failures return {ok:False, detail}
+    # and do NOT raise — a push delivery failure never crashes the PATCH.
+    # When no push subscriptions match, deliver() is a no-op (empty target list).
+    try:
+        from src.services.notification_router import deliver as _push_deliver
+
+        # HITL-needed hook — fires when interaction_kind transitions from
+        # 'work' (or NULL) → 'question' or 'decision'. Uses pre-captured
+        # values (_pre_patch_interaction_kind, _notify_*) since the ORM
+        # object is expired after commit (async-session lazy-load guard).
+        if (
+            "interaction_kind" in updates
+            and _resolved_interaction_kind_for_done in (
+                TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION
+            )
+            and _pre_patch_interaction_kind not in (
+                TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION
+            )
+        ):
+            _hitl_qp = _notify_question_payload or {}
+            _hitl_body = (
+                _hitl_qp.get("question") if isinstance(_hitl_qp, dict) else None
+            ) or _notify_task_title
+            await _push_deliver(
+                task_id=task_id,
+                payload={
+                    "title": f"HITL needed: {_notify_task_title}",
+                    "body": str(_hitl_body),
+                    "url": f"/tasks/{task_id}",
+                },
+                kind="web_push",
+                event_kind="hitl_needed",
+                session=session,
+            )
+
+        # Task done hook — fires when process_status transitions to 5.
+        elif (
+            "process_status" in updates
+            and _resolved_ps_for_done == TaskStatus.DONE
+            and _pre_patch_process_status != TaskStatus.DONE
+        ):
+            _done_reason = _notify_status_change_reason or "Completed"
+            await _push_deliver(
+                task_id=task_id,
+                payload={
+                    "title": f"Task done: {_notify_task_title}",
+                    "body": str(_done_reason),
+                    "url": f"/tasks/{task_id}",
+                },
+                kind="web_push",
+                event_kind="task_done",
+                session=session,
+            )
+            # Kanban #2565 §2 — Telegram FYI on done (mirrors the web_push hook;
+            # silent no-op when no telegram target / token). Soft-fail.
+            from src.services.notify_gate import notify_task_event as _notify_tg_event
+            await _notify_tg_event(
+                session=session,
+                task_id=task_id,
+                task_title=_notify_task_title or "",
+                event="done",
+                body=str(_done_reason),
+            )
+
+        # Task failed hook — fires when process_status transitions to 6.
+        elif (
+            "process_status" in updates
+            and _resolved_ps_for_done == TaskStatus.CANCELLED
+            and _pre_patch_process_status != TaskStatus.CANCELLED
+        ):
+            _fail_reason = _notify_status_change_reason or "Failed"
+            await _push_deliver(
+                task_id=task_id,
+                payload={
+                    "title": f"Task failed: {_notify_task_title}",
+                    "body": str(_fail_reason),
+                    "url": f"/tasks/{task_id}",
+                },
+                kind="web_push",
+                event_kind="task_failed",
+                session=session,
+            )
+
+        # Kanban #2565 §2 — Telegram FYI on BLOCKED (ps->4). Standalone `if`
+        # (not part of the done/failed if/elif chain — a block transition is
+        # orthogonal). Silent no-op without a telegram target / token; soft-fail.
+        if (
+            "process_status" in updates
+            and _resolved_ps_for_done == TaskStatus.BLOCKED
+            and _pre_patch_process_status != TaskStatus.BLOCKED
+        ):
+            from src.services.notify_gate import notify_task_event as _notify_tg_blocked
+            _blocked_reason = _notify_status_change_reason or "Blocked"
+            await _notify_tg_blocked(
+                session=session,
+                task_id=task_id,
+                task_title=_notify_task_title or "",
+                event="blocked",
+                body=str(_blocked_reason),
+            )
+
+        # Kanban #1841 — task_halted hook: fires when halt_reason transitions
+        # NULL → non-NULL in this PATCH. Independent of done/failed branches
+        # (a halt PATCH sets halt_reason, not ps=5/6 — defensive `elif` is not
+        # used here so a pathological PATCH that simultaneously sets
+        # halt_reason AND ps=5/6 fires both; in practice that never happens
+        # through the normal Lead API usage pattern).
+        if (
+            "halt_reason" in updates
+            and _notify_new_halt_reason is not None
+            and _pre_patch_halt_reason is None
+        ):
+            await _push_deliver(
+                task_id=task_id,
+                payload={
+                    "title": f"Task halted: {_notify_task_title}",
+                    "body": str(_notify_new_halt_reason),
+                    "url": f"/tasks/{task_id}",
+                },
+                kind="web_push",
+                event_kind="task_halted",
+                session=session,
+            )
+    except Exception:  # noqa: BLE001 — defensive: push hook failure never crashes PATCH
+        logger.exception(
+            "955.B push hook failed on task_id=%d; PATCH stands",
+            task_id,
+        )
+
+
 def _check_optimistic_lock(
     task: Task,
     if_unmodified_since: str | None,
@@ -2763,145 +2926,21 @@ async def update_task(
                 task_id,
             )
 
-    # Kanban #955.B: push-notification event hooks. Fire AFTER all PATCH commits
-    # so the mutation is durable before any delivery attempt. Three transitions:
-    #
-    #   (1) HITL needed — interaction_kind transitions from 'work'/'None' →
-    #       'question' or 'decision'. Does NOT fire on reverse transition.
-    #   (2) Task done  — process_status transitions to 5 (DONE).
-    #   (3) Task failed — process_status transitions to 6 (CANCELLED/FAIL).
-    #
-    # Pattern: "field in updates AND old value differs from new value" — same
-    # idempotent-re-PATCH guard used by #1007, #1211, #1004.
-    #
-    # deliver() is fire-and-await but adapter failures return {ok:False, detail}
-    # and do NOT raise — a push delivery failure never crashes the PATCH.
-    # When no push subscriptions match, deliver() is a no-op (empty target list).
-    try:
-        from src.services.notification_router import deliver as _push_deliver
-
-        # HITL-needed hook — fires when interaction_kind transitions from
-        # 'work' (or NULL) → 'question' or 'decision'. Uses pre-captured
-        # values (_pre_patch_interaction_kind, _notify_*) since the ORM
-        # object is expired after commit (async-session lazy-load guard).
-        if (
-            "interaction_kind" in updates
-            and _resolved_interaction_kind_for_done in (
-                TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION
-            )
-            and _pre_patch_interaction_kind not in (
-                TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION
-            )
-        ):
-            _hitl_qp = _notify_question_payload or {}
-            _hitl_body = (
-                _hitl_qp.get("question") if isinstance(_hitl_qp, dict) else None
-            ) or _notify_task_title
-            await _push_deliver(
-                task_id=task_id,
-                payload={
-                    "title": f"HITL needed: {_notify_task_title}",
-                    "body": str(_hitl_body),
-                    "url": f"/tasks/{task_id}",
-                },
-                kind="web_push",
-                event_kind="hitl_needed",
-                session=session,
-            )
-
-        # Task done hook — fires when process_status transitions to 5.
-        elif (
-            "process_status" in updates
-            and _resolved_ps_for_done == TaskStatus.DONE
-            and _pre_patch_process_status != TaskStatus.DONE
-        ):
-            _done_reason = _notify_status_change_reason or "Completed"
-            await _push_deliver(
-                task_id=task_id,
-                payload={
-                    "title": f"Task done: {_notify_task_title}",
-                    "body": str(_done_reason),
-                    "url": f"/tasks/{task_id}",
-                },
-                kind="web_push",
-                event_kind="task_done",
-                session=session,
-            )
-            # Kanban #2565 §2 — Telegram FYI on done (mirrors the web_push hook;
-            # silent no-op when no telegram target / token). Soft-fail.
-            from src.services.notify_gate import notify_task_event as _notify_tg_event
-            await _notify_tg_event(
-                session=session,
-                task_id=task_id,
-                task_title=_notify_task_title or "",
-                event="done",
-                body=str(_done_reason),
-            )
-
-        # Task failed hook — fires when process_status transitions to 6.
-        elif (
-            "process_status" in updates
-            and _resolved_ps_for_done == TaskStatus.CANCELLED
-            and _pre_patch_process_status != TaskStatus.CANCELLED
-        ):
-            _fail_reason = _notify_status_change_reason or "Failed"
-            await _push_deliver(
-                task_id=task_id,
-                payload={
-                    "title": f"Task failed: {_notify_task_title}",
-                    "body": str(_fail_reason),
-                    "url": f"/tasks/{task_id}",
-                },
-                kind="web_push",
-                event_kind="task_failed",
-                session=session,
-            )
-
-        # Kanban #2565 §2 — Telegram FYI on BLOCKED (ps->4). Standalone `if`
-        # (not part of the done/failed if/elif chain — a block transition is
-        # orthogonal). Silent no-op without a telegram target / token; soft-fail.
-        if (
-            "process_status" in updates
-            and _resolved_ps_for_done == TaskStatus.BLOCKED
-            and _pre_patch_process_status != TaskStatus.BLOCKED
-        ):
-            from src.services.notify_gate import notify_task_event as _notify_tg_blocked
-            _blocked_reason = _notify_status_change_reason or "Blocked"
-            await _notify_tg_blocked(
-                session=session,
-                task_id=task_id,
-                task_title=_notify_task_title or "",
-                event="blocked",
-                body=str(_blocked_reason),
-            )
-
-        # Kanban #1841 — task_halted hook: fires when halt_reason transitions
-        # NULL → non-NULL in this PATCH. Independent of done/failed branches
-        # (a halt PATCH sets halt_reason, not ps=5/6 — defensive `elif` is not
-        # used here so a pathological PATCH that simultaneously sets
-        # halt_reason AND ps=5/6 fires both; in practice that never happens
-        # through the normal Lead API usage pattern).
-        if (
-            "halt_reason" in updates
-            and _notify_new_halt_reason is not None
-            and _pre_patch_halt_reason is None
-        ):
-            await _push_deliver(
-                task_id=task_id,
-                payload={
-                    "title": f"Task halted: {_notify_task_title}",
-                    "body": str(_notify_new_halt_reason),
-                    "url": f"/tasks/{task_id}",
-                },
-                kind="web_push",
-                event_kind="task_halted",
-                session=session,
-            )
-    except Exception:  # noqa: BLE001 — defensive: push hook failure never crashes PATCH
-        logger.exception(
-            "955.B push hook failed on task_id=%d; PATCH stands",
-            task_id,
-        )
+    # Kanban #955.B (#2677): post-commit push + telegram notification matrix.
+    await _fire_post_patch_notifications(
+        session=session,
+        task_id=task_id,
+        updates=updates,
+        _resolved_interaction_kind_for_done=_resolved_interaction_kind_for_done,
+        _resolved_ps_for_done=_resolved_ps_for_done,
+        _pre_patch_interaction_kind=_pre_patch_interaction_kind,
+        _pre_patch_process_status=_pre_patch_process_status,
+        _pre_patch_halt_reason=_pre_patch_halt_reason,
+        _notify_task_title=_notify_task_title,
+        _notify_status_change_reason=_notify_status_change_reason,
+        _notify_question_payload=_notify_question_payload,
+        _notify_new_halt_reason=_notify_new_halt_reason,
+    )
 
     await session.refresh(task)
 
