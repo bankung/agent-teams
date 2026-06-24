@@ -28,8 +28,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.constants import RecordStatus, TaskStatus
 from src.db import get_or_404, get_session
+from src.models.project import Project
 from src.models.task import Task
 from src.models.task_gate import TaskGate
+from src.services.notify_gate import notify_gate_opened
 from src.schemas.task_gate import (
     GateOpenRequest,
     GateRead,
@@ -148,6 +150,29 @@ async def open_gate(
         gate.seq,
         gate.gate_tier,
     )
+
+    # Kanban #2565: best-effort Telegram notify AFTER the commit (the gate is
+    # durably open before we touch the network). Soft-fail — notify_gate_opened
+    # never raises (mirrors _fire_hitl_push); a missing telegram target or token
+    # is a silent no-op. The tier->channel policy (forbidden/informed/simple)
+    # lives in notify_gate, shared with the runner (Task C #2566).
+    project = await session.get(Project, task.project_id)
+    if project is None:
+        logger.warning(
+            "gate_open: project not found for task=%d project_id=%d; Telegram notify skipped",
+            task_id,
+            task.project_id,
+        )
+    else:
+        await notify_gate_opened(
+            session=session,
+            task=task,
+            project=project,
+            gate_id=gate.id,
+            gate_tier=gate.gate_tier,
+            question_payload=gate.question_payload,
+        )
+
     return gate
 
 
@@ -194,9 +219,20 @@ async def resolve_gate(
               expired).
       - 422 — invalid body (missing answer / bad provenance).
     """
-    gate = await get_or_404(
-        session, TaskGate, detail=f"Gate id={gate_id} not found", id=gate_id
-    )
+    # Kanban #2565 (SEC-NIT-2 from Task A): row-lock the gate with SELECT ... FOR
+    # UPDATE so two concurrent resolves (web + telegram, or a double-tap from the
+    # poller) SERIALIZE on the row. The second waiter re-reads status='answered'
+    # AFTER the first commits and falls into the 409 stale-reject below — closing
+    # the read-check-write race that the status guard alone leaves open under
+    # concurrent Telegram delivery (exactly this task's risk). Cheap: one extra
+    # lock clause on a PK lookup. 404 preserved when the gate id does not exist.
+    gate = (
+        await session.execute(
+            select(TaskGate).where(TaskGate.id == gate_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if gate is None:
+        raise HTTPException(status_code=404, detail=f"Gate id={gate_id} not found")
 
     # Load the parent work-task + enforce project scoping (the gate carries no
     # project_id of its own — it inherits the task's).
@@ -208,8 +244,8 @@ async def resolve_gate(
     # Step 1: stale-reject. A single 409 covers all not-resolvable states
     # (already-answered / cancelled / expired). Idempotent: a re-tap on an
     # already-answered gate returns the same 409 so the caller can re-read.
-    # follow-up #2565: SELECT FOR UPDATE on the gate row to close the concurrent
-    # double-resolve window before Telegram delivery goes live
+    # The FOR UPDATE lock above makes this guard race-safe: a concurrent resolve
+    # that lost the lock race re-reads status here AFTER the winner committed.
     if gate.status != "open":
         raise HTTPException(
             status_code=409,

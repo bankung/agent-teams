@@ -63,6 +63,20 @@ class Settings(BaseSettings):
     # Gmail SMTP + digest env vars are read directly via os.environ.get in
     # notify_email.py (matches notify_telegram.py pattern); intentionally not parsed into Settings.
 
+    # Kanban #2565 — Telegram async-HITL channel (Mode-A automation, 0.8 #5).
+    # BOTH are read at CALL TIME via os.environ inside notify_telegram.py and
+    # scripts/telegram_poller.py (mirrors the notify_telegram / notify_ntfy
+    # env-at-call-time pattern), so these fields are DECLARATIVE — they document
+    # the canonical names + supply a default-empty so an unconfigured deployment
+    # soft-fails (the adapter surfaces `missing_env_TELEGRAM_BOT_TOKEN` and the
+    # router falls through; the poller logs + idles). NEVER hardcode real values.
+    #   TELEGRAM_BOT_TOKEN        — the bot's API token (outbound send + poller).
+    #   TELEGRAM_OPERATOR_CHAT_ID — the ONLY chat_id the poller will act on; a
+    #                               callback/message from any other from.id is
+    #                               silently ignored (poller chat-id lock).
+    telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
+    telegram_operator_chat_id: str = Field(default="", alias="TELEGRAM_OPERATOR_CHAT_ID")
+
     # Kanban #1437 — signed-token opt-out for digest emails (itsdangerous
     # URLSafeTimedSerializer). Tokens are HMAC-signed; the key must be stable
     # across API restarts so tokens remain valid for up to 90 days. In

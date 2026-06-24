@@ -2774,6 +2774,16 @@ async def update_task(
                 event_kind="task_done",
                 session=session,
             )
+            # Kanban #2565 §2 — Telegram FYI on done (mirrors the web_push hook;
+            # silent no-op when no telegram target / token). Soft-fail.
+            from src.services.notify_gate import notify_task_event as _notify_tg_event
+            await _notify_tg_event(
+                session=session,
+                task_id=task_id,
+                task_title=_notify_task_title or "",
+                event="done",
+                body=str(_done_reason),
+            )
 
         # Task failed hook — fires when process_status transitions to 6.
         elif (
@@ -2792,6 +2802,24 @@ async def update_task(
                 kind="web_push",
                 event_kind="task_failed",
                 session=session,
+            )
+
+        # Kanban #2565 §2 — Telegram FYI on BLOCKED (ps->4). Standalone `if`
+        # (not part of the done/failed if/elif chain — a block transition is
+        # orthogonal). Silent no-op without a telegram target / token; soft-fail.
+        if (
+            "process_status" in updates
+            and _resolved_ps_for_done == TaskStatus.BLOCKED
+            and _pre_patch_process_status != TaskStatus.BLOCKED
+        ):
+            from src.services.notify_gate import notify_task_event as _notify_tg_blocked
+            _blocked_reason = _notify_status_change_reason or "Blocked"
+            await _notify_tg_blocked(
+                session=session,
+                task_id=task_id,
+                task_title=_notify_task_title or "",
+                event="blocked",
+                body=str(_blocked_reason),
             )
 
         # Kanban #1841 — task_halted hook: fires when halt_reason transitions
