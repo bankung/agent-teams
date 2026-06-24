@@ -31,7 +31,11 @@ from src.db import get_or_404, get_session
 from src.models.project import Project
 from src.models.task import Task
 from src.models.task_gate import TaskGate
-from src.services.notify_gate import notify_gate_opened
+from src.services.notify_gate import (
+    _FORBIDDEN_TIERS,
+    _extract_options,
+    notify_gate_opened,
+)
 from src.schemas.task_gate import (
     GateOpenRequest,
     GateRead,
@@ -236,10 +240,43 @@ async def resolve_gate(
 
     # Load the parent work-task + enforce project scoping (the gate carries no
     # project_id of its own — it inherits the task's).
-    task = await get_or_404(
-        session, Task, detail=f"Task id={gate.task_id} not found", id=gate.task_id
-    )
+    #
+    # Kanban #2684 (FIX 2 — stuck-task race): lock the TASK row FOR UPDATE, not a
+    # plain session.get. Two concurrent resolves on two SIBLING open gates of the
+    # same task otherwise each see the OTHER sibling still 'open' (uncommitted) ->
+    # both read count>0 -> NEITHER flips ps 8->TODO -> task halted forever. Lock
+    # order is gate-then-task (the gate FOR UPDATE above is first); sibling
+    # resolves contend only on the single shared task row, so they SERIALIZE with
+    # no deadlock. The 2nd resolver waits for the 1st commit, then _count_open_gates
+    # reads committed state -> correct count -> the last resolve reliably flips the
+    # task. Also closes the resume_context last-writer-wins race (a concurrent task
+    # PATCH must now wait on this lock).
+    task = (
+        await session.execute(
+            select(Task).where(Task.id == gate.task_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if task is None:
+        raise HTTPException(
+            status_code=404, detail=f"Task id={gate.task_id} not found"
+        )
     assert_task_belongs_to_session(gate.task_id, task.project_id, session_project_id)
+
+    # Kanban #2684 (FIX 1 — tier-forbidden 403): the forbidden tiers {key,
+    # external} are FYI-only (Ring 4 = terminal-only). They were enforced ONLY at
+    # notify time (notify_gate._FORBIDDEN_TIERS, the SOURCE OF TRUTH imported
+    # above to keep the two paths in lockstep), so a direct POST .../resolve could
+    # approve a gate that was never offered a button. Reject regardless of status
+    # (a forbidden-tier gate is 403 even if already answered/expired), so this
+    # sits BEFORE the stale-reject.
+    if gate.gate_tier in _FORBIDDEN_TIERS:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Gate id={gate_id} tier '{gate.gate_tier}' is not resolvable "
+                f"via this endpoint — terminal action required"
+            ),
+        )
 
     # Step 1: stale-reject. A single 409 covers all not-resolvable states
     # (already-answered / cancelled / expired). Idempotent: a re-tap on an
@@ -254,6 +291,27 @@ async def resolve_gate(
                 f"already resolved or no longer answerable"
             ),
         )
+
+    # Kanban #2684 (FIX 3 — answer-in-options 422, prompt-injection guard): the
+    # answer arrives verbatim from Telegram callback_data (decode_callback_data ->
+    # `option`) and is consumed later by the runner (#2531). When the gate offered
+    # an explicit options list, the answer MUST be one of the offered option ids;
+    # an arbitrary attacker-supplied string is a 422. _extract_options (imported
+    # from notify_gate, the SAME normalizer that BUILT the buttons) handles both
+    # string-list and dict-list option shapes -> we compare ids in lockstep with
+    # what was actually presented. Free-text gates (no/empty `options`) are
+    # unaffected: the guard only fires when an explicit options list is present.
+    qp = gate.question_payload
+    if isinstance(qp, dict) and qp.get("options"):
+        allowed_ids = {oid for oid, _ in _extract_options(qp)}
+        # `answer` is JSONB (Any) — option ids are always strings, so coerce to a
+        # str for the membership test (a list/dict/unhashable answer can never be
+        # an offered id -> 422, never a 500 on a `not in set` TypeError).
+        if str(payload.answer) not in allowed_ids:
+            raise HTTPException(
+                status_code=422,
+                detail=f"answer {payload.answer!r} not in gate options",
+            )
 
     now_utc = datetime.now(timezone.utc)
 

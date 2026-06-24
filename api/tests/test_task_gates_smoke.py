@@ -353,3 +353,218 @@ async def test_task_with_open_gate_appears_exactly_once(client, scaffold_cleanup
     # NEGATIVE: must NOT also appear as legacy_operator.
     leg = [it for it in items if it["task_id"] == tid and it["source"] == "legacy_operator"]
     assert leg == [], f"task must not appear under legacy_operator when open gate exists: {leg}"
+
+
+# ===========================================================================
+# Kanban #2684 — resolve-time hardening (3 intense-review fixes)
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# (6) FIX 1 — tier-forbidden 403: {key, external} are NOT chat-resolvable
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tier", ["key", "external"])
+async def test_resolve_forbidden_tier_returns_403(client, scaffold_cleanup, tier) -> None:
+    """NEGATIVE (FIX 1): a `key`- or `external`-tier gate is FYI-only (Ring 4,
+    terminal action required) — it was never offered an approve button. A direct
+    POST .../resolve on one must 403, NOT silently approve a gate that bypassed
+    the notify-time tier policy. The forbidden-tier check fires BEFORE the
+    stale-reject (a forbidden gate is 403 regardless of status).
+    """
+    pid = await _make_fresh_project(client, scaffold_cleanup, f"gates-403-{tier}")
+    tid = await _make_work_task(client, pid)
+    # Opening such a gate is allowed (the work-task halts); only RESOLVE is barred.
+    gate = await _open_gate(client, pid, tid, gate_tier=tier)
+
+    resp = await client.post(
+        f"/api/task-gates/{gate['id']}/resolve",
+        headers={"X-Project-Id": str(pid)},
+        json={"answer": "approve", "provenance": "telegram"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert "terminal action required" in resp.json()["detail"], resp.text
+
+    # NEGATIVE refetch: the gate is UNTOUCHED — still open, no answer written, and
+    # the task stays halted (the 403 must not have mutated anything).
+    full = (
+        await client.get(f"/api/tasks/{tid}", headers={"X-Project-Id": str(pid)})
+    ).json()
+    assert full["process_status"] == 8, "task must stay halted after a forbidden 403"
+    assert full["operator_gate"] == tier, "operator_gate unchanged"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tier", ["decision", "hitl", "commit"])
+async def test_resolve_non_forbidden_tier_succeeds(client, scaffold_cleanup, tier) -> None:
+    """POSITIVE (FIX 1 boundary): a non-forbidden tier (decision / hitl / commit)
+    still resolves normally -> 200. Proves the 403 guard is scoped to exactly the
+    forbidden set and does not over-block the answerable tiers.
+    """
+    pid = await _make_fresh_project(client, scaffold_cleanup, f"gates-ok-{tier}")
+    tid = await _make_work_task(client, pid)
+    gate = await _open_gate(client, pid, tid, gate_tier=tier)  # no options -> free text
+
+    resp = await client.post(
+        f"/api/task-gates/{gate['id']}/resolve",
+        headers={"X-Project-Id": str(pid)},
+        json={"answer": "approve", "provenance": "telegram"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["open_gate_count_remaining"] == 0, resp.text
+
+
+# ---------------------------------------------------------------------------
+# (7) FIX 3 — answer-in-options 422: answer must be one of the offered ids
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_answer_not_in_options_returns_422(client, scaffold_cleanup) -> None:
+    """NEGATIVE (FIX 3, prompt-injection guard): when the gate offered an explicit
+    options list, an answer that is NOT one of the offered option ids is a 422 —
+    the verbatim callback_data answer (consumed downstream by the runner) cannot
+    be an arbitrary attacker-supplied string.
+    """
+    pid = await _make_fresh_project(client, scaffold_cleanup, "gates-422")
+    tid = await _make_work_task(client, pid)
+    gate = await _open_gate(
+        client, pid, tid, options=[{"id": "approve", "label": "Approve"},
+                                   {"id": "reject", "label": "Reject"}]
+    )
+
+    resp = await client.post(
+        f"/api/task-gates/{gate['id']}/resolve",
+        headers={"X-Project-Id": str(pid)},
+        json={"answer": "rm -rf /", "provenance": "telegram"},
+    )
+    assert resp.status_code == 422, resp.text
+    assert "not in gate options" in resp.json()["detail"], resp.text
+
+    # NEGATIVE refetch: gate UNTOUCHED — the 422 rejected before the answer write.
+    full = (
+        await client.get(f"/api/tasks/{tid}", headers={"X-Project-Id": str(pid)})
+    ).json()
+    assert full["process_status"] == 8, "task stays halted after the 422"
+
+
+@pytest.mark.asyncio
+async def test_resolve_valid_option_succeeds(client, scaffold_cleanup) -> None:
+    """POSITIVE (FIX 3 boundary): an answer that MATCHES an offered option id
+    resolves normally -> 200. Covers BOTH option shapes the notify builder emits
+    (dict-form ids here, string-form below) so the membership check is in lockstep
+    with the buttons actually presented.
+    """
+    pid = await _make_fresh_project(client, scaffold_cleanup, "gates-422-ok")
+    tid = await _make_work_task(client, pid)
+
+    # dict-shaped options -> answer is the `id`.
+    g1 = await _open_gate(
+        client, pid, tid, options=[{"id": "approve", "label": "Approve"}]
+    )
+    r1 = await client.post(
+        f"/api/task-gates/{g1['id']}/resolve",
+        headers={"X-Project-Id": str(pid)},
+        json={"answer": "approve", "provenance": "telegram"},
+    )
+    assert r1.status_code == 200, r1.text
+
+    # string-shaped options (id == label) -> answer is the bare string.
+    g2 = await _open_gate(client, pid, tid, options=["yes", "no"])
+    r2 = await client.post(
+        f"/api/task-gates/{g2['id']}/resolve",
+        headers={"X-Project-Id": str(pid)},
+        json={"answer": "yes", "provenance": "web"},
+    )
+    assert r2.status_code == 200, r2.text
+
+
+@pytest.mark.asyncio
+async def test_resolve_free_text_gate_accepts_any_answer(client, scaffold_cleanup) -> None:
+    """POSITIVE (FIX 3 boundary): a gate with NO options list is free-text — any
+    answer is accepted (the options guard does not fire). Proves FIX 3 does not
+    over-constrain free-text gates.
+    """
+    pid = await _make_fresh_project(client, scaffold_cleanup, "gates-freetext")
+    tid = await _make_work_task(client, pid)
+    gate = await _open_gate(client, pid, tid)  # no options
+
+    resp = await client.post(
+        f"/api/task-gates/{gate['id']}/resolve",
+        headers={"X-Project-Id": str(pid)},
+        json={"answer": "any free-form text the operator typed", "provenance": "web"},
+    )
+    assert resp.status_code == 200, resp.text
+    rc = resp.json()["resume_context"]
+    assert rc["answered_gates"][str(gate["id"])]["answer"] == (
+        "any free-form text the operator typed"
+    )
+
+
+# ---------------------------------------------------------------------------
+# (8) FIX 2 — count-driven flip under the task FOR UPDATE lock (in-order)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_multi_gate_flips_only_after_last_resolve(client, scaffold_cleanup) -> None:
+    """POSITIVE (FIX 2 count logic): two open gates on one task resolved IN ORDER.
+    The task must NOT flip on the first resolve (a sibling is still open) and MUST
+    flip on the second (count -> 0). This locks the count logic the new task-row
+    FOR UPDATE lock protects — under concurrency the lock serializes the two
+    resolves so the second reads committed state and reliably performs this flip
+    (the stuck-task race the lock closes; the true 2-transaction overlap is
+    verified by Lead's live sequential multi-gate check — see module note below).
+    """
+    pid = await _make_fresh_project(client, scaffold_cleanup, "gates-flip-order")
+    tid = await _make_work_task(client, pid)
+
+    g1 = await _open_gate(client, pid, tid, question="First?")
+    g2 = await _open_gate(client, pid, tid, question="Second?")
+
+    # First resolve -> one sibling still open -> task STAYS halted.
+    r1 = await client.post(
+        f"/api/task-gates/{g1['id']}/resolve",
+        headers={"X-Project-Id": str(pid)},
+        json={"answer": "a1", "provenance": "web"},
+    )
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["open_gate_count_remaining"] == 1, r1.text
+    assert r1.json()["process_status"] == 8, "must NOT flip while a sibling is open"
+
+    full_mid = (
+        await client.get(f"/api/tasks/{tid}", headers={"X-Project-Id": str(pid)})
+    ).json()
+    assert full_mid["process_status"] == 8, "task halted between the two resolves"
+    assert full_mid["operator_gate"] is not None
+
+    # Second resolve -> count hits 0 -> task flips actionable.
+    r2 = await client.post(
+        f"/api/task-gates/{g2['id']}/resolve",
+        headers={"X-Project-Id": str(pid)},
+        json={"answer": "a2", "provenance": "web"},
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["open_gate_count_remaining"] == 0, r2.text
+    assert r2.json()["process_status"] == 1, "flips to TODO only after the LAST resolve"
+
+    full_end = (
+        await client.get(f"/api/tasks/{tid}", headers={"X-Project-Id": str(pid)})
+    ).json()
+    assert full_end["process_status"] == 1, "task actionable once count -> 0"
+    assert full_end["operator_gate"] is None, "operator_gate cleared at count 0"
+
+
+# NOTE (FIX 2 concurrency — deliberately NOT a unit test here): the actual race
+# the task-row FOR UPDATE lock closes is TWO CONCURRENT resolves on sibling gates
+# each committing in separate DB transactions, where without the lock both read
+# count>0 and NEITHER flips (task stuck forever). The shared-ASGITransport `client`
+# harness runs one event loop over one connection pool with per-request
+# commit-on-return, so a faithful 2-transaction lock-wait overlap is not trivially
+# expressible (and `asyncio.gather` over the same asyncpg pool risks harness
+# pool-starvation rather than a clean assertion). The FOR UPDATE clause IS the fix;
+# its correctness is reasoned in the router comment and live-verified by Lead via a
+# sequential multi-gate resolve against the running API. The in-order test above
+# locks the count-driven flip semantics the lock protects.
