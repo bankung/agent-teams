@@ -19,6 +19,7 @@ covers: active decisions.md 2026-05-20 onward; older in decisions-archive-2026-0
 > **[CRIT]** = anti-re-litigation decision (do-not-revisit without reopening the entry). Pull its
 > body before touching that area.
 
+- 2026-06-24 — #5 Mode-A automation: Telegram-only async HITL + 4-ring runner autonomy boundary; tasks A #2564 → B #2565 → C #2566 (+ runner #2531) under v0.8.0 #50
 - 2026-06-21 — #2520 story-doc layer was REDUNDANT, not neglected — sharpened story-vs-decisions trigger
 - [CRIT] 2026-06-21 — #2506 recurrence dormancy accepted as-is (dedup-bounded; executor deferred) + langgraph unhealthy left known-down
 - [CRIT] 2026-06-21 — #2500/#2503 review-batch security/RFC posture accepted as-is (solo-dev localhost)

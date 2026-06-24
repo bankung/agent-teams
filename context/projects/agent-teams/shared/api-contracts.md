@@ -554,4 +554,29 @@ Complementary to (not replacing) `langgraph/tools/permission_gate` (tier-based, 
 
 **Route-order invariant:** FastAPI matches in REGISTRATION ORDER — the validation router's static `/agents/validate` registers before this router's `/{name}` in `main.py` (load-bearing); `RESERVED_AGENT_NAMES = {"validate"}` backstops it (reserved name → validator ERROR diagnostic + gallery-detail 404).
 
+### Async-HITL gates (`task_gates`) — Kanban #2564 (applied 2026-06-24, migration `0072_task_gates`)
+
+The async-HITL gate foundation (`design/async-hitl-gates.md` §4 + §7) — the "stuck"/HITL path of the Mode-A continuous runner. A gate is a sub-event of a work-task (an async HITL ask), NOT a board task. Three endpoints; all require the `X-Project-Id` header. Coexists with the legacy `/api/tasks/{id}/decide` flow — `blocked_by` semantics unchanged.
+
+**POST `/api/tasks/{task_id}/gates`** — open a gate (201 → `GateRead`).
+- Body: `{kind: 'question'|'decision', gate_tier: 'key'|'commit'|'decision'|'hitl'|'external', question_payload?: object}` (`question_payload` capped ~8KB serialized).
+- Effect (one txn): INSERT gate (status='open', server-allocated `seq`=MAX(seq)+1 per task; `(task_id,seq)` UNIQUE) + halt the work-task: `process_status=8` (HALTED_PENDING_USER) + `operator_gate=<gate_tier>` (`halted_at` auto-stamps).
+- Returns `{id, task_id, seq, kind, question_payload, status, answer, gate_tier, answered_by, answered_via, created_at, answered_at}`.
+- Errors: 404 task not found · 400 X-Project-Id mismatch · 422 bad body.
+
+**POST `/api/task-gates/{gate_id}/resolve`** — resolve a gate by its id (200 → `GateResolveResponse`).
+- Gate-id-keyed; distinct from the legacy task-keyed `/decide`.
+- Body: `{answer: <any JSON, non-null, ~4KB cap>, provenance: 'web'|'telegram', answered_by?: str}`.
+- Effect (one txn): stale-reject if the gate is not 'open' (idempotent **409**) → else write answer/answered_by/answered_via/answered_at + status='answered'; fold the answer into the work-task `resume_context` (keyed under `resume_context.answered_gates[<gate_id>]` + `last_answered_gate_id`); flip the work-task `process_status` 8→1 (TODO/actionable) AND clear `operator_gate` ONLY when the task's remaining open-gate count == 0.
+- Returns `{gate_id, task_id, process_status, open_gate_count_remaining, resume_context, resolved_at}`.
+- Errors: 404 gate not found · 400 X-Project-Id mismatch · 409 gate not open · 422 bad body.
+- Concurrency: multiple open gates per task are native; out-of-order answers bind by gate_id; the task becomes actionable only when open-gate-count → 0.
+
+**GET `/api/operator-gates/pending`** — unified pending-gate read (200 → `list[PendingGateItem]`).
+- Unions (i) open `task_gates` rows (`source='task_gate'`) + (ii) legacy operator-HITL tasks (`source='legacy_operator'`: `operator_gate IS NOT NULL` OR a pending `gate='operator'` AC item — the #2127 OR-rule), with (ii) **excluding** any task that already has an open gate (dedup — a gated task appears once). One shape every caller reads (§7 "two writers, one reader").
+- Query: `?limit=` (1..500, default 200; caps the COMBINED result; legacy rows starve when open gates ≥ limit — v0.9.0 revisit).
+- Element: `{source, task_id, title, process_status, gate_tier, gate_id?, seq?, kind?, question_payload?, created_at}` — gate_id/seq/kind/question_payload NULL for legacy rows.
+
+> Task B #2565 (future): opening a gate does NOT yet notify. The Telegram notify swap (`_fire_hitl_push` seam) + the getUpdates poller is Task B. Task A is model + resolve + unified read only.
+
 <!-- No endpoints documented yet. First endpoint goes above this line. -->

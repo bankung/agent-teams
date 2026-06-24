@@ -48,6 +48,7 @@ from src.routers import scaffold as scaffold_router
 from src.routers import sessions as sessions_router
 from src.routers import shared_search as shared_search_router
 from src.routers import settings as settings_router
+from src.routers import task_gates as task_gates_router
 from src.routers import task_templates as task_templates_router
 from src.routers import task_outputs as task_outputs_router
 from src.routers import tasks as tasks_router
@@ -374,6 +375,11 @@ def create_app() -> FastAPI:
 
     app.include_router(projects_router.router, prefix="/api")
     app.include_router(tasks_router.router, prefix="/api")
+    # Kanban #2564 — async-HITL gates (task_gates): open a gate
+    # (POST /api/tasks/{id}/gates), resolve a gate
+    # (POST /api/task-gates/{gate_id}/resolve), unified pending-gate read
+    # (GET /api/operator-gates/pending). Sub-resource of tasks + a unified read.
+    app.include_router(task_gates_router.router, prefix="/api")
     app.include_router(sessions_router.router, prefix="/api")
     app.include_router(sessions_router.runs_router, prefix="/api")
     app.include_router(scaffold_router.router, prefix="/api")
