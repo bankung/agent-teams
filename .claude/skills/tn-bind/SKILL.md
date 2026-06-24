@@ -7,6 +7,7 @@ description: >-
 argument-hint: "<project name>"
 allowed-tools:
   - Bash(curl:*)
+  - Bash(echo:*)
   - Read
   - Write
 metadata:
@@ -35,10 +36,21 @@ curl --silent "http://localhost:8456/api/projects/by-name/<URL-encoded name>" \
   Print each project's `name` / `id` / `team`. Do NOT guess a project.
 - **any other** → show the raw response body and STOP.
 
-## Step 2 — persist the binding
+## Step 2 — persist the binding (session-scoped, #2679)
 
-Write the resolved id (a SINGLE integer, nothing else) to `_runtime/lead_project_id.txt`.
-This overwrites any previous value — that is the point (it fixes stale bindings).
+Write the resolved project id (a SINGLE integer) to a PER-SESSION file plus the legacy
+global file:
+
+1. Get this session's id: `echo $CLAUDE_CODE_SESSION_ID` (Bash). It equals the `session_id`
+   the cost-capture hooks receive in their payload.
+2. Write `<id>` to `_runtime/lead_project_id_<sid>.txt` — the per-session binding the
+   cost-capture hooks read. Each session has its own file; UUIDs never collide, so a stale
+   file from another session can never be mis-read (this is what fixes the cross-session
+   mis-attribution: incident 2026-06-05 / stale 599 / ledger 2355).
+3. Write `<id>` to `_runtime/lead_project_id.txt` — the legacy GLOBAL file, still read by the
+   gate/spawn/notify hooks AND the tn-* skills (until Phase B #2680 migrates them).
+   Overwriting it is fine (this session is now the most-recent binder for those readers).
+4. Best-effort housekeeping: prune `_runtime/lead_project_id_*.txt` older than ~7 days.
 
 ## Step 3 — announce
 

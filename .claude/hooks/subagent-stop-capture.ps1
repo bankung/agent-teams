@@ -12,14 +12,14 @@
 #   * Option B: writes ONLY to /api/usage/events. Never touches tasks.
 #
 # Per-event fields (LOCKED design):
-#   task_id        <cwd>/_runtime/lead_current_task.txt (trimmed; omit if missing)
+#   task_id        in-progress task via /api/tasks?process_status=2 (Resolve-ActiveTaskId, #2662); omit if none
 #   agent_name     = agentType from the subagent .meta.json
 #   session_ext_id = session_id from the payload
 #   source         = 'mode_a'
 #   is_estimate    = true
 #   dedup_key      = "subagent-<agentId>"  (+ "-<model>" when >1 model)
 #   provider       = 'anthropic' (default)
-#   project id     <cwd>/_runtime/lead_project_id.txt  (missing -> log + exit 0)
+#   project id     per-session _runtime/lead_project_id_<sid>.txt (Resolve-LeadProjectId, #2679; missing -> log + exit 0)
 #
 # Cost is computed SERVER-SIDE — we never send a cost.
 
@@ -64,11 +64,10 @@ try {
         exit 0
     }
 
-    # --- Resolve project id (REQUIRED) ------------------------------------
-    $projIdPath = Join-Path $runtimeDir 'lead_project_id.txt'
-    $projectId = Read-MarkerValue $projIdPath
+    # --- Resolve project id (REQUIRED; per-session binding #2679) ----------
+    $projectId = Resolve-LeadProjectId -RuntimeDir $runtimeDir -SessionId $sessionId -LogPath $logPath
     if ([string]::IsNullOrEmpty($projectId)) {
-        Write-UsageLog $logPath "[SubagentStop] DROP: lead_project_id.txt missing/empty at $projIdPath"
+        Write-UsageLog $logPath "[SubagentStop] DROP: no per-session project binding for $sessionId"
         exit 0
     }
 

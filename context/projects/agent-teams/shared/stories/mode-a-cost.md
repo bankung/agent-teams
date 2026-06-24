@@ -1,14 +1,16 @@
 ---
 story: mode-a-cost
-version: 5
+version: 6
 updated: 2026-06-24
-updated_by: lead @ #2662
+updated_by: lead @ #2679
 ---
 
 <!-- STORY DOC — mutable thread STATE ("what is true NOW"), single writer = Lead.
      Counterpart: the activity rail holds the immutable per-task EVENTS. Rules locked 2026-06-12 (#2332). -->
 
 ## Current state
+
+- **Session-scoped project binding LIVE — #2679 (Phase A, on `dev`, not committed).** Capture hooks resolve project via `Resolve-LeadProjectId(session_id)` reading per-session `lead_project_id_<sid>.txt` (parser.ps1) — **NO global fallback** (foreign/missing → NULL). Writers (tn-bind + CLAUDE.md bootstrap) write per-UUID (sid=`$CLAUDE_CODE_SESSION_ID`, proven == hook payload sid) + keep the global file for gates/skills. `lead_current_task.txt` fully dropped (marker fallback removed). Live-proven: foreign sid → NULL even with global=1; smoke `usage_events` id=313 project_id=1 task_id=2679 via per-UUID (log `[ResolveProj]`). hooks-only +65/-25; ii-applied. **OPEN findings:** (1) gate-family hooks (block-spawn / notify / pretooluse-bash-gate / approval-policies via `_shared.ps1 Get-ProjectId` / seo) STILL read the global = same cross-session bug, incl. a security-relevant approval path → needs **Phase A.2**; (2) skills = **Phase B #2680**; (3) in-flight sessions bound pre-change drop captures (NULL) until they re-bind.
 
 - **PULL task-attribution LIVE — #2662 (Phase 1, on `dev`, not committed).** Replaced the marker-only `task_id` resolution with `Resolve-ActiveTaskId` in `parser.ps1`: GET `/api/tasks?process_status=2` → most-recent `started_at` (tiebreak max id) → `lead_current_task.txt` marker → NULL. All 3 capture hooks (subagent-stop/sessionend/precompact) call it. ROOT FINDING: the marker has NO writer in-repo and held a STALE `2355` for weeks → the pre-#2662 path mis-attributed EVERY event to task 2355 (not NULL). 0 model-token (runs in hook), +1 localhost GET (~30ms). Live-proven: Explore smoke while #2662 ps=2 → `usage_events` id=306 `task_id=2662` (old path wrote 2355, e.g. id=11). hooks-only diff +64/-5; ii-applied. Phase 2 (detach SubagentStop / byte-offset watermark) + Phase 3 (PreToolUse brief-size for re-derivation ratio) = follow-ups.
 
@@ -47,6 +49,7 @@ updated_by: lead @ #2662
 
 ## Changelog
 
+- v6 2026-06-24 #2679 — session-scoped project binding (Phase A): `Resolve-LeadProjectId` (per-UUID `lead_project_id_<sid>.txt`, NO global fallback) in parser.ps1; 3 capture hooks wired via payload session_id; `lead_current_task.txt` dropped; tn-bind + CLAUDE.md write per-UUID + global. Live: foreign sid → NULL with global=1; smoke `usage_events` id=313 proj=1 task=2679. hooks-only +65/-25, ii-applied, not committed. Findings: gate-family hooks still on global (Phase A.2 needed, incl. security approval path); skills = Phase B #2680; in-flight sessions need re-bind.
 - v5 2026-06-24 #2662 — PULL task-attribution LIVE (Phase 1): `Resolve-ActiveTaskId` in parser.ps1 (in-progress task via `/api/tasks?process_status=2` → marker → NULL) replaces the never-written marker; all 3 hooks wired. Root finding: stale marker mis-attributed every capture to 2355 (not NULL). Live smoke `usage_events` id=306 task_id=2662; AC1/AC3/AC4/AC5 verified; hooks-only +64/-5, ii-applied; not yet committed. Phase 2 (detach SubagentStop + byte-offset watermark) + Phase 3 (PreToolUse brief-size) = follow-ups.
 - v4 2026-06-15 #1304 — pre-task cost FORECAST LIVE (commit `28a996a`): `POST /api/tasks/{id}/cost-forecast` + migration 0068 (`cost_forecast_threshold_usd` $1-default + `forecast_cost_usd`) + NewTaskModal $-gate confirm modal; `_DEFAULT_ANTHROPIC_MODEL` sonnet→opus-4-8. dev-reviewer + dev-security-reviewer APPROVE-WITH-NOTES; SEC-1/M1/M2 folded; live smoke + FE vitest 330 green. Caused a mid-build live outage (ORM-ahead-of-migration via --reload) → recovered by applying 0068 live + restart api. Deferred na: AC2/AC4 measurements → #2408; follow-ups #2409 (CalendarView gate) + #2410 (model_override pricing).
 - v3 2026-06-15 #2356 — read side LIVE: `GET /api/usage/monthly` billing-cycle rollup + `occurred_at` clamp (AC2) + `MonthlySpendSection` dashboard card (commit `3f75a7b`). dev-reviewer + dev-security-reviewer APPROVE-WITH-NOTES (0 blocker/major); Lead folded M1/M2 comment fixes + SW-1 (`task_title` cross-project widening -> decisions.md K1 gap). Verified live (monthly 2 cycles A/B, clamp 422); api usage tests 25, web 323. P3 closes the mode-a-cost build arc (P1 ingest + P2 capture + P3 read all LIVE).

@@ -37,9 +37,9 @@ try {
         exit 0
     }
 
-    $projectId = Read-MarkerValue (Join-Path $runtimeDir 'lead_project_id.txt')
+    $projectId = Resolve-LeadProjectId -RuntimeDir $runtimeDir -SessionId $sessionId -LogPath $logPath
     if ([string]::IsNullOrEmpty($projectId)) {
-        Write-UsageLog $logPath "[SessionEnd] DROP: lead_project_id.txt missing/empty"
+        Write-UsageLog $logPath "[SessionEnd] DROP: no per-session project binding for $sessionId"
         exit 0
     }
     $taskId = Resolve-ActiveTaskId -RuntimeDir $runtimeDir -ProjectId $projectId -LogPath $logPath

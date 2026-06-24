@@ -150,7 +150,7 @@ function _Prop {
 
 
 function Read-MarkerValue {
-    <# Read a single-line marker file (lead_project_id.txt / lead_current_task.txt).
+    <# Read a single-line marker file (e.g. a per-session lead_project_id_<sid>.txt).
        Returns the trimmed content, or $null if missing/empty/unreadable. #>
     param([Parameter(Mandatory = $true)][string] $Path)
     try {
@@ -163,6 +163,43 @@ function Read-MarkerValue {
 }
 
 
+function Resolve-LeadProjectId {
+    <#
+    .SYNOPSIS
+      Resolve the bound project id for THIS session — session-scoped (#2679).
+    .DESCRIPTION
+      Reads _runtime/lead_project_id_<SessionId>.txt. Trusts ONLY this session's
+      file; a missing file -> $null. There is deliberately NO fallback to the
+      global lead_project_id.txt — that global value belongs to whichever session
+      bound LAST (possibly a different project), so trusting it is exactly the
+      cross-session mis-attribution bug this replaces. Session UUIDs never collide,
+      so a stale per-session file from a dead session can never be mis-read.
+    .OUTPUTS
+      A project id STRING (matching Read-MarkerValue's contract), or $null.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string] $RuntimeDir,
+        [string] $SessionId = $null,
+        [string] $LogPath = $null
+    )
+
+    if ([string]::IsNullOrEmpty($SessionId)) {
+        if ($LogPath) { Write-UsageLog $LogPath "[ResolveProj] no session_id -> NULL" }
+        return $null
+    }
+
+    $path = Join-Path $RuntimeDir "lead_project_id_$SessionId.txt"
+    $val = Read-MarkerValue $path
+    if (-not [string]::IsNullOrEmpty($val)) {
+        if ($LogPath) { Write-UsageLog $LogPath "[ResolveProj] per-session project_id=$val (lead_project_id_$SessionId.txt)" }
+        return $val
+    }
+
+    if ($LogPath) { Write-UsageLog $LogPath "[ResolveProj] no per-session binding for $SessionId -> NULL (no global fallback)" }
+    return $null
+}
+
+
 function Resolve-ActiveTaskId {
     <#
     .SYNOPSIS
@@ -171,10 +208,9 @@ function Resolve-ActiveTaskId {
       Primary: ask the API which task is IN_PROGRESS (process_status=2) for this
       project and pick the most-recently-started one (tiebreak: max id). The
       in-progress status is the Kanban source of truth, maintained by normal
-      discipline — unlike the lead_current_task.txt marker, which NO code writes,
-      so attribution was almost always NULL/stale.
-      Fallback chain: in-progress task -> marker -> $null. NEVER throws; any
-      failure (API down, timeout, non-JSON) falls through to the marker/NULL.
+      discipline. Returns the in-progress task id, else $null (#2679 dropped the
+      legacy lead_current_task.txt marker fallback). NEVER throws; any failure
+      (API down, timeout, non-JSON) falls through to $null.
     .OUTPUTS
       A task id STRING (matching Read-MarkerValue's contract), or $null.
     #>
@@ -211,14 +247,7 @@ function Resolve-ActiveTaskId {
         if ($LogPath) { Write-UsageLog $LogPath ("[ResolveTask] PULL error -> marker fallback: " + $_.Exception.Message) }
     }
 
-    # --- Fallback: the legacy marker (manual override / back-compat) ------
-    $marker = Read-MarkerValue (Join-Path $RuntimeDir 'lead_current_task.txt')
-    if (-not [string]::IsNullOrEmpty($marker)) {
-        if ($LogPath) { Write-UsageLog $LogPath "[ResolveTask] marker task_id=$marker" }
-        return $marker
-    }
-
-    if ($LogPath) { Write-UsageLog $LogPath "[ResolveTask] no active task -> NULL" }
+    if ($LogPath) { Write-UsageLog $LogPath "[ResolveTask] no in-progress task -> NULL" }
     return $null
 }
 
