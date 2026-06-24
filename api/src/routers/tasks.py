@@ -1980,27 +1980,20 @@ async def create_task(
     return task
 
 
-@router.patch("/{task_id}", response_model=TaskRead)
-async def update_task(
-    task_id: int,
+def _check_optimistic_lock(
+    task: Task,
+    if_unmodified_since: str | None,
     payload: TaskUpdate,
-    session_project_id: int = Depends(require_project_id_header),
-    session: AsyncSession = Depends(get_session),
-    if_unmodified_since: str | None = Header(default=None, alias="If-Unmodified-Since"),
-    operator_proof: OperatorDecision = Depends(require_operator_proof),
-) -> Task:
-    task = await get_or_404(
-        session, Task, detail=f"Task id={task_id} not found", id=task_id
-    )
-    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)  # #695
+) -> None:
+    """Kanban #1128: optimistic locking via If-Unmodified-Since header.
 
-    # Kanban #1128: optimistic locking via If-Unmodified-Since header.
-    # If the header is present, compare the client's baseline against the
-    # current row's updated_at. A strictly newer row means a concurrent write
-    # landed between the client's GET and this PATCH — return 409 so the
-    # client can reload and re-apply their change on fresh data.
-    # If the header is absent, proceed as before (backward-compatible) and
-    # emit a debug log so header adoption can be tracked without flooding logs.
+    If the header is present, compare the client's baseline against the current
+    row's updated_at. A strictly newer row means a concurrent write landed
+    between the client's GET and this PATCH — raise 409 so the client can reload
+    and re-apply on fresh data. An unparseable header raises 400. If the header
+    is absent, proceed (backward-compatible) and emit a debug log so header
+    adoption can be tracked without flooding logs.
+    """
     if if_unmodified_since is not None:
         try:
             # Parse ISO-8601; treat naive timestamps as UTC.
@@ -2039,8 +2032,26 @@ async def update_task(
     else:
         logger.debug(
             "task %s PATCH: If-Unmodified-Since header absent (no optimistic lock)",
-            task_id,
+            task.id,
         )
+
+
+@router.patch("/{task_id}", response_model=TaskRead)
+async def update_task(
+    task_id: int,
+    payload: TaskUpdate,
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+    if_unmodified_since: str | None = Header(default=None, alias="If-Unmodified-Since"),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
+) -> Task:
+    task = await get_or_404(
+        session, Task, detail=f"Task id={task_id} not found", id=task_id
+    )
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)  # #695
+
+    # Kanban #1128: optimistic locking via If-Unmodified-Since header (#2673).
+    _check_optimistic_lock(task, if_unmodified_since, payload)
 
     # Kanban #955.B: capture pre-PATCH state for push-notification transition
     # detection. Must be captured before any mutation so the "was X before this
