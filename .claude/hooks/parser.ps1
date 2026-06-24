@@ -187,9 +187,10 @@ function Resolve-LeadProjectId {
         if ($LogPath) { Write-UsageLog $LogPath "[ResolveProj] no session_id -> NULL" }
         return $null
     }
-    # Defense-in-depth (#2692 review MINOR-1): session_id is a Claude-generated UUID;
-    # reject any non-UUID-shaped value so a crafted id can't traverse out of _runtime.
-    if ($SessionId -notmatch '^[a-zA-Z0-9\-]{8,64}$') {
+    # Defense-in-depth (#2692 review MINOR-1/NIT-1): session_id is a Claude-generated
+    # UUID; reject any non-UUID-shaped value so a crafted id can't traverse out of
+    # _runtime. \z (not $) so a trailing newline can't slip past the anchor in PS.
+    if ($SessionId -notmatch '^[a-zA-Z0-9\-]{8,64}\z') {
         if ($LogPath) { Write-UsageLog $LogPath "[ResolveProj] non-UUID session_id -> NULL" }
         return $null
     }
@@ -247,10 +248,10 @@ function Resolve-ActiveTaskId {
                 return [string]$pick.id
             }
         }
-        if ($LogPath) { Write-UsageLog $LogPath "[ResolveTask] PULL no in-progress task -> marker fallback" }
+        if ($LogPath) { Write-UsageLog $LogPath "[ResolveTask] PULL no in-progress task -> NULL" }
     }
     catch {
-        if ($LogPath) { Write-UsageLog $LogPath ("[ResolveTask] PULL error -> marker fallback: " + $_.Exception.Message) }
+        if ($LogPath) { Write-UsageLog $LogPath ("[ResolveTask] PULL error -> NULL: " + $_.Exception.Message) }
     }
 
     if ($LogPath) { Write-UsageLog $LogPath "[ResolveTask] no in-progress task -> NULL" }

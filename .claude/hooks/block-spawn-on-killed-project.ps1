@@ -2,8 +2,10 @@
 PreToolUse hook: block Agent spawn when project is marked killed.
 
 CONTEXT (Kanban #1209, 2026-05-18):
-Lead bootstrap step 5 persists the active project's id to `_runtime/lead_project_id.txt`
-(single integer, no surrounding whitespace). This file is the contract read by this hook.
+Lead bootstrap persists the active project's id PER SESSION to
+`_runtime/lead_project_id_<session_id>.txt` (single integer, no surrounding whitespace).
+This hook resolves that per-session file (via Get-ProjectId in _shared.ps1) — never the
+legacy global, which could belong to a different concurrent session's project (#2692).
 On every Agent spawn, we verify the project's `is_killed` state via `GET /api/projects/<id>`
 and deny the spawn if the project is killed.
 
@@ -19,8 +21,8 @@ FAILURE MODES:
 - Project is_killed=true → deny spawn; return error message to user.
 
 IMPLEMENTATION:
-Read `_runtime/lead_project_id.txt`, parse the integer id, read `is_killed` from the
-shared Lever B cache (Invoke-CachedPolicyFetch in _shared.ps1; live GET only on cache
+Resolve the per-session project id (Get-ProjectId -SessionId in _shared.ps1), read
+`is_killed` from the shared Lever B cache (Invoke-CachedPolicyFetch; live GET only on cache
 miss / >60s), deny if true. On is_killed=true a supplementary GET fetches the kill
 metadata for the message. Sharing the cache drops the dedicated per-spawn GET (R2/#2541).
 #>
@@ -35,8 +37,8 @@ metadata for the message. Sharing the cache drops the dedicated per-spawn GET (R
 #
 # Design — LOCKED as D6 = Option (i): file-path contract.
 #   Lead writes the session's bound project_id at bootstrap to:
-#     _runtime/lead_project_id.txt   (single integer, no surrounding whitespace required)
-#   This hook reads that file, GETs /api/projects/{id}, checks is_killed, denies if true.
+#     _runtime/lead_project_id_<session_id>.txt   (single integer; one file per session)
+#   This hook resolves that per-session file, GETs /api/projects/{id}, checks is_killed, denies if true.
 #
 # Fail-open semantics (intentional — bricking Lead on hook misbehavior is worse than
 # allowing a spawn under killed state, since the API gate still catches downstream writes):
@@ -47,8 +49,8 @@ metadata for the message. Sharing the cache drops the dedicated per-spawn GET (R
 #   - is_killed absent or false     -> exit 0 (neutral allow, no output)
 #   - is_killed = true              -> deny JSON + exit 2
 #
-# Lead-side responsibility: bootstrap section of CLAUDE.md must write the project_id
-# to _runtime/lead_project_id.txt right after step 4 ("Announce the binding"). The
+# Lead-side responsibility: the bootstrap section of CLAUDE.md must write the project_id
+# to the per-session _runtime/lead_project_id_<session_id>.txt at step 4 ("Persist"). The
 # file is per-machine runtime state — gitignored except for the .gitkeep marker.
 
 $ErrorActionPreference = 'Stop'
@@ -83,7 +85,7 @@ if ($null -eq $projectId) {
 #
 # Staleness note: the cache TTL is 60s, so a fresh kill can take up to 60s to gate spawns
 # here; the live 423 API gate still blocks the spawned agent's first write immediately.
-# (_shared.ps1 already dot-sourced above for Get-ProjectId.)
+# (Invoke-CachedPolicyFetch comes from _shared.ps1, dot-sourced at the resolve step above.)
 
 $fetch = Invoke-CachedPolicyFetch -ProjectId $projectId
 if ($fetch.failed) {

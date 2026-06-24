@@ -78,23 +78,26 @@ function Get-ProjectId {
             $repoRoot = $env:CLAUDE_PROJECT_DIR
         }
         if (-not $repoRoot) { return $null }
-        # #2692: per-session binding when a SessionId is supplied — read
-        # lead_project_id_<sid>.txt and NEVER fall back to the global file (the
-        # global value belongs to whichever session bound last, possibly another
-        # project — that is the cross-session bug). A session-less caller (omits
-        # SessionId, e.g. a scheduled hook) keeps the legacy global read.
-        if ($SessionId) {
-            # Defense-in-depth (#2692 review MINOR-1): only UUID-shaped session ids,
-            # so a crafted value can't traverse out of _runtime via the filename.
-            if ($SessionId -notmatch '^[a-zA-Z0-9\-]{8,64}$') { return $null }
-            $projectIdFile = Join-Path $repoRoot ("_runtime\lead_project_id_$SessionId.txt")
-        } else {
-            $projectIdFile = Join-Path $repoRoot '_runtime\lead_project_id.txt'
-        }
+        # #2692: per-session binding ONLY — read lead_project_id_<sid>.txt and NEVER
+        # fall back to the global file. The global belongs to whichever session bound
+        # last (possibly another project), so reading it is the cross-session
+        # wrong-project bug. EVERY caller passes a session_id; a miss returns $null so
+        # the gate fails open to ASK / spawn-block goes inactive — never another
+        # session's project (#2692 review WARN-1). A session-less scheduled hook does
+        # its own direct global read (see seo-ranking-report.ps1, KNOWN-GAP-1 #2694).
+        if (-not $SessionId) { return $null }
+        # Defense-in-depth (#2692 review MINOR-1/NIT-1): only UUID-shaped session ids,
+        # anchored with \z (not $, which also matches before a trailing newline in PS),
+        # so a crafted value can't traverse out of _runtime via the filename.
+        if ($SessionId -notmatch '^[a-zA-Z0-9\-]{8,64}\z') { return $null }
+        $projectIdFile = Join-Path $repoRoot ("_runtime\lead_project_id_$SessionId.txt")
     }
 
-    if (-not (Test-Path $projectIdFile)) { return $null }
-    $raw = (Get-Content -Raw -Path $projectIdFile).Trim()
+    # -LiteralPath so a metacharacter in the (UUID-guarded) path can't glob; the read
+    # stays fail-soft (no -ErrorAction Stop: there is no surrounding try/catch here, and
+    # a read error must fall through to $null = fail-open-ASK, not throw).
+    if (-not (Test-Path -LiteralPath $projectIdFile)) { return $null }
+    $raw = (Get-Content -Raw -LiteralPath $projectIdFile).Trim()
     $projectId = 0
     if (-not [int]::TryParse($raw, [ref]$projectId) -or $projectId -le 0) { return $null }
     return $projectId

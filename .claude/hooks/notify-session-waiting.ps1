@@ -1,7 +1,8 @@
 # notify-session-waiting.ps1 — Claude Code Notification hook (Kanban #1937).
 # Fires when the Claude Code session emits a Notification event (idle / waiting
 # for user input at a permission prompt). Reads the active project context from
-# _runtime/lead_project_id.txt, pulls the current IN_PROGRESS task, and POSTs a
+# the per-session _runtime/lead_project_id_<session_id>.txt (#2692), pulls the
+# current IN_PROGRESS task, and POSTs a
 # push notification via POST /api/notifications/deliver so the web_push fan-out
 # (and/or local-file fallback) reaches the operator even when the terminal is not
 # in focus.
@@ -31,8 +32,9 @@ try {
         $hookPayload = $stdinRaw | ConvertFrom-Json -ErrorAction Stop
         if ($hookPayload.PSObject.Properties.Name -contains 'session_id') {
             $sessionId = [string]$hookPayload.session_id
-            # Defense-in-depth (#2692 review MINOR-1): only UUID-shaped session ids.
-            if ($sessionId -notmatch '^[a-zA-Z0-9\-]{8,64}$') { $sessionId = $null }
+            # Defense-in-depth (#2692 review MINOR-1/NIT-1): only UUID-shaped session
+            # ids; \z (not $) so a trailing newline can't slip past the anchor in PS.
+            if ($sessionId -notmatch '^[a-zA-Z0-9\-]{8,64}\z') { $sessionId = $null }
         }
         if ($hookPayload.PSObject.Properties.Name -contains 'message') {
             $hookMessage = [string]$hookPayload.message

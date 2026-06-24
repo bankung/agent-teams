@@ -18,8 +18,10 @@ metadata:
 
 # /tn-bind — resolve a project by name and persist the session binding
 
-The project name is in `$ARGUMENTS`. This writes the canonical binding marker that
-`_runtime/lead_project_id.txt` holds — read by the spawn-block hook AND every tn-* skill.
+The project name is in `$ARGUMENTS`. This writes the per-session binding marker
+`_runtime/lead_project_id_<session_id>.txt` — the canonical source every tn-* skill (via
+`bin/lead-project-id.ps1`) and the per-session hooks resolve from. It also writes the legacy
+global `_runtime/lead_project_id.txt`, now read only by session-less scheduled hooks (KNOWN-GAP-1 #2694).
 
 ## Step 1 — resolve the project by name
 
@@ -47,9 +49,11 @@ global file:
    cost-capture hooks read. Each session has its own file; UUIDs never collide, so a stale
    file from another session can never be mis-read (this is what fixes the cross-session
    mis-attribution: incident 2026-06-05 / stale 599 / ledger 2355).
-3. Write `<id>` to `_runtime/lead_project_id.txt` — the legacy GLOBAL file, still read by the
-   gate/spawn/notify hooks AND the tn-* skills (until Phase B #2680 migrates them).
-   Overwriting it is fine (this session is now the most-recent binder for those readers).
+3. Write `<id>` to `_runtime/lead_project_id.txt` — the legacy GLOBAL file. Since #2692/#2680
+   the gate/spawn/notify hooks resolve per-session (via `Get-ProjectId -SessionId`) and the
+   tn-* skills via `bin/lead-project-id.ps1`, so the global is now read only by the SEO audit
+   hook (`seo-ranking-report.ps1`/`.sh`; KNOWN-GAP-1 #2694). Writing it stays harmless and keeps
+   that one reader pointed at the most-recent binding.
 4. Best-effort housekeeping: prune `_runtime/lead_project_id_*.txt` older than ~7 days.
 
 ## Step 3 — announce

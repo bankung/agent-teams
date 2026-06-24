@@ -17,9 +17,10 @@ $ErrorActionPreference = 'Stop'
 
 try {
     $sid = $env:CLAUDE_CODE_SESSION_ID
-    # UUID-shape guard (same as the hook resolvers, #2692 MINOR-1): reject empty /
-    # malformed ids so a crafted value can't traverse out of _runtime.
-    if (-not $sid -or $sid -notmatch '^[a-zA-Z0-9\-]{8,64}$') {
+    # UUID-shape guard (same as the hook resolvers, #2692 MINOR-1/NIT-1): reject empty /
+    # malformed ids so a crafted value can't traverse out of _runtime. \z (not $) so a
+    # trailing newline can't slip past the anchor in PowerShell.
+    if (-not $sid -or $sid -notmatch '^[a-zA-Z0-9\-]{8,64}\z') {
         [Console]::Error.WriteLine("lead-project-id: no/invalid CLAUDE_CODE_SESSION_ID -- run /tn-bind <project> in this session")
         exit 1
     }
@@ -31,10 +32,14 @@ try {
         exit 1
     }
 
-    $raw = (Get-Content -LiteralPath $file -Raw).Trim()
+    $raw = Get-Content -LiteralPath $file -Raw          # $null on a zero-byte file
+    if ($null -ne $raw) { $raw = $raw.Trim() }
     $projId = 0
-    if (-not [int]::TryParse($raw, [ref]$projId) -or $projId -le 0) {
-        [Console]::Error.WriteLine("lead-project-id: binding file malformed ('$raw') -- re-run /tn-bind <project>")
+    if ([string]::IsNullOrEmpty($raw) -or -not [int]::TryParse($raw, [ref]$projId) -or $projId -le 0) {
+        # Tailored message + cap the echoed content (#2692 review NIT-2): never spill an
+        # unbounded body to stderr, and handle the empty/null file without a null-deref.
+        $shown = if ([string]::IsNullOrEmpty($raw)) { '(empty)' } else { $raw.Substring(0, [Math]::Min(20, $raw.Length)) }
+        [Console]::Error.WriteLine("lead-project-id: binding file malformed ('$shown') -- re-run /tn-bind <project>")
         exit 1
     }
 
