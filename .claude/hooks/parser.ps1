@@ -163,6 +163,66 @@ function Read-MarkerValue {
 }
 
 
+function Resolve-ActiveTaskId {
+    <#
+    .SYNOPSIS
+      Resolve which task a usage event belongs to — PULL, not PUSH (#2662).
+    .DESCRIPTION
+      Primary: ask the API which task is IN_PROGRESS (process_status=2) for this
+      project and pick the most-recently-started one (tiebreak: max id). The
+      in-progress status is the Kanban source of truth, maintained by normal
+      discipline — unlike the lead_current_task.txt marker, which NO code writes,
+      so attribution was almost always NULL/stale.
+      Fallback chain: in-progress task -> marker -> $null. NEVER throws; any
+      failure (API down, timeout, non-JSON) falls through to the marker/NULL.
+    .OUTPUTS
+      A task id STRING (matching Read-MarkerValue's contract), or $null.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string] $RuntimeDir,
+        [Parameter(Mandatory = $true)][string] $ProjectId,
+        [string] $LogPath = $null
+    )
+
+    # --- Primary: PULL the in-progress task from the API ------------------
+    try {
+        $url = "$script:UsageApiBase/api/tasks?process_status=2"
+        $raw = & curl.exe --silent --show-error --max-time 5 `
+            -H "X-Project-Id: $ProjectId" `
+            $url 2>&1 | Out-String
+
+        $parsed = $null
+        try { $parsed = $raw | ConvertFrom-Json } catch { $parsed = $null }
+
+        $rows = @($parsed | Where-Object { $null -ne $_ -and $null -ne $_.id })
+        if ($rows.Count -gt 0) {
+            $pick = $rows | Sort-Object `
+                @{ Expression = { if ($_.started_at) { [datetime]$_.started_at } else { [datetime]::MinValue } }; Descending = $true }, `
+                @{ Expression = { [int]$_.id }; Descending = $true } |
+                Select-Object -First 1
+            if ($null -ne $pick) {
+                if ($LogPath) { Write-UsageLog $LogPath "[ResolveTask] PULL in-progress task_id=$($pick.id) (started=$($pick.started_at))" }
+                return [string]$pick.id
+            }
+        }
+        if ($LogPath) { Write-UsageLog $LogPath "[ResolveTask] PULL no in-progress task -> marker fallback" }
+    }
+    catch {
+        if ($LogPath) { Write-UsageLog $LogPath ("[ResolveTask] PULL error -> marker fallback: " + $_.Exception.Message) }
+    }
+
+    # --- Fallback: the legacy marker (manual override / back-compat) ------
+    $marker = Read-MarkerValue (Join-Path $RuntimeDir 'lead_current_task.txt')
+    if (-not [string]::IsNullOrEmpty($marker)) {
+        if ($LogPath) { Write-UsageLog $LogPath "[ResolveTask] marker task_id=$marker" }
+        return $marker
+    }
+
+    if ($LogPath) { Write-UsageLog $LogPath "[ResolveTask] no active task -> NULL" }
+    return $null
+}
+
+
 function Write-UsageLog {
     <# Best-effort append to the capture log. Never throws. #>
     param(

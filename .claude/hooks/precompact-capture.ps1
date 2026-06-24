@@ -42,7 +42,7 @@ try {
         Write-UsageLog $logPath "[PreCompact] DROP: lead_project_id.txt missing/empty"
         exit 0
     }
-    $taskId = Read-MarkerValue (Join-Path $runtimeDir 'lead_current_task.txt')
+    $taskId = Resolve-ActiveTaskId -RuntimeDir $runtimeDir -ProjectId $projectId -LogPath $logPath
 
     $watermark = Join-Path $runtimeDir "usage_watermark_$sessionId.json"
 

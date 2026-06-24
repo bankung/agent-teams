@@ -1,14 +1,16 @@
 ---
 story: mode-a-cost
-version: 4
-updated: 2026-06-15
-updated_by: lead @ #1304
+version: 5
+updated: 2026-06-24
+updated_by: lead @ #2662
 ---
 
 <!-- STORY DOC — mutable thread STATE ("what is true NOW"), single writer = Lead.
      Counterpart: the activity rail holds the immutable per-task EVENTS. Rules locked 2026-06-12 (#2332). -->
 
 ## Current state
+
+- **PULL task-attribution LIVE — #2662 (Phase 1, on `dev`, not committed).** Replaced the marker-only `task_id` resolution with `Resolve-ActiveTaskId` in `parser.ps1`: GET `/api/tasks?process_status=2` → most-recent `started_at` (tiebreak max id) → `lead_current_task.txt` marker → NULL. All 3 capture hooks (subagent-stop/sessionend/precompact) call it. ROOT FINDING: the marker has NO writer in-repo and held a STALE `2355` for weeks → the pre-#2662 path mis-attributed EVERY event to task 2355 (not NULL). 0 model-token (runs in hook), +1 localhost GET (~30ms). Live-proven: Explore smoke while #2662 ps=2 → `usage_events` id=306 `task_id=2662` (old path wrote 2355, e.g. id=11). hooks-only diff +64/-5; ii-applied. Phase 2 (detach SubagentStop / byte-offset watermark) + Phase 3 (PreToolUse brief-size for re-derivation ratio) = follow-ups.
 
 - **Ledger LIVE.** `usage_events` table (migration `0067`, applied) + `POST /api/usage/events` ingest — commit `9696510` (#2354). Server computes `cost_usd` from raw tokens+model; idempotent on `dedup_key` (re-POST → 200, same id). Per-project rate-limit 60req/10s, 429-before-DB-work — commit `7de0c7f` (#2355). NOTE: ingest is **POST-only — no GET** (a GET 405s); read rows via the DB or the hook log.
 - **Capture producer LIVE** — commit `2d78a27` (#2355). Three best-effort lifecycle hooks in `.claude/hooks/` (`subagent-stop-capture.ps1`, `precompact-capture.ps1`, `sessionend-capture.ps1`) over shared `parser.ps1`; `settings.json` wired (operator ii, timeout 15, always exit 0). Task attribution via `_runtime/lead_current_task.txt` marker; Lead delta de-dup via `_runtime/usage_watermark_<session>.json`.
@@ -45,6 +47,7 @@ updated_by: lead @ #1304
 
 ## Changelog
 
+- v5 2026-06-24 #2662 — PULL task-attribution LIVE (Phase 1): `Resolve-ActiveTaskId` in parser.ps1 (in-progress task via `/api/tasks?process_status=2` → marker → NULL) replaces the never-written marker; all 3 hooks wired. Root finding: stale marker mis-attributed every capture to 2355 (not NULL). Live smoke `usage_events` id=306 task_id=2662; AC1/AC3/AC4/AC5 verified; hooks-only +64/-5, ii-applied; not yet committed. Phase 2 (detach SubagentStop + byte-offset watermark) + Phase 3 (PreToolUse brief-size) = follow-ups.
 - v4 2026-06-15 #1304 — pre-task cost FORECAST LIVE (commit `28a996a`): `POST /api/tasks/{id}/cost-forecast` + migration 0068 (`cost_forecast_threshold_usd` $1-default + `forecast_cost_usd`) + NewTaskModal $-gate confirm modal; `_DEFAULT_ANTHROPIC_MODEL` sonnet→opus-4-8. dev-reviewer + dev-security-reviewer APPROVE-WITH-NOTES; SEC-1/M1/M2 folded; live smoke + FE vitest 330 green. Caused a mid-build live outage (ORM-ahead-of-migration via --reload) → recovered by applying 0068 live + restart api. Deferred na: AC2/AC4 measurements → #2408; follow-ups #2409 (CalendarView gate) + #2410 (model_override pricing).
 - v3 2026-06-15 #2356 — read side LIVE: `GET /api/usage/monthly` billing-cycle rollup + `occurred_at` clamp (AC2) + `MonthlySpendSection` dashboard card (commit `3f75a7b`). dev-reviewer + dev-security-reviewer APPROVE-WITH-NOTES (0 blocker/major); Lead folded M1/M2 comment fixes + SW-1 (`task_title` cross-project widening -> decisions.md K1 gap). Verified live (monthly 2 cycles A/B, clamp 422); api usage tests 25, web 323. P3 closes the mode-a-cost build arc (P1 ingest + P2 capture + P3 read all LIVE).
 - v2 2026-06-13 #2361 — pre-0.6.3 intense review + security test (0 blockers/0 majors): token overflow guard, W1 port→127.0.0.1, W2 hooks drop conversation content (8570c46); residual nits → #2362; README v0.6.3 section added.

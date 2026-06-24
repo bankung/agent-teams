@@ -72,9 +72,8 @@ try {
         exit 0
     }
 
-    # --- Resolve task id (OPTIONAL) ---------------------------------------
-    $taskIdPath = Join-Path $runtimeDir 'lead_current_task.txt'
-    $taskId = Read-MarkerValue $taskIdPath   # $null -> omit
+    # --- Resolve task id (PULL in-progress; marker fallback; #2662) -------
+    $taskId = Resolve-ActiveTaskId -RuntimeDir $runtimeDir -ProjectId $projectId -LogPath $logPath
 
     # --- Locate the finished subagent transcript --------------------------
     $subagentsDir = Resolve-SubagentsDir $transcriptPath
