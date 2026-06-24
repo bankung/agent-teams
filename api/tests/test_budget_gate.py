@@ -20,6 +20,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -111,6 +112,22 @@ async def test_null_cap_returns_no_cap_configured(client, scaffold_cleanup, db_s
     assert bc.cap_daily_usd is None
     assert bc.pct_used is None
     assert bc.used_today_usd == Decimal("0.0000")
+
+
+@pytest.mark.asyncio
+async def test_null_cap_skips_compute_spend(client, scaffold_cleanup, db_session):
+    """AC2: no-cap project → compute_spend is never awaited; result fields correct."""
+    pid = await _make_fresh_project(client, scaffold_cleanup, "gate-null-skip")
+    # No cap set — column stays NULL.
+    spy = AsyncMock(return_value=Decimal("0"))
+    with patch("src.services.budget_gate.compute_spend", spy):
+        bc = await check_budget(db_session, pid, Decimal("5.00"))
+    spy.assert_not_awaited()
+    assert bc.allowed is True
+    assert bc.reason == "no_cap_configured"
+    assert bc.used_today_usd == Decimal("0")
+    assert bc.projected_usd == Decimal("0")
+    assert bc.pct_used is None
 
 
 @pytest.mark.asyncio
