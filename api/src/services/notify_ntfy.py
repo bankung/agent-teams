@@ -129,11 +129,11 @@ def send_push(
         try:
             resp = client.post(url, content=message.encode("utf-8"), headers=headers)
         except httpx.RequestError as exc:
-            logger.warning("notify_ntfy: request_error topic=%s err=%r", topic, exc)
+            logger.warning("notify_ntfy: request_error topic=%s err_type=%s", topic, type(exc).__name__)
             return SendResult(
                 ok=False,
                 detail=f"request_error: {type(exc).__name__}",
-                error=repr(exc),
+                error=type(exc).__name__,
             )
         if not (200 <= resp.status_code < 300):
             snippet = (resp.text or "")[:200]
@@ -149,11 +149,11 @@ def send_push(
         logger.info("notify_ntfy: sent topic=%s priority=%d", topic, priority)
         return SendResult(ok=True, detail="sent")
     except Exception as exc:  # noqa: BLE001 — docstring contract: MUST NOT raise
-        logger.warning("notify_ntfy: unexpected_error topic=%s err=%r", topic, exc)
+        logger.warning("notify_ntfy: unexpected_error topic=%s err_type=%s", topic, type(exc).__name__)
         return SendResult(
             ok=False,
             detail=f"unexpected_error: {type(exc).__name__}",
-            error=repr(exc),
+            error=type(exc).__name__,
         )
     finally:
         if own_client:

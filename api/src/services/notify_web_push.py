@@ -115,8 +115,8 @@ async def _soft_delete_subscription(sub_id: int) -> None:
             )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(
-            "notify_web_push: failed to soft-delete subscription id=%d: %r",
-            sub_id, exc,
+            "notify_web_push: failed to soft-delete subscription id=%d err_type=%s",
+            sub_id, type(exc).__name__,
         )
 
 
@@ -190,7 +190,7 @@ async def send_web_push(
             ).scalar_one_or_none()
     except Exception as exc:  # pragma: no cover - DB unreachable
         logger.warning(
-            "notify_web_push: db_error fetching sub_id=%d: %r", sub_id, exc
+            "notify_web_push: db_error fetching sub_id=%d err_type=%s", sub_id, type(exc).__name__
         )
         return {"ok": False, "detail": f"db_error: {type(exc).__name__}"}
 
@@ -250,7 +250,7 @@ async def send_web_push(
             }
         except Exception as exc:
             logger.warning(
-                "notify_web_push: request_error sub_id=%d err=%r", sub_id, exc
+                "notify_web_push: request_error sub_id=%d err_type=%s", sub_id, type(exc).__name__
             )
             return {
                 "ok": False,

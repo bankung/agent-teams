@@ -442,6 +442,7 @@ async def update_session_run(
             )
         except ValueError as exc:
             # Unknown (provider, model). Don't fail the PATCH — log + leave column.
+            # audited #2659: ValueError from pricing lookup carries no secret (provider/model are public names)
             logger.warning(
                 "session_runs cost lookup failed: run_id=%d provider=%r model=%r err=%r",
                 run_id,
