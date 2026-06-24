@@ -45,7 +45,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.project import Project
@@ -132,29 +132,26 @@ async def _resolve_push_subscription_targets(
         select(PushSubscription)
         .where(
             PushSubscription.status == RecordStatus.ACTIVE,
+            or_(
+                PushSubscription.project_id.is_(None),
+                PushSubscription.project_id == project_id,
+            ),
+            PushSubscription.kinds_enabled[event_kind].astext == "true",
         )
         .order_by(PushSubscription.id.asc())
     )
     result = await session.execute(stmt)
     subs = result.scalars().all()
 
-    targets: list[dict[str, Any]] = []
-    for sub in subs:
-        # Project scoping: NULL means all-projects; specific project_id must match.
-        if sub.project_id is not None and sub.project_id != project_id:
-            continue
-        # kinds_enabled filter — treat missing key as False.
-        kinds = sub.kinds_enabled or {}
-        if not kinds.get(event_kind, False):
-            continue
-        targets.append(
-            {
-                "kind": "web_push",
-                "chat_id": str(sub.id),
-                "priority": 100,
-                "label": f"push:{sub.id}",
-            }
-        )
+    targets: list[dict[str, Any]] = [
+        {
+            "kind": "web_push",
+            "chat_id": str(sub.id),
+            "priority": 100,
+            "label": f"push:{sub.id}",
+        }
+        for sub in subs
+    ]
     return targets
 
 
