@@ -14,7 +14,7 @@ import logging
 import types as _types
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi import status as http_status
@@ -1980,6 +1980,17 @@ async def create_task(
     return task
 
 
+def _resolved(updates: dict[str, Any], task: Task, field: str) -> Any:
+    """PATCH-wins-else-row resolver for update_task (#2674).
+
+    Returns the PATCH-supplied value for `field` when the key is present in
+    `updates` — a membership test, NOT .get(), so an explicit None in the PATCH
+    body is honored — else the existing row's value. Single source of truth for
+    the "PATCH-supplied if present, else existing row" resolved-final semantics.
+    """
+    return updates[field] if field in updates else getattr(task, field)
+
+
 def _check_optimistic_lock(
     task: Task,
     if_unmodified_since: str | None,
@@ -2153,16 +2164,14 @@ async def update_task(
     # existing row's run_mode. V1 forbids re-parenting so project_id is always
     # the existing row's. Only fires when the resolved value is auto_headless;
     # downgrading auto_headless → manual is always allowed.
-    resolved_run_mode = updates.get("run_mode") if "run_mode" in updates else task.run_mode
+    resolved_run_mode = _resolved(updates, task, "run_mode")
 
     # V3+ T1 (Kanban #706) cross-table validator on RESOLVED final values:
     # task_kind='human' is incompatible with run_mode != 'manual'. Resolve
     # task_kind the same way as run_mode. Fires BEFORE the consent check
     # (cheaper — pure function, no DB I/O). Detail string source-text-locked
     # in services/task_kind.py.
-    resolved_task_kind = (
-        updates.get("task_kind") if "task_kind" in updates else task.task_kind
-    )
+    resolved_task_kind = _resolved(updates, task, "task_kind")
 
     # Kanban #858: server-side coerce based on the resolved interaction_kind.
     # If the resolved value is 'question' or 'decision', force task_kind='human'
@@ -2170,10 +2179,7 @@ async def update_task(
     # below from firing on the same call). Reverse 'question'/'decision' → 'work'
     # is NOT auto-reverted (spawn brief edge case #3) — task_kind stays at the
     # existing 'human' until the caller explicitly PATCHes it back to 'ai'.
-    resolved_interaction_kind = (
-        updates.get("interaction_kind") if "interaction_kind" in updates
-        else task.interaction_kind
-    )
+    resolved_interaction_kind = _resolved(updates, task, "interaction_kind")
     coerced_task_kind, coerced_run_mode = coerce_task_kind_for_interaction(
         resolved_interaction_kind, resolved_task_kind, resolved_run_mode
     )
@@ -2196,14 +2202,8 @@ async def update_task(
     # is_pending=true on a ps=3 row → 400; PATCH only ps=3 on a ps=2 +
     # is_pending=true row → 400). Pure function — fires before consent
     # (DB I/O). Detail source-text-locked in services/is_pending.py.
-    resolved_is_pending = (
-        updates["is_pending"] if "is_pending" in updates else task.is_pending
-    )
-    resolved_process_status = (
-        updates["process_status"]
-        if "process_status" in updates
-        else task.process_status
-    )
+    resolved_is_pending = _resolved(updates, task, "is_pending")
+    resolved_process_status = _resolved(updates, task, "process_status")
     assert_is_pending_with_process_status(
         resolved_is_pending, resolved_process_status
     )
@@ -2350,14 +2350,8 @@ async def update_task(
     # two detail-string templates. Skipped silently when neither field is
     # in the body (no chance of violating).
     if "sort_order" in updates or "blocked_by" in updates:
-        resolved_sort_order = (
-            updates["sort_order"] if "sort_order" in updates else task.sort_order
-        )
-        resolved_blocked_by_for_order = (
-            updates["blocked_by"]
-            if "blocked_by" in updates
-            else task.blocked_by
-        )
+        resolved_sort_order = _resolved(updates, task, "sort_order")
+        resolved_blocked_by_for_order = _resolved(updates, task, "blocked_by")
         await _enforce_blocker_order_constraint(
             session,
             target_id=task_id,
@@ -2371,14 +2365,8 @@ async def update_task(
     # this app-layer check catches the cross-state case (PATCH one field on a
     # row where the other is already set). Returns 422 with the same locked
     # detail before the DB CHECK trips the IntegrityError 400 fallback.
-    resolved_is_template = (
-        updates["is_template"] if "is_template" in updates else task.is_template
-    )
-    resolved_scheduled_at = (
-        updates["scheduled_at"]
-        if "scheduled_at" in updates
-        else task.scheduled_at
-    )
+    resolved_is_template = _resolved(updates, task, "is_template")
+    resolved_scheduled_at = _resolved(updates, task, "scheduled_at")
     if resolved_is_template is True and resolved_scheduled_at is not None:
         raise HTTPException(
             status_code=422,
@@ -2394,11 +2382,7 @@ async def update_task(
     # existing row's value). Fires AFTER consent (which is the broader gate —
     # project-level consent must be granted first; then the per-template L15
     # confirm refines it). Detail string source-text-locked above.
-    resolved_template_auto_run_confirmed_at = (
-        updates["template_auto_run_confirmed_at"]
-        if "template_auto_run_confirmed_at" in updates
-        else task.template_auto_run_confirmed_at
-    )
+    resolved_template_auto_run_confirmed_at = _resolved(updates, task, "template_auto_run_confirmed_at")
     if (
         resolved_is_template is True
         and resolved_run_mode == TaskRunMode.AUTO_HEADLESS
@@ -2491,16 +2475,8 @@ async def update_task(
         and ("recurrence_rule" in updates or "recurrence_timezone" in updates)
         and "next_fire_at" not in updates
     ):
-        resolved_rule = (
-            updates["recurrence_rule"]
-            if "recurrence_rule" in updates
-            else task.recurrence_rule
-        )
-        resolved_tz = (
-            updates["recurrence_timezone"]
-            if "recurrence_timezone" in updates
-            else task.recurrence_timezone
-        )
+        resolved_rule = _resolved(updates, task, "recurrence_rule")
+        resolved_tz = _resolved(updates, task, "recurrence_timezone")
         if resolved_rule:
             updates["next_fire_at"] = next_cron_fire(resolved_rule, resolved_tz or "UTC")
 
