@@ -323,6 +323,11 @@ def run() -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    # #2667 — httpx INFO request-logging prints the token-bearing URL
+    # (e.g. /bot<TOKEN>/getUpdates) into stdout. Mute to WARNING so our own
+    # scripts.telegram_poller INFO logs are preserved but the token never leaks.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     token = os.environ.get(TELEGRAM_ENV_TOKEN, "").strip()
     if not token:

@@ -72,6 +72,13 @@ if not _src_logger.handlers:
     _h = logging.StreamHandler(sys.stdout)
     _h.setFormatter(logging.Formatter(_LOG_FORMAT))
     _src_logger.addHandler(_h)
+# #2667 defense-in-depth — the 'src' handler above is on a separate logger
+# tree from 'httpx', so httpx INFO request logs (which print token-bearing
+# URLs) are NOT emitted by the api today (#2565 smoke: no /bot URL in api
+# log). This suppresses them explicitly in case uvicorn or a future config
+# adds a root INFO handler that would otherwise catch the httpx tree.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
