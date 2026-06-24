@@ -19,7 +19,7 @@ metadata:
 `$ARGUMENTS` = the title, optionally `title | description`.
 
 ## Step 1 — resolve the active project id
-Read `_runtime/lead_project_id.txt` → use as BOTH `X-Project-Id` header AND `project_id` in the body
+Resolve the project id by running `powershell -File bin/lead-project-id.ps1` (THIS session's binding; exits non-zero if unbound → run `/tn-bind`, never the global `lead_project_id.txt`) — use as BOTH `X-Project-Id` header AND `project_id` in the body
 (they MUST match — the server 400s on mismatch). If missing, run `/tn-bind` first.
 
 ## Step 2 — build the payload

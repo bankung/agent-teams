@@ -29,7 +29,7 @@ summary (Step 2)** — it cannot be re-derived from a query once the context is 
 
 ## Step 1 — resolve the bound project
 
-Read `_runtime/lead_project_id.txt` (single integer) → the bound project id; use it as
+Resolve the bound project id by running `powershell -File bin/lead-project-id.ps1` (THIS session's binding; exits non-zero if unbound → run `/tn-bind`, never the global `lead_project_id.txt`); use it as
 `X-Project-Id` on every `/api/*` call. Missing/empty → run `/tn-bind <project>` first.
 
 ## Step 2 — summarize the in-session thread (THE CORE — judgment, not a query)

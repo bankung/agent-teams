@@ -24,7 +24,7 @@ to pin a single milestone. Read-only (no mutations).
 > more important); process_status 1 TODO / 2 IN_PROGRESS / 3 REVIEW / 4 BLOCKED / 5 DONE / 6 CANCELLED.
 
 ## Step 1 — resolve the active project id
-Read `_runtime/lead_project_id.txt` → `X-Project-Id`. If missing, run `/tn-bind` first.
+Resolve `X-Project-Id` by running `powershell -File bin/lead-project-id.ps1` — it prints THIS session's bound project id and exits non-zero if this session is unbound (→ STOP, run `/tn-bind`). Never read the global `lead_project_id.txt` (it may hold another concurrent session's project). [#2680]
 
 ## Step 2 — fetch milestones (for ordering + spill)
 ```

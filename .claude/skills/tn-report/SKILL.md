@@ -26,7 +26,7 @@ user's request is in `$ARGUMENTS` as `<task_id> <kind> <summary>`. Follow this e
 
 ## Step 1 — resolve the active project id (NON-NEGOTIABLE)
 
-Read the session-bound project id from `_runtime/lead_project_id.txt` (a single integer).
+Resolve the session-bound project id by running `powershell -File bin/lead-project-id.ps1` — it prints THIS session's id (`_runtime/lead_project_id_<sid>.txt`) and exits non-zero if this session is unbound; on a non-zero exit STOP and run `/tn-bind`, never read the global `lead_project_id.txt` (it may hold another concurrent session's project). [#2680]
 That value is the `X-Project-Id` header for the POST + GET.
 
 - If the file is missing/empty: STOP and ask the operator which project to bind to.

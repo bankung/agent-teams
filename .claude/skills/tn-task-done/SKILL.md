@@ -23,8 +23,8 @@ flipped DONE on unverified criteria.
 
 ## Step 1 — resolve the active project id
 
-Read `_runtime/lead_project_id.txt` (single integer) → use as `X-Project-Id`.
-If missing/empty: STOP and run `/tn-bind <project>` first.
+Resolve `X-Project-Id` by running `powershell -File bin/lead-project-id.ps1` (prints THIS session's bound project id; exits non-zero if unbound — never read the global `lead_project_id.txt`, it may hold another session's project). [#2680]
+If it exits non-zero: STOP and run `/tn-bind <project>` first.
 
 ## Step 2 — fetch the task
 

@@ -23,7 +23,7 @@ metadata:
 
 `$ARGUMENTS` = `[memory | decisions | both] [project-name]` — which store(s) to compact (default
 `both`) and an optional project override for the `decisions.md` target (default = the session-bound
-active project in `_runtime/lead_project_id.txt`).
+active project for THIS session, via `bin/lead-project-id.ps1`).
 
 This skill REASONS over two append-mostly knowledge stores and proposes how to shrink them without
 losing information. It is **Lead-run**: only the Lead has host filesystem access to the operator
@@ -45,7 +45,7 @@ If you cannot satisfy "all output under `_scratch/`", STOP and report — do not
 
 ## Procedure
 
-1. **Resolve targets.** Read `_runtime/lead_project_id.txt` → active project id (and name, via
+1. **Resolve targets.** Run `powershell -File bin/lead-project-id.ps1` → THIS session's active project id (exits non-zero if unbound → `/tn-bind`; never the global `lead_project_id.txt`) (and name, via
    `GET /api/projects/<id>` if needed). A `project-name` arg overrides the decisions target. Resolve:
    memory dir = the operator auto-memory path (`MEMORY.md` + `memory/*.md`); decisions =
    `context/projects/<project>/shared/decisions.md`. Make the output dir

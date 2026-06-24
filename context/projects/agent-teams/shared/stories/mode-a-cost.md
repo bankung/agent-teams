@@ -1,14 +1,16 @@
 ---
 story: mode-a-cost
-version: 7
+version: 8
 updated: 2026-06-24
-updated_by: lead @ #2692
+updated_by: lead @ #2680
 ---
 
 <!-- STORY DOC — mutable thread STATE ("what is true NOW"), single writer = Lead.
      Counterpart: the activity rail holds the immutable per-task EVENTS. Rules locked 2026-06-12 (#2332). -->
 
 ## Current state
+
+- **Skills per-session binding LIVE — #2680 (Phase B, on `dev`, not committed).** New CLI `bin/lead-project-id.ps1` resolves THIS session's project (per-session, UUID guard, exit-1 fail-loud); all 13 tn-* skill refs migrated off the global `lead_project_id.txt` to the CLI; mutating skills abort on non-zero. **Closes the wrong-project-write hole.** Verified: CLI happy→1, foreign/malformed→exit1; grep 0 reader-instructions remain. +15/-15 + new CLI, ii-applied. **WORKSTREAM COMPLETE** (Phase 1 #2662 + A #2679 + A.2 #2692 + B #2680); only residual = **KNOWN-GAP-1** (session-less scheduled seo hooks still on global, low-priority).
 
 - **Gate-family per-session binding LIVE — #2692 (Phase A.2, on `dev`, not committed).** The 2 PreToolUse gates (approval-policies, pretooluse-bash) + block-spawn + notify now resolve project per-session via `$payload.session_id` (`Get-ProjectId -SessionId` / inline) — no global fallback; seo-ranking EXCLUDED (scheduled, no session). dev-security-reviewer **APPROVE-WITH-NOTES (0 blocker/0 major)**; folded MINOR-1 (UUID path-traversal guard on ALL 3 resolvers incl. #2679's parser.ps1), NIT-1 (dup dot-source), NIT-2 (msg). Verified: traversal→NULL, foreign→NULL with global=1, approval smoke 7/7. +57/-43, ii-applied. REMAINING: skills = Phase B #2680; session-less scheduled hooks still on global (KNOWN-GAP-1, tracked); in-flight sessions re-bind.
 
@@ -51,6 +53,7 @@ updated_by: lead @ #2692
 
 ## Changelog
 
+- v8 2026-06-24 #2680 — skills per-session binding (Phase B): bin/lead-project-id.ps1 CLI (per-session resolve, UUID guard, fail-loud); 13 tn-* skill refs migrated off the global to the CLI; mutating skills abort on non-zero -> closes the wrong-project-write hole. Verified CLI + grep 0 reader-instructions. +15/-15 + CLI, ii-applied, not committed. Binding workstream (Phase 1/A/A.2/B) COMPLETE; residual = KNOWN-GAP-1 (session-less seo hooks).
 - v7 2026-06-24 #2692 — gate-family per-session binding (Phase A.2): Get-ProjectId gains -SessionId (per-session, no global fallback); approval-policies + pretooluse-bash + block-spawn + notify resolve via $payload.session_id; seo excluded (scheduled, no session). dev-security-reviewer APPROVE-WITH-NOTES (0 blocker/0 major); MINOR-1 UUID path-traversal guard folded into _shared + parser(#2679) + notify; NIT-1/NIT-2 fixed. Verified traversal->NULL, foreign->NULL w/ global=1, approval smoke 7/7. +57/-43, ii-applied, not committed. Remaining: skills Phase B #2680; session-less hooks KNOWN-GAP-1.
 - v6 2026-06-24 #2679 — session-scoped project binding (Phase A): `Resolve-LeadProjectId` (per-UUID `lead_project_id_<sid>.txt`, NO global fallback) in parser.ps1; 3 capture hooks wired via payload session_id; `lead_current_task.txt` dropped; tn-bind + CLAUDE.md write per-UUID + global. Live: foreign sid → NULL with global=1; smoke `usage_events` id=313 proj=1 task=2679. hooks-only +65/-25, ii-applied, not committed. Findings: gate-family hooks still on global (Phase A.2 needed, incl. security approval path); skills = Phase B #2680; in-flight sessions need re-bind.
 - v5 2026-06-24 #2662 — PULL task-attribution LIVE (Phase 1): `Resolve-ActiveTaskId` in parser.ps1 (in-progress task via `/api/tasks?process_status=2` → marker → NULL) replaces the never-written marker; all 3 hooks wired. Root finding: stale marker mis-attributed every capture to 2355 (not NULL). Live smoke `usage_events` id=306 task_id=2662; AC1/AC3/AC4/AC5 verified; hooks-only +64/-5, ii-applied; not yet committed. Phase 2 (detach SubagentStop + byte-offset watermark) + Phase 3 (PreToolUse brief-size) = follow-ups.

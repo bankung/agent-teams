@@ -16,7 +16,7 @@ metadata:
 
 # /tn-audit — on-demand project health audit
 
-`$ARGUMENTS` = optional project name or id. Default = the bound project (`_runtime/lead_project_id.txt`).
+`$ARGUMENTS` = optional project name or id. Default = the bound project (run `powershell -File bin/lead-project-id.ps1` for THIS session's id; never the global `lead_project_id.txt`). [#2680]
 NOTE: there is NO "run audit" API endpoint — the audit RUN is the **project-auditor** agent. The
 `/audit` router only exposes the historical rollup (read).
 
