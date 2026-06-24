@@ -154,13 +154,15 @@ def check_operator_proof(token_header: str | None) -> OperatorDecision:
     """Decide whether `token_header` proves operator presence for THIS request.
 
     Returns `OperatorDecision.OPERATOR` or `NOT_OPERATOR` per the activation
-    semantics in the module docstring. ALWAYS writes an audit row (for BOTH
-    allow and deny) before returning — the caller raises HTTP 403 on
-    `NOT_OPERATOR`.
+    semantics in the module docstring. Writes an audit row only when the gate is
+    ACTIVE — inactive (fail-open) passes carry no signal worth persisting, and
+    every task PATCH would append a noise row while the gate is dormant.
+    The caller raises HTTP 403 on `NOT_OPERATOR`.
     """
     active = _gate_active()
     decision = _evaluate(token_header)
-    _write_audit(decision, active=active)
+    if active:
+        _write_audit(decision, active=active)
     return decision
 
 

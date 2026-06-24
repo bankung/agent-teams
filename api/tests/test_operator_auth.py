@@ -105,7 +105,11 @@ def _reset_inactive_warn():
 
 
 def test_check_proof_inactive_allows_any_token(monkeypatch, tmp_path):
-    """Key UNSET -> OPERATOR for any token (fail-open), audit row written."""
+    """Key UNSET -> OPERATOR for any token (fail-open), NO audit row written.
+
+    AC1: when the gate is INACTIVE the audit file must NOT grow — inactive
+    passes carry no signal and every task PATCH would append noise.
+    """
     monkeypatch.delenv(_KEY_ENV, raising=False)
     audit = tmp_path / "audit.jsonl"
     monkeypatch.setattr(operator_auth, "_AUDIT_PATH", audit)
@@ -113,9 +117,50 @@ def test_check_proof_inactive_allows_any_token(monkeypatch, tmp_path):
     assert check_operator_proof(None) is OperatorDecision.OPERATOR
     assert check_operator_proof("anything") is OperatorDecision.OPERATOR
 
+    # AC1 negative assertion: the file must not have been created at all.
+    assert not audit.exists(), "inactive gate must not write any audit rows"
+
+
+def test_check_proof_inactive_no_audit_row(monkeypatch, tmp_path):
+    """AC1 explicit spy: _write_audit is NOT called when the gate is INACTIVE.
+
+    Complements the file-existence check above with a direct call-count assertion
+    so any future refactor that moves the guard inside _write_audit is also caught.
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    audit = tmp_path / "audit.jsonl"
+    monkeypatch.setattr(operator_auth, "_AUDIT_PATH", audit)
+
+    calls: list = []
+    original = operator_auth._write_audit
+    monkeypatch.setattr(
+        operator_auth, "_write_audit", lambda *a, **kw: calls.append((a, kw))
+    )
+    try:
+        check_operator_proof(None)
+        check_operator_proof("any-token")
+    finally:
+        monkeypatch.setattr(operator_auth, "_write_audit", original)
+
+    assert calls == [], f"_write_audit called {len(calls)} time(s) when gate inactive"
+
+
+def test_check_proof_active_audit_written(monkeypatch, tmp_path):
+    """AC2: when the gate is ACTIVE, operator-proof decisions ARE audited.
+
+    Both an allow (valid token) and a deny (wrong token) must produce a row.
+    """
+    monkeypatch.setenv(_KEY_ENV, "s3cret-token")
+    audit = tmp_path / "audit.jsonl"
+    monkeypatch.setattr(operator_auth, "_AUDIT_PATH", audit)
+
+    check_operator_proof("s3cret-token")   # allow
+    check_operator_proof("wrong-token")    # deny
+
     rows = [json.loads(line) for line in audit.read_text().splitlines()]
-    assert len(rows) == 2
-    assert all(r["decision"] == "operator" and r["gate_active"] is False for r in rows)
+    assert len(rows) == 2, f"expected 2 audit rows for active gate, got {len(rows)}"
+    assert rows[0]["decision"] == "operator" and rows[0]["gate_active"] is True
+    assert rows[1]["decision"] == "not_operator" and rows[1]["gate_active"] is True
 
 
 def test_check_proof_active_valid_token(monkeypatch, tmp_path):
