@@ -65,9 +65,10 @@ async def request_size_middleware(request: Request, call_next):
         except ValueError:
             # Malformed Content-Length — let the downstream stack handle it.
             return await call_next(request)
-        if content_length > _max_bytes():
+        max_bytes = _max_bytes()
+        if content_length > max_bytes:
             return JSONResponse(
-                {"detail": f"Request body too large (max {_max_bytes()} bytes)"},
+                {"detail": f"Request body too large (max {max_bytes} bytes)"},
                 status_code=413,
             )
     return await call_next(request)

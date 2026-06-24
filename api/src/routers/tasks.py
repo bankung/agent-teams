@@ -1996,6 +1996,7 @@ async def _fire_post_patch_notifications(
     session: AsyncSession,
     task_id: int,
     updates: dict[str, Any],
+    hitl_transition_in: bool,
     _resolved_interaction_kind_for_done: Any,
     _resolved_ps_for_done: Any,
     _pre_patch_interaction_kind: Any,
@@ -2034,15 +2035,7 @@ async def _fire_post_patch_notifications(
         # 'work' (or NULL) → 'question' or 'decision'. Uses pre-captured
         # values (_pre_patch_interaction_kind, _notify_*) since the ORM
         # object is expired after commit (async-session lazy-load guard).
-        if (
-            "interaction_kind" in updates
-            and _resolved_interaction_kind_for_done in (
-                TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION
-            )
-            and _pre_patch_interaction_kind not in (
-                TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION
-            )
-        ):
+        if hitl_transition_in:
             _hitl_qp = _notify_question_payload or {}
             _hitl_body = (
                 _hitl_qp.get("question") if isinstance(_hitl_qp, dict) else None
@@ -2926,11 +2919,24 @@ async def update_task(
                 task_id,
             )
 
+    # #2671(a): compute the HITL work->question/decision transition ONCE; reused
+    # by the web_push hook (inside the helper) and the ntfy _fire_hitl_push below.
+    _hitl_transition_in = (
+        "interaction_kind" in updates
+        and _resolved_interaction_kind_for_done in (
+            TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION
+        )
+        and _pre_patch_interaction_kind not in (
+            TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION
+        )
+    )
+
     # Kanban #955.B (#2677): post-commit push + telegram notification matrix.
     await _fire_post_patch_notifications(
         session=session,
         task_id=task_id,
         updates=updates,
+        hitl_transition_in=_hitl_transition_in,
         _resolved_interaction_kind_for_done=_resolved_interaction_kind_for_done,
         _resolved_ps_for_done=_resolved_ps_for_done,
         _pre_patch_interaction_kind=_pre_patch_interaction_kind,
@@ -2950,15 +2956,7 @@ async def update_task(
     # not just patching an unrelated field on an already-HITL task).
     # Pre-PATCH value must NOT already be question/decision (transition-in guard).
     # Soft-fail: push error does NOT block the 200 response.
-    if (
-        "interaction_kind" in updates
-        and _resolved_interaction_kind_for_done in (
-            TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION
-        )
-        and _pre_patch_interaction_kind not in (
-            TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION
-        )
-    ):
+    if _hitl_transition_in:
         _fire_hitl_push(task_id, _notify_task_title or "", _notify_question_payload)
 
     return task
