@@ -21,13 +21,15 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from sqlalchemy import cast, func, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.constants import RecordStatus, TaskStatus
 from src.db import get_or_404, get_session
+from src.middleware.rate_limit import limiter
 from src.models.project import Project
 from src.models.task import Task
 from src.models.task_gate import TaskGate
@@ -87,7 +89,9 @@ async def _count_open_gates(
     response_model=GateRead,
     status_code=201,
 )
+@limiter.limit("20/minute")
 async def open_gate(
+    request: Request,  # required by slowapi key_func — not used in handler body
     task_id: int,
     payload: GateOpenRequest,
     session_project_id: int = Depends(require_project_id_header),
@@ -109,44 +113,66 @@ async def open_gate(
     )
     assert_task_belongs_to_session(task_id, task.project_id, session_project_id)
 
-    # Allocate the next per-task seq. COALESCE(MAX(seq), 0) + 1 — seq is
-    # per-task (not a global sequence), so the first gate on a task gets seq=1.
-    next_seq = int(
-        (
-            await session.execute(
-                select(func.coalesce(func.max(TaskGate.seq), 0) + 1).where(
-                    TaskGate.task_id == task_id
-                )
+    async def _insert_gate_with_retry() -> TaskGate:
+        """Allocate next seq + INSERT gate + halt task; retry ONCE on seq collision.
+
+        FIX 2 (#2685): COALESCE(MAX(seq),0)+1 is not atomic — two concurrent
+        open_gate calls for the same task can compute the same seq, and the 2nd
+        INSERT hits the unique ix_task_gates_task_id_seq constraint. We catch
+        IntegrityError, rollback (which also discards the task halt mutation),
+        re-fetch both the seq AND the task state, then retry once. The Telegram
+        notify fires only after the successful commit, never on the failed attempt.
+        """
+        for attempt in range(2):
+            # Re-fetch task on retry (rollback wiped the halt mutation from the
+            # ORM identity map; we must re-apply it on the fresh row).
+            _task = await get_or_404(
+                session, Task, detail=f"Task id={task_id} not found", id=task_id
             )
-        ).scalar_one()
-    )
+            next_seq = int(
+                (
+                    await session.execute(
+                        select(func.coalesce(func.max(TaskGate.seq), 0) + 1).where(
+                            TaskGate.task_id == task_id
+                        )
+                    )
+                ).scalar_one()
+            )
+            _gate = TaskGate(
+                task_id=task_id,
+                seq=next_seq,
+                kind=payload.kind,
+                question_payload=payload.question_payload,
+                status="open",
+                gate_tier=payload.gate_tier,
+            )
+            session.add(_gate)
 
-    gate = TaskGate(
-        task_id=task_id,
-        seq=next_seq,
-        kind=payload.kind,
-        question_payload=payload.question_payload,
-        status="open",
-        gate_tier=payload.gate_tier,
-    )
-    session.add(gate)
+            _task.process_status = TaskStatus.HALTED_PENDING_USER
+            # M2: last-writer-wins rollup (see original comment above).
+            _task.operator_gate = payload.gate_tier
+            if _task.halted_at is None:
+                _task.halted_at = datetime.now(timezone.utc)
+            _task.updated_at = func.now()
 
-    # Halt the work-task. ps->8 (HALTED_PENDING_USER) + operator_gate=<tier> so
-    # the task surfaces on the "what's on me?" lane. halted_at stamps only when
-    # currently NULL (mirror of _STATUS_TIMESTAMP_FIELDS setdefault semantics in
-    # routers/tasks.py — a re-halt never re-stamps). operator_gate is set to the
-    # gate's tier regardless (this gate is the live ask).
-    task.process_status = TaskStatus.HALTED_PENDING_USER
-    # M2: last-writer-wins rollup — concurrent gates on the same task may carry
-    # different tiers; the gate rows each record the correct tier, but this
-    # task-level field reflects whichever open_gate call landed last.
-    task.operator_gate = payload.gate_tier
-    if task.halted_at is None:
-        task.halted_at = datetime.now(timezone.utc)
-    task.updated_at = func.now()
+            try:
+                await session.commit()
+                await session.refresh(_gate)
+                return _gate
+            except IntegrityError:
+                await session.rollback()
+                if attempt == 1:
+                    # Second attempt also collided — give up rather than looping.
+                    raise
+                logger.warning(
+                    "gate_open: seq collision on task=%d attempt=%d; retrying",
+                    task_id,
+                    attempt,
+                )
+        # Unreachable — loop always returns or raises on attempt 1.
+        raise RuntimeError("gate_open retry loop exited unexpectedly")  # pragma: no cover
 
-    await session.commit()
-    await session.refresh(gate)
+    gate = await _insert_gate_with_retry()
     logger.info(
         "gate_open: task=%d gate=%d seq=%d tier=%s",
         task_id,
@@ -160,6 +186,10 @@ async def open_gate(
     # never raises (mirrors _fire_hitl_push); a missing telegram target or token
     # is a silent no-op. The tier->channel policy (forbidden/informed/simple)
     # lives in notify_gate, shared with the runner (Task C #2566).
+    # Re-fetch task after retry loop (the _task local is gone from outer scope).
+    task = await get_or_404(
+        session, Task, detail=f"Task id={task_id} not found", id=task_id
+    )
     project = await session.get(Project, task.project_id)
     if project is None:
         logger.warning(
@@ -189,9 +219,11 @@ async def open_gate(
     "/task-gates/{gate_id}/resolve",
     response_model=GateResolveResponse,
 )
+@limiter.limit("20/minute")
 async def resolve_gate(
-    gate_id: int,
-    payload: GateResolveRequest,
+    request: Request,  # required by slowapi key_func — not used in handler body
+    gate_id: int = Path(ge=1),  # FIX 5 (#2685): lower-bound guard — gate ids are always >=1
+    payload: GateResolveRequest = ...,  # required body; Ellipsis = FastAPI "required" sentinel
     session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
 ) -> GateResolveResponse:

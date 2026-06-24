@@ -56,6 +56,7 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -232,23 +233,30 @@ def process_update(
 
     chat-id LOCK: a callback/message whose from.id != operator_chat_id is
     IGNORED (status='ignored_foreign') — the security boundary of the poller.
+
+    The returned dict ALWAYS carries `transient_error: bool`. The run() loop
+    uses this for FIX 1 (#2685): when True the offset must NOT advance past this
+    update so it is retried next getUpdates call. Only a clean transient resolve
+    error (result.status=='error') sets it; every other outcome (resolved, already,
+    ignored_*, no_project, exception) advances the offset normally (the
+    except-branch in run() is poison-skip, unchanged).
     """
     from_id = _from_id_of(update)
     # Compare as strings so an env value ("12345") matches Telegram's int id.
     if from_id is None or str(from_id) != str(operator_chat_id):
-        return {"action": "ignored_foreign", "from_id": from_id}
+        return {"action": "ignored_foreign", "from_id": from_id, "transient_error": False}
 
     cq = update.get("callback_query")
     if not isinstance(cq, dict):
         # An allowed plain message (not a button tap) — nothing to resolve.
-        return {"action": "ignored_non_callback"}
+        return {"action": "ignored_non_callback", "transient_error": False}
 
     callback_query_id = cq.get("id")
     decoded = decode_callback_data(cq.get("data"))
     if decoded is None:
         if callback_query_id:
             answer_callback(client, token=token, callback_query_id=callback_query_id)
-        return {"action": "ignored_bad_callback_data", "data": cq.get("data")}
+        return {"action": "ignored_bad_callback_data", "data": cq.get("data"), "transient_error": False}
 
     gate_id = decoded["gate_id"]
     option = decoded["option"]
@@ -262,7 +270,7 @@ def process_update(
                 callback_query_id=callback_query_id,
                 text="No project bound; resolve skipped.",
             )
-        return {"action": "no_project", "gate_id": gate_id}
+        return {"action": "no_project", "gate_id": gate_id, "transient_error": False}
 
     result = resolve_gate_via_api(
         client,
@@ -272,6 +280,14 @@ def process_update(
         option=option,
         answered_by=str(operator_chat_id),
     )
+
+    # FIX 1 (#2685): a transient resolve error (non-200/non-409 HTTP or network
+    # error) is NOT a reason to advance the offset — the operator's tap would be
+    # lost and the gate left open. Signal back to run() so it can hold the offset
+    # for retry on the next getUpdates call. 409 (already) and 200 (resolved)
+    # both advance normally.
+    is_transient_error = result["status"] == "error"
+
     if callback_query_id:
         if result["status"] == "resolved":
             toast = f"Recorded: {option}"
@@ -281,7 +297,96 @@ def process_update(
             toast = "Resolve failed; check the terminal."
         answer_callback(client, token=token, callback_query_id=callback_query_id, text=toast)
 
-    return {"action": "resolved", "gate_id": gate_id, "option": option, "result": result}
+    # #2668: edit the gate card to reflect settled state after a resolve or
+    # idempotent already-handled. Best-effort — failure logs and continues.
+    # Guard the message shape: callback_query.message must carry chat.id +
+    # message_id (both required for editMessage*).
+    if result["status"] in ("resolved", "already"):
+        msg = cq.get("message")
+        if isinstance(msg, dict):
+            msg_chat = msg.get("chat")
+            msg_id = msg.get("message_id")
+            if isinstance(msg_chat, dict) and msg_id is not None:
+                chat_id = msg_chat.get("id")
+                if chat_id is not None:
+                    # Build settled marker: chosen option + ISO-8601 timestamp.
+                    settled_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    settled_text = f"Resolved: {option} — {settled_ts}"
+                    # Remove the inline keyboard so stale buttons disappear.
+                    edit_message_reply_markup(
+                        client,
+                        token=token,
+                        chat_id=chat_id,
+                        message_id=msg_id,
+                    )
+                    # Update the message text to the settled marker.
+                    edit_message_text(
+                        client,
+                        token=token,
+                        chat_id=chat_id,
+                        message_id=msg_id,
+                        text=settled_text,
+                    )
+
+    return {
+        "action": "resolved",
+        "gate_id": gate_id,
+        "option": option,
+        "result": result,
+        "transient_error": is_transient_error,
+    }
+
+
+def edit_message_reply_markup(
+    client: httpx.Client,
+    *,
+    token: str,
+    chat_id: int | str,
+    message_id: int,
+) -> None:
+    """Remove the inline keyboard from a gate card by setting reply_markup to {}.
+    Best-effort — failure only logs (mirror answer_callback posture).
+    Kanban #2668."""
+    url = f"{TELEGRAM_API_BASE}/bot{token}/editMessageReplyMarkup"
+    payload: dict[str, Any] = {
+        "chat_id": str(chat_id),
+        "message_id": message_id,
+        "reply_markup": {"inline_keyboard": []},
+    }
+    try:
+        client.post(url, json=payload)
+    except httpx.RequestError as exc:
+        # Never log URL (carries bot token).
+        logger.warning("edit_message_reply_markup: request_error err=%s", type(exc).__name__)
+
+
+def edit_message_text(
+    client: httpx.Client,
+    *,
+    token: str,
+    chat_id: int | str,
+    message_id: int,
+    text: str,
+) -> None:
+    """Update the gate card text to a settled marker. Best-effort.
+    Telegram's "message is not modified" 400 is treated as success (idempotent).
+    Kanban #2668."""
+    url = f"{TELEGRAM_API_BASE}/bot{token}/editMessageText"
+    payload: dict[str, Any] = {
+        "chat_id": str(chat_id),
+        "message_id": message_id,
+        "text": text[:4096],  # Telegram hard cap on text length.
+    }
+    try:
+        resp = client.post(url, json=payload)
+        # 400 "message is not modified" is fine — treat as success.
+        if resp.status_code not in (200, 400):
+            logger.warning(
+                "edit_message_text: http=%d", resp.status_code
+            )
+    except httpx.RequestError as exc:
+        # Never log URL (carries bot token).
+        logger.warning("edit_message_text: request_error err=%s", type(exc).__name__)
 
 
 def get_updates(
@@ -299,9 +404,11 @@ def get_updates(
         logger.warning("get_updates: request_error err=%s", type(exc).__name__)
         return []
     if resp.status_code != 200:
-        snippet = (resp.text or "")[:200]
+        # FIX 6 (#2685): log only the status code at WARNING; demote the body
+        # snippet to DEBUG to avoid flooding the terminal with response bodies.
         # 409 here == another getUpdates consumer (or a webhook) on this token.
-        logger.warning("get_updates: http=%d body=%s", resp.status_code, snippet)
+        logger.warning("get_updates: http=%d", resp.status_code)
+        logger.debug("get_updates: http=%d body=%.200s", resp.status_code, resp.text or "")
         return []
     try:
         parsed = resp.json()
@@ -398,10 +505,34 @@ def run() -> int:
                         project_id=project_id,
                     )
                     logger.info("telegram_poller: update=%s -> %s", update_id, outcome.get("action"))
+                    # FIX 1 (#2685): a transient resolve error (API 5xx / network)
+                    # means the operator's tap was NOT durably recorded. Do NOT
+                    # advance the offset past this update — break the loop here so
+                    # the batch ends at the last successfully-processed update,
+                    # write_offset persists progress UP TO (but not including) this
+                    # update, and the next getUpdates will re-fetch and retry it.
+                    # The gate 409-idempotency makes replay safe for already-answered
+                    # gates. 200 (resolved) and 409 (already) both advance normally.
+                    # Non-resolve outcomes (ignored_*, no_project) also advance; only
+                    # a transient_error=True holds.
+                    # shortcut: holds the ENTIRE remaining batch on first transient
+                    # error — any subsequent updates in the same batch are deferred
+                    # too. Acceptable: transient API outage is rare and the next
+                    # poll re-delivers the full tail.
+                    if outcome.get("transient_error"):
+                        logger.warning(
+                            "telegram_poller: update=%s transient resolve error; "
+                            "holding offset (will retry next poll)",
+                            update_id,
+                        )
+                        break
                 except Exception:  # noqa: BLE001 — one bad update must not kill the loop.
                     logger.exception("telegram_poller: update=%s processing error", update_id)
-                # Advance offset past this update regardless of outcome (a poison
-                # update must not wedge the loop; resolve is idempotent via 409).
+                    # Poison update (unexpected exception): advance past it so the
+                    # loop does not wedge. The exception path is unchanged from the
+                    # pre-FIX1 behavior — only clean transient-error signals hold.
+                # Advance offset past this update (no break above = success or
+                # exception-skip; the transient-error path already broke out).
                 if isinstance(update_id, int):
                     offset = update_id + 1
             write_offset(offset_path, offset)

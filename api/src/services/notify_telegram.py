@@ -134,6 +134,13 @@ def decode_callback_data(data: str) -> dict[str, Any] | None:
     parts = data.split(":", 2)
     if len(parts) != 3 or parts[0] != _CALLBACK_PREFIX:
         return None
+    # FIX 4 (#2685): CVE-2020-10735-style int-parse cost guard — an attacker
+    # can craft a callback_data with a very long digit string in parts[1] to
+    # force CPython's O(n²) big-int conversion. Reject before int() if the
+    # gate_id field exceeds 20 characters (max int64 is 19 digits + optional
+    # sign, so 20 is a safe ceiling with no false-positives for real gate ids).
+    if len(parts[1]) > 20:
+        return None
     try:
         gate_id = int(parts[1])
     except (TypeError, ValueError):

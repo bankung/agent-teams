@@ -155,6 +155,14 @@ class TaskGate(Base):
             "task_id",
             postgresql_where=text("status = 'open'"),
         ),
+        # Partial index on the answered subset — the `_answered_gate_exists`
+        # EXISTS subquery in the next-autorun picker's gate_resume_stmt (tasks.py
+        # ~L854-881). Mirror of migration 0073's postgresql_where.
+        Index(
+            "ix_task_gates_answered",
+            "task_id",
+            postgresql_where=text("status = 'answered'"),
+        ),
     )
 
     def __repr__(self) -> str:  # pragma: no cover
