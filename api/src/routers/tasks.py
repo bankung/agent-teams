@@ -18,7 +18,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi import status as http_status
-from sqlalchemy import cast, or_, select, update
+from sqlalchemy import cast, exists, or_, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,6 +35,7 @@ from src.models.project_resource import ProjectResource
 from src.models.session import SessionRun
 from src.models.task import Task
 from src.models.task_comment import TaskComment
+from src.models.task_gate import TaskGate
 from src.models.transaction import Transaction
 from src.schemas.ai_task import ParseRequest, ParseResponse
 from src.schemas.project import ResolveFlagRequest, ResolveFlagResponse
@@ -662,6 +663,19 @@ async def get_next_autorun(
     # Alias for the blocker row so we can outerjoin Task → blocker Task.
     blocker = aliased(Task)
 
+    # --- async-HITL gate predicates (#2566) ----------------------------------
+    # Two correlated EXISTS on the selected Task. A ps=TODO task with answered
+    # gates + 0 open is a gate-RESUME (route to gate_resume_tasks, resume from
+    # resume_context); a ps=TODO task with no gate rows is a fresh pickup
+    # (next_task). The two lanes are disjoint + exhaustive over the auto-TODO
+    # lane because an OPEN gate forces ps=8 (so it can't be at ps=TODO). §7.
+    _open_gate_exists = exists().where(
+        TaskGate.task_id == Task.id, TaskGate.status == "open"
+    )
+    _answered_gate_exists = exists().where(
+        TaskGate.task_id == Task.id, TaskGate.status == "answered"
+    )
+
     # --- next_task -----------------------------------------------------------
     # Highest-priority runnable TODO task: auto_pickup or auto_headless,
     # not halted, not blocked by an in-progress/todo blocker,
@@ -685,6 +699,16 @@ async def get_next_autorun(
             Task.halt_reason.is_(None),
             or_(Task.blocked_by.is_(None), blocker.process_status.in_(_TERMINAL_BLOCKER_STATUSES)),
             or_(Task.scheduled_at.is_(None), Task.scheduled_at <= now),
+            # #2566: a gate-driven task never surfaces as a FRESH pickup. The
+            # 'answered' term is the real exclusion (routes resumed tasks to
+            # gate_resume_tasks); 'open' is defensive/self-documenting (an open
+            # gate forces ps=8, so it can't reach this TODO filter anyway). This
+            # CANNOT regress pre-existing tasks: they have zero task_gates rows,
+            # so the EXISTS is false and ~ is true for all of them.
+            ~exists().where(
+                TaskGate.task_id == Task.id,
+                TaskGate.status.in_(("open", "answered")),
+            ),
         )
         .order_by(
             Task.priority.desc(),
@@ -815,6 +839,47 @@ async def get_next_autorun(
     )
     question_rows = list((await session.execute(questions_stmt)).scalars().all())
 
+    # --- gate_resume_tasks (#2566) -------------------------------------------
+    # Tasks whose async-HITL gates are ALL answered: resolve_gate flipped ps
+    # 8->TODO + cleared operator_gate, but left halt_reason=None — so without
+    # this branch they'd match next_task_stmt and be picked up FRESH, losing the
+    # resume signal. Surface them on a clean separate predicate (§7) so the
+    # runner resumes from resume_context instead. Read-only (no FOR UPDATE);
+    # .limit(50) app-side guard mirrors resume_stmt (#2505).
+    #
+    # AC3: ~_open_gate_exists excludes a task that still has any open sibling
+    # gate (which would also be ps=8, not TODO — belt-and-suspenders).
+    # AC4: the blocked_by clause keeps a legacy-blocked task out until its
+    # blocker is terminal (combinatorial edge — §7: blocker DONE AND 0 open).
+    gate_resume_stmt = (
+        select(Task)
+        .outerjoin(blocker, Task.blocked_by == blocker.id)
+        .where(
+            Task.project_id == project_id,
+            Task.status == RecordStatus.ACTIVE,
+            Task.process_status == TaskStatus.TODO,
+            Task.run_mode.in_([TaskRunMode.AUTO_PICKUP, TaskRunMode.AUTO_HEADLESS]),
+            # resolve_gate never sets halt_reason (§7) — a gate-resolved task is
+            # always halt_reason=NULL; belt-and-suspenders vs a future resolve
+            # change that might stamp it (would otherwise silently drop the task).
+            Task.halt_reason.is_(None),
+            or_(
+                Task.blocked_by.is_(None),
+                blocker.process_status.in_(_TERMINAL_BLOCKER_STATUSES),
+            ),
+            or_(Task.scheduled_at.is_(None), Task.scheduled_at <= now),
+            _answered_gate_exists,  # been through a gate-answer (resumable)
+            ~_open_gate_exists,     # AC3: not still waiting on any open gate
+        )
+        .order_by(
+            Task.priority.desc(),
+            Task.sort_order.asc().nulls_last(),
+            Task.created_at.asc(),
+        )
+        .limit(50)  # app-side guard — Kanban #2505
+    )
+    gate_resume_rows = list((await session.execute(gate_resume_stmt)).scalars().all())
+
     # --- blocked_count -------------------------------------------------------
     # Count of active TODO/IN_PROGRESS tasks that have a non-terminal blocker (non-DONE, non-CANCELLED; #2422).
     blocked_stmt = (
@@ -836,6 +901,7 @@ async def get_next_autorun(
         resume_tasks=resume_rows,
         pending_questions=question_rows,
         blocked_count=blocked_count,
+        gate_resume_tasks=gate_resume_rows,
     )
 
 

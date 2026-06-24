@@ -1513,12 +1513,19 @@ class NextAutorunResponse(BaseModel):
     - resume_tasks: HALTED tasks whose blocker is now DONE (ready to re-run)
     - pending_questions: question/decision tasks awaiting user answer
     - blocked_count: total tasks currently blocked (any blocker not DONE)
+    - gate_resume_tasks: tasks whose async-HITL gates are all answered (ps
+      flipped 8->TODO) — resume from resume_context, do NOT start fresh (#2566).
     """
 
     next_task: TaskRead | None
     resume_tasks: list[TaskRead]
     pending_questions: list[TaskRead]
     blocked_count: int
+    # Kanban #2566 — additive, default-empty so existing constructors/tests stay
+    # backward-compatible. A gate-resumed task (resolve_gate flipped ps 8->TODO,
+    # halt_reason=None) MUST be resumed from resume_context, NOT picked up fresh;
+    # next_task explicitly excludes these so the two lanes are disjoint.
+    gate_resume_tasks: list[TaskRead] = Field(default_factory=list)
 
 
 class TaskReorder(BaseModel):

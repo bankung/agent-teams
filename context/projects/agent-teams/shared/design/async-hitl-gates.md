@@ -122,5 +122,17 @@ Mode B's multi-round HITL is trivially correct because the **LangGraph checkpoin
 
 Relationship: A → B → C dependency order; all three under milestone **v0.8.0 (#50)**; #2531 (ZommmBeeean runner) consumes C.
 
+## 12. Build landing + the `resume_context` self-sufficiency contract (Task C #2566, 2026-06-24)
+
+Tasks A (#2564) + B (#2565) are committed; C (#2566) is built + **live-verified** (an answered gate surfaces in `next-autorun.gate_resume_tasks`, absent from `next_task`; `resume_context` carries the folded answer; throwaway task 2661/gate 7, cleaned up). The §8 "hard part" is now concrete:
+
+**The contract.** A gate-resumed Mode-A task carries its entire *"where I was + what was answered"* in `task.resume_context` (JSONB) so a **fresh** run (post-`/clear`, post-compaction, new session) resumes from `resume_context` + the task row + the activity rail alone — no in-context memory. Two families live in `resume_context`:
+1. **halt snapshot** — free-form keys the gate-OPENER persists (a task PATCH at/before open: e.g. `step`, partial draft, cursor) describing where the runner paused. *(PATCH-based for v0.8.0; capturing it atomically in the gate-open body is a #2531 hardening option — there is a two-write window otherwise.)*
+2. **answer fold** — `answered_gates[<gate_id>] = {gate_id, seq, kind, gate_tier, answer, answered_by, answered_via, answered_at}` + a `last_answered_gate_id` pointer, written by `resolve_gate`, which **merges** into the existing dict and never clobbers (1).
+
+The fresh runner reads the merged whole: the snapshot says where to resume, `answered_gates` supplies the decisions keyed by gate. The picker surfaces these on `gate_resume_tasks` (a clean separate predicate, §7) — provably **disjoint from `next_task`** (which excludes any task with an open/answered gate), so a resume is never mistaken for a fresh start. AC4 combinatorial edge: a legacy `blocked_by` must be terminal AND open-gate-count = 0.
+
+**Deferred to runner #2531:** the live fresh-resume drain-run (AC5 "park + advance" — the *park* half, ps=8 excluded from every lane, is verified; the loop is the runner's); a partial index `ix_task_gates_answered` for the answered-gate EXISTS (benign at current gate volume; add before the runner drives real load); the opener's atomic snapshot capture. #2531 consumes `gate_resume_tasks` + this contract.
+
 ---
 *Source: consultation session 2026-06-23 (no implementation performed). Supersedes nothing; complements `mode-b-authorization-chain.md` (operator-vs-AI auth) and `operator-vs-ai-auth-1852.md`.*
