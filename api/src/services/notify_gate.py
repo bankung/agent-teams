@@ -211,22 +211,15 @@ async def notify_task_event(
     # fire (it owns the loop's stop condition) — call this helper with
     # event="stopped" from the runner, NOT from any API PATCH path here.
 
-    `deliver(kind='telegram')` resolves the target itself, but we pre-check the
-    target so a deployment without one doesn't accumulate a local-file fallback
-    on every blocked/done transition.
+    `deliver(kind='telegram', fallback_on_empty=False)` — the flag means a
+    deployment without a telegram target is a silent no-op (no spurious
+    local-file fallback on every blocked/done transition).
     """
     from src.services.notification_router import deliver
 
     try:
         if not os.environ.get(TELEGRAM_ENV_TOKEN, "").strip():
             return {"fired": False, "skipped": "missing_token"}
-        # Load task + project just for the target pre-check. One light roundtrip.
-        task = await session.get(Task, task_id)
-        if task is None:
-            return {"fired": False, "skipped": "task_not_found"}
-        project = await session.get(Project, task.project_id)
-        if project is None or not await _has_telegram_target(session, task, project):
-            return {"fired": False, "skipped": "no_telegram_target"}
 
         payload = {
             "title": f"Task {event}: {task_title}",
@@ -235,7 +228,8 @@ async def notify_task_event(
             "url": f"/tasks/{task_id}",
         }
         result = await deliver(
-            task_id=task_id, payload=payload, kind="telegram", session=session
+            task_id=task_id, payload=payload, kind="telegram", session=session,
+            fallback_on_empty=False,
         )
         attempts = result.get("attempts") or []
         delivered_ok = any(a.get("ok") and a.get("target") for a in attempts)
@@ -247,24 +241,6 @@ async def notify_task_event(
             event,
         )
         return {"fired": False, "skipped": "exception"}
-
-
-async def _has_telegram_target(
-    session: AsyncSession, task: Task, project: Project
-) -> bool:
-    """True iff a `telegram` NotificationTarget is resolvable for this task/project.
-
-    Mirrors notification_router._resolve_targets precedence (task-level overrides
-    project-level) but only needs a yes/no — we gate the whole notify on it so a
-    deployment without a telegram target stays a silent no-op (no spurious
-    local-file fallback that deliver() would otherwise write).
-    """
-    raw = task.notification_targets
-    if raw is None:
-        raw = project.notification_targets
-    if not raw:
-        return False
-    return any(isinstance(t, dict) and t.get("kind") == "telegram" for t in raw)
 
 
 async def notify_gate_opened(
@@ -295,8 +271,6 @@ async def notify_gate_opened(
     try:
         if not os.environ.get(TELEGRAM_ENV_TOKEN, "").strip():
             return {"fired": False, "skipped": "missing_token", "delivered_ok": None}
-        if not await _has_telegram_target(session, task, project):
-            return {"fired": False, "skipped": "no_telegram_target", "delivered_ok": None}
 
         payload = build_gate_notify_payload(
             task_id=task.id,
@@ -310,6 +284,7 @@ async def notify_gate_opened(
             payload=payload,
             kind="telegram",
             session=session,
+            fallback_on_empty=False,
         )
         # deliver() returns {"task_id", "attempts": [...]}; a telegram attempt
         # with ok=True means the message (and buttons) went out.

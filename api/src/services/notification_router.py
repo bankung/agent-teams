@@ -263,6 +263,7 @@ async def deliver(
     kind: str,
     session: AsyncSession,
     event_kind: str | None = None,
+    fallback_on_empty: bool = True,
 ) -> dict[str, Any]:
     """Resolve the target list + attempt delivery in priority order.
 
@@ -282,6 +283,12 @@ async def deliver(
                     Appended AFTER the explicit NotificationTarget rows so
                     they're tried last in the priority chain. When None, the
                     push-subscription resolver is skipped (backwards-compat).
+        fallback_on_empty: When False, the local-file fallback is SKIPPED for
+                    the "no targets configured" case (kind_targets is empty).
+                    The fallback still fires when kind_targets is non-empty but
+                    ALL adapters returned ok=False ("all_adapters_failed").
+                    Default True preserves the original behaviour for all
+                    existing callers. (Kanban #2657)
 
     Returns:
         {
@@ -380,7 +387,10 @@ async def deliver(
     # Local-file fallback fires when:
     #   (a) no targets were resolved at all (both task + project NULL), or
     #   (b) every adapter call returned ok=False.
-    if not delivered_ok:
+    # When fallback_on_empty=False, case (a) is suppressed — the caller has
+    # already pre-checked for the target and a no-op is preferred over a
+    # spurious file write. Case (b) always fires regardless of the flag.
+    if not delivered_ok and (fallback_on_empty or kind_targets):
         fallback_reason = (
             "no_targets_configured" if not kind_targets else "all_adapters_failed"
         )
