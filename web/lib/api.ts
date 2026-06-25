@@ -1464,45 +1464,16 @@ export const push = {
 
 // listAuditFlags — cross-project aggregation for the GOV4 /review page.
 //
-// Implementation: the existing /api/tasks endpoint is single-project-scoped
-// (gates on X-Project-Id per Kanban #695). To aggregate across N projects
-// we (1) list active projects, (2) per project fetch open question tasks
-// in parallel, (3) client-side filter on `question_payload.is_audit_flag`.
-//
-// Why client-side filter: there is no BE filter for JSONB-path predicates
-// on the tasks endpoint today. The volume is small (≤10s of question tasks
-// per project) so a single round-trip per project + a in-memory predicate
-// is acceptable for v1. If this grows, add a BE filter param + revisit.
-//
-// `pending=true` returns process_status != 5 (TODO/IN_PROGRESS/REVIEW/BLOCKED);
-// `include_cancelled` defaults to false so CANCELLED (ps=6) is also out.
-// GOV3 flag tasks are created with process_status=BLOCKED (4); operator-resolved
-// flags transition to DONE (5) which the pending filter naturally drops.
+// GET /api/audit/flags returns exactly the flag set the /review page needs
+// in ONE SQL query (Kanban #2700). The BE filters:
+//   - interaction_kind == 'question'
+//   - question_payload->>'is_audit_flag' == 'true'
+//   - process_status != DONE (5)  and != CANCELLED (6)  (pending semantics)
+//   - task.status == ACTIVE, project.status == ACTIVE
+// Parity with the old per-project fan-out: same flag set, no per-project
+// partial-failure mode (a JSONB row that lacks the key is simply excluded).
 export async function listAuditFlags(): Promise<AuditFlagWithProject[]> {
-  const projects = await listProjects({ status: 1 });
-  // Per-project parallel fetch. Errors on individual projects degrade to
-  // an empty list for that project rather than failing the whole page —
-  // a single project's API outage shouldn't blank the /review surface for
-  // the other N-1 projects.
-  const perProject = await Promise.all(
-    projects.map(async (project) => {
-      try {
-        const tasks = await listTasks(project.id, {
-          pending: true,
-          limit: 500,
-        });
-        const flags = tasks.filter(
-          (t) =>
-            t.interaction_kind === "question" &&
-            t.question_payload?.is_audit_flag === true,
-        );
-        return flags.map((flag) => ({ flag, project }));
-      } catch {
-        return [];
-      }
-    }),
-  );
-  return perProject.flat();
+  return jsonFetch<AuditFlagWithProject[]>(`/api/audit/flags`);
 }
 
 // ============================================================================

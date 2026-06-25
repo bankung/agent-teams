@@ -21,7 +21,9 @@ from src.db import get_session
 from src.middleware.rate_limit import limiter
 from src.models.project import Project
 from src.models.task import Task
-from src.schemas.audit import AuditDailyCounts, AuditDailyRollupEntry
+from src.schemas.audit import AuditDailyCounts, AuditDailyRollupEntry, AuditFlagWithProject
+from src.schemas.project import ProjectRead
+from src.schemas.task import TaskRead
 
 router = APIRouter(prefix="/audit", tags=["audit"])
 
@@ -195,6 +197,67 @@ async def list_audit_daily_rollup(
                 failed_giveup=row.failed_giveup_count,
                 pending_escalation=row.pending_escalation_count,
             ),
+        )
+        for row in rows
+    ]
+
+
+# F-16: JSONB key for the audit-flag marker — extracted to avoid magic strings.
+_IS_AUDIT_FLAG_KEY = "is_audit_flag"
+
+
+@router.get("/flags", response_model=list[AuditFlagWithProject])
+@limiter.limit("60/minute")
+async def list_audit_flags(
+    request: Request,  # required by slowapi key_func — not used in handler body
+    session: AsyncSession = Depends(get_session),
+) -> list[AuditFlagWithProject]:
+    """Cross-project list of open GOV3 audit-flag question tasks (Kanban #2700).
+
+    Returns every active question task whose `question_payload->>'is_audit_flag'`
+    is the string `'true'`, joined with its parent project. One SQL query —
+    collapses the client-side N+1 fan-out previously in `listAuditFlags` (FE).
+
+    Filters applied (parity with the FE's `listTasks(pending=true)` call):
+      - Task.interaction_kind == 'question'
+      - question_payload->>'is_audit_flag' == 'true'  (missing key → NULL → excluded)
+      - Task.process_status != DONE (5)       (pending=true semantics)
+      - Task.process_status != CANCELLED (6)  (include_cancelled=false default)
+      - Task.status == ACTIVE (RecordStatus)
+      - Task.is_active == True               (Kanban #1240: default-exclude auto-archived)
+      - Project.status == ACTIVE (RecordStatus)
+
+    Order: Project.id ASC, Task.id ASC (deterministic).
+    Returns `[]` when nothing matches — never 500 on empty.
+    """
+    # JSONB predicate: question_payload->>'is_audit_flag' == 'true'.
+    # Missing key → NULL → excluded by the equality check (NULL != 'true').
+    # Mirrors the #2681 notification_router JSONB idiom.
+    is_audit_flag_expr = Task.question_payload.op("->>")(_IS_AUDIT_FLAG_KEY)
+
+    stmt = (
+        select(Task, Project)
+        .join(Project, Task.project_id == Project.id)
+        .where(
+            Task.interaction_kind == "question",
+            is_audit_flag_expr == "true",
+            # pending=true parity: ps != DONE
+            Task.process_status != TaskStatus.DONE,
+            # include_cancelled=False default parity: ps != CANCELLED
+            Task.process_status != TaskStatus.CANCELLED,
+            Task.status == RecordStatus.ACTIVE,
+            Task.is_active.is_(True),  # Kanban #1240: default-exclude auto-archived rows
+            Project.status == RecordStatus.ACTIVE,
+        )
+        .order_by(Project.id.asc(), Task.id.asc())
+    )
+
+    rows = (await session.execute(stmt)).all()
+
+    return [
+        AuditFlagWithProject(
+            flag=TaskRead.model_validate(row.Task),
+            project=ProjectRead.model_validate(row.Project),
         )
         for row in rows
     ]

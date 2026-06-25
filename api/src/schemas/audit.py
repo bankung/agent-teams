@@ -1,4 +1,4 @@
-"""Pydantic schemas for the auditor cross-project daily-rollup API (Kanban #1082).
+"""Pydantic schemas for the auditor cross-project APIs (Kanban #1082, #2700).
 
 Powers the Audit dashboard widget — one row per (project, day) showing the
 breakdown of auditor verdicts written to `tasks.audit_report` (migration 0030,
@@ -38,6 +38,9 @@ from datetime import date
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.schemas.project import ProjectRead
+from src.schemas.task import TaskRead
+
 
 class AuditDailyCounts(BaseModel):
     """Per-day, per-project verdict bucket — 5 keys always present (zero-filled).
@@ -58,6 +61,17 @@ class AuditDailyCounts(BaseModel):
     # `model_dump`, but FastAPI's response_model encoder applies aliases by
     # default for response serialization.
     model_config = ConfigDict(populate_by_name=True)
+
+
+class AuditFlagWithProject(BaseModel):
+    """Bundle of a GOV3 audit-flag question task with its parent project.
+
+    Returned by GET /api/audit/flags (Kanban #2700). Mirrors the FE type
+    `AuditFlagWithProject` in web/lib/api.ts (locked shape).
+    """
+
+    flag: TaskRead
+    project: ProjectRead
 
 
 class AuditDailyRollupEntry(BaseModel):
