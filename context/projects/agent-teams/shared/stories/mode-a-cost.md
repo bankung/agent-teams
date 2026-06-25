@@ -1,8 +1,8 @@
 ---
 story: mode-a-cost
-version: 8
-updated: 2026-06-24
-updated_by: lead @ #2680
+version: 9
+updated: 2026-06-25
+updated_by: lead @ #2694
 ---
 
 <!-- STORY DOC — mutable thread STATE ("what is true NOW"), single writer = Lead.
@@ -10,7 +10,9 @@ updated_by: lead @ #2680
 
 ## Current state
 
-- **Skills per-session binding LIVE — #2680 (Phase B, on `dev`, not committed).** New CLI `bin/lead-project-id.ps1` resolves THIS session's project (per-session, UUID guard, exit-1 fail-loud); all 13 tn-* skill refs migrated off the global `lead_project_id.txt` to the CLI; mutating skills abort on non-zero. **Closes the wrong-project-write hole.** Verified: CLI happy→1, foreign/malformed→exit1; grep 0 reader-instructions remain. +15/-15 + new CLI, ii-applied. **WORKSTREAM COMPLETE** (Phase 1 #2662 + A #2679 + A.2 #2692 + B #2680); only residual = **KNOWN-GAP-1** (session-less scheduled seo hooks still on global, low-priority).
+- **Binding workstream COMMITTED + PUSHED + review-hardened — `e127053` on `origin/dev` (2026-06-25).** Phases 1/A/A.2/B (#2662/#2679/#2692/#2680) + the `/tn-intense-review` fix set (WARN-1 null-session global-fallback closed, `\z` UUID guard, `-LiteralPath`, accurate logs, cross-phase doc-drift) all on remote. **KNOWN-GAP-1 (#2694) RESOLVED + premise CORRECTED:** the global `lead_project_id.txt` is NOT dead/legacy — it is the deliberate one-way channel the **session-less Telegram HITL poller daemon** (`api/scripts/telegram_poller.py`, #2565; env `TELEGRAM_POLLER_PROJECT_ID` first → global fallback, re-resolved each batch) reads to follow the active project. seo-ranking was a red herring (unregistered + cosmetic `project=?`; its in-session `.ps1` now resolves per-session, the session-less `.sh` twin legitimately reads the global). **Invariant LOCKED: interactive sessions WRITE/overwrite the global, NEVER read it; only session-less daemons read it.** Operator caught a new session still READING the global in tn-bind → fixed (tn-bind + CLAUDE.md reframed write-only/never-read; seo-ranking.ps1 migrated per-session; AGENTS.md flagged for Codex regen). Fix ii-applied + parse-clean; pending commit&push.
+
+- **Skills per-session binding LIVE — #2680 (Phase B, on `dev`, not committed).** New CLI `bin/lead-project-id.ps1` resolves THIS session's project (per-session, UUID guard, exit-1 fail-loud); all 13 tn-* skill refs migrated off the global `lead_project_id.txt` to the CLI; mutating skills abort on non-zero. **Closes the wrong-project-write hole.** Verified: CLI happy→1, foreign/malformed→exit1; grep 0 reader-instructions remain. +15/-15 + new CLI, ii-applied. **WORKSTREAM COMPLETE** (Phase 1 #2662 + A #2679 + A.2 #2692 + B #2680); **KNOWN-GAP-1 (#2694) RESOLVED** — premise was wrong; the global is the Telegram-poller channel by design (see top bullet), not a seo-ranking gap.
 
 - **Gate-family per-session binding LIVE — #2692 (Phase A.2, on `dev`, not committed).** The 2 PreToolUse gates (approval-policies, pretooluse-bash) + block-spawn + notify now resolve project per-session via `$payload.session_id` (`Get-ProjectId -SessionId` / inline) — no global fallback; seo-ranking EXCLUDED (scheduled, no session). dev-security-reviewer **APPROVE-WITH-NOTES (0 blocker/0 major)**; folded MINOR-1 (UUID path-traversal guard on ALL 3 resolvers incl. #2679's parser.ps1), NIT-1 (dup dot-source), NIT-2 (msg). Verified: traversal→NULL, foreign→NULL with global=1, approval smoke 7/7. +57/-43, ii-applied. REMAINING: skills = Phase B #2680; session-less scheduled hooks still on global (KNOWN-GAP-1, tracked); in-flight sessions re-bind.
 
@@ -53,6 +55,7 @@ updated_by: lead @ #2680
 
 ## Changelog
 
+- v9 2026-06-25 #2694 — KNOWN-GAP-1 RESOLVED + premise CORRECTED. Workstream committed+pushed `e127053` (+ intense-review fix set). Operator caught a new session still READING the global `lead_project_id.txt` in tn-bind. Repo-wide grep found the REAL reader: the session-less **Telegram poller daemon** (`api/scripts/telegram_poller.py` #2565, env-first→global-fallback, re-resolved each batch) — NOT seo-ranking (unregistered + cosmetic `project=?`). So the global is KEPT by design (poller channel). **Invariant LOCKED:** sessions WRITE/overwrite the global, never READ; only session-less daemons read. Fixes: tn-bind + CLAUDE.md reframed (write-only/never-read); seo-ranking.ps1 in-session read migrated per-session (`.sh` twin + smoke fixture legitimately session-less/env-override); AGENTS.md flagged for Codex regen. .claude edits ii-applied + parse-clean.
 - v8 2026-06-24 #2680 — skills per-session binding (Phase B): bin/lead-project-id.ps1 CLI (per-session resolve, UUID guard, fail-loud); 13 tn-* skill refs migrated off the global to the CLI; mutating skills abort on non-zero -> closes the wrong-project-write hole. Verified CLI + grep 0 reader-instructions. +15/-15 + CLI, ii-applied, not committed. Binding workstream (Phase 1/A/A.2/B) COMPLETE; residual = KNOWN-GAP-1 (session-less seo hooks).
 - v7 2026-06-24 #2692 — gate-family per-session binding (Phase A.2): Get-ProjectId gains -SessionId (per-session, no global fallback); approval-policies + pretooluse-bash + block-spawn + notify resolve via $payload.session_id; seo excluded (scheduled, no session). dev-security-reviewer APPROVE-WITH-NOTES (0 blocker/0 major); MINOR-1 UUID path-traversal guard folded into _shared + parser(#2679) + notify; NIT-1/NIT-2 fixed. Verified traversal->NULL, foreign->NULL w/ global=1, approval smoke 7/7. +57/-43, ii-applied, not committed. Remaining: skills Phase B #2680; session-less hooks KNOWN-GAP-1.
 - v6 2026-06-24 #2679 — session-scoped project binding (Phase A): `Resolve-LeadProjectId` (per-UUID `lead_project_id_<sid>.txt`, NO global fallback) in parser.ps1; 3 capture hooks wired via payload session_id; `lead_current_task.txt` dropped; tn-bind + CLAUDE.md write per-UUID + global. Live: foreign sid → NULL with global=1; smoke `usage_events` id=313 proj=1 task=2679. hooks-only +65/-25, ii-applied, not committed. Findings: gate-family hooks still on global (Phase A.2 needed, incl. security approval path); skills = Phase B #2680; in-flight sessions need re-bind.
