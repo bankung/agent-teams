@@ -144,6 +144,26 @@ reason — and **notify** (walker-stopped/empty, Ring 2).
   `resume_context`.
 - Re-verify task state at every pickup (a row may have moved since you last looked).
 
+## 7. Tests + proactive compaction (operator-locked 2026-06-25)
+
+**Tests — never round-trip the operator per task.** In-session `pytest` is hook-blocked
+(operator-run only), so do NOT stop the drain to ask for a test run each task:
+- **Batch it.** During the drain, mark each task's full-suite AC `na` (deferred-to-operator-pytest)
+  with a one-line rationale; at the drain's END give ONE `pytest tests -q` (cwd `/repo/api`)
+  covering all touched modules — the operator runs it once, not per task.
+- **Verify inline what you can** (no asking): endpoints by live-curl, FE by the agent's vitest,
+  `py_compile` in-container for syntax. These are the per-task proof; the batched pytest is the
+  final backstop.
+- **Long-term fix = CI (#2708).** Once the workflow is green, every push runs the full suite
+  automatically → the full-suite AC becomes "CI-verified on push" and the manual-pytest ask disappears.
+
+**Compaction — task boundaries are the safe points.** Durable state lives in Kanban + the activity
+rail + local commits + design docs, and §6 re-derives position at every pickup — so a compaction
+*between* tasks loses nothing. There is **no live per-turn token gauge** to read; rely on harness
+auto-compaction (it fires at clean boundaries) + the §6 re-verify after it, and on a very long run
+proactively `/compact` **at a task boundary** (never mid-task). Mirror of operator memory
+`feedback_walker_continuous_no_per_task_ask`.
+
 ## Why this exists
 
 Encodes the operator's by-hand "pick the next task + start it" step as a disciplined, hands-off
