@@ -2203,6 +2203,151 @@ def _check_optimistic_lock(
         )
 
 
+async def _validate_blocked_by_patch(
+    session: AsyncSession, task: Task, task_id: int, updates: dict[str, Any]
+) -> None:
+    # Kanban #771: blocked_by validation on PATCH. Differs from POST in two ways:
+    #   1. Self-reference IS structurally possible (target row has an id), so
+    #      reject blocked_by == task_id at 422.
+    #   2. Cycle detection: walk the new blocker's chain up to depth=10. If we
+    #      hit task_id anywhere in the chain → cycle → 422. Setting to None
+    #      is always allowed (clears the blocker; no checks needed).
+    # Soft-deleted blockers are rejected. Same-project enforcement mirrors POST.
+    # Stable detail strings pinned by
+    # test_blocked_by_detail_strings_pinned_in_router_source — keep in sync.
+    if "blocked_by" in updates:
+        new_blocked_by = updates["blocked_by"]
+        if new_blocked_by is not None:
+            if new_blocked_by == task_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="blocked_by cannot reference self",
+                )
+            blocker = await session.get(Task, new_blocked_by)
+            if blocker is None or blocker.status == RecordStatus.DELETED:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"blocked_by {new_blocked_by} does not exist or is deleted",
+                )
+            if blocker.project_id != task.project_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"blocked_by {new_blocked_by} belongs to a different project",
+                )
+            # Cycle walk: starting from the new blocker, follow blocked_by
+            # links. If we hit task_id → cycle (the target transitively
+            # depends on itself). Exhaust within depth budget → OK. Exceed
+            # budget → defensive 422 (should not occur in practice).
+            # Range is N+2 (not N+1) so a chain of EXACTLY N blockers
+            # terminates via the `cursor is None: break` path on iteration
+            # N+1 instead of falsely tripping the for-else. The constant N
+            # is the budget for "blockers walked"; the +1 sentinel
+            # iteration exists solely to break cleanly when the chain ends
+            # (or cycle closes) at the budget edge. Mirrors the
+            # _enforce_blocker_order_constraint fix (#772 / Kanban #820).
+            #
+            # #2501 perf: pre-fetch the chain in one recursive-CTE SELECT,
+            # build id→Task dict, walk in Python. Same cycle/depth semantics.
+            from sqlalchemy import text as _sa_text_cycle  # SELECT only — not DML
+
+            _cycle_chain_rows = (
+                await session.execute(
+                    _sa_text_cycle(
+                        "WITH RECURSIVE bc(id, blocked_by, depth) AS ("
+                        "  SELECT id, blocked_by, 1 FROM tasks WHERE id = :start_id"
+                        "  UNION ALL"
+                        "  SELECT t.id, t.blocked_by, bc.depth + 1"
+                        "  FROM tasks t JOIN bc ON t.id = bc.blocked_by"
+                        "  WHERE bc.depth <= :max_depth"
+                        ") SELECT id FROM bc"
+                    ),
+                    {"start_id": new_blocked_by, "max_depth": _BLOCKED_BY_MAX_CHAIN_DEPTH + 1},
+                )
+            ).fetchall()
+            _cycle_chain_ids = [r[0] for r in _cycle_chain_rows]
+            _cycle_task_map: dict[int, Task] = {}
+            if _cycle_chain_ids:
+                _cycle_fetched = (
+                    await session.execute(
+                        select(Task).where(Task.id.in_(_cycle_chain_ids))
+                    )
+                ).scalars().all()
+                _cycle_task_map = {t.id: t for t in _cycle_fetched}
+
+            cursor: int | None = blocker.blocked_by
+            for depth in range(1, _BLOCKED_BY_MAX_CHAIN_DEPTH + 2):
+                if cursor is None:
+                    break
+                if cursor == task_id:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"blocked_by {new_blocked_by} would create a cycle (depth {depth})",
+                    )
+                next_row = _cycle_task_map.get(cursor)
+                if next_row is None:
+                    break
+                cursor = next_row.blocked_by
+            else:
+                # Loop exited via exhausting `range` without break — chain
+                # longer than the budget. Defensive guard.
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"blocked_by chain exceeds maximum depth of {_BLOCKED_BY_MAX_CHAIN_DEPTH}",
+                )
+
+
+async def _validate_handoff_template_patch(
+    session: AsyncSession, task: Task, updates: dict[str, Any]
+) -> None:
+    # Kanban #1004: handoff_template_id PATCH validation. Same posture as
+    # blocked_by — existence + project-scope checks, plus the global-template
+    # exception (project_id IS NULL on the template). Setting to None is
+    # always allowed (clears the auto-handoff opt-in).
+    if "handoff_template_id" in updates:
+        new_handoff_template_id = updates["handoff_template_id"]
+        if new_handoff_template_id is not None:
+            ht = await session.get(HandoffTemplate, new_handoff_template_id)
+            if ht is None or ht.status == RecordStatus.DELETED:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"handoff_template_id {new_handoff_template_id} "
+                        "does not exist or is deleted"
+                    ),
+                )
+            if ht.project_id is not None and ht.project_id != task.project_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"handoff_template_id {new_handoff_template_id} "
+                        "belongs to a different project"
+                    ),
+                )
+
+
+async def _validate_milestone_patch(
+    session: AsyncSession, task: Task, updates: dict[str, Any]
+) -> None:
+    # Kanban #1868: milestone_id PATCH validation. Same posture as blocked_by /
+    # handoff_template_id — existence + same-project checks. Setting to None is
+    # always allowed (unassigns from the milestone). Stable detail strings
+    # pinned by test_milestone_id_detail_strings_pinned_in_router_source.
+    if "milestone_id" in updates:
+        new_milestone_id = updates["milestone_id"]
+        if new_milestone_id is not None:
+            milestone = await session.get(Milestone, new_milestone_id)
+            if milestone is None or milestone.status == RecordStatus.DELETED:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"milestone_id {new_milestone_id} does not exist or is deleted",
+                )
+            if milestone.project_id != task.project_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"milestone_id {new_milestone_id} belongs to a different project",
+                )
+
+
 @router.patch("/{task_id}", response_model=TaskRead)
 async def update_task(
     task_id: int,
@@ -2364,138 +2509,10 @@ async def update_task(
         resolved_is_pending, resolved_process_status
     )
 
-    # Kanban #771: blocked_by validation on PATCH. Differs from POST in two ways:
-    #   1. Self-reference IS structurally possible (target row has an id), so
-    #      reject blocked_by == task_id at 422.
-    #   2. Cycle detection: walk the new blocker's chain up to depth=10. If we
-    #      hit task_id anywhere in the chain → cycle → 422. Setting to None
-    #      is always allowed (clears the blocker; no checks needed).
-    # Soft-deleted blockers are rejected. Same-project enforcement mirrors POST.
-    # Stable detail strings pinned by
-    # test_blocked_by_detail_strings_pinned_in_router_source — keep in sync.
-    if "blocked_by" in updates:
-        new_blocked_by = updates["blocked_by"]
-        if new_blocked_by is not None:
-            if new_blocked_by == task_id:
-                raise HTTPException(
-                    status_code=422,
-                    detail="blocked_by cannot reference self",
-                )
-            blocker = await session.get(Task, new_blocked_by)
-            if blocker is None or blocker.status == RecordStatus.DELETED:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"blocked_by {new_blocked_by} does not exist or is deleted",
-                )
-            if blocker.project_id != task.project_id:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"blocked_by {new_blocked_by} belongs to a different project",
-                )
-            # Cycle walk: starting from the new blocker, follow blocked_by
-            # links. If we hit task_id → cycle (the target transitively
-            # depends on itself). Exhaust within depth budget → OK. Exceed
-            # budget → defensive 422 (should not occur in practice).
-            # Range is N+2 (not N+1) so a chain of EXACTLY N blockers
-            # terminates via the `cursor is None: break` path on iteration
-            # N+1 instead of falsely tripping the for-else. The constant N
-            # is the budget for "blockers walked"; the +1 sentinel
-            # iteration exists solely to break cleanly when the chain ends
-            # (or cycle closes) at the budget edge. Mirrors the
-            # _enforce_blocker_order_constraint fix (#772 / Kanban #820).
-            #
-            # #2501 perf: pre-fetch the chain in one recursive-CTE SELECT,
-            # build id→Task dict, walk in Python. Same cycle/depth semantics.
-            from sqlalchemy import text as _sa_text_cycle  # SELECT only — not DML
-
-            _cycle_chain_rows = (
-                await session.execute(
-                    _sa_text_cycle(
-                        "WITH RECURSIVE bc(id, blocked_by, depth) AS ("
-                        "  SELECT id, blocked_by, 1 FROM tasks WHERE id = :start_id"
-                        "  UNION ALL"
-                        "  SELECT t.id, t.blocked_by, bc.depth + 1"
-                        "  FROM tasks t JOIN bc ON t.id = bc.blocked_by"
-                        "  WHERE bc.depth <= :max_depth"
-                        ") SELECT id FROM bc"
-                    ),
-                    {"start_id": new_blocked_by, "max_depth": _BLOCKED_BY_MAX_CHAIN_DEPTH + 1},
-                )
-            ).fetchall()
-            _cycle_chain_ids = [r[0] for r in _cycle_chain_rows]
-            _cycle_task_map: dict[int, Task] = {}
-            if _cycle_chain_ids:
-                _cycle_fetched = (
-                    await session.execute(
-                        select(Task).where(Task.id.in_(_cycle_chain_ids))
-                    )
-                ).scalars().all()
-                _cycle_task_map = {t.id: t for t in _cycle_fetched}
-
-            cursor: int | None = blocker.blocked_by
-            for depth in range(1, _BLOCKED_BY_MAX_CHAIN_DEPTH + 2):
-                if cursor is None:
-                    break
-                if cursor == task_id:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=f"blocked_by {new_blocked_by} would create a cycle (depth {depth})",
-                    )
-                next_row = _cycle_task_map.get(cursor)
-                if next_row is None:
-                    break
-                cursor = next_row.blocked_by
-            else:
-                # Loop exited via exhausting `range` without break — chain
-                # longer than the budget. Defensive guard.
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"blocked_by chain exceeds maximum depth of {_BLOCKED_BY_MAX_CHAIN_DEPTH}",
-                )
-
-    # Kanban #1004: handoff_template_id PATCH validation. Same posture as
-    # blocked_by — existence + project-scope checks, plus the global-template
-    # exception (project_id IS NULL on the template). Setting to None is
-    # always allowed (clears the auto-handoff opt-in).
-    if "handoff_template_id" in updates:
-        new_handoff_template_id = updates["handoff_template_id"]
-        if new_handoff_template_id is not None:
-            ht = await session.get(HandoffTemplate, new_handoff_template_id)
-            if ht is None or ht.status == RecordStatus.DELETED:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"handoff_template_id {new_handoff_template_id} "
-                        "does not exist or is deleted"
-                    ),
-                )
-            if ht.project_id is not None and ht.project_id != task.project_id:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"handoff_template_id {new_handoff_template_id} "
-                        "belongs to a different project"
-                    ),
-                )
-
-    # Kanban #1868: milestone_id PATCH validation. Same posture as blocked_by /
-    # handoff_template_id — existence + same-project checks. Setting to None is
-    # always allowed (unassigns from the milestone). Stable detail strings
-    # pinned by test_milestone_id_detail_strings_pinned_in_router_source.
-    if "milestone_id" in updates:
-        new_milestone_id = updates["milestone_id"]
-        if new_milestone_id is not None:
-            milestone = await session.get(Milestone, new_milestone_id)
-            if milestone is None or milestone.status == RecordStatus.DELETED:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"milestone_id {new_milestone_id} does not exist or is deleted",
-                )
-            if milestone.project_id != task.project_id:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"milestone_id {new_milestone_id} belongs to a different project",
-                )
+    # Kanban #771/#1004/#1868: FK-reference PATCH validation (extracted #2675).
+    await _validate_blocked_by_patch(session, task, task_id, updates)
+    await _validate_handoff_template_patch(session, task, updates)
+    await _validate_milestone_patch(session, task, updates)
 
     # Kanban #772 resolved-final blocker-order constraint. Fires when EITHER
     # `sort_order` or `blocked_by` is in the PATCH body — the constraint
