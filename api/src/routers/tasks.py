@@ -363,6 +363,9 @@ async def list_tasks(
     assigned_role: int | None = Query(
         default=None, description="Filter by tasks.assigned_role"
     ),
+    run_mode: Literal["manual", "auto_pickup", "auto_headless"] | None = Query(
+        default=None, description="Filter by tasks.run_mode (e.g. auto_pickup / manual)."
+    ),
     parent_task_id: int | None = Query(
         default=None,
         ge=1,
@@ -499,6 +502,8 @@ async def list_tasks(
         stmt = stmt.where(Task.process_status != TaskStatus.CANCELLED)
     if assigned_role is not None:
         stmt = stmt.where(Task.assigned_role == assigned_role)
+    if run_mode is not None:
+        stmt = stmt.where(Task.run_mode == run_mode)
     # Kanban #1868: filter to a single milestone's tasks.
     if milestone_id is not None:
         stmt = stmt.where(Task.milestone_id == milestone_id)
@@ -933,6 +938,9 @@ async def list_task_summaries(
             "Silently ignored when an explicit `process_status=N` is provided."
         ),
     ),
+    run_mode: Literal["manual", "auto_pickup", "auto_headless"] | None = Query(
+        default=None, description="Filter by tasks.run_mode (e.g. auto_pickup / manual)."
+    ),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     include_deleted: bool = Query(
@@ -981,6 +989,8 @@ async def list_task_summaries(
         stmt = stmt.where(Task.process_status != TaskStatus.CANCELLED)
     if milestone_id is not None:
         stmt = stmt.where(Task.milestone_id == milestone_id)
+    if run_mode is not None:
+        stmt = stmt.where(Task.run_mode == run_mode)
     stmt = stmt.order_by(Task.id.asc()).limit(limit).offset(offset)
     result = await session.execute(stmt)
     return list(result.scalars().all())
