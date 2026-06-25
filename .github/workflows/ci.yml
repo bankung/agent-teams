@@ -1,0 +1,182 @@
+# .github/workflows/ci.yml
+#
+# Test / lint / typecheck CI — runs on every push to dev + feature branches
+# and on pull requests targeting main. Three parallel jobs: web, api, langgraph.
+
+name: CI
+
+on:
+  push:
+    branches:
+      - dev
+      - 'feature/**'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # web — Next.js 16 / React 19 / TypeScript 5 / Vitest
+  # Node version: web/Dockerfile uses node:20-alpine; no .nvmrc present.
+  # Scripts verified from web/package.json:
+  #   "lint": "eslint ."
+  #   "test": "vitest run"
+  # Typecheck: tsconfig.json has "noEmit": true → npx tsc --noEmit
+  # (No "typecheck" script in package.json; tsc --noEmit is the canonical path.)
+  # ---------------------------------------------------------------------------
+  web:
+    name: web — typecheck / lint / vitest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test (vitest run)
+        run: npm run test
+
+  # ---------------------------------------------------------------------------
+  # api — FastAPI / Python 3.12 / pytest-asyncio / Alembic
+  #
+  # Postgres service container mirrors the compose db service:
+  #   image: postgres:16, same superuser + dbname as the compose default.
+  #
+  # Chicken-egg for pytest_runner role:
+  #   api/tests/conftest.py rewrites DATABASE_URL to use pytest_runner:<pw>
+  #   and then does CREATE DATABASE agent_teams_test OWNER pytest_runner.
+  #   The role is normally created by alembic migration
+  #   2026_05_17_1200_pytest_runner_role against the live DB, but in CI
+  #   there is no live DB — we pre-create the role manually before pytest.
+  #   Password comes from the repo secret PYTEST_DB_PASSWORD (see operator
+  #   action items below).
+  #
+  # Working directory: conftest.py line 340 runs alembic with cwd="/repo/api";
+  #   in CI the checkout lands at /home/runner/work/.../agent-teams.
+  #   The conftest subprocess uses cwd="/repo/api" which won't exist on GH
+  #   runners. We set REPO_ROOT + working-directory: api for every step so
+  #   alembic.ini (script_location = alembic) resolves correctly AND the
+  #   conftest's subprocess cwd resolves.
+  #   Wait — conftest.py hardcodes cwd="/repo/api". We work around this by
+  #   creating a /repo symlink to the checkout root (see "Symlink /repo" step).
+  #
+  # deps: pip install -e ".[dev]"  (from api/Dockerfile: pip install -e ".[dev]")
+  #
+  # Required env vars (conftest.py top-of-file + src.settings):
+  #   DATABASE_URL   — set to superuser DSN (conftest rewrites it to pytest_runner)
+  #   PYTEST_DB_PASSWORD — password for pytest_runner role
+  #   REPO_ROOT      — pydantic-settings raises ValidationError if unset
+  #   SECRET_KEY     — required by src.settings; 32+ char random value
+  #   CREDENTIALS_MASTER_KEY — required by lifespan get_fernet()
+  # ---------------------------------------------------------------------------
+  api:
+    name: api — pytest (postgres:16 service)
+    runs-on: ubuntu-latest
+
+    services:
+      db:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agent_teams
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: api/pyproject.toml
+
+      - name: Symlink /repo to checkout root
+        # conftest.py hardcodes cwd="/repo/api" for the alembic subprocess.
+        # Create the symlink so that path resolves on the GH runner.
+        run: sudo ln -s "$GITHUB_WORKSPACE" /repo
+
+      - name: Install api dependencies
+        working-directory: api
+        run: pip install -e ".[dev]"
+
+      - name: Pre-create pytest_runner role
+        # The alembic migration that creates this role runs against the LIVE DB;
+        # in CI there is no live DB. We create the role manually so conftest can
+        # issue CREATE DATABASE agent_teams_test OWNER pytest_runner.
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -c \
+            "CREATE ROLE pytest_runner WITH LOGIN PASSWORD '${{ secrets.PYTEST_DB_PASSWORD }}';"
+
+      - name: Run pytest
+        working-directory: api
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/agent_teams
+          PYTEST_DB_PASSWORD: ${{ secrets.PYTEST_DB_PASSWORD }}
+          REPO_ROOT: /repo
+          SECRET_KEY: ci-secret-key-not-for-production-use-only-32x
+          CREDENTIALS_MASTER_KEY: ${{ secrets.CI_CREDENTIALS_MASTER_KEY }}
+          APP_SCHEDULER_DISABLE: "true"
+        run: pytest tests/ -x -q
+
+  # ---------------------------------------------------------------------------
+  # langgraph — Python 3.12 / pytest-asyncio / unit suite (LLM fully mocked)
+  #
+  # All tests use monkeypatch / MagicMock / respx — no live LLM calls.
+  # No "gemma" or "ollama" custom markers exist in the test suite (verified
+  # via grep @pytest.mark across langgraph/tests/). The only skipif markers
+  # are: os.name == "nt" (Windows symlink, fine on ubuntu) and
+  # LANGGRAPH_LLM_PROVIDER == ollama (batch-2 HTTP tools; safe to run without
+  # setting the var, which is the default).
+  #
+  # deps: pip install -e .[test]  (from langgraph/pyproject.toml [test] extras)
+  # No Postgres service needed — tests do not hit a DB.
+  # ---------------------------------------------------------------------------
+  langgraph:
+    name: langgraph — pytest (mocked LLM, no DB)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: langgraph/pyproject.toml
+
+      - name: Install langgraph dependencies
+        working-directory: langgraph
+        run: pip install -e ".[test]"
+
+      - name: Run pytest
+        working-directory: langgraph
+        run: pytest tests/ -x -q
