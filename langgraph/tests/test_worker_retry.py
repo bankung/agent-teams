@@ -76,7 +76,13 @@ def _make_client(handler) -> httpx.AsyncClient:
 
 
 def _make_graph_module(ainvoke_impl) -> SimpleNamespace:
-    return SimpleNamespace(graph=SimpleNamespace(ainvoke=ainvoke_impl))
+    async def _aget_state(config):
+        # No prior checkpoint -> has_checkpoint() returns False -> retry re-invokes
+        # fresh (these tests exercise the retry loop, not checkpoint-resume).
+        return SimpleNamespace(created_at=None)
+    return SimpleNamespace(
+        graph=SimpleNamespace(ainvoke=ainvoke_impl, aget_state=_aget_state)
+    )
 
 
 def _body(req: httpx.Request) -> dict[str, Any]:
