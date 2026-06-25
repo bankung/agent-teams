@@ -54,6 +54,9 @@ type Props = {
   projectId?: number;
   // #2412 — non-terminal task ids; TaskCard gates the blocked chip against this set.
   blockingTaskIds?: Set<number>;
+  // Kanban #2703 — run-type toggle plumbing; forwarded to TaskCard.
+  onPatch?: (updated: TaskRead) => void;
+  onError?: (message: string) => void;
 };
 
 // #2122 N1 — derive the column-key→process_status map from the columns prop
@@ -83,6 +86,8 @@ export function BoardDndCanvas({
   onSameLaneReorder,
   projectId,
   blockingTaskIds,
+  onPatch,
+  onError,
 }: Props) {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -156,6 +161,8 @@ export function BoardDndCanvas({
               highlightedTaskId={highlightedTaskId}
               projectId={projectId}
               blockingTaskIds={blockingTaskIds}
+              onPatch={onPatch}
+              onError={onError}
             />
           );
         })}

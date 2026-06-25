@@ -36,9 +36,12 @@ type Props = {
   projectId?: number;
   // #2412 — non-terminal task ids; passed through to TaskCard for blocked-badge gating.
   blockingTaskIds?: Set<number>;
+  // Kanban #2703 — run-type toggle plumbing; passed through to TaskCard.
+  onPatch?: (updated: TaskRead) => void;
+  onError?: (message: string) => void;
 };
 
-export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, sortable = false, highlightedTaskId = null, totalCount, onLoadMore, loadMoreLoading = false, projectId, blockingTaskIds }: Props) {
+export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, sortable = false, highlightedTaskId = null, totalCount, onLoadMore, loadMoreLoading = false, projectId, blockingTaskIds, onPatch, onError }: Props) {
   const { isOver, setNodeRef } = useDroppable({ id: columnId });
   const taskIds = tasks.map((t) => t.id);
   const dropHighlight = isOver ? " ring-2 ring-blue-400/50" : "";
@@ -80,6 +83,8 @@ export function BoardColumn({ columnId, statuses, label, tasks, onOpenDetail, so
                 highlighted={highlightedTaskId === task.id}
                 projectId={projectId}
                 blockingTaskIds={blockingTaskIds}
+                onPatch={onPatch}
+                onError={onError}
               />
             ))
           )}

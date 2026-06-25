@@ -938,6 +938,8 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
           onSameLaneReorder={onSameLaneReorder}
           projectId={project.id}
           blockingTaskIds={blockingTaskIds}
+          onPatch={onPatchedTask}
+          onError={pushToast}
         />
       )}
       {/* #2371 (R1) — AuditHistorySection moved to project settings page. */}

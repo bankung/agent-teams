@@ -987,8 +987,11 @@ export async function parseTaskText(
 // halt_reason added 2026-05-20 by Kanban #1001 — Halt quick-action sets ps=4 + halt_reason in one PATCH.
 //   PATCH semantics (per #785): key-absent = unchanged; explicit `null` = clear/unhalt; non-empty string = halt.
 // Kanban #2181 — description + acceptance_criteria inline editing from task drawer.
+// Kanban #2703 — task_kind is PATCH-able (BE TaskUpdate accepts it); the board
+// run-type toggle sends task_kind + run_mode together in one atomic PATCH so the
+// server HUMAN ⇒ MANUAL invariant (assert_run_mode_for_kind) never fires mid-flip.
 export type TaskPatch = Partial<
-  Pick<TaskRead, "process_status" | "priority" | "title" | "blocked_by" | "sort_order" | "run_mode" | "description" | "acceptance_criteria">
+  Pick<TaskRead, "process_status" | "priority" | "title" | "blocked_by" | "sort_order" | "run_mode" | "task_kind" | "description" | "acceptance_criteria">
 > & {
   new_answer?: string | null;
   new_answer_by?: string | null;

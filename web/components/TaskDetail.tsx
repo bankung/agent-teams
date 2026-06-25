@@ -271,6 +271,32 @@ export function TaskDetail({
     }
   };
 
+  // Kanban #2703 — bidirectional run-type (human ↔ auto) parity for the detail
+  // panel. Closes the one-way handleRun path: 'auto' writes ai+auto_pickup,
+  // 'human' writes human+manual — both fields in ONE atomic PATCH so the server
+  // HUMAN ⇒ MANUAL invariant never fires mid-flip. Optimistic + revert matches
+  // handleMilestoneChange. Reads task_kind directly (no local mirror needed —
+  // onPatch refreshes the row), guarded against re-entrancy via `submitting`.
+  const handleRunTypeChange = async (next: "human" | "auto") => {
+    if (submitting) return;
+    const current = task.task_kind === TaskKind.AI ? "auto" : "human";
+    if (next === current) return;
+    setSubmitting(true);
+    try {
+      const body =
+        next === "auto"
+          ? { task_kind: TaskKind.AI, run_mode: TaskRunMode.AUTO_PICKUP }
+          : { task_kind: TaskKind.HUMAN, run_mode: TaskRunMode.MANUAL };
+      const updated = await patchTask(projectId, task.id, body);
+      onPatch(updated);
+    } catch (err: unknown) {
+      const msg = extractErrorMessage(err, "Run-type change failed");
+      onError(`Task #${task.id}: ${msg}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleModelOverrideChange = async (
     tier: "haiku" | "sonnet" | "opus" | null,
   ) => {
@@ -427,6 +453,49 @@ export function TaskDetail({
                     >
                       {submitting ? "Queuing…" : "Run"}
                     </button>
+                  </div>
+                )}
+                {/* Kanban #2703 — bidirectional run-type (human ↔ auto). AC4: work
+                    tasks only (HITL question/decision are server-coerced human+
+                    manual) AND non-terminal (DONE/CANCELLED run-type is immutable). */}
+                {!isTerminal && task.interaction_kind === "work" && (
+                  <div className="mt-2" data-run-type-control>
+                    <span className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                      Run type
+                    </span>
+                    <span
+                      role="radiogroup"
+                      aria-label="Run type"
+                      data-run-type-toggle
+                      data-run-type-value={task.task_kind === TaskKind.AI ? "auto" : "human"}
+                      className="mt-1 inline-flex items-center overflow-hidden rounded border border-zinc-200 dark:border-zinc-700"
+                    >
+                      {(["human", "auto"] as const).map((kind) => {
+                        const active =
+                          (task.task_kind === TaskKind.AI ? "auto" : "human") === kind;
+                        return (
+                          <button
+                            key={kind}
+                            type="button"
+                            role="radio"
+                            aria-checked={active}
+                            aria-label={kind === "auto" ? "Auto (AI auto-pickup)" : "Human (manual)"}
+                            disabled={submitting}
+                            data-run-type-option={kind}
+                            data-run-type-active={active ? "true" : undefined}
+                            onClick={() => void handleRunTypeChange(kind)}
+                            className={
+                              "min-h-[44px] px-3 py-2 text-xs font-medium transition-colors disabled:opacity-50 sm:min-h-0 sm:px-2.5 sm:py-1 " +
+                              (active
+                                ? "bg-violet-600 text-white dark:bg-violet-600"
+                                : "bg-white text-zinc-600 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800")
+                            }
+                          >
+                            {kind === "auto" ? "Auto" : "Human"}
+                          </button>
+                        );
+                      })}
+                    </span>
                   </div>
                 )}
                 {/* #1349 — HITL nudge toggle; terminal tasks don't fire nudges so hidden there */}
