@@ -111,6 +111,8 @@ services:
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.com}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_OPERATOR_CHAT_ID: ${TELEGRAM_OPERATOR_CHAT_ID:-}
       # pytest_runner role password (Kanban #1109 — L4 prevention layer for
       # the 2026-05-17 dev-DB-wipe incident). Used by the alembic migration
       # 0034_pytest_runner_role to create the role with the matching password,
@@ -288,6 +290,46 @@ services:
       timeout: 3s
       retries: 3
       start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # telegram-poller — inbound async-HITL gate poller (Kanban #2565/#2698).
+  # Its OWN service (NOT `docker compose exec api ...`) so it SURVIVES
+  # `docker compose restart api` — the #2698 fix. Long-polls Telegram getUpdates
+  # (purely outbound) and resolves gates via the api on an operator tap.
+  #
+  # SINGLE INSTANCE ONLY (Telegram 409 on concurrent getUpdates): this service
+  # REPLACES the old manual `docker compose exec api python -m scripts.telegram_poller`
+  # — do NOT run both. Opt-in (needs TELEGRAM_BOT_TOKEN + TELEGRAM_OPERATOR_CHAT_ID
+  # in .env; the poller exit(1)s without them, which would crash-loop a default-on
+  # service — hence the profile gate, mirroring langgraph):
+  #   docker compose -p agent-teams --profile telegram up -d telegram-poller
+  # ---------------------------------------------------------------------------
+  telegram-poller:
+    profiles: ["telegram"]
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: agent-teams-telegram-poller
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_OPERATOR_CHAT_ID: ${TELEGRAM_OPERATOR_CHAT_ID:-}
+      # Compose-internal hostname — the poller's default is localhost:8456 which
+      # inside a container is the poller itself. MUST point at the api service.
+      # (Mirrors langgraph's LANGGRAPH_KANBAN_API_BASE=http://api:8456.)
+      AGENT_TEAMS_API_BASE: http://api:8456
+      # Needed so the poller reads _runtime/lead_project_id.txt (bound project)
+      # and writes _runtime/telegram_offset.txt under the bind mount.
+      REPO_ROOT: /repo
+      # Optional explicit project-id override; empty -> falls back to the
+      # _runtime/lead_project_id.txt global signal.
+      TELEGRAM_POLLER_PROJECT_ID: ${TELEGRAM_POLLER_PROJECT_ID:-}
+    volumes:
+      - .:/repo
+    command: ["python", "-m", "scripts.telegram_poller"]
+    restart: unless-stopped
 
 volumes:
   agent-teams-pgdata:
