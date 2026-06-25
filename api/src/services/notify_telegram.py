@@ -19,10 +19,17 @@ decodes it with `decode_callback_data` and resolves the gate via the API. The
 control key is stripped from the rendered text body so it never leaks into the
 visible message. See `services/notify_gate.py` for the tier->policy that BUILDS
 these payloads.
+
+Kanban #2721 — HTML formatter:
+When the payload carries `_html` (TELEGRAM_HTML_KEY), `send_telegram` sends
+it verbatim with `parse_mode=HTML` instead of calling `_serialize_payload_for_text`.
+Build that string with `format_telegram_html` — it escapes every dynamic piece
+so titles containing `<`/`>`/`&` never produce malformed markup.
 """
 
 from __future__ import annotations
 
+import html as _html_mod
 import json
 import logging
 import os
@@ -45,10 +52,58 @@ TELEGRAM_ENV_TOKEN = "TELEGRAM_BOT_TOKEN"
 # text render so it never appears in the visible message.
 TELEGRAM_CONTROL_KEY = "_telegram"
 
+# Reserved payload key for a pre-composed HTML string (Kanban #2721). When
+# present and non-empty, `send_telegram` uses it as the message text with
+# `parse_mode=HTML` instead of the plain-text serialisation path.
+TELEGRAM_HTML_KEY = "_html"
+
 # Telegram hard cap on callback_data is 64 BYTES (UTF-8). We keep the encoding
 # ASCII so byte-length == char-length. Format: "g:<gate_id>:<option>".
 CALLBACK_DATA_MAX_BYTES = 64
 _CALLBACK_PREFIX = "g"  # marks a gate-resolve callback; future kinds can add prefixes.
+
+
+def format_telegram_html(
+    *,
+    status: str,
+    title: str,
+    context: list[str] | None = None,
+) -> str:
+    """Compose a Telegram HTML-mode message string.
+
+    Layout (parse_mode=HTML):
+      Line 1: <status> — plain escaped tag, e.g. "Gate · decision"
+      Line 2: <b><title></b> — task title, bold
+      Blank line, then each context line escaped, one per line.
+
+    Every dynamic piece is HTML-escaped (& < >) BEFORE tag wrapping so a
+    title like "<b>auth</b> & login" renders as literal text, never markup.
+    Length cap: Telegram's hard limit is 4096 chars; when the assembled string
+    exceeds that, context lines are trimmed (character-level) to fit.
+    # shortcut: trims the context block as a whole string (not line-by-line);
+    # ceiling = context is the only variable-length part; a per-line trim would
+    # be marginally cleaner but adds complexity for a rare edge.
+    """
+    esc_status = _html_mod.escape(status, quote=False)
+    esc_title = _html_mod.escape(title, quote=False)
+    header = f"{esc_status}\n<b>{esc_title}</b>"
+
+    if not context:
+        text = header
+        if len(text) > 4096:
+            text = text[: 4093] + "..."
+        return text
+
+    esc_context = "\n".join(_html_mod.escape(line, quote=False) for line in context)
+    text = f"{header}\n\n{esc_context}"
+    if len(text) > 4096:
+        budget = 4096 - len(header) - 5  # 5 = "\n\n" + "..."
+        if budget > 0:
+            esc_context = esc_context[:budget] + "..."
+        else:
+            esc_context = "..."
+        text = f"{header}\n\n{esc_context}"
+    return text
 
 
 def _serialize_payload_for_text(payload: dict[str, Any]) -> str:
@@ -230,12 +285,23 @@ async def send_telegram(
         }
 
     url = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
-    body: dict[str, Any] = {
-        "chat_id": str(chat_id),
-        "text": _serialize_payload_for_text(payload),
-    }
+    # Kanban #2721: HTML path — when the payload carries a pre-composed HTML
+    # string under TELEGRAM_HTML_KEY, use it with parse_mode=HTML; otherwise
+    # fall through to the original plain-text serialisation (unchanged).
+    html_text = payload.get(TELEGRAM_HTML_KEY)
+    if html_text and isinstance(html_text, str):
+        body: dict[str, Any] = {
+            "chat_id": str(chat_id),
+            "text": html_text,
+            "parse_mode": "HTML",
+        }
+    else:
+        body = {
+            "chat_id": str(chat_id),
+            "text": _serialize_payload_for_text(payload),
+        }
     # Kanban #2565: attach an inline keyboard when the payload carries buttons.
-    # Plain-text payloads (no `_telegram` control block) leave body untouched.
+    # Both the HTML and plain-text paths attach reply_markup identically.
     reply_markup = _build_reply_markup(payload)
     if reply_markup is not None:
         body["reply_markup"] = reply_markup

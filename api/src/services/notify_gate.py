@@ -44,7 +44,9 @@ from src.models.task import Task
 from src.services.notify_telegram import (
     TELEGRAM_CONTROL_KEY,
     TELEGRAM_ENV_TOKEN,
+    TELEGRAM_HTML_KEY,
     encode_callback_data,
+    format_telegram_html,
 )
 
 logger = logging.getLogger("api.notify_gate")
@@ -142,49 +144,65 @@ def build_gate_notify_payload(
     """Build the Telegram delivery payload for a gate, per the LOCKED tier policy.
 
     Returns a payload dict ready for `deliver(kind='telegram', payload=...)`.
-    The `_telegram` control block (when present) carries the inline buttons the
-    adapter turns into a reply_markup; it is stripped from the visible text.
+    The `_html` key carries the HTML-formatted message string; the `_telegram`
+    control block (when present) carries the inline buttons. Both keys are
+    handled by the adapter; neither appears in the visible text.
 
     Pure function (no IO) so it is unit-testable in isolation — the tier->shape
     mapping is the heart of AC3 and is exercised directly in the tests.
+
+    Kanban #2721: structured title/body/url keys removed; replaced by _html.
+    The url key is dropped entirely (operator decision: no link in messages).
     """
     question_text = ""
     if isinstance(question_payload, dict):
         question_text = str(question_payload.get("question") or "")
 
-    base: dict[str, Any] = {
-        "title": f"Gate #{gate_id} [{gate_tier}] — {task_title}",
-        "task_id": task_id,
-        "url": f"/tasks/{task_id}",
-    }
+    status = f"Gate · {gate_tier}"
 
     # --- Ring 4: key / external — FYI ONLY, never answerable -----------------
     if gate_tier in _FORBIDDEN_TIERS:
-        base["body"] = (
+        terminal_line = (
             f"Needs your attention in the TERMINAL (tier '{gate_tier}' is not "
-            f"chat-approvable). " + (question_text or "Open the terminal to act.")
+            f"chat-approvable)."
         )
-        # NO _telegram control block -> adapter sends plain text, no buttons.
-        return base
+        ctx: list[str] = [terminal_line]
+        if question_text:
+            ctx.append(question_text)
+        # NO _telegram control block -> adapter sends HTML text, no buttons.
+        return {TELEGRAM_HTML_KEY: format_telegram_html(
+            status=status, title=task_title, context=ctx,
+        )}
 
     # --- commit / push: informed-approval — evidence THEN buttons -----------
     if gate_tier == _EVIDENCE_TIER:
         evidence = _render_evidence_lines(question_payload)
-        body_parts = []
+        ctx = []
         if question_text:
-            body_parts.append(question_text)
-        body_parts.append("Evidence:")
-        body_parts.extend(f"  - {line}" for line in evidence)
-        base["body"] = "\n".join(body_parts)
+            ctx.append(question_text)
+        ctx.append("Evidence:")
+        ctx.extend(f"  - {line}" for line in evidence)
         options = _extract_options(question_payload)
-        base[TELEGRAM_CONTROL_KEY] = {"buttons": _buttons_for_options(gate_id, options)}
-        return base
+        return {
+            TELEGRAM_HTML_KEY: format_telegram_html(
+                status=status, title=task_title, context=ctx,
+            ),
+            TELEGRAM_CONTROL_KEY: {"buttons": _buttons_for_options(gate_id, options)},
+        }
 
     # --- decision / hitl (and any other non-forbidden tier): simple buttons --
-    base["body"] = question_text or "Approve or reject this gate."
+    # Always include title + tier so empty-question gates are never bare.
+    ctx = []
+    if question_text:
+        ctx.append(question_text)
+    ctx.append(f"Tier: {gate_tier}")
     options = _extract_options(question_payload)
-    base[TELEGRAM_CONTROL_KEY] = {"buttons": _buttons_for_options(gate_id, options)}
-    return base
+    return {
+        TELEGRAM_HTML_KEY: format_telegram_html(
+            status=status, title=task_title, context=ctx,
+        ),
+        TELEGRAM_CONTROL_KEY: {"buttons": _buttons_for_options(gate_id, options)},
+    }
 
 
 async def notify_task_event(
@@ -221,11 +239,13 @@ async def notify_task_event(
         if not os.environ.get(TELEGRAM_ENV_TOKEN, "").strip():
             return {"fired": False, "skipped": "missing_token"}
 
+        # Kanban #2721: HTML-formatted FYI; url/title/body/task_id keys dropped.
         payload = {
-            "title": f"Task {event}: {task_title}",
-            "body": body,
-            "task_id": task_id,
-            "url": f"/tasks/{task_id}",
+            TELEGRAM_HTML_KEY: format_telegram_html(
+                status=f"Task {event}",
+                title=task_title,
+                context=[body] if body else None,
+            ),
         }
         result = await deliver(
             task_id=task_id, payload=payload, kind="telegram", session=session,

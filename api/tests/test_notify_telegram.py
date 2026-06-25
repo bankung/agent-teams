@@ -27,8 +27,10 @@ from src.services.notify_telegram import (
     TELEGRAM_API_BASE,
     TELEGRAM_CONTROL_KEY,
     TELEGRAM_ENV_TOKEN,
+    TELEGRAM_HTML_KEY,
     decode_callback_data,
     encode_callback_data,
+    format_telegram_html,
     send_telegram,
 )
 
@@ -345,3 +347,123 @@ async def test_send_telegram_plain_text_path_has_no_reply_markup(monkeypatch) ->
     assert result["ok"] is True
     assert "reply_markup" not in captured["body"]
     assert "title: digest" in captured["body"]["text"]
+
+
+# ===========================================================================
+# Kanban #2721 — HTML formatter + HTML send path
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# format_telegram_html — escaping + structure
+# ---------------------------------------------------------------------------
+
+
+def test_format_telegram_html_escapes_title_and_context() -> None:
+    # Injection guard: dynamic content must be escaped; no raw markup in output.
+    result = format_telegram_html(
+        status="Gate · decision",
+        title="<b>auth</b> & login",
+        context=["<script>bad</script>", "A & B"],
+    )
+    assert "&lt;b&gt;auth&lt;/b&gt;" in result
+    assert "&amp; login" in result
+    assert "&lt;script&gt;" in result
+    assert "<script>" not in result
+    assert "&amp; B" in result
+    # The bold wrapper around the escaped title must be present.
+    assert "<b>" in result and "</b>" in result
+
+
+def test_format_telegram_html_structure() -> None:
+    # Status on its own line; bold title on the next; blank line before context.
+    result = format_telegram_html(
+        status="Task done",
+        title="Deploy pipeline",
+        context=["3 tasks completed"],
+    )
+    lines = result.split("\n")
+    assert lines[0] == "Task done"
+    assert lines[1] == "<b>Deploy pipeline</b>"
+    assert lines[2] == ""  # blank separator
+    assert "3 tasks completed" in result
+
+
+def test_format_telegram_html_no_context_omits_blank_line() -> None:
+    result = format_telegram_html(status="Gate · key", title="Provision token")
+    assert result == "Gate · key\n<b>Provision token</b>"
+
+
+def test_format_telegram_html_length_cap_trims_context() -> None:
+    # A very long context line must be trimmed so the result stays <=4096 chars.
+    long_ctx = ["x" * 5000]
+    result = format_telegram_html(status="S", title="T", context=long_ctx)
+    assert len(result) <= 4096
+    assert "..." in result
+
+
+# ---------------------------------------------------------------------------
+# send_telegram HTML path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_telegram_html_path_sets_parse_mode(monkeypatch) -> None:
+    # When TELEGRAM_HTML_KEY is present, body must have parse_mode=HTML
+    # and text == the HTML string (not re-serialised).
+    monkeypatch.setenv(TELEGRAM_ENV_TOKEN, "test-token-abc")
+    captured: dict[str, Any] = {}
+
+    html_msg = "<b>Task done</b>\n\nAll good."
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 5}})
+
+    payload = {TELEGRAM_HTML_KEY: html_msg}
+    client = _make_client(handler)
+    try:
+        result = await send_telegram(_VALID_TARGET, payload, client=client)
+    finally:
+        await client.aclose()
+
+    assert result["ok"] is True
+    assert captured["body"]["parse_mode"] == "HTML"
+    assert captured["body"]["text"] == html_msg
+    assert "reply_markup" not in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_send_telegram_html_path_with_buttons_attaches_reply_markup(
+    monkeypatch,
+) -> None:
+    # HTML path + _telegram buttons -> parse_mode=HTML AND reply_markup present.
+    monkeypatch.setenv(TELEGRAM_ENV_TOKEN, "test-token-abc")
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 6}})
+
+    payload = {
+        TELEGRAM_HTML_KEY: "Gate · decision\n<b>Ship it?</b>",
+        TELEGRAM_CONTROL_KEY: {
+            "buttons": [
+                {"text": "Approve", "callback_data": "g:42:approve"},
+                {"text": "Reject", "callback_data": "g:42:reject"},
+            ]
+        },
+    }
+    client = _make_client(handler)
+    try:
+        result = await send_telegram(_VALID_TARGET, payload, client=client)
+    finally:
+        await client.aclose()
+
+    assert result["ok"] is True
+    body = captured["body"]
+    assert body["parse_mode"] == "HTML"
+    assert "reply_markup" in body
+    kb = body["reply_markup"]["inline_keyboard"]
+    assert len(kb) == 2
+    assert kb[0][0]["callback_data"] == "g:42:approve"
