@@ -187,4 +187,4 @@ jobs:
 
       - name: Run pytest
         working-directory: langgraph
-        run: pytest tests/ -x -q
+        run: pytest tests/ --maxfail=20 -q

@@ -168,7 +168,7 @@ async def test_multiboard_tick_picks_second_project(
 
     poll_once_calls: list[dict] = []
 
-    async def fake_poll_once(client, graph_module, cfg, headers):
+    async def fake_poll_once(client, graph_module, cfg, headers, session_id_override=None):
         poll_once_calls.append({"pid": headers.get("X-Project-Id")})
 
     monkeypatch.setattr(worker, "_fetch_all_projects", fake_fetch_all)
@@ -333,7 +333,7 @@ async def test_multiboard_session_failure_no_crash(
 
     poll_once_calls: list[dict] = []
 
-    async def fake_poll_once(client, graph_module, cfg, headers):
+    async def fake_poll_once(client, graph_module, cfg, headers, session_id_override=None):
         # Capture the LANGGRAPH_SESSION_ID env at invocation time.
         import os
         poll_once_calls.append({
@@ -650,7 +650,7 @@ async def test_multiboard_starvation_unanswered_question_board_a_does_not_block_
 
     poll_once_calls: list[str] = []
 
-    async def fake_poll_once(client, graph_module, cfg, headers):
+    async def fake_poll_once(client, graph_module, cfg, headers, session_id_override=None):
         poll_once_calls.append(headers.get("X-Project-Id"))
 
     cancel_after = 1
