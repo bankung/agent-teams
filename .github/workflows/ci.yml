@@ -66,8 +66,8 @@ jobs:
   #   The role is normally created by alembic migration
   #   2026_05_17_1200_pytest_runner_role against the live DB, but in CI
   #   there is no live DB — we pre-create the role manually before pytest.
-  #   Password comes from the repo secret PYTEST_DB_PASSWORD (see operator
-  #   action items below).
+  #   Password is generated at runtime (openssl rand -hex 16) — the CI env
+  #   is fully ephemeral so no repo secret is needed.
   #
   # Working directory: conftest.py line 340 runs alembic with cwd="/repo/api";
   #   in CI the checkout lands at /home/runner/work/.../agent-teams.
@@ -75,17 +75,17 @@ jobs:
   #   runners. We set REPO_ROOT + working-directory: api for every step so
   #   alembic.ini (script_location = alembic) resolves correctly AND the
   #   conftest's subprocess cwd resolves.
-  #   Wait — conftest.py hardcodes cwd="/repo/api". We work around this by
-  #   creating a /repo symlink to the checkout root (see "Symlink /repo" step).
+  #   conftest.py hardcodes cwd="/repo/api". We work around this by creating
+  #   a /repo symlink to the checkout root (see "Symlink /repo" step).
   #
   # deps: pip install -e ".[dev]"  (from api/Dockerfile: pip install -e ".[dev]")
   #
   # Required env vars (conftest.py top-of-file + src.settings):
   #   DATABASE_URL   — set to superuser DSN (conftest rewrites it to pytest_runner)
-  #   PYTEST_DB_PASSWORD — password for pytest_runner role
+  #   PYTEST_DB_PASSWORD — generated at runtime (consistent within the run)
   #   REPO_ROOT      — pydantic-settings raises ValidationError if unset
   #   SECRET_KEY     — required by src.settings; 32+ char random value
-  #   CREDENTIALS_MASTER_KEY — required by lifespan get_fernet()
+  #   CREDENTIALS_MASTER_KEY — generated at runtime via Fernet.generate_key()
   # ---------------------------------------------------------------------------
   api:
     name: api — pytest (postgres:16 service)
@@ -125,6 +125,9 @@ jobs:
         working-directory: api
         run: pip install -e ".[dev]"
 
+      - name: Generate ephemeral pytest_runner password
+        run: echo "PYTEST_DB_PASSWORD=$(openssl rand -hex 16)" >> "$GITHUB_ENV"
+
       - name: Pre-create pytest_runner role
         # The alembic migration that creates this role runs against the LIVE DB;
         # in CI there is no live DB. We create the role manually so conftest can
@@ -133,16 +136,17 @@ jobs:
           PGPASSWORD: postgres
         run: |
           psql -h localhost -U postgres -c \
-            "CREATE ROLE pytest_runner WITH LOGIN PASSWORD '${{ secrets.PYTEST_DB_PASSWORD }}';"
+            "CREATE ROLE pytest_runner WITH LOGIN PASSWORD '$PYTEST_DB_PASSWORD';"
+
+      - name: Generate ephemeral CREDENTIALS_MASTER_KEY (Fernet)
+        run: echo "CREDENTIALS_MASTER_KEY=$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" >> "$GITHUB_ENV"
 
       - name: Run pytest
         working-directory: api
         env:
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/agent_teams
-          PYTEST_DB_PASSWORD: ${{ secrets.PYTEST_DB_PASSWORD }}
           REPO_ROOT: /repo
           SECRET_KEY: ci-secret-key-not-for-production-use-only-32x
-          CREDENTIALS_MASTER_KEY: ${{ secrets.CI_CREDENTIALS_MASTER_KEY }}
           APP_SCHEDULER_DISABLE: "true"
         run: pytest tests/ -x -q
 
@@ -176,6 +180,10 @@ jobs:
       - name: Install langgraph dependencies
         working-directory: langgraph
         run: pip install -e ".[test]"
+
+      - name: Symlink /repo to checkout root
+        # parity test test_approval_evaluator_parity.py loads /repo/api/src/services/approval_evaluator.py
+        run: sudo ln -s "$GITHUB_WORKSPACE" /repo
 
       - name: Run pytest
         working-directory: langgraph
