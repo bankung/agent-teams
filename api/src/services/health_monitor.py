@@ -433,7 +433,7 @@ class HealthMonitor:
         # triggers + run_mode consent validators). Lead's rule: DB writes
         # through FastAPI, not direct SQL.
         auto_pause_ids: list[int] = []
-        alert_writes: list[tuple[int, dict[str, Any] | None]] = []
+        alert_writes: list[tuple[int, int, dict[str, Any]]] = []
 
         for task in tasks:
             metrics.checked += 1
@@ -475,15 +475,13 @@ class HealthMonitor:
                 metrics.alerts_high += 1
                 auto_pause_ids.append(task.id)
 
-            alert_writes.append((task.id, alert))
+            alert_writes.append((task.id, task.project_id, alert))
 
         # Write alerts via PATCH so the audit trigger sees the change. For
         # high-severity tasks we bundle `run_mode='manual'` into the same
         # PATCH — single round-trip per task, atomic at the DB layer.
         if alert_writes:
-            await self._flush_alerts(
-                alert_writes, auto_pause_ids, projects, metrics
-            )
+            await self._flush_alerts(alert_writes, auto_pause_ids, metrics)
 
     def _evaluate_detectors(
         self,
@@ -523,9 +521,8 @@ class HealthMonitor:
 
     async def _flush_alerts(
         self,
-        alert_writes: list[tuple[int, dict[str, Any] | None]],
+        alert_writes: list[tuple[int, int, dict[str, Any]]],
         auto_pause_ids: list[int],
-        projects: dict[int, Project],
         metrics: SweepMetrics,
     ) -> None:
         """PATCH each alerted task. High-severity rows also flip to manual.
@@ -535,18 +532,7 @@ class HealthMonitor:
         """
         client = self._http_client_factory()
         try:
-            for task_id, alert in alert_writes:
-                # Look up project for the task (need it for the header).
-                # alert_writes was built in-order with the tasks list; we
-                # need project_id per task — round-trip via projects map.
-                # The sweep only adds rows we already have a project for.
-                project_id = self._project_id_for_alert(task_id, projects)
-                if project_id is None:
-                    logger.warning(
-                        "health_monitor.flush_alerts: missing project_id for task %d",
-                        task_id,
-                    )
-                    continue
+            for task_id, project_id, alert in alert_writes:
                 body: dict[str, Any] = {"health_alert": alert}
                 if task_id in auto_pause_ids:
                     body["run_mode"] = TaskRunMode.MANUAL
@@ -572,18 +558,6 @@ class HealthMonitor:
         finally:
             await client.aclose()
 
-    def _project_id_for_alert(
-        self, task_id: int, projects: dict[int, Project]
-    ) -> int | None:
-        """task_id -> project_id lookup for the PATCH dispatch.
-
-        Populated at sweep start by `_fetch_active_autorun_tasks` (sets
-        `self._alert_project_map`). Kept as a separate map rather than
-        scanning `projects.values()` because Project rows don't carry their
-        tasks pre-loaded in the sweep query.
-        """
-        return getattr(self, "_alert_project_map", {}).get(task_id)
-
     # -- Query helpers ------------------------------------------------------
 
     async def _fetch_active_autorun_tasks(
@@ -607,8 +581,6 @@ class HealthMonitor:
             )
         )
         rows = (await session.execute(stmt)).scalars().all()
-        # Cache the task_id -> project_id map for PATCH dispatch.
-        self._alert_project_map = {t.id: t.project_id for t in rows}
         return list(rows)
 
     async def _fetch_projects(
@@ -620,21 +592,17 @@ class HealthMonitor:
         rows = (await session.execute(stmt)).scalars().all()
         return {p.id: p for p in rows}
 
-    async def _fetch_7day_baseline(
+    async def _fetch_spend_since(
         self,
         session: AsyncSession,
         project_ids: list[int],
-        now: datetime,
-    ) -> dict[int, Decimal | None]:
-        """7-day average daily spend per project, from session_runs.
+        since: datetime,
+    ) -> dict[int, Decimal]:
+        """Raw SUM(total_cost_usd) per project for session_runs since `since`.
 
-        Avg = SUM(total_cost_usd) / 7 over the trailing 7×24h window. If a
-        project has zero session_runs in the window, returns None (skips
-        the burn-spike detector for that project).
+        Returns Decimal("0") for projects with no rows in the window.
+        Callers apply their own post-processing (/7 + None-for-zero vs raw).
         """
-        if not project_ids:
-            return {}
-        since = now - timedelta(days=7)
         stmt = (
             select(
                 SessionModel.project_id,
@@ -650,10 +618,32 @@ class HealthMonitor:
             .group_by(SessionModel.project_id)
         )
         rows = (await session.execute(stmt)).all()
-        result: dict[int, Decimal | None] = {pid: None for pid in project_ids}
+        result: dict[int, Decimal] = {pid: Decimal("0") for pid in project_ids}
         for project_id, total in rows:
-            if total is not None and total > 0:
-                result[project_id] = Decimal(str(total)) / Decimal("7")
+            result[project_id] = Decimal(str(total or 0))
+        return result
+
+    async def _fetch_7day_baseline(
+        self,
+        session: AsyncSession,
+        project_ids: list[int],
+        now: datetime,
+    ) -> dict[int, Decimal | None]:
+        """7-day average daily spend per project, from session_runs.
+
+        Avg = SUM(total_cost_usd) / 7 over the trailing 7×24h window. If a
+        project has zero session_runs in the window, returns None (skips
+        the burn-spike detector for that project).
+        """
+        if not project_ids:
+            return {}
+        raw = await self._fetch_spend_since(
+            session, project_ids, now - timedelta(days=7)
+        )
+        result: dict[int, Decimal | None] = {pid: None for pid in project_ids}
+        for pid, total in raw.items():
+            if total > 0:
+                result[pid] = total / Decimal("7")
         return result
 
     async def _fetch_today_spend(
@@ -666,22 +656,4 @@ class HealthMonitor:
         if not project_ids:
             return {}
         midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        stmt = (
-            select(
-                SessionModel.project_id,
-                func.coalesce(
-                    func.sum(SessionRun.total_cost_usd), Decimal("0")
-                ).label("total"),
-            )
-            .join(SessionModel, SessionRun.session_id == SessionModel.id)
-            .where(
-                SessionModel.project_id.in_(project_ids),
-                SessionRun.created_at >= midnight,
-            )
-            .group_by(SessionModel.project_id)
-        )
-        rows = (await session.execute(stmt)).all()
-        result: dict[int, Decimal] = {pid: Decimal("0") for pid in project_ids}
-        for project_id, total in rows:
-            result[project_id] = Decimal(str(total or 0))
-        return result
+        return await self._fetch_spend_since(session, project_ids, midnight)

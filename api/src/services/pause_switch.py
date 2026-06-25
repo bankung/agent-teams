@@ -205,6 +205,44 @@ async def pause_project(
     }
 
 
+async def _resume_recurring_and_unfreeze(
+    session: AsyncSession,
+    project_id: int,
+    now: datetime,
+) -> tuple[int, int]:
+    """Recompute next_fire_at on paused recurring tasks + clear kill_frozen markers.
+
+    Shared by unpause_project and _flag_done_and_unpause. NO commit — each
+    caller owns its transaction boundary.
+
+    Returns (resumed_recurring, unfrozen_tasks).
+    """
+    # Recompute next_fire_at — mirrors GOV1 revive logic.
+    recurring_stmt = select(Task).where(
+        Task.project_id == project_id,
+        Task.status == RecordStatus.ACTIVE,
+        Task.recurrence_rule.is_not(None),
+        Task.next_fire_at.is_(None),
+    )
+    recurring_rows = list((await session.execute(recurring_stmt)).scalars().all())
+    for row in recurring_rows:
+        row.next_fire_at = next_cron_fire(
+            row.recurrence_rule, row.recurrence_timezone, anchor=now
+        )
+
+    # Unfreeze kill_frozen=true rows — defensive sweep (see pause_project comment).
+    frozen_stmt = select(Task).where(
+        Task.project_id == project_id,
+        Task.status == RecordStatus.ACTIVE,
+        Task.kill_frozen.is_(True),
+    )
+    frozen_rows = list((await session.execute(frozen_stmt)).scalars().all())
+    for row in frozen_rows:
+        row.kill_frozen = False
+
+    return len(recurring_rows), len(frozen_rows)
+
+
 async def unpause_project(
     *,
     project_id: int,
@@ -234,37 +272,9 @@ async def unpause_project(
 
     now = datetime.now(timezone.utc)
 
-    # ---- recompute next_fire_at on recurring tasks --------------------------
-    # Mirrors GOV1's revive logic. No staleness gate this slice — soft-pause
-    # cadence is expected to be days, not weeks; if GOV5 surfaces stale-revive
-    # noise, port the GOV1 REVIVE_MAX_STALENESS_DAYS gate over.
-    recurring_stmt = select(Task).where(
-        Task.project_id == project_id,
-        Task.status == RecordStatus.ACTIVE,
-        Task.recurrence_rule.is_not(None),
-        Task.next_fire_at.is_(None),
+    resumed_recurring, unfrozen_tasks = await _resume_recurring_and_unfreeze(
+        session, project_id, now
     )
-    recurring_rows = list((await session.execute(recurring_stmt)).scalars().all())
-    for row in recurring_rows:
-        row.next_fire_at = next_cron_fire(
-            row.recurrence_rule, row.recurrence_timezone, anchor=now
-        )
-    resumed_recurring = len(recurring_rows)
-
-    # ---- unfreeze every kill_frozen=true row in the project -----------------
-    # Pause only ever sets kill_frozen=true on templates (see pause_project
-    # comment); revive sweeps every kill_frozen=true row defensively in case
-    # an out-of-band pause + GOV1 kill chain left an inconsistency. Cheap
-    # full-project scan — no FK-driven cascade concerns at this scale.
-    frozen_stmt = select(Task).where(
-        Task.project_id == project_id,
-        Task.status == RecordStatus.ACTIVE,
-        Task.kill_frozen.is_(True),
-    )
-    frozen_rows = list((await session.execute(frozen_stmt)).scalars().all())
-    for row in frozen_rows:
-        row.kill_frozen = False
-    unfrozen_tasks = len(frozen_rows)
 
     # ---- flip project state -------------------------------------------------
     # PRESERVE paused_at + paused_reason — D4: keep the historical record.
@@ -585,30 +595,9 @@ async def _flag_done_and_unpause(
 
     now = datetime.now(timezone.utc)
 
-    # Recompute recurrence (mirrors unpause_project).
-    recurring_stmt = select(Task).where(
-        Task.project_id == project_id,
-        Task.status == RecordStatus.ACTIVE,
-        Task.recurrence_rule.is_not(None),
-        Task.next_fire_at.is_(None),
+    resumed_recurring, unfrozen_tasks = await _resume_recurring_and_unfreeze(
+        session, project_id, now
     )
-    recurring_rows = list((await session.execute(recurring_stmt)).scalars().all())
-    for row in recurring_rows:
-        row.next_fire_at = next_cron_fire(
-            row.recurrence_rule, row.recurrence_timezone, anchor=now
-        )
-    resumed_recurring = len(recurring_rows)
-
-    # Clear kill_frozen markers.
-    frozen_stmt = select(Task).where(
-        Task.project_id == project_id,
-        Task.status == RecordStatus.ACTIVE,
-        Task.kill_frozen.is_(True),
-    )
-    frozen_rows = list((await session.execute(frozen_stmt)).scalars().all())
-    for row in frozen_rows:
-        row.kill_frozen = False
-    unfrozen_tasks = len(frozen_rows)
 
     # Flip project state. Preserve paused_at + paused_reason as history (D4).
     project.is_paused = False
