@@ -2348,6 +2348,82 @@ async def _validate_milestone_patch(
                 )
 
 
+async def _estimate_and_record_cost_on_done(
+    session: AsyncSession,
+    task: Task,
+    task_id: int,
+    updates: dict[str, Any],
+    resolved_status_change_reason: str | None,
+) -> None:
+    # Kanban #944 (2026-05-16): per-task LLM-cost estimation on done-flip.
+    # Fires only when the PATCH transitions process_status from <5 to 5 AND
+    # the task has never been estimated before (idempotent re-flip: a row
+    # whose estimated_cost_usd is non-null preserves the first-close values).
+    # Estimator failures (unknown model, etc.) are swallowed + logged so a
+    # cost-estimation bug never blocks a done flip. The status_change_reason
+    # for output-char counting is the resolved value (payload if present, else
+    # the existing row's stored value).
+    new_process_status = updates.get("process_status")
+    if (
+        new_process_status == TaskStatus.DONE
+        and task.process_status < TaskStatus.DONE
+        and task.estimated_cost_usd is None
+    ):
+        try:
+            runs_result = await session.execute(
+                select(SessionRun).where(SessionRun.task_id == task_id)
+            )
+            runs = list(runs_result.scalars())
+            _snap = _types.SimpleNamespace(
+                title=task.title,
+                description=task.description,
+                status_change_reason=resolved_status_change_reason,
+            )
+            est = estimate_task_cost(_snap, runs)
+            updates.setdefault("estimated_input_tokens", est["tokens_in"])
+            updates.setdefault("estimated_output_tokens", est["tokens_out"])
+            updates.setdefault("estimated_cost_usd", est["cost_usd"])
+
+            # Kanban #953: mirror the cost estimate into the transactions
+            # ledger so per-project P&L stays complete without manual
+            # reconciliation. Idempotent via the same precondition that
+            # gates the cost write itself (task.estimated_cost_usd is None
+            # before this block) — re-flipping a previously-done task does
+            # NOT double-insert. Skip when cost is zero (no ledger noise
+            # for unmetered work) and when project_id is missing (defensive).
+            cost_usd = est["cost_usd"]
+            if cost_usd and cost_usd > 0 and task.project_id is not None:
+                provider, _model = resolve_provider_model()
+                # USD minor units (cents). The estimator returns USD
+                # Decimals — we hard-code USD here in lockstep. Localizing
+                # to project.currency_default is a future slice (the cost
+                # is denominated in USD upstream regardless).
+                amount_minor = int(cost_usd * 100)
+                session.add(
+                    Transaction(
+                        project_id=task.project_id,
+                        amount_minor=amount_minor,
+                        currency="USD",
+                        kind="cost",
+                        category=f"llm_{provider}",
+                        # task.completed_at hasn't resolved yet (it's a func.now()
+                        # ClauseElement in `updates`). Stamp explicit UTC now()
+                        # so the ledger row carries a concrete TZ-aware datetime.
+                        occurred_at=datetime.now(timezone.utc),
+                        source="estimated",
+                        source_ref=f"task-{task_id}-close",
+                        task_id=task_id,
+                        notes=f"Auto-inserted on task close (est. {cost_usd} USD)",
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001 - swallow + log; never crash the PATCH
+            logger.warning(
+                "task %s: cost estimation failed (%s); leaving estimate fields NULL",
+                task_id,
+                exc,
+            )
+
+
 @router.patch("/{task_id}", response_model=TaskRead)
 async def update_task(
     task_id: int,
@@ -2706,72 +2782,9 @@ async def update_task(
         if field is not None and getattr(task, field) is None:
             updates.setdefault(field, func.now())
 
-    # Kanban #944 (2026-05-16): per-task LLM-cost estimation on done-flip.
-    # Fires only when the PATCH transitions process_status from <5 to 5 AND
-    # the task has never been estimated before (idempotent re-flip: a row
-    # whose estimated_cost_usd is non-null preserves the first-close values).
-    # Estimator failures (unknown model, etc.) are swallowed + logged so a
-    # cost-estimation bug never blocks a done flip. The status_change_reason
-    # for output-char counting is the resolved value (payload if present, else
-    # the existing row's stored value).
-    if (
-        new_process_status == TaskStatus.DONE
-        and task.process_status < TaskStatus.DONE
-        and task.estimated_cost_usd is None
-    ):
-        try:
-            runs_result = await session.execute(
-                select(SessionRun).where(SessionRun.task_id == task_id)
-            )
-            runs = list(runs_result.scalars())
-            _snap = _types.SimpleNamespace(
-                title=task.title,
-                description=task.description,
-                status_change_reason=_notify_status_change_reason,
-            )
-            est = estimate_task_cost(_snap, runs)
-            updates.setdefault("estimated_input_tokens", est["tokens_in"])
-            updates.setdefault("estimated_output_tokens", est["tokens_out"])
-            updates.setdefault("estimated_cost_usd", est["cost_usd"])
-
-            # Kanban #953: mirror the cost estimate into the transactions
-            # ledger so per-project P&L stays complete without manual
-            # reconciliation. Idempotent via the same precondition that
-            # gates the cost write itself (task.estimated_cost_usd is None
-            # before this block) — re-flipping a previously-done task does
-            # NOT double-insert. Skip when cost is zero (no ledger noise
-            # for unmetered work) and when project_id is missing (defensive).
-            cost_usd = est["cost_usd"]
-            if cost_usd and cost_usd > 0 and task.project_id is not None:
-                provider, _model = resolve_provider_model()
-                # USD minor units (cents). The estimator returns USD
-                # Decimals — we hard-code USD here in lockstep. Localizing
-                # to project.currency_default is a future slice (the cost
-                # is denominated in USD upstream regardless).
-                amount_minor = int(cost_usd * 100)
-                session.add(
-                    Transaction(
-                        project_id=task.project_id,
-                        amount_minor=amount_minor,
-                        currency="USD",
-                        kind="cost",
-                        category=f"llm_{provider}",
-                        # task.completed_at hasn't resolved yet (it's a func.now()
-                        # ClauseElement in `updates`). Stamp explicit UTC now()
-                        # so the ledger row carries a concrete TZ-aware datetime.
-                        occurred_at=datetime.now(timezone.utc),
-                        source="estimated",
-                        source_ref=f"task-{task_id}-close",
-                        task_id=task_id,
-                        notes=f"Auto-inserted on task close (est. {cost_usd} USD)",
-                    )
-                )
-        except Exception as exc:  # noqa: BLE001 - swallow + log; never crash the PATCH
-            logger.warning(
-                "task %s: cost estimation failed (%s); leaving estimate fields NULL",
-                task_id,
-                exc,
-            )
+    await _estimate_and_record_cost_on_done(
+        session, task, task_id, updates, _notify_status_change_reason
+    )
 
     # Skip writes where the new value equals the existing one — reduces audit-row
     # noise on PATCHes that touch only some fields. The lifecycle stamping above
