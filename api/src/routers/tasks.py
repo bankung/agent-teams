@@ -93,7 +93,7 @@ from src.services.session_project import (
 )
 from src.services.operator_auth import (
     OperatorDecision,
-    require_operator_proof,
+    check_operator_proof,
 )
 from src.services.action_templates import get_template
 from src.services.handoff_spawn import spawn_child_from_handoff
@@ -2441,7 +2441,7 @@ async def update_task(
     session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
     if_unmodified_since: str | None = Header(default=None, alias="If-Unmodified-Since"),
-    operator_proof: OperatorDecision = Depends(require_operator_proof),
+    x_operator_token: str | None = Header(default=None, alias="X-Operator-Token"),
 ) -> Task:
     task = await get_or_404(
         session, Task, detail=f"Task id={task_id} not found", id=task_id
@@ -2469,15 +2469,18 @@ async def update_task(
     # `verified_by='user'` as genuinely-operator; without this check any AI
     # agent could PATCH that literal and unlock its own gated action.
     #
-    # FAIL-OPEN when unset: `require_operator_proof` returns OPERATOR for any
+    # FAIL-OPEN when unset: `check_operator_proof` returns OPERATOR for any
     # request when OPERATOR_ACTION_KEY is unset (gate INACTIVE), so this 403 is
     # dormant on the live deployment (no key in .env yet) and existing PATCH
     # flows are unaffected. The operator ACTIVATES by setting the key + wiring
     # the X-Operator-Token header into their verify-flow (see operator_auth.py).
-    if (
-        operator_proof is not OperatorDecision.OPERATOR
-        and _patch_sets_operator_only_verified_by(updates)
-    ):
+    #
+    # Kanban #2697 — option b: audit only when this PATCH actually attempts a
+    # gated operator-only verified_by (cuts ACTIVE-gate audit noise from the
+    # frequent non-gated board PATCHes). The decision still drives the 403 below.
+    _sets_gated = _patch_sets_operator_only_verified_by(updates)
+    operator_proof = check_operator_proof(x_operator_token, sets_gated_field=_sets_gated)
+    if operator_proof is not OperatorDecision.OPERATOR and _sets_gated:
         raise HTTPException(
             status_code=403, detail=_DETAIL_OPERATOR_PROOF_REQUIRED
         )

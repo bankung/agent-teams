@@ -150,18 +150,33 @@ def _write_audit(decision: OperatorDecision, *, active: bool) -> None:
         pass
 
 
-def check_operator_proof(token_header: str | None) -> OperatorDecision:
+def check_operator_proof(
+    token_header: str | None,
+    *,
+    sets_gated_field: bool = True,
+) -> OperatorDecision:
     """Decide whether `token_header` proves operator presence for THIS request.
 
     Returns `OperatorDecision.OPERATOR` or `NOT_OPERATOR` per the activation
-    semantics in the module docstring. Writes an audit row only when the gate is
-    ACTIVE — inactive (fail-open) passes carry no signal worth persisting, and
-    every task PATCH would append a noise row while the gate is dormant.
+    semantics in the module docstring.
+
+    `sets_gated_field` (Kanban #2697, option b): when False the audit row is
+    suppressed even if the gate is ACTIVE. Pass False from `update_task` when
+    the PATCH does NOT attempt a gated operator-only `verified_by` field — this
+    eliminates the audit noise from the frequent non-gated board PATCHes while
+    keeping the row for the rare PATCH that actually touches a gated field.
+
+    Default is True to preserve the existing behavior for `require_operator_proof`
+    (which calls this function with no flag) and therefore for every other gated
+    route (email, projects, calendar, templates, gallery). The inactive-gate guard
+    (`if active`) is the outer condition — gate INACTIVE always skips the write
+    regardless of `sets_gated_field`.
+
     The caller raises HTTP 403 on `NOT_OPERATOR`.
     """
     active = _gate_active()
     decision = _evaluate(token_header)
-    if active:
+    if active and sets_gated_field:
         _write_audit(decision, active=active)
     return decision
 
