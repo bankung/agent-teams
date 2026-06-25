@@ -124,13 +124,24 @@ _DETAIL_COMPACT_PROVIDER_FAILED = (
 _ACTIVITY_PREVIEW_CHARS = 2000
 
 
-async def _child_count(db: AsyncSession, model: type, session_id: int) -> int:
-    n = await db.scalar(
+async def _child_counts(
+    db: AsyncSession, session_id: int
+) -> tuple[int, int]:
+    """Return (runs_count, compacts_count) in one round-trip."""
+    runs_q = (
         select(func.count())
-        .select_from(model)
-        .where(model.session_id == session_id)
+        .select_from(SessionRun)
+        .where(SessionRun.session_id == session_id)
+        .scalar_subquery()
     )
-    return int(n or 0)
+    compacts_q = (
+        select(func.count())
+        .select_from(SessionCompact)
+        .where(SessionCompact.session_id == session_id)
+        .scalar_subquery()
+    )
+    rc, cc = (await db.execute(select(runs_q, compacts_q))).one()
+    return int(rc or 0), int(cc or 0)
 
 
 def _to_session_read(
@@ -252,8 +263,7 @@ async def get_session_detail(
         detail=_DETAIL_SESSION_NOT_FOUND_TEMPLATE.format(id=session_id),
         id=session_id,
     )
-    rc = await _child_count(db, SessionRun, session_id)
-    cc = await _child_count(db, SessionCompact, session_id)
+    rc, cc = await _child_counts(db, session_id)
     return _to_session_read(row, runs_count=rc, compacts_count=cc)
 
 
@@ -281,8 +291,7 @@ async def update_session(
     updates = payload.model_dump(exclude_unset=True)
     if not updates:
         # Silent no-op (mirror of N7 in projects/tasks PATCHes).
-        rc = await _child_count(db, SessionRun, session_id)
-        cc = await _child_count(db, SessionCompact, session_id)
+        rc, cc = await _child_counts(db, session_id)
         return _to_session_read(row, runs_count=rc, compacts_count=cc)
 
     # If the caller is closing the session, server-stamp `closed_at`.
@@ -300,8 +309,7 @@ async def update_session(
 
     await db.commit()
     await db.refresh(row)
-    rc = await _child_count(db, SessionRun, session_id)
-    cc = await _child_count(db, SessionCompact, session_id)
+    rc, cc = await _child_counts(db, session_id)
     return _to_session_read(row, runs_count=rc, compacts_count=cc)
 
 
