@@ -76,7 +76,6 @@ from src.tools.email import (
 from src.routers.tools_email import (
     _enforce_tool_grant_or_403,
     _require_creds,
-    _require_outlook_creds,
     _resolve_approval_mode,
     _write_action_audit,
 )
@@ -180,8 +179,8 @@ def _provider_tag(provider: Provider) -> str:
 async def _creds_for(provider: Provider, session_project_id: int, session: AsyncSession):
     """Fetch the right provider creds (reuses the email router fetchers)."""
     if provider is Provider.GOOGLE:
-        return await _require_creds(session_project_id, session)
-    return await _require_outlook_creds(session_project_id, session)
+        return await _require_creds("gmail", session_project_id, session)
+    return await _require_creds("outlook", session_project_id, session)
 
 
 def _cap_or_429(session_project_id: int, units: int, action: str, provider_tag: str) -> None:

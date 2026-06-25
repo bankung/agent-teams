@@ -654,30 +654,30 @@ async def gmail_auth_status(
 # ---------------------------------------------------------------------------
 
 
-async def _require_creds(session_project_id: int, session: AsyncSession):
-    """Fetch Gmail creds or raise 401. Local helper — keeps the trash route lean."""
-    creds = await token_store.get("gmail", session_project_id, session)
+async def _require_creds(provider: str, session_project_id: int, session: AsyncSession):
+    """Fetch <provider> creds or raise 401. Local helper — keeps the routes lean."""
+    creds = await token_store.get(provider, session_project_id, session)
     if creds is None:
         raise HTTPException(
             status_code=401,
             detail=(
-                "gmail not authenticated; start the OAuth flow at "
-                "POST /api/tools/email/auth/gmail/start"
+                f"{provider} not authenticated; start the OAuth flow at "
+                f"POST /api/tools/email/auth/{provider}/start"
             ),
         )
     return creds
 
 
-def _cap_check_or_429(session_project_id: int, units: int, action: str) -> None:
+def _cap_check_or_429(provider: str, session_project_id: int, units: int, action: str) -> None:
     """Run gate.check_and_increment; raise 429 with info on refusal.
 
     Also writes an audit row for the refusal so the JSONL trail captures
-    every blocked attempt (not just upstream-Gmail calls).
+    every blocked attempt (not just upstream calls).
     """
     ok, info = gate.check_and_increment(session_project_id, units)
     if not ok:
         gate.log_audit(
-            "gmail", session_project_id, action, units, success=False,
+            provider, session_project_id, action, units, success=False,
             error_code="daily_cap_reached",
         )
         raise HTTPException(
@@ -770,14 +770,14 @@ async def gmail_trash(
         _bulk_check_or_400(len(ids), force)
 
         # Auth check after bulk gate.
-        creds = await _require_creds(session_project_id, session)
+        creds = await _require_creds("gmail", session_project_id, session)
     else:
         # query mode: auth must come first because the list call requires creds.
-        creds = await _require_creds(session_project_id, session)
+        creds = await _require_creds("gmail", session_project_id, session)
 
         # Pay list units before we know the count — this is honest accounting.
         # dry_run still pays list units (the upstream list call happens).
-        _cap_check_or_429(session_project_id, _LIST_UNITS_PER_CALL, "list")
+        _cap_check_or_429("gmail", session_project_id, _LIST_UNITS_PER_CALL, "list")
         try:
             ids = await run_in_threadpool(
                 gmail_client.list_message_ids,
@@ -828,7 +828,7 @@ async def gmail_trash(
 
     # Layer 1 — daily-units cap for the trash workload.
     total_units = _TRASH_UNITS_PER_MESSAGE * len(ids)
-    _cap_check_or_429(session_project_id, total_units, "trash")
+    _cap_check_or_429("gmail", session_project_id, total_units, "trash")
 
     # Execute the trash loop.
     try:
@@ -926,10 +926,10 @@ async def gmail_mark(
     # Layer 3 — bulk-threshold gate (mirrors /gmail/trash). Fires after Layer-0/tier,
     # before auth/cap, so the payload-safety rail is observable without OAuth setup.
     _bulk_check_or_400(len(ids), force)
-    creds = await _require_creds(session_project_id, session)
+    creds = await _require_creds("gmail", session_project_id, session)
 
     total_units = _MODIFY_UNITS_PER_MESSAGE * len(ids)
-    _cap_check_or_429(session_project_id, total_units, "mark")
+    _cap_check_or_429("gmail", session_project_id, total_units, "mark")
 
     add_label_ids = [] if body.read else ["UNREAD"]
     remove_label_ids = ["UNREAD"] if body.read else []
@@ -990,10 +990,10 @@ async def gmail_archive(
     ids = list(body.message_ids)
     # Layer 3 — bulk-threshold gate (mirrors /gmail/trash).
     _bulk_check_or_400(len(ids), force)
-    creds = await _require_creds(session_project_id, session)
+    creds = await _require_creds("gmail", session_project_id, session)
 
     total_units = _MODIFY_UNITS_PER_MESSAGE * len(ids)
-    _cap_check_or_429(session_project_id, total_units, "archive")
+    _cap_check_or_429("gmail", session_project_id, total_units, "archive")
 
     try:
         modified, errors = await run_in_threadpool(
@@ -1049,9 +1049,9 @@ async def gmail_draft(
     # Tier gate (#1859) — `modify` is OPEN; no-op, kept in Layer-0 -> tier order.
     _enforce_operator_tier_or_403(EmailTier.MODIFY, operator_proof)
 
-    creds = await _require_creds(session_project_id, session)
+    creds = await _require_creds("gmail", session_project_id, session)
 
-    _cap_check_or_429(session_project_id, _DRAFT_UNITS_PER_CALL, "draft")
+    _cap_check_or_429("gmail", session_project_id, _DRAFT_UNITS_PER_CALL, "draft")
 
     try:
         created = await run_in_threadpool(
@@ -1150,8 +1150,8 @@ async def gmail_reply(
     )
     _enforce_operator_tier_or_403(EmailTier.REPLY, operator_proof)
 
-    creds = await _require_creds(session_project_id, session)
-    _cap_check_or_429(session_project_id, _SEND_UNITS_PER_CALL, "reply")
+    creds = await _require_creds("gmail", session_project_id, session)
+    _cap_check_or_429("gmail", session_project_id, _SEND_UNITS_PER_CALL, "reply")
 
     try:
         sent = await run_in_threadpool(
@@ -1204,8 +1204,8 @@ async def gmail_forward(
     )
     _enforce_operator_tier_or_403(EmailTier.REPLY, operator_proof)
 
-    creds = await _require_creds(session_project_id, session)
-    _cap_check_or_429(session_project_id, _SEND_UNITS_PER_CALL, "forward")
+    creds = await _require_creds("gmail", session_project_id, session)
+    _cap_check_or_429("gmail", session_project_id, _SEND_UNITS_PER_CALL, "forward")
 
     try:
         sent = await run_in_threadpool(
@@ -1261,8 +1261,8 @@ async def gmail_send_internal(
     # rather than slipping past the external-send confirm. Dormant when unset.
     _enforce_internal_recipients_or_403(to=body.to, cc=body.cc, bcc=body.bcc)
 
-    creds = await _require_creds(session_project_id, session)
-    _cap_check_or_429(session_project_id, _SEND_UNITS_PER_CALL, "send_internal")
+    creds = await _require_creds("gmail", session_project_id, session)
+    _cap_check_or_429("gmail", session_project_id, _SEND_UNITS_PER_CALL, "send_internal")
 
     try:
         sent = await run_in_threadpool(
@@ -1319,8 +1319,8 @@ async def gmail_external_send(
         operator_proof, project_id=session_project_id, summary=f"to {body.to}",
     )
 
-    creds = await _require_creds(session_project_id, session)
-    _cap_check_or_429(session_project_id, _SEND_UNITS_PER_CALL, "external_send")
+    creds = await _require_creds("gmail", session_project_id, session)
+    _cap_check_or_429("gmail", session_project_id, _SEND_UNITS_PER_CALL, "external_send")
 
     try:
         sent = await run_in_threadpool(
@@ -1394,8 +1394,8 @@ async def gmail_search(
     )
     _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
 
-    creds = await _require_creds(session_project_id, session)
-    _cap_check_or_429(session_project_id, _SEARCH_UNITS_PER_CALL, "search")
+    creds = await _require_creds("gmail", session_project_id, session)
+    _cap_check_or_429("gmail", session_project_id, _SEARCH_UNITS_PER_CALL, "search")
 
     try:
         items = await run_in_threadpool(
@@ -1442,8 +1442,8 @@ async def gmail_get(
     )
     _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
 
-    creds = await _require_creds(session_project_id, session)
-    _cap_check_or_429(session_project_id, _GET_UNITS_PER_MESSAGE, "get")
+    creds = await _require_creds("gmail", session_project_id, session)
+    _cap_check_or_429("gmail", session_project_id, _GET_UNITS_PER_MESSAGE, "get")
 
     try:
         data = await run_in_threadpool(
@@ -1502,8 +1502,8 @@ async def gmail_thread(
     )
     _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
 
-    creds = await _require_creds(session_project_id, session)
-    _cap_check_or_429(session_project_id, _THREAD_UNITS_PER_CALL, "thread")
+    creds = await _require_creds("gmail", session_project_id, session)
+    _cap_check_or_429("gmail", session_project_id, _THREAD_UNITS_PER_CALL, "thread")
 
     try:
         data = await run_in_threadpool(
@@ -1554,8 +1554,8 @@ async def gmail_labels(
     )
     _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
 
-    creds = await _require_creds(session_project_id, session)
-    _cap_check_or_429(session_project_id, _LABELS_UNITS_PER_CALL, "labels")
+    creds = await _require_creds("gmail", session_project_id, session)
+    _cap_check_or_429("gmail", session_project_id, _LABELS_UNITS_PER_CALL, "labels")
 
     try:
         items = await run_in_threadpool(gmail_client.list_labels, creds)
@@ -1604,8 +1604,8 @@ async def gmail_attachment(
     )
     _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
 
-    creds = await _require_creds(session_project_id, session)
-    _cap_check_or_429(session_project_id, _ATTACHMENT_UNITS_PER_CALL, "attachment")
+    creds = await _require_creds("gmail", session_project_id, session)
+    _cap_check_or_429("gmail", session_project_id, _ATTACHMENT_UNITS_PER_CALL, "attachment")
 
     try:
         data = await run_in_threadpool(
@@ -1747,36 +1747,6 @@ async def outlook_auth_status(
 # ---------------------------------------------------------------------------
 
 
-async def _require_outlook_creds(session_project_id: int, session: AsyncSession):
-    """Fetch Outlook creds or raise 401."""
-    creds = await token_store.get("outlook", session_project_id, session)
-    if creds is None:
-        raise HTTPException(
-            status_code=401,
-            detail=(
-                "outlook not authenticated; start the OAuth flow at "
-                "POST /api/tools/email/auth/outlook/start"
-            ),
-        )
-    return creds
-
-
-def _outlook_cap_check_or_429(session_project_id: int, units: int, action: str) -> None:
-    """Run gate.check_and_increment; raise 429 with info on refusal.
-
-    Mirrors Gmail's `_cap_check_or_429` but writes 'outlook' as the audit provider.
-    """
-    ok, info = gate.check_and_increment(session_project_id, units)
-    if not ok:
-        gate.log_audit(
-            "outlook", session_project_id, action, units, success=False,
-            error_code="daily_cap_reached",
-        )
-        raise HTTPException(
-            status_code=429,
-            detail={"error": "daily_cap_reached", **info},
-        )
-
 
 @router.post("/outlook/trash", response_model=OutlookTrashResponse)
 async def outlook_trash(
@@ -1843,14 +1813,14 @@ async def outlook_trash(
         _bulk_check_or_400(len(ids), force)
 
         # Auth check after bulk gate.
-        creds = await _require_outlook_creds(session_project_id, session)
+        creds = await _require_creds("outlook", session_project_id, session)
     else:
         # query mode: auth must come first because the list call requires creds.
-        creds = await _require_outlook_creds(session_project_id, session)
+        creds = await _require_creds("outlook", session_project_id, session)
 
         # Pay list units before we know the count — honest accounting.
         # dry_run still pays list units (the upstream list call happens).
-        _outlook_cap_check_or_429(session_project_id, _OUTLOOK_LIST_UNITS_PER_CALL, "list")
+        _cap_check_or_429("outlook", session_project_id, _OUTLOOK_LIST_UNITS_PER_CALL, "list")
         try:
             ids = await run_in_threadpool(
                 outlook_client.list_message_ids,
@@ -1900,7 +1870,7 @@ async def outlook_trash(
 
     # Layer 1 — daily-units cap for the trash workload.
     total_units = _OUTLOOK_TRASH_UNITS_PER_MESSAGE * len(ids)
-    _outlook_cap_check_or_429(session_project_id, total_units, "trash")
+    _cap_check_or_429("outlook", session_project_id, total_units, "trash")
 
     # Execute the move loop.
     # FIX-1 (#1609): outlook_client.trash_messages is sync and calls time.sleep
@@ -1947,8 +1917,8 @@ async def outlook_trash(
 # ---------------------------------------------------------------------------
 # Gate chain (byte-for-byte same ORDER as Gmail Tier-1):
 #   Layer-0 _enforce_tool_grant_or_403 → tier gate _enforce_operator_tier_or_403(MODIFY)
-#   → (_bulk_check_or_400 for mark/archive) → _require_outlook_creds
-#   → _outlook_cap_check_or_429 → execute → gate.log_audit("outlook"…)
+#   → (_bulk_check_or_400 for mark/archive) → _require_creds("outlook", …)
+#   → _cap_check_or_429("outlook", …) → execute → gate.log_audit("outlook"…)
 #   → _write_action_audit(…)
 # Both MODIFY_UNITS_PER_MESSAGE and _DRAFT_UNITS_PER_CALL are shared with Gmail
 # (provider-agnostic constants defined above the Gmail routes).
@@ -1980,10 +1950,10 @@ async def outlook_mark(
     ids = list(body.message_ids)
     # Layer 3 — bulk-threshold gate.
     _bulk_check_or_400(len(ids), force)
-    creds = await _require_outlook_creds(session_project_id, session)
+    creds = await _require_creds("outlook", session_project_id, session)
 
     total_units = _MODIFY_UNITS_PER_MESSAGE * len(ids)
-    _outlook_cap_check_or_429(session_project_id, total_units, "mark")
+    _cap_check_or_429("outlook", session_project_id, total_units, "mark")
 
     try:
         modified, errors = await run_in_threadpool(
@@ -2042,10 +2012,10 @@ async def outlook_archive(
     ids = list(body.message_ids)
     # Layer 3 — bulk-threshold gate.
     _bulk_check_or_400(len(ids), force)
-    creds = await _require_outlook_creds(session_project_id, session)
+    creds = await _require_creds("outlook", session_project_id, session)
 
     total_units = _MODIFY_UNITS_PER_MESSAGE * len(ids)
-    _outlook_cap_check_or_429(session_project_id, total_units, "archive")
+    _cap_check_or_429("outlook", session_project_id, total_units, "archive")
 
     try:
         modified, errors = await run_in_threadpool(
@@ -2101,9 +2071,9 @@ async def outlook_draft(
     # Tier gate (#1859) — `modify` is OPEN; no-op, kept in Layer-0 -> tier order.
     _enforce_operator_tier_or_403(EmailTier.MODIFY, operator_proof)
 
-    creds = await _require_outlook_creds(session_project_id, session)
+    creds = await _require_creds("outlook", session_project_id, session)
 
-    _outlook_cap_check_or_429(session_project_id, _DRAFT_UNITS_PER_CALL, "draft")
+    _cap_check_or_429("outlook", session_project_id, _DRAFT_UNITS_PER_CALL, "draft")
 
     try:
         created = await run_in_threadpool(
@@ -2166,7 +2136,7 @@ async def outlook_draft(
 #
 # READ tier — auto-approve: no operator-proof, no _write_action_audit. Gate
 # chain mirrors Gmail read routes byte-for-byte but uses the outlook provider
-# + _outlook_cap_check_or_429 + _require_outlook_creds.
+# + _cap_check_or_429("outlook", …) + _require_creds("outlook", …).
 #
 # Unit costs mirror the Gmail READ constants (provider-agnostic cost parity).
 _OUTLOOK_SEARCH_UNITS_PER_CALL = 5  # one Graph $search call.
@@ -2196,8 +2166,8 @@ async def outlook_search(
     )
     _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
 
-    creds = await _require_outlook_creds(session_project_id, session)
-    _outlook_cap_check_or_429(session_project_id, _OUTLOOK_SEARCH_UNITS_PER_CALL, "search")
+    creds = await _require_creds("outlook", session_project_id, session)
+    _cap_check_or_429("outlook", session_project_id, _OUTLOOK_SEARCH_UNITS_PER_CALL, "search")
 
     try:
         items = await run_in_threadpool(
@@ -2244,8 +2214,8 @@ async def outlook_get(
     )
     _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
 
-    creds = await _require_outlook_creds(session_project_id, session)
-    _outlook_cap_check_or_429(session_project_id, _OUTLOOK_GET_UNITS_PER_MESSAGE, "get")
+    creds = await _require_creds("outlook", session_project_id, session)
+    _cap_check_or_429("outlook", session_project_id, _OUTLOOK_GET_UNITS_PER_MESSAGE, "get")
 
     try:
         data = await run_in_threadpool(
@@ -2273,7 +2243,7 @@ async def outlook_get(
 # ---------------------------------------------------------------------------
 #
 # Mirrors the Gmail Tier-3 send block byte-for-byte in gate ORDER + audit shape;
-# uses the outlook provider + _outlook_cap_check_or_429 + _require_outlook_creds.
+# uses the outlook provider + _cap_check_or_429("outlook", …) + _require_creds("outlook", …).
 # Graph send actions (reply/forward/sendMail) return 202 with no body, so
 # message_id is typically None in the response (see OutlookSendResponse).
 #
@@ -2300,8 +2270,8 @@ async def outlook_reply(
     )
     _enforce_operator_tier_or_403(EmailTier.REPLY, operator_proof)
 
-    creds = await _require_outlook_creds(session_project_id, session)
-    _outlook_cap_check_or_429(session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "reply")
+    creds = await _require_creds("outlook", session_project_id, session)
+    _cap_check_or_429("outlook", session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "reply")
 
     try:
         sent = await run_in_threadpool(
@@ -2350,8 +2320,8 @@ async def outlook_forward(
     )
     _enforce_operator_tier_or_403(EmailTier.REPLY, operator_proof)
 
-    creds = await _require_outlook_creds(session_project_id, session)
-    _outlook_cap_check_or_429(session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "forward")
+    creds = await _require_creds("outlook", session_project_id, session)
+    _cap_check_or_429("outlook", session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "forward")
 
     try:
         sent = await run_in_threadpool(
@@ -2402,8 +2372,8 @@ async def outlook_send_internal(
     # #2100 WARN-1 — internal/external downgrade rail (mirrors Gmail send-internal).
     _enforce_internal_recipients_or_403(to=body.to, cc=body.cc, bcc=body.bcc)
 
-    creds = await _require_outlook_creds(session_project_id, session)
-    _outlook_cap_check_or_429(session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "send_internal")
+    creds = await _require_creds("outlook", session_project_id, session)
+    _cap_check_or_429("outlook", session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "send_internal")
 
     try:
         sent = await run_in_threadpool(
@@ -2457,8 +2427,8 @@ async def outlook_external_send(
         operator_proof, project_id=session_project_id, summary=f"to {body.to}",
     )
 
-    creds = await _require_outlook_creds(session_project_id, session)
-    _outlook_cap_check_or_429(session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "external_send")
+    creds = await _require_creds("outlook", session_project_id, session)
+    _cap_check_or_429("outlook", session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "external_send")
 
     try:
         sent = await run_in_threadpool(
