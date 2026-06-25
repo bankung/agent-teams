@@ -67,6 +67,18 @@ $tests = @(
     @{ Name='POS echo session-id -> allow';          Cmd='echo $CLAUDE_CODE_SESSION_ID'; Expected='allow' },
     @{ Name='POS curl GET by-name -> allow';         Cmd='curl --silent "http://localhost:8456/api/projects/by-name/agent-teams" -o _scratch/tn_bind_resp.json -w "%{http_code}"'; Expected='allow' },
     @{ Name='POS curl GET projects?status -> allow'; Cmd='curl --silent "http://localhost:8456/api/projects?status=1" -o _scratch/tn_bind_list.json -w "%{http_code}"'; Expected='allow' },
+    # --- #2711 quoted-echo tolerance + bind-binding-write allow ---
+    @{ Name='POS echo quoted session-id -> allow';   Cmd='echo "$CLAUDE_CODE_SESSION_ID"'; Expected='allow' },
+    @{ Name='POS printf write per-session -> allow';  Cmd="printf '1' > _runtime/lead_project_id_0570819a-692a-4945-b78c-e81357e8f000.txt"; Expected='allow' },
+    @{ Name='POS printf write global -> allow';       Cmd="printf '1' > _runtime/lead_project_id.txt"; Expected='allow' },
+    @{ Name='POS printf write unquoted/no-space -> allow'; Cmd='printf 599>_runtime/lead_project_id.txt'; Expected='allow' },
+    # --- #2711 bind-write narrowness: only the exact binding-marker shape rides it ---
+    @{ Name='NEG printf to other path -> ask';        Cmd="printf '1' > _runtime/other.txt"; Expected='ask' },
+    @{ Name='NEG printf non-digit content -> ask';    Cmd="printf 'x' > _runtime/lead_project_id.txt"; Expected='ask' },
+    @{ Name='NEG printf write then chained rm -> ask'; Cmd="printf '1' > _runtime/lead_project_id.txt ; rm -rf /tmp/x"; Expected='ask' },
+    @{ Name='NEG printf append (>>) -> ask';          Cmd="printf '1' >> _runtime/lead_project_id.txt"; Expected='ask' },
+    @{ Name='NEG printf unicode-digit content -> ask'; Cmd="printf $([char]0x0661) > _runtime/lead_project_id.txt"; Expected='ask' },
+    @{ Name='NEG echo asymmetric quote -> ask';       Cmd='echo "$CLAUDE_CODE_SESSION_ID'; Expected='ask' },
     # --- narrowness: arbitrary / mutating shapes must NOT ride the bypass ---
     @{ Name='NEG echo other -> ask';                 Cmd='echo hello world'; Expected='ask' },
     @{ Name='NEG curl by-name -X DELETE -> ask';     Cmd='curl --silent -X DELETE "http://localhost:8456/api/projects/by-name/agent-teams"'; Expected='ask' },

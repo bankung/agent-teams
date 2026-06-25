@@ -333,9 +333,13 @@ if ($cmd) {
     $hasForeignUrl = $bootstrapCmd -match '(?i)https?://(?!localhost:8456/)'
 
     # (a) echo $CLAUDE_CODE_SESSION_ID — pure read; how the bind reads the session
-    #     id to name the per-session binding file. Exact, case-sensitive, single-space
-    #     match only (-cmatch + literal space — not \s, which would admit a newline).
-    $isEchoSessionId = $bootstrapCmd -cmatch '^echo \$CLAUDE_CODE_SESSION_ID$'
+    #     id to name the per-session binding file. Case-sensitive, single-space match;
+    #     accepts the bare form (per #2706) OR a fully PAIRED-double-quoted form
+    #     (echo "$CLAUDE_CODE_SESSION_ID", the natural Lead/skill form) — asymmetric
+    #     quotes are rejected (#2711, NIT-2). Anchored to that one env var; the final
+    #     $hasShellMeta guard rejects any newline/metacharacter, so the quotes admit
+    #     nothing executable.
+    $isEchoSessionId = $bootstrapCmd -cmatch '^echo (\$CLAUDE_CODE_SESSION_ID|"\$CLAUDE_CODE_SESSION_ID")$'
 
     # (b) curl GET to the project-resolution endpoints (by-name / active-list). The
     #     first token must be curl(.exe) (after any leading VAR= assignments), the
@@ -362,6 +366,41 @@ if ($cmd) {
 
     if (($isEchoSessionId -or $isBindResolveCurl) -and -not $hasShellMeta -and -not $hasForeignUrl) {
         Emit-Decision -Decision 'allow' -Reason 'pretooluse-bash-gate: bind-bootstrap read-only command (echo session-id / curl GET project-resolve) — allowed pre-binding (#2706)'
+        exit 0
+    }
+}
+
+# ---------------------------------------------------------------------------
+# BIND-BINDING-WRITE ALLOW (#2711) — the ONE mutation /tn-bind performs.
+# /tn-bind writes the resolved project id (a bare integer) to the per-session
+# binding marker _runtime/lead_project_id_<sid>.txt AND the global
+# _runtime/lead_project_id.txt. Those writes happen DURING the bind, before any
+# per-session binding exists, so Get-ProjectId (below) is still $null and the gate
+# would otherwise emit the no-binding ASK — forcing a prompt on the bind's own
+# writes. The #2706 allow only covered the read-only echo + curl GET; the writes
+# fell through. (Write tool can't be used for the GLOBAL file: it always exists and
+# the Write tool refuses to overwrite a file not first Read — but the skill's core
+# invariant is "a session must NEVER READ the global". So the write stays Bash printf
+# and is allow-listed HERE, the only place a Bash write can be silenced during the
+# no-binding window — a static allowlist entry would be overridden by the no-binding
+# ASK, exactly as Bash(echo:*) is.)
+#
+# Anchored FULL-STRING and path-locked so it cannot be ridden to anything else:
+# first token printf, a bare (optionally single/double-quoted) run of DIGITS, a
+# single '>' redirect, target locked to the two binding-file shapes, and (defense
+# in depth vs the .NET '$'-before-trailing-newline corner) NO CR/LF anywhere. The
+# trailing '$' anchor means no second statement survives, so `printf ... ; evil`
+# cannot smuggle a command. Placed AFTER the local deny guards (a deny still
+# short-circuits at exit 2 first) and BEFORE the project fetch. Like the #2706 read
+# allow, it fires regardless of binding state and supersedes any project-level
+# approval_policies auto_deny on Bash for this exact shape — acceptable because the
+# sole effect is writing the session's own integer binding marker.
+# ---------------------------------------------------------------------------
+if ($cmd) {
+    $bw = $cmd.Trim()
+    if (($bw -cmatch '^printf [''"]?[0-9]+[''"]?\s*>\s*_runtime/lead_project_id(_[0-9a-fA-F-]+)?\.txt$') -and `
+        ($bw -notmatch '[\r\n]')) {
+        Emit-Decision -Decision 'allow' -Reason 'pretooluse-bash-gate: bind-binding-write (printf <id> > _runtime/lead_project_id marker) — allowed pre-binding (#2711)'
         exit 0
     }
 }

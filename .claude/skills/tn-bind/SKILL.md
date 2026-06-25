@@ -8,8 +8,10 @@ argument-hint: "<project name>"
 allowed-tools:
   - Bash(curl:*)
   - Bash(echo:*)
+  - Bash(printf:*)
+  - Bash(cat:*)
+  - Bash(find:*)
   - Read
-  - Write
 metadata:
   version: 1.0.0
   category: platform
@@ -42,21 +44,30 @@ curl --silent "http://localhost:8456/api/projects/by-name/<URL-encoded name>" \
 ## Step 2 — persist the binding (session-scoped, #2679)
 
 Write the resolved project id (a SINGLE integer) to a PER-SESSION file plus the legacy
-global file:
+global file. **Issue each write as its OWN bare `printf` Bash call** — no `&&`/`;`/`cat`
+chaining, exactly `printf '<id>' > <file>`. This is non-negotiable: the Bash gate's
+bind-binding-write allow (#2711) is anchored full-string to that exact shape, so it stays
+silent during the no-binding window of the bind itself. A chained or reshaped write (or the
+Write tool — which can't overwrite the always-present global without first Reading it, and the
+global must never be read) falls back to a permission prompt.
 
 1. Get this session's id: `echo $CLAUDE_CODE_SESSION_ID` (Bash). It equals the `session_id`
-   the cost-capture hooks receive in their payload.
-2. Write `<id>` to `_runtime/lead_project_id_<sid>.txt` — the per-session binding the
-   cost-capture hooks read. Each session has its own file; UUIDs never collide, so a stale
-   file from another session can never be mis-read (this is what fixes the cross-session
-   mis-attribution: incident 2026-06-05 / stale 599 / ledger 2355).
-3. OVERWRITE `_runtime/lead_project_id.txt` with `<id>` — the GLOBAL file. This is the one-way
-   signal channel that the session-less Telegram HITL poller daemon (`api/scripts/telegram_poller.py`,
-   #2565) reads (env `TELEGRAM_POLLER_PROJECT_ID` first, then this file) so it can follow the active
-   session's project without a restart. Overwrite UNCONDITIONALLY — do NOT read it first: a session
-   must never READ the global (that is the cross-session read pattern #2692/#2680 removed everywhere
-   else). Every interactive reader (gate/spawn/notify hooks + tn-* skills) already resolves per-session.
-4. Best-effort housekeeping: prune `_runtime/lead_project_id_*.txt` older than ~7 days.
+   the cost-capture hooks receive in their payload. (Quoted `echo "$CLAUDE_CODE_SESSION_ID"`
+   is also accepted by the gate per #2711.)
+2. Write `<id>` to the per-session binding the cost-capture hooks read — its OWN call:
+   `printf '<id>' > _runtime/lead_project_id_<sid>.txt`. Each session has its own file; UUIDs
+   never collide, so a stale file from another session can never be mis-read (this is what fixes
+   the cross-session mis-attribution: incident 2026-06-05 / stale 599 / ledger 2355).
+3. OVERWRITE the GLOBAL file — its OWN call: `printf '<id>' > _runtime/lead_project_id.txt`.
+   This is the one-way signal channel that the session-less Telegram HITL poller daemon
+   (`api/scripts/telegram_poller.py`, #2565) reads (env `TELEGRAM_POLLER_PROJECT_ID` first, then
+   this file) so it can follow the active session's project without a restart. Overwrite
+   UNCONDITIONALLY — do NOT read it first: a session must never READ the global (that is the
+   cross-session read pattern #2692/#2680 removed everywhere else). Every interactive reader
+   (gate/spawn/notify hooks + tn-* skills) already resolves per-session.
+4. Verify with a SEPARATE `cat` call (e.g. `cat _runtime/lead_project_id_<sid>.txt`) — by then the
+   binding exists, so `cat`/`find` resolve the project and stay silent. Then best-effort
+   housekeeping: prune `_runtime/lead_project_id_*.txt` older than ~7 days.
 
 ## Step 3 — announce
 
