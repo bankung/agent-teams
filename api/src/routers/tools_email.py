@@ -25,6 +25,7 @@ the `router` object + helpers above the marker.
 from __future__ import annotations
 
 import datetime
+import functools
 import json
 import logging
 import os
@@ -1131,6 +1132,55 @@ async def gmail_draft(
 _SEND_UNITS_PER_CALL = 100
 
 
+async def _execute_email_send(
+    session: AsyncSession,
+    *,
+    session_project_id: int,
+    agent_role: str | None,
+    provider: str,
+    action: str,
+    units: int,
+    tier: EmailTier,
+    approval_mode: str,
+    client_callable,          # zero-arg callable; returns the client's `sent` dict
+    audit_recipient: str,
+    audit_subject: str,
+    body: str,
+    response_cls,
+):
+    """Shared send-execution tail for the 8 email send handlers (#2682 STEP B).
+
+    The caller performs the gate chain + creds + cap, then hands the bound
+    upstream call (as a zero-arg `client_callable`) plus the audit metadata here.
+    Behavior is byte-identical to the previous inline tails.
+    """
+    try:
+        sent = await run_in_threadpool(client_callable)
+    except Exception as exc:
+        gate.log_audit(
+            provider, session_project_id, action, units,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("%s %s failed: %s", provider, action, type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": f"{provider}_{action}_failed", "class": type(exc).__name__},
+        ) from exc
+
+    msg_id = sent.get("message_id")
+    gate.log_audit(provider, session_project_id, action, units, success=True)
+    _write_action_audit(
+        agent_role=agent_role, action=action, tier=tier,
+        message_ids=[msg_id] if msg_id else [], approval_mode=approval_mode,
+        result="success",
+    )
+    await _write_send_audit_task(
+        session, session_project_id=session_project_id, provider=provider,
+        action=action, recipient=audit_recipient, subject=audit_subject, body=body,
+    )
+    return response_cls(message_id=msg_id, thread_id=sent.get("thread_id"))
+
+
 @router.post("/gmail/reply", response_model=GmailSendResponse)
 async def gmail_reply(
     body: GmailReplyRequest,
@@ -1153,37 +1203,20 @@ async def gmail_reply(
     creds = await _require_creds("gmail", session_project_id, session)
     _cap_check_or_429("gmail", session_project_id, _SEND_UNITS_PER_CALL, "reply")
 
-    try:
-        sent = await run_in_threadpool(
+    return await _execute_email_send(
+        session, session_project_id=session_project_id, agent_role=agent_role,
+        provider="gmail", action="reply", units=_SEND_UNITS_PER_CALL,
+        tier=EmailTier.REPLY, approval_mode=_resolve_approval_mode(),
+        client_callable=functools.partial(
             gmail_client.send_reply,
             creds,
             message_id=body.message_id,
             body=body.body,
             thread_id=body.thread_id,
-        )
-    except Exception as exc:
-        gate.log_audit(
-            "gmail", session_project_id, "reply", _SEND_UNITS_PER_CALL,
-            success=False, error_code=type(exc).__name__,
-        )
-        logger.warning("gmail reply failed: %s", type(exc).__name__)
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "gmail_reply_failed", "class": type(exc).__name__},
-        ) from exc
-
-    msg_id = sent.get("message_id")
-    gate.log_audit("gmail", session_project_id, "reply", _SEND_UNITS_PER_CALL, success=True)
-    _write_action_audit(
-        agent_role=agent_role, action="reply", tier=EmailTier.REPLY,
-        message_ids=[msg_id] if msg_id else [], approval_mode=_resolve_approval_mode(),
-        result="success",
+        ),
+        audit_recipient=f"(re: {body.message_id})", audit_subject="(reply)",
+        body=body.body, response_cls=GmailSendResponse,
     )
-    await _write_send_audit_task(
-        session, session_project_id=session_project_id, provider="gmail",
-        action="reply", recipient=f"(re: {body.message_id})", subject="(reply)", body=body.body,
-    )
-    return GmailSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
 
 
 @router.post("/gmail/forward", response_model=GmailSendResponse)
@@ -1207,34 +1240,17 @@ async def gmail_forward(
     creds = await _require_creds("gmail", session_project_id, session)
     _cap_check_or_429("gmail", session_project_id, _SEND_UNITS_PER_CALL, "forward")
 
-    try:
-        sent = await run_in_threadpool(
+    return await _execute_email_send(
+        session, session_project_id=session_project_id, agent_role=agent_role,
+        provider="gmail", action="forward", units=_SEND_UNITS_PER_CALL,
+        tier=EmailTier.REPLY, approval_mode=_resolve_approval_mode(),
+        client_callable=functools.partial(
             gmail_client.send_forward,
             creds, message_id=body.message_id, to=body.to, body=body.body,
-        )
-    except Exception as exc:
-        gate.log_audit(
-            "gmail", session_project_id, "forward", _SEND_UNITS_PER_CALL,
-            success=False, error_code=type(exc).__name__,
-        )
-        logger.warning("gmail forward failed: %s", type(exc).__name__)
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "gmail_forward_failed", "class": type(exc).__name__},
-        ) from exc
-
-    msg_id = sent.get("message_id")
-    gate.log_audit("gmail", session_project_id, "forward", _SEND_UNITS_PER_CALL, success=True)
-    _write_action_audit(
-        agent_role=agent_role, action="forward", tier=EmailTier.REPLY,
-        message_ids=[msg_id] if msg_id else [], approval_mode=_resolve_approval_mode(),
-        result="success",
+        ),
+        audit_recipient=body.to, audit_subject="(forward)",
+        body=body.body, response_cls=GmailSendResponse,
     )
-    await _write_send_audit_task(
-        session, session_project_id=session_project_id, provider="gmail",
-        action="forward", recipient=body.to, subject="(forward)", body=body.body,
-    )
-    return GmailSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
 
 
 @router.post("/gmail/send-internal", response_model=GmailSendResponse)
@@ -1264,35 +1280,18 @@ async def gmail_send_internal(
     creds = await _require_creds("gmail", session_project_id, session)
     _cap_check_or_429("gmail", session_project_id, _SEND_UNITS_PER_CALL, "send_internal")
 
-    try:
-        sent = await run_in_threadpool(
+    return await _execute_email_send(
+        session, session_project_id=session_project_id, agent_role=agent_role,
+        provider="gmail", action="send_internal", units=_SEND_UNITS_PER_CALL,
+        tier=EmailTier.SEND_INTERNAL, approval_mode=_resolve_approval_mode(),
+        client_callable=functools.partial(
             gmail_client.send_message,
             creds, to=body.to, subject=body.subject, body=body.body,
             cc=body.cc, bcc=body.bcc,
-        )
-    except Exception as exc:
-        gate.log_audit(
-            "gmail", session_project_id, "send_internal", _SEND_UNITS_PER_CALL,
-            success=False, error_code=type(exc).__name__,
-        )
-        logger.warning("gmail send_internal failed: %s", type(exc).__name__)
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "gmail_send_internal_failed", "class": type(exc).__name__},
-        ) from exc
-
-    msg_id = sent.get("message_id")
-    gate.log_audit("gmail", session_project_id, "send_internal", _SEND_UNITS_PER_CALL, success=True)
-    _write_action_audit(
-        agent_role=agent_role, action="send_internal", tier=EmailTier.SEND_INTERNAL,
-        message_ids=[msg_id] if msg_id else [], approval_mode=_resolve_approval_mode(),
-        result="success",
+        ),
+        audit_recipient=body.to, audit_subject=body.subject,
+        body=body.body, response_cls=GmailSendResponse,
     )
-    await _write_send_audit_task(
-        session, session_project_id=session_project_id, provider="gmail",
-        action="send_internal", recipient=body.to, subject=body.subject, body=body.body,
-    )
-    return GmailSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
 
 
 @router.post("/gmail/external-send", response_model=GmailSendResponse)
@@ -1322,35 +1321,18 @@ async def gmail_external_send(
     creds = await _require_creds("gmail", session_project_id, session)
     _cap_check_or_429("gmail", session_project_id, _SEND_UNITS_PER_CALL, "external_send")
 
-    try:
-        sent = await run_in_threadpool(
+    return await _execute_email_send(
+        session, session_project_id=session_project_id, agent_role=agent_role,
+        provider="gmail", action="external_send", units=_SEND_UNITS_PER_CALL,
+        tier=EmailTier.EXTERNAL_SEND, approval_mode="operator_confirm",
+        client_callable=functools.partial(
             gmail_client.send_message,
             creds, to=body.to, subject=body.subject, body=body.body,
             cc=body.cc, bcc=body.bcc,
-        )
-    except Exception as exc:
-        gate.log_audit(
-            "gmail", session_project_id, "external_send", _SEND_UNITS_PER_CALL,
-            success=False, error_code=type(exc).__name__,
-        )
-        logger.warning("gmail external_send failed: %s", type(exc).__name__)
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "gmail_external_send_failed", "class": type(exc).__name__},
-        ) from exc
-
-    msg_id = sent.get("message_id")
-    gate.log_audit("gmail", session_project_id, "external_send", _SEND_UNITS_PER_CALL, success=True)
-    _write_action_audit(
-        agent_role=agent_role, action="external_send", tier=EmailTier.EXTERNAL_SEND,
-        message_ids=[msg_id] if msg_id else [], approval_mode="operator_confirm",
-        result="success",
+        ),
+        audit_recipient=body.to, audit_subject=body.subject,
+        body=body.body, response_cls=GmailSendResponse,
     )
-    await _write_send_audit_task(
-        session, session_project_id=session_project_id, provider="gmail",
-        action="external_send", recipient=body.to, subject=body.subject, body=body.body,
-    )
-    return GmailSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
 
 
 # ---------------------------------------------------------------------------
@@ -2273,33 +2255,16 @@ async def outlook_reply(
     creds = await _require_creds("outlook", session_project_id, session)
     _cap_check_or_429("outlook", session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "reply")
 
-    try:
-        sent = await run_in_threadpool(
+    return await _execute_email_send(
+        session, session_project_id=session_project_id, agent_role=agent_role,
+        provider="outlook", action="reply", units=_OUTLOOK_SEND_UNITS_PER_CALL,
+        tier=EmailTier.REPLY, approval_mode=_resolve_approval_mode(),
+        client_callable=functools.partial(
             outlook_client.send_reply, creds, message_id=body.message_id, body=body.body,
-        )
-    except Exception as exc:
-        gate.log_audit(
-            "outlook", session_project_id, "reply", _OUTLOOK_SEND_UNITS_PER_CALL,
-            success=False, error_code=type(exc).__name__,
-        )
-        logger.warning("outlook reply failed: %s", type(exc).__name__)
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "outlook_reply_failed", "class": type(exc).__name__},
-        ) from exc
-
-    msg_id = sent.get("message_id")
-    gate.log_audit("outlook", session_project_id, "reply", _OUTLOOK_SEND_UNITS_PER_CALL, success=True)
-    _write_action_audit(
-        agent_role=agent_role, action="reply", tier=EmailTier.REPLY,
-        message_ids=[msg_id] if msg_id else [], approval_mode=_resolve_approval_mode(),
-        result="success",
+        ),
+        audit_recipient=f"(re: {body.message_id})", audit_subject="(reply)",
+        body=body.body, response_cls=OutlookSendResponse,
     )
-    await _write_send_audit_task(
-        session, session_project_id=session_project_id, provider="outlook",
-        action="reply", recipient=f"(re: {body.message_id})", subject="(reply)", body=body.body,
-    )
-    return OutlookSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
 
 
 @router.post("/outlook/forward", response_model=OutlookSendResponse)
@@ -2323,33 +2288,16 @@ async def outlook_forward(
     creds = await _require_creds("outlook", session_project_id, session)
     _cap_check_or_429("outlook", session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "forward")
 
-    try:
-        sent = await run_in_threadpool(
+    return await _execute_email_send(
+        session, session_project_id=session_project_id, agent_role=agent_role,
+        provider="outlook", action="forward", units=_OUTLOOK_SEND_UNITS_PER_CALL,
+        tier=EmailTier.REPLY, approval_mode=_resolve_approval_mode(),
+        client_callable=functools.partial(
             outlook_client.send_forward, creds, message_id=body.message_id, to=body.to, body=body.body,
-        )
-    except Exception as exc:
-        gate.log_audit(
-            "outlook", session_project_id, "forward", _OUTLOOK_SEND_UNITS_PER_CALL,
-            success=False, error_code=type(exc).__name__,
-        )
-        logger.warning("outlook forward failed: %s", type(exc).__name__)
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "outlook_forward_failed", "class": type(exc).__name__},
-        ) from exc
-
-    msg_id = sent.get("message_id")
-    gate.log_audit("outlook", session_project_id, "forward", _OUTLOOK_SEND_UNITS_PER_CALL, success=True)
-    _write_action_audit(
-        agent_role=agent_role, action="forward", tier=EmailTier.REPLY,
-        message_ids=[msg_id] if msg_id else [], approval_mode=_resolve_approval_mode(),
-        result="success",
+        ),
+        audit_recipient=body.to, audit_subject="(forward)",
+        body=body.body, response_cls=OutlookSendResponse,
     )
-    await _write_send_audit_task(
-        session, session_project_id=session_project_id, provider="outlook",
-        action="forward", recipient=body.to, subject="(forward)", body=body.body,
-    )
-    return OutlookSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
 
 
 @router.post("/outlook/send-internal", response_model=OutlookSendResponse)
@@ -2375,34 +2323,17 @@ async def outlook_send_internal(
     creds = await _require_creds("outlook", session_project_id, session)
     _cap_check_or_429("outlook", session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "send_internal")
 
-    try:
-        sent = await run_in_threadpool(
+    return await _execute_email_send(
+        session, session_project_id=session_project_id, agent_role=agent_role,
+        provider="outlook", action="send_internal", units=_OUTLOOK_SEND_UNITS_PER_CALL,
+        tier=EmailTier.SEND_INTERNAL, approval_mode=_resolve_approval_mode(),
+        client_callable=functools.partial(
             outlook_client.send_message,
             creds, to=body.to, subject=body.subject, body=body.body, cc=body.cc, bcc=body.bcc,
-        )
-    except Exception as exc:
-        gate.log_audit(
-            "outlook", session_project_id, "send_internal", _OUTLOOK_SEND_UNITS_PER_CALL,
-            success=False, error_code=type(exc).__name__,
-        )
-        logger.warning("outlook send_internal failed: %s", type(exc).__name__)
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "outlook_send_internal_failed", "class": type(exc).__name__},
-        ) from exc
-
-    msg_id = sent.get("message_id")
-    gate.log_audit("outlook", session_project_id, "send_internal", _OUTLOOK_SEND_UNITS_PER_CALL, success=True)
-    _write_action_audit(
-        agent_role=agent_role, action="send_internal", tier=EmailTier.SEND_INTERNAL,
-        message_ids=[msg_id] if msg_id else [], approval_mode=_resolve_approval_mode(),
-        result="success",
+        ),
+        audit_recipient=body.to, audit_subject=body.subject,
+        body=body.body, response_cls=OutlookSendResponse,
     )
-    await _write_send_audit_task(
-        session, session_project_id=session_project_id, provider="outlook",
-        action="send_internal", recipient=body.to, subject=body.subject, body=body.body,
-    )
-    return OutlookSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
 
 
 @router.post("/outlook/external-send", response_model=OutlookSendResponse)
@@ -2430,31 +2361,14 @@ async def outlook_external_send(
     creds = await _require_creds("outlook", session_project_id, session)
     _cap_check_or_429("outlook", session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "external_send")
 
-    try:
-        sent = await run_in_threadpool(
+    return await _execute_email_send(
+        session, session_project_id=session_project_id, agent_role=agent_role,
+        provider="outlook", action="external_send", units=_OUTLOOK_SEND_UNITS_PER_CALL,
+        tier=EmailTier.EXTERNAL_SEND, approval_mode="operator_confirm",
+        client_callable=functools.partial(
             outlook_client.send_message,
             creds, to=body.to, subject=body.subject, body=body.body, cc=body.cc, bcc=body.bcc,
-        )
-    except Exception as exc:
-        gate.log_audit(
-            "outlook", session_project_id, "external_send", _OUTLOOK_SEND_UNITS_PER_CALL,
-            success=False, error_code=type(exc).__name__,
-        )
-        logger.warning("outlook external_send failed: %s", type(exc).__name__)
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "outlook_external_send_failed", "class": type(exc).__name__},
-        ) from exc
-
-    msg_id = sent.get("message_id")
-    gate.log_audit("outlook", session_project_id, "external_send", _OUTLOOK_SEND_UNITS_PER_CALL, success=True)
-    _write_action_audit(
-        agent_role=agent_role, action="external_send", tier=EmailTier.EXTERNAL_SEND,
-        message_ids=[msg_id] if msg_id else [], approval_mode="operator_confirm",
-        result="success",
+        ),
+        audit_recipient=body.to, audit_subject=body.subject,
+        body=body.body, response_cls=OutlookSendResponse,
     )
-    await _write_send_audit_task(
-        session, session_project_id=session_project_id, provider="outlook",
-        action="external_send", recipient=body.to, subject=body.subject, body=body.body,
-    )
-    return OutlookSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
