@@ -82,9 +82,10 @@ $tests = @(
     @{ Name='NEG curl by-name -K config -> ask';     Cmd='curl --silent -K /tmp/evil.cfg "http://localhost:8456/api/projects/by-name/agent-teams"'; Expected='ask' },
     @{ Name='NEG ECHO uppercase -> ask';             Cmd='ECHO $CLAUDE_CODE_SESSION_ID'; Expected='ask' },
     @{ Name='NEG echo newline-injection -> ask';     Cmd="echo`n`$CLAUDE_CODE_SESSION_ID"; Expected='ask' },
-    # --- deny-guard regression (must still short-circuit) ---
+    # --- deny-guard regression (must still short-circuit BEFORE the bootstrap allow) ---
     @{ Name='DENY psql DELETE FROM -> deny';         Cmd='psql -U postgres -d agent_teams -c "DELETE FROM tasks WHERE id=1"'; Expected='deny' },
-    @{ Name='DENY pytest inline live DB -> deny';    Cmd='DATABASE_URL=postgresql://postgres:postgres@db:5432/agent_teams pytest -x'; Expected='deny' }
+    @{ Name='DENY pytest inline live DB -> deny';    Cmd='DATABASE_URL=postgresql://postgres:postgres@db:5432/agent_teams pytest -x'; Expected='deny' },
+    @{ Name='DENY bitdefender LASTEXITCODE chain -> deny'; Cmd='echo hi ; $rc = $LASTEXITCODE'; Expected='deny' }
 )
 
 $failCount = 0
