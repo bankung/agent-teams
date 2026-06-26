@@ -19,6 +19,7 @@ covers: active decisions.md 2026-05-20 onward; older in decisions-archive-2026-0
 > **[CRIT]** = anti-re-litigation decision (do-not-revisit without reopening the entry). Pull its
 > body before touching that area.
 
+- 2026-06-26 — #2735 board "Mode A" now shows REAL usage_events cost (not the task-estimate): new `actual_interactive_cost` 5th aggregate on `/api/projects/stats` re-points `CostSummary` (estimated_cost/Query4/budget/PL untouched) + new per-session `SessionCostPanel`; verified live $2200 vs $22.61, CI-green (run 28232926892). from #2728
 - 2026-06-26 — #2729 base-image refresh: pin api+langgraph to a fresh `python:3.12-slim` digest (scout High 18→5, Low 55→40) + repo-root `.snyk` for 3 no-fix perl base CVEs (expiry 2026-09-20); app-layer Highs (starlette/cryptography) → #2736
 - 2026-06-26 — #2732 Option C: autonomous-execution onboarding flow — `ProjectConsentGrantModal` posture radio (Q&A only / Standard tools) sets consent + `tools_config` in one action; FE-only (`setProjectToolsConfig`); Custom tier-editor deferred; verified live on demo #690
 - 2026-06-26 — #2707 Option B: `tools_enabled` decoupled from multi-board eligibility (consent alone → eligible; Q&A-only when tools off); `permission_gate` kill-switch intact; operator-facing FE onboarding flow → Option C #2732
