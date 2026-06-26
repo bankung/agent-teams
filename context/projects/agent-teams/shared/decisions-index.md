@@ -19,6 +19,7 @@ covers: active decisions.md 2026-05-20 onward; older in decisions-archive-2026-0
 > **[CRIT]** = anti-re-litigation decision (do-not-revisit without reopening the entry). Pull its
 > body before touching that area.
 
+- 2026-06-26 — #2729 base-image refresh: pin api+langgraph to a fresh `python:3.12-slim` digest (scout High 18→5, Low 55→40) + repo-root `.snyk` for 3 no-fix perl base CVEs (expiry 2026-09-20); app-layer Highs (starlette/cryptography) → #2736
 - 2026-06-26 — #2732 Option C: autonomous-execution onboarding flow — `ProjectConsentGrantModal` posture radio (Q&A only / Standard tools) sets consent + `tools_config` in one action; FE-only (`setProjectToolsConfig`); Custom tier-editor deferred; verified live on demo #690
 - 2026-06-26 — #2707 Option B: `tools_enabled` decoupled from multi-board eligibility (consent alone → eligible; Q&A-only when tools off); `permission_gate` kill-switch intact; operator-facing FE onboarding flow → Option C #2732
 - 2026-06-24 — #5 Tasks A/B/C BUILT: task_gates HITL channel + picker `gate_resume_tasks` field live (disjoint from next_task); resume_context contract in async-hitl-gates §12; runner #2531 + W-1 index + AC5 drain-run deferred

@@ -7,7 +7,8 @@
 # required because `pip install -e .` needs the package layout to resolve
 # [tool.setuptools.packages.find] at build time.
 
-FROM python:3.12-slim
+# refreshed 2026-06-26 (#2729) — re-pull/re-pin periodically to pick up Debian patches
+FROM python:3.12-slim@sha256:6c4dd321d176d61ea848dc8c73a4f7dbae8f70e0ee48bb411ea2f045b599fa8e
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

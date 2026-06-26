@@ -1,0 +1,18 @@
+version: v1.25.0
+# Ignore policy for base-OS CVEs with no upstream fix.
+# Keyed on CVE ids — snyk CLI not installed locally; operator may need to
+# cross-map to SNYK-DEBIAN13-* ids from the Snyk dashboard (see #2729 notes).
+# Expires <=90 days from 2026-06-26; re-evaluate at each expiry.
+ignore:
+  CVE-2026-12087:
+    - '*':
+        reason: "Debian 13 won't-fix — perl, fixed version: not fixed (Debian advisory pending); no upstream patch available at 2026-06-26"
+        expires: 2026-09-20T00:00:00.000Z
+  CVE-2026-48959:
+    - '*':
+        reason: "Debian 13 won't-fix — perl, fixed version: not fixed; no upstream patch available at 2026-06-26"
+        expires: 2026-09-20T00:00:00.000Z
+  CVE-2026-48962:
+    - '*':
+        reason: "Debian 13 won't-fix — perl, fixed version: not fixed; no upstream patch available at 2026-06-26"
+        expires: 2026-09-20T00:00:00.000Z
