@@ -39,6 +39,7 @@ from typing_extensions import TypedDict
 
 from hitl import request_user_input, resume_config
 from worker import (
+    STATUS_BLOCKED,
     STATUS_DONE,
     STATUS_IN_PROGRESS,
     WorkerConfig,
@@ -110,14 +111,21 @@ def _standard_handler(task: dict[str, Any]):
 
 
 class _CheckpointerSpy:
-    """Stub checkpointer recording adelete_thread calls (the clear path)."""
+    """Stub checkpointer recording adelete_thread calls (the clear path).
 
-    def __init__(self, *, has_prior: bool) -> None:
+    `raise_on_delete` (default False) makes adelete_thread raise — used to
+    exercise the BLOCK-on-clear-failure branch (a broken/transient checkpointer).
+    """
+
+    def __init__(self, *, has_prior: bool, raise_on_delete: bool = False) -> None:
         self.has_prior = has_prior
+        self.raise_on_delete = raise_on_delete
         self.deleted_threads: list[str] = []
 
     async def adelete_thread(self, thread_id: str) -> None:
         self.deleted_threads.append(thread_id)
+        if self.raise_on_delete:
+            raise RuntimeError("connection refused")
         # After a clear, the thread no longer has a checkpoint.
         self.has_prior = False
 
@@ -225,6 +233,71 @@ async def test_fresh_pickup_no_prior_checkpoint_does_not_clear() -> None:
     # No checkpoint existed → clear_checkpoint must NOT have been called.
     assert spy.deleted_threads == [], (
         f"clear fired on a no-checkpoint pickup: {spy.deleted_threads!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test (c) — clear FAILURE blocks the task; never invokes (no stale-resume)
+# ---------------------------------------------------------------------------
+
+
+async def test_clear_failure_blocks_without_invoking() -> None:
+    """If clearing the stale checkpoint RAISES (broken / transient checkpointer),
+    the worker must NOT fall through to ainvoke — the stale checkpoint is still
+    on disk, so invoking would RESUME it (the exact #2664 stale-resume bug).
+    Instead it PATCHes BLOCKED and returns.
+
+    POSITIVE — the task ends BLOCKED with a halt_reason in the retry-loop
+               taxonomy ('transient:checkpointer_clear: ...').
+    NEGATIVE — ainvoke is NEVER called (no stale-merged run); the function
+               returned before the retry loop.
+    """
+    cfg = _cfg()
+    task = {
+        "id": 2666,
+        "description": "checkpointer down during re-queue",
+        "assigned_role": "dev-backend",
+    }
+
+    # has_prior=True → aget_state.created_at set → has_checkpoint True → the clear
+    # is attempted; raise_on_delete=True → adelete_thread raises mid-clear.
+    spy = _CheckpointerSpy(has_prior=True, raise_on_delete=True)
+    seen_inputs: list[Any] = []
+
+    async def ainvoke(state, config):
+        seen_inputs.append(state)
+        return {"task_id": 2666, "halt_reason": None, "final_result": "should not run"}
+
+    requests: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        requests.append(req)
+        return _standard_handler(task)(req)
+
+    graph_module = _make_graph_module_with_spy(ainvoke, spy)
+    async with _make_client(handler) as client:
+        await _poll_once(client, graph_module, cfg, _headers(cfg))
+
+    # The clear was attempted (proves we hit the failing branch, not skipped it).
+    assert spy.deleted_threads == ["task-2666"]
+
+    # NEGATIVE — ainvoke was NEVER called: no stale-resume, and the function
+    # returned before the retry loop.
+    assert seen_inputs == [], (
+        f"ainvoke must not run after a clear failure (stale-resume risk); "
+        f"got inputs: {seen_inputs!r}"
+    )
+
+    # POSITIVE — PATCH sequence is exactly IN_PROGRESS then BLOCKED, and the
+    # BLOCKED halt_reason carries the retry-loop taxonomy prefix.
+    patches = [r for r in requests if r.method == "PATCH"]
+    statuses = [_body(p)["process_status"] for p in patches]
+    assert statuses == [STATUS_IN_PROGRESS, STATUS_BLOCKED], (
+        f"unexpected patch sequence: {statuses}"
+    )
+    blocked_body = _body(patches[-1])
+    assert blocked_body["halt_reason"].startswith("transient:checkpointer_clear:"), (
+        f"unexpected halt_reason: {blocked_body['halt_reason']!r}"
     )
 
 

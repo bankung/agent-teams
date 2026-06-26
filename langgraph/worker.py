@@ -854,8 +854,50 @@ async def _poll_once(
     # Cleared ONCE here, before the retry loop — the in-pickup transient-retry resume
     # (below, _attempt>0) still resumes THIS pickup's own checkpoint. HITL resume runs via
     # _resume_hitl_task (a different function) and is NOT affected.
-    if await has_checkpoint(compiled, task_id):
-        await clear_checkpoint(compiled, task_id)
+    #
+    # intense-review M1+WARN-1+R2 — guard the clear so a checkpointer/DB error here
+    # (transient asyncpg / adelete_thread failure) cannot freeze the task in IN_PROGRESS
+    # (we're past the IN_PROGRESS flip, before the guarded ainvoke retry loop). On failure
+    # we must NOT fall through to ainvoke: the stale checkpoint is still on disk, so passing
+    # initial_state would RESUME it (the exact #2664 stale-resume bug — assigned_role / state
+    # carried over + add_messages doubling), and a permanently-broken checkpointer would
+    # silently stale-resume every pickup behind only a log line. Instead PATCH BLOCKED +
+    # return (operator-visible + retryable once the checkpointer recovers; no stale-merged
+    # run). The happy-path clear is logged at INFO (routine re-queue) for the audit trail —
+    # the FE confirm is UX-only, not a server-side gate.
+    try:
+        if await has_checkpoint(compiled, task_id):
+            logger.info(
+                "task %d: stale checkpoint found on fresh next_task pickup; clearing (re-queue path)",
+                task_id,
+            )
+            await clear_checkpoint(compiled, task_id)
+    except Exception as exc:
+        logger.warning(
+            "task %d: failed to clear stale checkpoint; blocking "
+            "(retry on re-queue once checkpointer recovers)",
+            task_id,
+            exc_info=True,
+        )
+        # Mirror the post-retry-loop graph-error BLOCKED body (L975-985): two fields,
+        # process_status + halt_reason, in the retry-loop halt-taxonomy format
+        # {kind}:{short_class}: {ClassName}: {detail} (so a ':' tokenizer reads
+        # transient / checkpointer_clear / {ExcType} / detail) and the _HALT_REASON_MAX cap.
+        _clear_halt = (
+            f"transient:checkpointer_clear: {type(exc).__name__}: "
+            f"failed to clear stale checkpoint"
+        )[:_HALT_REASON_MAX]
+        await _patch_task(
+            client,
+            cfg,
+            headers,
+            task_id,
+            {
+                "process_status": STATUS_BLOCKED,
+                "halt_reason": _clear_halt,
+            },
+        )
+        return
 
     # Kanban #2136 — structured halt taxonomy + bounded transient retry.
     # LangGraph checkpoints make re-invocation safe (idempotent per thread_id).
