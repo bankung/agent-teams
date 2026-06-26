@@ -278,31 +278,7 @@ describe("ProjectConsentGrantModal — operator token", () => {
     expect(token).toBe("consent-secret");
   });
 
-  it("calls grantConsent without a token when the field is left empty", async () => {
-    const user = userEvent.setup();
-    mockGrantConsent.mockResolvedValueOnce(SUCCESS_PROJECT_READ);
-
-    const project = { id: 1, name: "test-project" };
-    render(<ProjectConsentGrantModal project={project} />);
-
-    await user.click(
-      document.body.querySelector("[data-consent-grant-trigger]") as HTMLButtonElement,
-    );
-    await user.type(
-      document.body.querySelector("[data-consent-grant-input]") as HTMLInputElement,
-      "test-project",
-    );
-    await user.click(
-      document.body.querySelector("[data-consent-grant-submit]") as HTMLButtonElement,
-    );
-
-    await waitFor(() => expect(mockGrantConsent).toHaveBeenCalledTimes(1));
-    const [, , token] = mockGrantConsent.mock.calls[0];
-    // Empty string — applyOperatorToken will NOT set the header.
-    expect(token).toBe("");
-  });
-
-  it("submit is NOT disabled when token field is empty (token is optional)", async () => {
+  it("submit is disabled when project name is typed but operator token is empty", async () => {
     const user = userEvent.setup();
     const project = { id: 1, name: "test-project" };
     render(<ProjectConsentGrantModal project={project} />);
@@ -320,7 +296,7 @@ describe("ProjectConsentGrantModal — operator token", () => {
     const submitBtn = document.body.querySelector(
       "[data-consent-grant-submit]",
     ) as HTMLButtonElement;
-    expect(submitBtn.disabled).toBe(false);
+    expect(submitBtn.disabled).toBe(true);
   });
 });
 
@@ -342,6 +318,10 @@ describe("ProjectConsentGrantModal — posture radio", () => {
     await user.type(
       document.body.querySelector("[data-consent-grant-input]") as HTMLInputElement,
       "test-project",
+    );
+    await user.type(
+      document.body.querySelector("[data-consent-grant-operator-token]") as HTMLInputElement,
+      "qa-token",
     );
 
     // Q&A radio is default — do NOT click standard
@@ -368,6 +348,10 @@ describe("ProjectConsentGrantModal — posture radio", () => {
       document.body.querySelector("[data-consent-grant-input]") as HTMLInputElement,
       "test-project",
     );
+    await user.type(
+      document.body.querySelector("[data-consent-grant-operator-token]") as HTMLInputElement,
+      "standard-token",
+    );
 
     // Select standard posture
     await user.click(
@@ -388,7 +372,7 @@ describe("ProjectConsentGrantModal — posture radio", () => {
       auto_allow_tiers: ["read"],
       halt_tiers: ["write", "network", "destructive"],
     });
-    expect(token).toBe("");
+    expect(token).toBe("standard-token");
   });
 
   it("partial-failure: grantConsent succeeds but setProjectToolsConfig rejects → distinct error text renders", async () => {
@@ -405,6 +389,10 @@ describe("ProjectConsentGrantModal — posture radio", () => {
     await user.type(
       document.body.querySelector("[data-consent-grant-input]") as HTMLInputElement,
       "test-project",
+    );
+    await user.type(
+      document.body.querySelector("[data-consent-grant-operator-token]") as HTMLInputElement,
+      "partial-fail-token",
     );
 
     // Select standard posture to trigger the tools write

@@ -812,8 +812,8 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
         <PausedBanner project={project} />
       </header>
       {/* Wave A.1 — toolbar row: left cluster (audit + scheduled chips),
-          centre (inline headless control), right (+New).
-          Audit/scheduled moved here from nav row; headless banner condensed
+          centre (inline autonomous control), right (+New).
+          Audit/scheduled moved here from nav row; autonomous banner condensed
           from standalone full-width section. */}
       <div
         className="mb-3 flex flex-wrap items-center gap-2"
@@ -882,9 +882,9 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
             </select>
           </label>
         )}
-        {/* Inline headless control — replaces the standalone
+        {/* Inline autonomous control — replaces the standalone
             ProjectConsentBanner section. Shows consent date when granted;
-            shows a compact "Headless: off · Enable" chip when not granted
+            shows a compact "Autonomous: off · Enable" chip when not granted
             (clicking opens the same ProjectConsentGrantModal). The
             hasHeadlessTask warning is surfaced as an amber inline badge. */}
         {project.auto_run_consent_at !== null ? (
@@ -892,7 +892,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
             className="inline-flex items-center gap-1.5 rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs text-emerald-800 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300"
             data-headless-status="granted"
           >
-            Headless: on · {project.auto_run_consent_at.slice(0, 10)}
+            Autonomous: on · {project.auto_run_consent_at.slice(0, 10)}
             {hasHeadlessTask && (
               <span className="font-semibold text-amber-700 dark:text-amber-300">⚠ active</span>
             )}
@@ -902,7 +902,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
             className="inline-flex items-center gap-0 rounded border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"
             data-headless-status="off"
           >
-            Headless: off
+            Autonomous: off
             {hasHeadlessTask && (
               <span className="ml-1.5 text-amber-700 dark:text-amber-300">⚠</span>
             )}

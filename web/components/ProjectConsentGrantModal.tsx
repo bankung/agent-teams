@@ -111,7 +111,7 @@ export function ProjectConsentGrantModal({ project }: Props) {
               Enable autonomous execution
             </h2>
             <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-              Auto-headless tasks run without per-task confirmation. Type the
+              Autonomous-execution tasks run without per-task confirmation. Type the
               project name{" "}
               <span className="font-mono text-zinc-900 dark:text-zinc-100">{project.name}</span> to
               confirm.
@@ -177,7 +177,7 @@ export function ProjectConsentGrantModal({ project }: Props) {
             </fieldset>
             <label className="mt-3 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
               Operator token{" "}
-              <span className="font-normal text-zinc-500">(optional)</span>
+              <span className="font-normal text-zinc-500">(required)</span>
               <input
                 type="password"
                 value={operatorToken}
@@ -189,7 +189,7 @@ export function ProjectConsentGrantModal({ project }: Props) {
                 data-consent-grant-operator-token
               />
               <span className="mt-0.5 block text-[10px] text-zinc-500 dark:text-zinc-500">
-                Required only if operator gating is enabled.
+                Required to enable autonomous execution.
               </span>
             </label>
             {error !== null && (
@@ -212,7 +212,7 @@ export function ProjectConsentGrantModal({ project }: Props) {
               </button>
               <button
                 type="submit"
-                disabled={submitting || typed.length === 0}
+                disabled={submitting || typed.length === 0 || operatorToken.trim().length === 0}
                 className="rounded border border-emerald-600 bg-emerald-600 px-2 py-1 text-xs font-medium uppercase tracking-wide text-white hover:bg-emerald-700 disabled:opacity-50 dark:border-emerald-500 dark:bg-emerald-500 dark:hover:bg-emerald-600"
                 data-consent-grant-submit
               >
