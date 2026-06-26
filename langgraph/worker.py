@@ -96,6 +96,32 @@ _DEFAULT_TRANSIENT_RETRIES = 2
 _DEFAULT_RETRY_BACKOFF_SEC = 5.0
 
 
+def build_brief_with_handoff(task: dict, blocker_task: dict | None) -> str:
+    """Return the task brief, optionally enriched with the blocker's output.
+
+    Kanban #2556 — explicit cross-task context handoff.  When task B is
+    blocked_by task A and A is DONE, A's status_change_reason (its final
+    answer, already sanitized at write-time) is injected via a clearly
+    delimited block so the LLM can use A's output to answer B.
+
+    Pure function — no I/O.  Sanitizes the injected content through
+    sanitize_for_agent_context (redacts SQL DDL/DML, caps 500 chars).
+    """
+    base = task.get("description") or task.get("title") or ""
+    if (
+        task.get("blocked_by") is not None
+        and blocker_task is not None
+        and blocker_task.get("process_status") == STATUS_DONE
+    ):
+        out = sanitize_for_agent_context(blocker_task.get("status_change_reason"))
+        if out:
+            base = (
+                f"{base}\n\n--- Context from prerequisite task #{blocker_task['id']} ---\n"
+                f"{out}\n---"
+            )
+    return base
+
+
 def classify_exception(exc: BaseException) -> tuple[str, str]:
     """Map an exception to (kind, short_class) for structured halt taxonomy.
 
@@ -752,6 +778,35 @@ async def _poll_once(
         )
         return
 
+    # 3a) Kanban #2556 — explicit cross-task context handoff.  If this task has a
+    # blocked_by dependency, fetch the blocker's final answer so build_brief_with_handoff
+    # can inject it into the brief (first-invoke only; the brief is checkpointed on
+    # first invoke so retries/resumes don't double-inject).  Tolerate fetch failure
+    # gracefully — a missing blocker answer is better than a crashed task.
+    blocker_task: dict | None = None
+    if task.get("blocked_by") is not None:
+        blocker_id = task["blocked_by"]
+        try:
+            blocker_resp = await client.get(
+                f"{cfg.api_base}/api/tasks/{blocker_id}", headers=headers
+            )
+            if blocker_resp.status_code == 200:
+                blocker_task = blocker_resp.json()
+            else:
+                logger.warning(
+                    "cross-task handoff: failed to fetch blocker task %d (HTTP %d); "
+                    "proceeding without handoff context",
+                    blocker_id,
+                    blocker_resp.status_code,
+                )
+        except Exception:
+            logger.warning(
+                "cross-task handoff: exception fetching blocker task %d; "
+                "proceeding without handoff context",
+                blocker_id,
+                exc_info=True,
+            )
+
     # L16 (Kanban #1123) — sanitize halt_reason + status_change_reason BEFORE
     # they reach any agent prompt. These fields are operator-side free-form text
     # PATCHed by the UI / scripted clients; a compromised writer could plant a
@@ -763,7 +818,7 @@ async def _poll_once(
     # description content). See content_safety.py for the L17 sibling.
     initial_state: dict[str, Any] = {
         "task_id": task_id,
-        "brief": (task.get("description") or task.get("title") or ""),
+        "brief": build_brief_with_handoff(task, blocker_task),
         "assigned_role": task.get("assigned_role"),
         "messages": [],
         "intermediate_results": {},
