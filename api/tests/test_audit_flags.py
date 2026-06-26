@@ -82,14 +82,14 @@ async def test_jsonb_filter_present_true_included(client, empty_db) -> None:  # 
 
     # Case 1: key present, value true → should be included.
     task_true = await _make_flag_task(
-        proj.id, question_payload={"is_audit_flag": True, "prompt": "flag me"}
+        proj.id, question_payload={"is_audit_flag": True, "question": "flag me"}
     )
     # Case 2: key present, value false → excluded.
     await _make_flag_task(
-        proj.id, question_payload={"is_audit_flag": False, "prompt": "not a flag"}
+        proj.id, question_payload={"is_audit_flag": False, "question": "not a flag"}
     )
     # Case 3: key missing entirely → excluded (NULL != 'true').
-    await _make_flag_task(proj.id, question_payload={"prompt": "no flag key"})
+    await _make_flag_task(proj.id, question_payload={"question": "no flag key"})
 
     resp = await client.get("/api/audit/flags")
     assert resp.status_code == 200, resp.text
@@ -121,7 +121,7 @@ async def test_auto_archived_excluded(client, empty_db) -> None:  # noqa: F811
             title="archived flag fixture",
             process_status=TaskStatus.BLOCKED,
             interaction_kind="question",
-            question_payload={"is_audit_flag": True},
+            question_payload={"is_audit_flag": True, "question": "archived flag"},
             is_active=False,
         )
         session.add(task)
@@ -140,19 +140,19 @@ async def test_done_and_cancelled_excluded(client, empty_db) -> None:  # noqa: F
     # DONE — should be excluded (operator resolved the flag).
     await _make_flag_task(
         proj.id,
-        question_payload={"is_audit_flag": True},
+        question_payload={"is_audit_flag": True, "question": "done flag"},
         process_status=TaskStatus.DONE,
     )
     # CANCELLED — excluded by include_cancelled=false default.
     await _make_flag_task(
         proj.id,
-        question_payload={"is_audit_flag": True},
+        question_payload={"is_audit_flag": True, "question": "cancelled flag"},
         process_status=TaskStatus.CANCELLED,
     )
     # BLOCKED — should be included (open flag).
     task_blocked = await _make_flag_task(
         proj.id,
-        question_payload={"is_audit_flag": True},
+        question_payload={"is_audit_flag": True, "question": "blocked flag"},
         process_status=TaskStatus.BLOCKED,
     )
 
