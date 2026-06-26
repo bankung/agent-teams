@@ -556,6 +556,28 @@ export async function grantConsent(
   });
 }
 
+// #2732 — tools posture write path for the autonomous-execution onboarding flow.
+// Deliberately separate from ProjectUpdateBody (which narrows tools_config out by design).
+export type ProjectToolsConfig = {
+  tools_enabled: boolean;
+  auto_allow_tiers: string[];
+  halt_tiers: string[];
+  http_hosts?: string[];
+};
+export async function setProjectToolsConfig(
+  projectId: number,
+  toolsConfig: ProjectToolsConfig,
+  operatorToken?: string,
+): Promise<ProjectRead> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  applyOperatorToken(headers, operatorToken);
+  return jsonFetch<ProjectRead>(`/api/projects/${projectId}`, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({ tools_config: toolsConfig }),
+  });
+}
+
 // killProject / reviveProject — Kanban #1209 GOV1 hard kill switch (D5).
 // Shared response shape (`KillReviveResponse`): success, project_id, action,
 // is_killed, killed_at, killed_reason, drain_summary (operator-readable counts),

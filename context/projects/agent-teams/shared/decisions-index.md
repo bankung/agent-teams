@@ -1,6 +1,6 @@
 ---
 purpose: bootstrap hot-read INDEX for decisions.md (1 line per decision)
-updated: 2026-06-23
+updated: 2026-06-26
 covers: active decisions.md 2026-05-20 onward; older in decisions-archive-2026-05.md
 ---
 
@@ -19,6 +19,8 @@ covers: active decisions.md 2026-05-20 onward; older in decisions-archive-2026-0
 > **[CRIT]** = anti-re-litigation decision (do-not-revisit without reopening the entry). Pull its
 > body before touching that area.
 
+- 2026-06-26 — #2732 Option C: autonomous-execution onboarding flow — `ProjectConsentGrantModal` posture radio (Q&A only / Standard tools) sets consent + `tools_config` in one action; FE-only (`setProjectToolsConfig`); Custom tier-editor deferred; verified live on demo #690
+- 2026-06-26 — #2707 Option B: `tools_enabled` decoupled from multi-board eligibility (consent alone → eligible; Q&A-only when tools off); `permission_gate` kill-switch intact; operator-facing FE onboarding flow → Option C #2732
 - 2026-06-24 — #5 Tasks A/B/C BUILT: task_gates HITL channel + picker `gate_resume_tasks` field live (disjoint from next_task); resume_context contract in async-hitl-gates §12; runner #2531 + W-1 index + AC5 drain-run deferred
 - 2026-06-24 — #5 Mode-A automation: Telegram-only async HITL + 4-ring runner autonomy boundary; tasks A #2564 → B #2565 → C #2566 (+ runner #2531) under v0.8.0 #50
 - 2026-06-21 — #2520 story-doc layer was REDUNDANT, not neglected — sharpened story-vs-decisions trigger
