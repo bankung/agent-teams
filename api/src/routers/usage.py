@@ -34,6 +34,9 @@ from src.schemas.usage import (
     UsageMonthlyCycle,
     UsageMonthlyResponse,
     UsageMonthlyTaskRow,
+    UsageSessionAgentRow,
+    UsageSessionRow,
+    UsageSessionsResponse,
 )
 from src.settings import get_settings
 
@@ -440,5 +443,182 @@ async def usage_monthly(
         months=months,
         cycle_day=resolved_cycle_day,
         cycles=cycles_out,
+        total_cost_usd=_fmt_money(grand_total),
+    )
+
+
+@router.get("/sessions", response_model=UsageSessionsResponse)
+@limiter.limit("30/minute")
+async def usage_sessions(
+    request: Request,  # required by slowapi key_func — not used in handler body
+    project_id: int | None = Query(
+        default=None,
+        ge=1,
+        description="Optional project filter. When omitted, all projects are included.",
+    ),
+    limit: int = Query(
+        default=50,
+        ge=1,
+        le=200,
+        description="Max sessions to return (most-recent first). Default 50, max 200.",
+    ),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        description="Sessions to skip before the page (for pagination).",
+    ),
+    db: AsyncSession = Depends(get_session),
+) -> UsageSessionsResponse:
+    """Per-session cost aggregate over the append-only ``usage_events`` ledger.
+
+    Each row is one ``session_ext_id`` (the Claude Code session uuid) with a
+    per-(agent, model) breakdown. ``agent_name IS NULL`` denotes the Lead/main
+    turn; a non-null name is a subagent.
+
+    - **session_ext_id IS NOT NULL only** — events with no session id aren't
+      attributable to a session and are EXCLUDED from this per-session view.
+    - **Cross-project by default**; pass ``project_id`` to scope to one project.
+    - Sessions are ordered most-recent first by ``max(occurred_at)`` and paged
+      with ``limit``/``offset``. Money is 4dp strings; ``cache_hit_ratio`` is a
+      float rounded to 4dp (0.0 when the cache denominator is 0).
+    """
+    # ---- Step 1: page of session ids, most-recent first -------------------
+    # shortcut: session_ext_id is UNINDEXED, so the group_by below is a seq scan
+    # + hashagg — fine <100k ledger rows; upgrade: add
+    # ix_usage_events_session_ext_id and switch to an index-assisted aggregate.
+    last_at = func.max(UsageEvent.occurred_at).label("last_at")
+    id_stmt = select(UsageEvent.session_ext_id, last_at).where(
+        UsageEvent.session_ext_id.is_not(None)
+    )
+    if project_id is not None:
+        id_stmt = id_stmt.where(UsageEvent.project_id == project_id)
+    id_stmt = (
+        id_stmt.group_by(UsageEvent.session_ext_id)
+        .order_by(last_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+
+    page_rows = (await db.execute(id_stmt)).fetchall()
+    page_ids = [r.session_ext_id for r in page_rows]  # preserves recent-first order
+
+    if not page_ids:
+        return UsageSessionsResponse(
+            sessions=[],
+            limit=limit,
+            offset=offset,
+            returned=0,
+            total_cost_usd="0.0000",
+        )
+
+    # ---- Step 2: per-(agent, model) aggregates for that page --------------
+    agg_stmt = (
+        select(
+            UsageEvent.session_ext_id,
+            UsageEvent.agent_name,
+            UsageEvent.model,
+            func.sum(UsageEvent.cost_usd).label("cost_usd"),
+            func.sum(UsageEvent.input_tokens).label("input_tokens"),
+            func.sum(UsageEvent.output_tokens).label("output_tokens"),
+            func.sum(UsageEvent.cache_read_input_tokens).label("cache_read"),
+            func.sum(UsageEvent.cache_creation_input_tokens).label("cache_creation"),
+            func.count().label("event_count"),
+            func.min(UsageEvent.occurred_at).label("first_at"),
+            func.max(UsageEvent.occurred_at).label("last_at"),
+        )
+        .where(UsageEvent.session_ext_id.in_(page_ids))
+    )
+    if project_id is not None:
+        agg_stmt = agg_stmt.where(UsageEvent.project_id == project_id)
+    agg_stmt = agg_stmt.group_by(
+        UsageEvent.session_ext_id, UsageEvent.agent_name, UsageEvent.model
+    )
+
+    agg_rows = (await db.execute(agg_stmt)).fetchall()
+
+    # ---- Step 3: bucket the (agent, model) rows by session ----------------
+    by_session: dict[str, list] = defaultdict(list)
+    for r in agg_rows:
+        by_session[r.session_ext_id].append(r)
+
+    sessions_out: list[UsageSessionRow] = []
+    grand_total = Decimal("0")
+
+    for sid in page_ids:  # iterate in step-1 order → most-recent first preserved
+        rows = by_session.get(sid, [])
+
+        # Session totals across this session's agent rows.
+        s_cost = Decimal("0")
+        s_in = 0
+        s_out = 0
+        s_cread = 0
+        s_ccreate = 0
+        s_events = 0
+        firsts: list[datetime] = []
+        lasts: list[datetime] = []
+
+        agent_rows: list[UsageSessionAgentRow] = []
+        for r in rows:
+            cost = Decimal(str(r.cost_usd)) if r.cost_usd is not None else Decimal("0")
+            in_t = int(r.input_tokens or 0)
+            out_t = int(r.output_tokens or 0)
+            cread = int(r.cache_read or 0)
+            ccreate = int(r.cache_creation or 0)
+            ecount = int(r.event_count or 0)
+
+            s_cost += cost
+            s_in += in_t
+            s_out += out_t
+            s_cread += cread
+            s_ccreate += ccreate
+            s_events += ecount
+            firsts.append(r.first_at)
+            lasts.append(r.last_at)
+
+            agent_rows.append(
+                UsageSessionAgentRow(
+                    agent_name=r.agent_name,
+                    model=r.model,
+                    cost_usd=_fmt_money(cost),
+                    input_tokens=in_t,
+                    output_tokens=out_t,
+                    cache_read_input_tokens=cread,
+                    cache_creation_input_tokens=ccreate,
+                    event_count=ecount,
+                )
+            )
+
+        # Sort agents: Lead first (agent_name None → False sorts before True),
+        # then by cost desc within each tier.
+        agent_rows.sort(
+            key=lambda a: (a.agent_name is not None, -Decimal(a.cost_usd))
+        )
+
+        denom = s_in + s_ccreate + s_cread
+        cache_hit_ratio = round(s_cread / denom, 4) if denom > 0 else 0.0
+
+        grand_total += s_cost
+
+        sessions_out.append(
+            UsageSessionRow(
+                session_ext_id=sid,
+                total_cost_usd=_fmt_money(s_cost),
+                input_tokens=s_in,
+                output_tokens=s_out,
+                cache_read_input_tokens=s_cread,
+                cache_creation_input_tokens=s_ccreate,
+                cache_hit_ratio=cache_hit_ratio,
+                event_count=s_events,
+                first_occurred_at=min(firsts).isoformat(),
+                last_occurred_at=max(lasts).isoformat(),
+                agents=agent_rows,
+            )
+        )
+
+    return UsageSessionsResponse(
+        sessions=sessions_out,
+        limit=limit,
+        offset=offset,
+        returned=len(sessions_out),
         total_cost_usd=_fmt_money(grand_total),
     )
