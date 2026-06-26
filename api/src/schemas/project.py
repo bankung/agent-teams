@@ -251,14 +251,17 @@ class ToolsConfig(BaseModel):
     `langgraph/tools/permission_gate.check_permission()` BEFORE invoking any
     registered tool. The locked default ships "permissive read, halt on
     everything else" plus `tools_enabled=false` as a master kill switch — see
-    migration `0027_projects_tools_config` for the full rationale.
+    migration `2026_05_16_0100_projects_tools_config` for the full rationale.
 
     Field semantics (locked design #949 — see
     `_scratch/standards-proposal-permission-tiers.md`):
 
     - `tools_enabled` — master kill switch. False → gate returns `reject` for
       EVERY tool regardless of tier (including reads). Only the user (FE
-      config UI, gated by #943) can flip true.
+      config UI, gated by #943) can flip true. As of #2707 this flag is
+      decoupled from multi-board eligibility (consent-granted projects are
+      now eligible even with tools disabled); the operator write path for
+      this flag lands in #2707 Option C (the #943 UI was never built).
     - `auto_allow_tiers` — tiers whose tool calls auto-execute without human
       review. The ship default ships `["read"]` only.
     - `halt_tiers` — tiers whose tool calls halt the agent for human review

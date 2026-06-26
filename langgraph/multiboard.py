@@ -5,8 +5,10 @@ unit-testable. The worker calls them; transport stays in worker.py.
 
 Eligibility contract (operator-locked):
   is_active=True AND auto_run_consent_at != null
-  AND tools_config.tools_enabled == True
   AND NOT is_paused AND NOT is_killed
+
+(tools_config.tools_enabled was REMOVED from eligibility in #2707 — it is now only
+the permission-gate capability switch, not an eligibility/onboarding gate.)
 
 Refresh cadence: every MULTIBOARD_REFRESH_TICKS ticks (default 6;
 overridable via LANGGRAPH_MULTIBOARD_REFRESH_TICKS).
@@ -35,15 +37,12 @@ def multiboard_refresh_ticks() -> int:
 def is_eligible(project: dict[str, Any]) -> bool:
     """Return True iff a project dict meets multi-board eligibility. #2184.
 
-    Checks: is_active, auto_run_consent_at, tools_config.tools_enabled,
-    NOT is_paused, NOT is_killed.
+    Checks: is_active, auto_run_consent_at, NOT is_paused, NOT is_killed.
+    (tools_config.tools_enabled removed from eligibility — #2707.)
     """
     if not project.get("is_active"):
         return False
     if project.get("auto_run_consent_at") is None:
-        return False
-    tc = project.get("tools_config") or {}
-    if not tc.get("tools_enabled"):
         return False
     if project.get("is_paused"):
         return False

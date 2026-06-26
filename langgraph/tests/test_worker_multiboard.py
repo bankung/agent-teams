@@ -95,12 +95,16 @@ def test_eligibility_consent_null() -> None:
     assert multiboard.is_eligible(_proj(auto_run_consent_at=None)) is False
 
 
-def test_eligibility_tools_disabled() -> None:
-    assert multiboard.is_eligible(_proj(tools_config={"tools_enabled": False})) is False
+def test_eligibility_tools_disabled_still_eligible() -> None:
+    # #2707: tools_enabled no longer gates eligibility — it's the permission-gate
+    # capability switch (see test_permission_gate reject-when-disabled coverage).
+    assert multiboard.is_eligible(_proj(tools_config={"tools_enabled": False})) is True
 
 
-def test_eligibility_no_tools_config() -> None:
-    assert multiboard.is_eligible(_proj(tools_config=None)) is False
+def test_eligibility_no_tools_config_still_eligible() -> None:
+    # #2707: tools_enabled no longer gates eligibility — it's the permission-gate
+    # capability switch (see test_permission_gate reject-when-disabled coverage).
+    assert multiboard.is_eligible(_proj(tools_config=None)) is True
 
 
 def test_eligibility_inactive() -> None:
