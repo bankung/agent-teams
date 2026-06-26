@@ -48,7 +48,7 @@ function decodeEffort(s: string): EffortValue {
 type Props = {
   project: ProjectRead;
   // When true the ApprovalPoliciesEditor is not rendered here; the caller
-  // is responsible for rendering it (e.g. inside an AdvancedSettingsDisclosure).
+  // is responsible for rendering it (e.g. the settings page's Advanced section).
   hideApprovalPolicies?: boolean;
 };
 
