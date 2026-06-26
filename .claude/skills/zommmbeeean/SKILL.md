@@ -43,8 +43,9 @@ async-HITL gate flow + `resume_context`). It automates the *"pick the next task 
 - **max** — optional cap: stop after N tasks complete (a safety governor for the first runs).
 - **Bound project:** resolve via `powershell -File bin/lead-project-id.ps1` (this session's id). If
   unbound → run `/tn-bind` first, then re-invoke.
-- **Poller (for gate answers):** the operator should have `docker compose -p agent-teams exec api
-  python -m scripts.telegram_poller` running in a separate terminal. If it is NOT running, gates
+- **Poller (for gate answers):** the operator should have the `telegram-poller` compose service running
+  (`docker compose -p agent-teams --profile telegram up -d telegram-poller` — #2698, restart-resilient,
+  survives `restart api`). If it is NOT running, gates
   still open + notify, but taps won't auto-resolve — the walker still parks + walks on; the operator
   resolves later. Mention this once at start, don't block on it.
 
