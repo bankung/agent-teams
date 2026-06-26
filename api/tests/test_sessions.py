@@ -1311,7 +1311,7 @@ async def test_activity_response_flags_compact_recommended_over_ceiling(
 async def test_patch_run_with_provider_model_computes_total_cost(
     client, scaffold_cleanup, session_fs_cleanup
 ) -> None:
-    """PATCH with 1M+1M tokens + opus → server computes ~$90."""
+    """PATCH with 1M+1M tokens + opus → server computes ~$30."""
     from decimal import Decimal
 
     name = _unique_name("run-cost-opus")
@@ -1338,7 +1338,7 @@ async def test_patch_run_with_provider_model_computes_total_cost(
         )
         assert r.status_code == 200, r.text
         body = r.json()
-        assert Decimal(str(body["total_cost_usd"])) == Decimal("90.0000")
+        assert Decimal(str(body["total_cost_usd"])) == Decimal("30.0000")
         assert body["total_input_tokens"] == 1_000_000
         assert body["total_output_tokens"] == 1_000_000
     finally:
@@ -1378,7 +1378,7 @@ async def test_patch_run_client_total_cost_usd_silently_ignored(
         )
         assert r.status_code == 200, r.text
         body = r.json()
-        assert Decimal(str(body["total_cost_usd"])) == Decimal("90.0000")
+        assert Decimal(str(body["total_cost_usd"])) == Decimal("30.0000")
     finally:
         await client.delete(f"/api/projects/{pid}")
 

@@ -549,7 +549,7 @@ async def _make_session_run(
     budget_warning. Returns the final SessionRunRead body.
 
     Cost is server-computed from `(provider, model, input_tokens, output_tokens)`
-    per CTX-3 (#718). For `claude-opus-4-7`: $15/M input + $75/M output.
+    per CTX-3 (#718). For `claude-opus-4-7`: $5/M input + $25/M output (current Opus rate, #2727).
     """
     create_resp = await client.post(f"/api/sessions/{session_id}/runs", json={})
     assert create_resp.status_code == 201, create_resp.text
@@ -635,11 +635,11 @@ async def test_stats_cost_usage_sums_two_session_runs(
 ) -> None:
     """Two session_runs in the same project — cost_usage MUST be the SUM of
     their per-row tokens / context chars / cost / counts. Uses `claude-opus-4-7`
-    ($15/M input + $75/M output) so cost is determined and test-stable.
+    ($5/M input + $25/M output) so cost is determined and test-stable.
 
-    Run 1: 100_000 in + 200_000 out → cost = 100k/1M*15 + 200k/1M*75 = 1.5 + 15.0 = 16.5
-    Run 2: 50_000 in + 80_000 out  → cost = 50k/1M*15 + 80k/1M*75 = 0.75 + 6.0 = 6.75
-    Total: in=150_000, out=280_000, cost=23.25 USD; session_run_count=2.
+    Run 1: 100_000 in + 200_000 out → cost = 100k/1M*5 + 200k/1M*25 = 0.5 + 5.0 = 5.5
+    Run 2: 50_000 in + 80_000 out  → cost = 50k/1M*5 + 80k/1M*25 = 0.25 + 2.0 = 2.25
+    Total: in=150_000, out=280_000, cost=7.75 USD; session_run_count=2.
     """
     from decimal import Decimal
 
@@ -670,8 +670,8 @@ async def test_stats_cost_usage_sums_two_session_runs(
         assert cu["total_output_tokens"] == 280_000, cu
         assert cu["total_context_chars"] == 7_500, cu
         assert cu["session_run_count"] == 2, cu
-        # Cost: SUM(16.5 + 6.75) = 23.25 — Decimal-stringified.
-        assert Decimal(cu["total_cost_usd"]) == Decimal("23.2500"), cu
+        # Cost: SUM(5.5 + 2.25) = 7.75 — Decimal-stringified.
+        assert Decimal(cu["total_cost_usd"]) == Decimal("7.7500"), cu
         # No budget_warning flips on these runs.
         assert cu["budget_warning_count"] == 0, cu
     finally:
@@ -736,11 +736,11 @@ async def test_stats_cost_usage_cross_project_isolation(
     sid_a = await _make_session(client, pid_a)
     sid_b = await _make_session(client, pid_b)
     try:
-        # Project A: 1 run, 100_000 in / 0 out → cost 1.5 USD.
+        # Project A: 1 run, 100_000 in / 0 out → cost 0.5 USD.
         await _make_session_run(
             client, sid_a, input_tokens=100_000, output_tokens=0
         )
-        # Project B: 1 run, 0 in / 200_000 out → cost 15.0 USD; budget_warning=true.
+        # Project B: 1 run, 0 in / 200_000 out → cost 5.0 USD; budget_warning=true.
         await _make_session_run(
             client,
             sid_b,
@@ -759,14 +759,14 @@ async def test_stats_cost_usage_cross_project_isolation(
         assert cu_a["total_output_tokens"] == 0, cu_a
         assert cu_a["session_run_count"] == 1, cu_a
         assert cu_a["budget_warning_count"] == 0, cu_a
-        assert Decimal(cu_a["total_cost_usd"]) == Decimal("1.5000"), cu_a
+        assert Decimal(cu_a["total_cost_usd"]) == Decimal("0.5000"), cu_a
 
         cu_b = entry_b["cost_usage"]
         assert cu_b["total_input_tokens"] == 0, cu_b
         assert cu_b["total_output_tokens"] == 200_000, cu_b
         assert cu_b["session_run_count"] == 1, cu_b
         assert cu_b["budget_warning_count"] == 1, cu_b
-        assert Decimal(cu_b["total_cost_usd"]) == Decimal("15.0000"), cu_b
+        assert Decimal(cu_b["total_cost_usd"]) == Decimal("5.0000"), cu_b
     finally:
         _session_fs_cleanup_inline(sid_a)
         _session_fs_cleanup_inline(sid_b)
