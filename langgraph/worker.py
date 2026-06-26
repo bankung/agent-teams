@@ -64,6 +64,7 @@ from hitl import (
     EngineCrashError,
     HITLError,
     InvalidAnswerError,
+    clear_checkpoint,
     has_checkpoint,
     resume_graph,
     validate_answer,
@@ -845,6 +846,16 @@ async def _poll_once(
         "effort": resolved_effort,
     }
     config = {"configurable": {"thread_id": f"task-{task_id}"}}
+
+    # #2664 — a fresh next_task pickup (next-autorun guarantees process_status==TODO)
+    # MUST run from clean state. If a STALE checkpoint survives from a PRIOR run of this
+    # task (re-queued to TODO via drag / reset / PATCH process_status->TODO), clear it so
+    # the run honors current DB state (assigned_role etc.) instead of resuming the old graph.
+    # Cleared ONCE here, before the retry loop — the in-pickup transient-retry resume
+    # (below, _attempt>0) still resumes THIS pickup's own checkpoint. HITL resume runs via
+    # _resume_hitl_task (a different function) and is NOT affected.
+    if await has_checkpoint(compiled, task_id):
+        await clear_checkpoint(compiled, task_id)
 
     # Kanban #2136 — structured halt taxonomy + bounded transient retry.
     # LangGraph checkpoints make re-invocation safe (idempotent per thread_id).

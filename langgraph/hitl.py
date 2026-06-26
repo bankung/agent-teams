@@ -236,6 +236,24 @@ async def has_checkpoint(graph: Any, task_id: int) -> bool:
     return getattr(state, "created_at", None) is not None
 
 
+async def clear_checkpoint(graph: Any, task_id: int) -> None:
+    """Delete the LangGraph checkpoint thread for `task_id` (#2664).
+
+    Used by the worker's FRESH `next_task` pickup to guarantee a re-queued task
+    (dragged / reset / PATCHed back to TODO) runs from clean `initial_state`
+    instead of resuming a STALE checkpoint left by a prior run — which would
+    ignore DB changes (e.g. a new `assigned_role`) and carry over old graph
+    state (e.g. `audit_retry_count`).
+
+    `adelete_thread` takes a bare thread_id string (verified against
+    langgraph-checkpoint-postgres 3.1.0 / langgraph-checkpoint 4.1.1 —
+    signature `adelete_thread(self, thread_id: str) -> None`), so we pass the
+    same `task-<id>` thread key `has_checkpoint`/`resume_config` use; the
+    checkpointer is reachable as `graph.checkpointer` on a CompiledStateGraph.
+    """
+    await graph.checkpointer.adelete_thread(thread_id_for_task(task_id))
+
+
 async def resume_graph(
     graph: Any,
     task_id: int,

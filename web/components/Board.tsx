@@ -59,6 +59,7 @@ const TaskDetail = dynamic(
 import { ToastStack, type ToastMessage } from "@/components/Toast";
 import { ViewSwitcher } from "@/components/ViewSwitcher";
 import { FINANCE_PANELS_ENABLED } from "@/lib/featureFlags";
+import { ModalShell } from "@/components/ModalShell";
 
 type Props = {
   initialTasks: TaskRead[];
@@ -303,6 +304,15 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
   // to see ONLY gated tasks. Session-scoped; no localStorage persistence.
   const [showOperatorGateOnly, setShowOperatorGateOnly] = useState(false);
 
+  // Kanban #2664 — confirm guard for destructive re-queue drops (AI task dragged
+  // back to TODO after it has already run). Holds the pending drop args until
+  // the user confirms; null = no dialog shown.
+  const [rerunConfirm, setRerunConfirm] = useState<{
+    taskId: number;
+    newPs: TaskStatusValue;
+    original: TaskRead;
+  } | null>(null);
+
   // #1868 v1.1 — milestone filter. "all" = no filter (default); "none" = only
   // tasks with milestone_id == null; number = only tasks pointing at that
   // milestone. Client-side filter on the in-memory `tasks` snapshot — the
@@ -498,7 +508,10 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
 
   // Kanban #2111 Part 3c — callbacks passed to BoardDndCanvas (owns dnd-kit).
   // Cross-lane: optimistic setTasks + PATCH; revert on error (mirrors original onDragEnd).
-  const onCrossLaneDrop = useCallback(
+  // Kanban #2664 — destructive gate: dragging a previously-run AI task into TODO
+  // re-queues it (discards its prior run). Show a confirm dialog before any state
+  // change; only proceed on confirm.
+  const applyLaneDrop = useCallback(
     (taskId: number, newPs: TaskStatusValue, original: TaskRead) => {
       setTasks((prev) =>
         prev.map((t) =>
@@ -520,6 +533,21 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
         });
     },
     [project.id, pushToast],
+  );
+
+  const onCrossLaneDrop = useCallback(
+    (taskId: number, newPs: TaskStatusValue, original: TaskRead) => {
+      const isDestructive =
+        newPs === TaskStatus.TODO &&
+        original.task_kind === "ai" &&
+        original.started_at !== null;
+      if (isDestructive) {
+        setRerunConfirm({ taskId, newPs, original });
+        return;
+      }
+      applyLaneDrop(taskId, newPs, original);
+    },
+    [applyLaneDrop],
   );
 
   // Kanban #2112 — server-side DONE Load-more handler.
@@ -983,6 +1011,49 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
         />
       )}
       <ToastStack messages={toasts} onDismiss={dismissToast} />
+      {/* Kanban #2664 — re-run confirm dialog. Shown only when a previously-run
+          AI task is dragged back to TODO (destructive: discards its prior run).
+          No optimistic move until the user confirms. */}
+      <ModalShell
+        open={rerunConfirm !== null}
+        onClose={() => setRerunConfirm(null)}
+        labelledBy="rerun-confirm-title"
+        maxWidth="sm"
+        backdropProps={{ "data-rerun-confirm-backdrop": true }}
+      >
+        <h2
+          id="rerun-confirm-title"
+          className="text-sm font-semibold uppercase tracking-wide text-zinc-900 dark:text-zinc-100"
+        >
+          Re-run #{rerunConfirm?.taskId}
+        </h2>
+        <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
+          Discards its previous run and starts over. Continue?
+        </p>
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setRerunConfirm(null)}
+            className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+            data-rerun-confirm-cancel
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (!rerunConfirm) return;
+              const { taskId, newPs, original } = rerunConfirm;
+              setRerunConfirm(null);
+              applyLaneDrop(taskId, newPs, original);
+            }}
+            className="rounded border border-amber-600 bg-amber-600 px-3 py-2 text-xs font-medium uppercase tracking-wide text-white hover:bg-amber-700 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-amber-500 dark:bg-amber-500 dark:hover:bg-amber-600"
+            data-rerun-confirm-ok
+          >
+            Re-run
+          </button>
+        </div>
+      </ModalShell>
       {/* #1582 — board phase of the first-visit product tour. Renders null
           unless the dashboard phase handed off (localStorage baton); then runs
           the board + task-drawer steps and finalizes the tour. projectName gates
