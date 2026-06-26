@@ -989,6 +989,25 @@ class ProjectStatsCostUsage(BaseModel):
     session_run_count: int = 0
 
 
+class ProjectStatsActualInteractiveCost(BaseModel):
+    """Per-project REAL interactive cost/token aggregate from `usage_events` (#2735).
+
+    Sums `cost_usd` / `input_tokens` / `output_tokens` over every `usage_events`
+    row for this project (the interactive Claude-Code hook-capture ledger, "Mode A").
+    Distinct from `estimated_cost` (the per-task heuristic forecast from
+    `tasks.estimated_cost_usd`, kept for budgeting/P&L) and from `cost_usage`
+    (headless `session_runs` metering, "Mode B").
+
+    All three keys ALWAYS emitted (zero-filled) — mirrors the cost_usage/estimated_cost
+    no-coalescing contract. `total_cost_usd` serializes as a JSON string by Pydantic v2
+    default, mirroring ProjectStatsEstimatedCost.total_cost_usd exactly.
+    """
+
+    total_cost_usd: Decimal = Decimal("0")
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+
+
 class ProjectStatsEntry(BaseModel):
     """Single project's stats row in the batched stats response (Kanban #769).
 
@@ -1015,6 +1034,11 @@ class ProjectStatsEntry(BaseModel):
     `cost_usage` — surfaces DONE-flip estimates for projects whose
     `session_runs` token columns are not yet populated.
 
+    `actual_interactive_cost` (#2735): real interactive cost/token aggregates from
+    `usage_events` (Mode A hook-capture ledger). Always emitted (zero-filled when
+    the project has no usage_events). Distinct from `estimated_cost` (heuristic
+    forecast) and `cost_usage` (Mode B headless metering).
+
     Soft-deleted tasks (`status=0`) excluded from BOTH `counts` /
     `run_mode_breakdown` AND `last_activity_at`. Cancelled tasks
     (`process_status=6`, Kanban #854) excluded ONLY from
@@ -1032,6 +1056,8 @@ class ProjectStatsEntry(BaseModel):
     cost_usage: ProjectStatsCostUsage
     # G1: heuristic per-task estimate aggregate (always emitted, zero-filled)
     estimated_cost: ProjectStatsEstimatedCost
+    # #2735: real interactive cost from usage_events (always emitted, zero-filled)
+    actual_interactive_cost: ProjectStatsActualInteractiveCost
 
 
 # ---------------------------------------------------------------------------

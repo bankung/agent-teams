@@ -98,20 +98,23 @@ export function CostSummary({
   let totalInput = 0;
   let totalOutput = 0;
   let totalRuns = 0;
-  let totalEstimatedCost = 0;
-  let totalEstimatedInput = 0;
-  let totalEstimatedOutput = 0;
-  let hasEstimated = false;
+  // #2735 — Mode A card now reads actual_interactive_cost (the real usage_events
+  // hook-capture ledger), NOT the estimated_cost heuristic roll-up. estimated_cost
+  // stays on the type — the P&L components still consume it.
+  let totalInteractiveCost = 0;
+  let totalInteractiveInput = 0;
+  let totalInteractiveOutput = 0;
+  let hasInteractive = false;
   for (const entry of stats) {
     totalCost += parseUsd(entry.cost_usage.total_cost_usd);
     totalInput += entry.cost_usage.total_input_tokens;
     totalOutput += entry.cost_usage.total_output_tokens;
     totalRuns += entry.cost_usage.session_run_count;
-    if (entry.estimated_cost != null) {
-      hasEstimated = true;
-      totalEstimatedCost += parseUsd(entry.estimated_cost.total_cost_usd);
-      totalEstimatedInput += entry.estimated_cost.total_input_tokens;
-      totalEstimatedOutput += entry.estimated_cost.total_output_tokens;
+    if (entry.actual_interactive_cost != null) {
+      hasInteractive = true;
+      totalInteractiveCost += parseUsd(entry.actual_interactive_cost.total_cost_usd);
+      totalInteractiveInput += entry.actual_interactive_cost.total_input_tokens;
+      totalInteractiveOutput += entry.actual_interactive_cost.total_output_tokens;
     }
   }
 
@@ -159,14 +162,14 @@ export function CostSummary({
         {/* Compact inline summary shown only when collapsible + collapsed */}
         {collapsible && !expanded && (
           <span className="text-xs text-zinc-600 dark:text-zinc-400 tabular-nums">
-            {hasEstimated && (
-              <span title="Mode A estimated cost">A·est {formatUsd(totalEstimatedCost)}</span>
+            {hasInteractive && (
+              <span title="Mode A actual interactive cost">A {formatUsd(totalInteractiveCost)}</span>
             )}
-            {hasEstimated && !noUsage && <span className="mx-1 text-zinc-400">·</span>}
+            {hasInteractive && !noUsage && <span className="mx-1 text-zinc-400">·</span>}
             {!noUsage && (
               <span title="Mode B actual cost">B·actual {formatUsd(totalCost)}</span>
             )}
-            {(hasEstimated || !noUsage) && <span className="mx-1 text-zinc-400">·</span>}
+            {(hasInteractive || !noUsage) && <span className="mx-1 text-zinc-400">·</span>}
             <span>{totalRuns} run{totalRuns === 1 ? "" : "s"}</span>
           </span>
         )}
@@ -174,7 +177,7 @@ export function CostSummary({
 
       {expanded && (
         <>
-          {noUsage && !hasEstimated ? (
+          {noUsage && !hasInteractive ? (
             <p className="text-sm text-zinc-500 dark:text-zinc-400">
               No usage tracked yet.
             </p>
@@ -182,23 +185,23 @@ export function CostSummary({
             <>
               {/* Mode A + Mode B side-by-side compact cards */}
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {/* Mode A · Estimated */}
-                {hasEstimated && (
+                {/* Mode A · Actual (interactive) — #2735: real usage_events cost */}
+                {hasInteractive && (
                   <div className="rounded-md border border-blue-100 bg-blue-50/40 px-3 py-3 dark:border-blue-900/30 dark:bg-blue-950/10">
                     <div className="mb-1 flex items-center gap-2">
                       <span className="text-[11px] font-medium uppercase tracking-wide text-blue-600 dark:text-blue-400">
-                        Mode A · Estimated
+                        Mode A · Actual (interactive)
                       </span>
                     </div>
                     <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                       <span
                         className="text-lg font-semibold tabular-nums leading-none text-blue-700 dark:text-blue-300"
-                        title={`$${totalEstimatedCost.toFixed(4)} USD (heuristic estimate at API token rates)`}
+                        title={`$${totalInteractiveCost.toFixed(4)} USD (real interactive cost captured from Claude Code hooks — usage_events ledger)`}
                       >
-                        {formatUsd(totalEstimatedCost)}
+                        {formatUsd(totalInteractiveCost)}
                       </span>
                       <span className="text-xs text-zinc-500 dark:text-zinc-400 tabular-nums">
-                        {formatInt(totalEstimatedInput)} in / {formatInt(totalEstimatedOutput)} out tokens
+                        {formatInt(totalInteractiveInput)} in / {formatInt(totalInteractiveOutput)} out tokens
                       </span>
                     </div>
                   </div>

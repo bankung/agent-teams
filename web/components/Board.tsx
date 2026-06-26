@@ -19,6 +19,7 @@ import {
   type ProjectRead,
   type ProjectStatsEntry,
   type TaskRead,
+  type UsageSessionsResponse,
 } from "@/lib/api";
 import { orderMilestonesForPicker } from "@/lib/milestoneOrder";
 
@@ -36,6 +37,7 @@ import { sortDoneLane, sortLaneTasks } from "@/lib/sortLaneTasks";
 import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
 import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
 import { CostSummary } from "@/components/CostSummary";
+import { SessionCostPanel } from "@/components/SessionCostPanel";
 import { Icon } from "@/components/Icon";
 import { PnlSummaryCard } from "@/components/PnlSummaryCard";
 import { ProgressChartsPanel } from "@/components/ProgressChartsPanel";
@@ -72,6 +74,22 @@ type Props = {
   // Kanban #1292 — SSR-fetched burndown + velocity series for the progress
   // charts panel. Always present (the BE zero-fills every bucket).
   progressStats: ProgressStatsResponse;
+  // Kanban #2735 — SSR-fetched page 1 of per-session cost (scoped to this
+  // project). Prop-driven initial render; SessionCostPanel pages "Load more"
+  // client-side. Optional: the server page always supplies it (an empty page on
+  // a fetch error); omitting it (e.g. in tests) falls back to EMPTY_SESSIONS so
+  // the panel renders its empty state rather than crashing.
+  initialSessions?: UsageSessionsResponse;
+};
+
+// #2735 — empty-page fallback when initialSessions is omitted. Mirrors the
+// server-side .catch shape so the panel's empty-state path is identical.
+const EMPTY_SESSIONS: UsageSessionsResponse = {
+  sessions: [],
+  limit: 50,
+  offset: 0,
+  returned: 0,
+  total_cost_usd: "0.0000",
 };
 
 type Column = { statuses: TaskStatusValue[]; label: string; key: string };
@@ -252,7 +270,7 @@ export function computeDoneTotalCount(
   return undefined;
 }
 
-export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, project, projectStats, progressStats }: Props) {
+export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, project, projectStats, progressStats, initialSessions = EMPTY_SESSIONS }: Props) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -804,6 +822,16 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
             />
           </div>
         </div>
+        {/* Kanban #2735 — per-session cost panel. Its OWN full-width collapsible
+            section BELOW the 3-up panels band (it's a list — too tall for the
+            band). defaultCollapsed=true + storageKey persists per-project. */}
+        <SessionCostPanel
+          data={initialSessions}
+          projectId={project.id}
+          defaultCollapsed
+          storageKey={`project.${project.id}.panels.sessions.expanded`}
+          className="mt-3 min-w-0"
+        />
         {/* #1209 GOV1 D5 — red strip above the consent banner when killed.
             (Renders nothing when is_killed=false.) */}
         <KilledBanner project={project} />

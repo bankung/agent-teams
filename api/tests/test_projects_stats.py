@@ -495,6 +495,7 @@ async def test_stats_entry_shape_always_full(client) -> None:
             "counts",
             "run_mode_breakdown",
             "last_activity_at",
+            "actual_interactive_cost",  # #2735: always emitted
         }, entry
         # counts: 7 string keys (1-6 + 8; 7 reserved/skipped), all int.
         # Kanban #1839: "8" (HALTED_PENDING_USER) added to TaskStatus.ALL.
@@ -994,3 +995,164 @@ async def test_stats_estimated_cost_nonzero_after_done_flip(
         assert Decimal(ec["total_cost_usd"]) >= Decimal("0"), ec
     finally:
         await client.delete(f"/api/projects/{project_id}")
+
+
+# ---- 19-21. #2735 — actual_interactive_cost sub-object ----------------------
+#
+# These tests exercise the new `actual_interactive_cost` aggregate sourced from
+# `usage_events` (the Mode A hook-capture ledger). Seed mechanism mirrors
+# test_usage_sessions.py: each row is created via POST /api/usage/events with
+# the X-Project-Id header; the server computes cost_usd from the token vector.
+# There is NO delete API for usage_events — teardown is soft-delete of the
+# project (CASCADE removes its events) via scaffold_cleanup.
+
+
+async def _seed_usage_event(
+    client,
+    project_id: int,
+    *,
+    model: str = "claude-opus-4-8",
+    input_tokens: int = 1000,
+    output_tokens: int = 500,
+) -> dict:
+    """POST one usage_events row and return the stored row JSON."""
+    import uuid
+    from datetime import datetime, timedelta, timezone
+
+    occurred_at = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    payload = {
+        "model": model,
+        "provider": "anthropic",
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "occurred_at": occurred_at,
+        "dedup_key": f"stats-{uuid.uuid4().hex}",
+    }
+    resp = await client.post(
+        "/api/usage/events",
+        json=payload,
+        headers={"X-Project-Id": str(project_id)},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+@pytest.mark.asyncio
+async def test_stats_actual_interactive_cost_zero_filled_when_no_events(
+    client, scaffold_cleanup
+) -> None:
+    """#2735 — a project with no usage_events MUST still emit the full
+    `actual_interactive_cost` sub-object with every key zero-valued.
+    Mirrors estimated_cost test 16 (shape/contract regression gate).
+    """
+    from decimal import Decimal
+
+    project = await _make_project(client, scaffold_cleanup, slug="aic-zero")
+    try:
+        entry = await _stats_entry_for(client, project["id"])
+        assert entry is not None
+        assert "actual_interactive_cost" in entry, entry
+
+        aic = entry["actual_interactive_cost"]
+        # All three keys present.
+        assert set(aic.keys()) == {
+            "total_cost_usd",
+            "total_input_tokens",
+            "total_output_tokens",
+        }, aic
+        # Integer zeros.
+        assert aic["total_input_tokens"] == 0, aic
+        assert aic["total_output_tokens"] == 0, aic
+        # Decimal serializes as JSON string (mirrors estimated_cost.total_cost_usd).
+        assert isinstance(aic["total_cost_usd"], str), aic
+        assert Decimal(aic["total_cost_usd"]) == Decimal("0"), aic
+    finally:
+        await client.delete(f"/api/projects/{project['id']}")
+
+
+@pytest.mark.asyncio
+async def test_stats_actual_interactive_cost_nonzero_after_seeding_events(
+    client, scaffold_cleanup
+) -> None:
+    """#2735 — after inserting usage_events rows for a project, the
+    `actual_interactive_cost` aggregate MUST be non-zero.
+    Confirms Query 5 actually reads real data (not the vacuous zero path).
+    """
+    from decimal import Decimal
+
+    project = await _make_project(client, scaffold_cleanup, slug="aic-nonzero")
+    project_id = project["id"]
+    try:
+        # Seed two events with known token counts; server computes cost_usd.
+        await _seed_usage_event(
+            client, project_id, input_tokens=10_000, output_tokens=5_000
+        )
+        await _seed_usage_event(
+            client, project_id, input_tokens=20_000, output_tokens=3_000
+        )
+
+        entry = await _stats_entry_for(client, project_id)
+        assert entry is not None
+        aic = entry["actual_interactive_cost"]
+        assert set(aic.keys()) == {
+            "total_cost_usd",
+            "total_input_tokens",
+            "total_output_tokens",
+        }, aic
+        # Token totals must reflect the two seeded events.
+        assert aic["total_input_tokens"] == 30_000, aic
+        assert aic["total_output_tokens"] == 8_000, aic
+        # cost_usd must be > 0 (server-computed from the token vector).
+        assert Decimal(aic["total_cost_usd"]) > Decimal("0"), (
+            f"actual_interactive_cost.total_cost_usd must be > 0 after seeding events; got {aic}"
+        )
+    finally:
+        await client.delete(f"/api/projects/{project_id}")
+
+
+@pytest.mark.asyncio
+async def test_stats_actual_interactive_cost_cross_project_isolation(
+    client, scaffold_cleanup
+) -> None:
+    """#2735 — usage_events for project A MUST NOT bleed into project B.
+    Also confirms the field is present on every entry (single project_id param).
+    """
+    from decimal import Decimal
+
+    pid_a = (await _make_project(client, scaffold_cleanup, slug="aic-iso-a"))["id"]
+    pid_b = (await _make_project(client, scaffold_cleanup, slug="aic-iso-b"))["id"]
+    try:
+        # Seed 1 event into project A only.
+        await _seed_usage_event(
+            client, pid_a, input_tokens=5_000, output_tokens=2_000
+        )
+
+        entry_a = await _stats_entry_for(client, pid_a)
+        entry_b = await _stats_entry_for(client, pid_b)
+        assert entry_a is not None
+        assert entry_b is not None
+
+        aic_a = entry_a["actual_interactive_cost"]
+        aic_b = entry_b["actual_interactive_cost"]
+
+        # Project A has events — must be non-zero.
+        assert aic_a["total_input_tokens"] == 5_000, aic_a
+        assert aic_a["total_output_tokens"] == 2_000, aic_a
+        assert Decimal(aic_a["total_cost_usd"]) > Decimal("0"), aic_a
+
+        # Project B has no events — must remain zero-filled.
+        assert aic_b["total_input_tokens"] == 0, aic_b
+        assert aic_b["total_output_tokens"] == 0, aic_b
+        assert Decimal(aic_b["total_cost_usd"]) == Decimal("0"), aic_b
+
+        # Single-project-param entry also carries the field.
+        resp_filtered = await client.get(f"/api/projects/stats?project_id={pid_a}")
+        assert resp_filtered.status_code == 200
+        filtered_entries = resp_filtered.json()
+        assert len(filtered_entries) == 1
+        assert "actual_interactive_cost" in filtered_entries[0], filtered_entries[0]
+    finally:
+        await client.delete(f"/api/projects/{pid_a}")
+        await client.delete(f"/api/projects/{pid_b}")

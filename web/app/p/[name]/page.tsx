@@ -6,7 +6,9 @@ import {
   getProjectProgressStats,
   listAllTasks,
   listDoneLanePage,
+  listUsageSessions,
   HttpError,
+  type UsageSessionsResponse,
 } from "@/lib/api";
 import { TaskRunMode } from "@/lib/constants";
 import { Board } from "@/components/Board";
@@ -37,12 +39,26 @@ export default async function ProjectBoardPage(props: Props) {
   // doneFirstPage: listDoneLanePage(limit=50) — first 50 DONE tasks only;
   //   remaining pages fetched client-side on "Load more".
   // Previously: listAllTasks(project.id) fetched ALL tasks incl. every DONE.
-  const [active, doneFirstPage, projectStats, progressStats] = await Promise.all([
-    listAllTasks(project.id, { pending: true }),
-    listDoneLanePage(project.id, { limit: 50 }),
-    getProjectsStats({ projectId: project.id }),
-    getProjectProgressStats(project.id),
-  ]);
+  // Kanban #2735 — per-session cost panel (page 1, scoped to this project).
+  // SSR-fetched in the same Promise.all (established pattern; avoids the
+  // client-fetch origin class that bit #1673). Degrades to an empty page on
+  // error so a usage-endpoint hiccup never blanks the board.
+  const [active, doneFirstPage, projectStats, progressStats, sessions] =
+    await Promise.all([
+      listAllTasks(project.id, { pending: true }),
+      listDoneLanePage(project.id, { limit: 50 }),
+      getProjectsStats({ projectId: project.id }),
+      getProjectProgressStats(project.id),
+      listUsageSessions({ projectId: project.id, limit: 50 }).catch(
+        (): UsageSessionsResponse => ({
+          sessions: [],
+          limit: 50,
+          offset: 0,
+          returned: 0,
+          total_cost_usd: "0.0000",
+        }),
+      ),
+    ]);
   const initialTasks = [...active, ...doneFirstPage];
   // has-more: if the first page is exactly the limit, the server likely has more.
   const initialDoneHasMore = doneFirstPage.length === 50;
@@ -58,6 +74,7 @@ export default async function ProjectBoardPage(props: Props) {
       project={project}
       projectStats={projectStats}
       progressStats={progressStats}
+      initialSessions={sessions}
     />
   );
 }

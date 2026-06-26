@@ -407,6 +407,16 @@ export type ProjectStatsCostUsage = {
   session_run_count: number;
 };
 
+// #2735 — real interactive (Mode A) cost from the usage_events hook-capture
+// ledger. Same Decimal-as-string serialization as estimated_cost / cost_usage
+// — parse total_cost_usd via parseUsd() before arithmetic. Optional: absent on
+// API versions that predate the slice → CostSummary degrades gracefully.
+export type ProjectStatsActualInteractiveCost = {
+  total_cost_usd: string;
+  total_input_tokens: number;
+  total_output_tokens: number;
+};
+
 // G1 — heuristic estimate from task-level estimated_cost_usd roll-up.
 // total_cost_usd is a Decimal STRING (same Pydantic serialization as
 // cost_usage.total_cost_usd — #871). Parse via parseUsd() before arithmetic.
@@ -427,7 +437,14 @@ export type ProjectStatsEntry = {
   last_activity_at: string | null;
   cost_usage: ProjectStatsCostUsage;
   // G1 — heuristic task-estimate roll-up; optional until BE slice lands.
+  // STILL consumed by the P&L components (PnlSummaryCard / PnlDashboardSection)
+  // — do NOT remove even though CostSummary's Mode A card now reads
+  // actual_interactive_cost instead (#2735).
   estimated_cost?: ProjectStatsEstimatedCost;
+  // #2735 — real interactive (Mode A) cost from the usage_events ledger.
+  // The CostSummary "Mode A · Actual (interactive)" card sums this. Optional:
+  // absent on older API versions → that card hides (graceful degradation).
+  actual_interactive_cost?: ProjectStatsActualInteractiveCost;
 };
 
 export async function getProjectsStats(opts?: {
@@ -2492,6 +2509,65 @@ export async function getMonthlyUsage(opts?: {
   if (opts?.cycle_day != null) qs.set("cycle_day", String(opts.cycle_day));
   if (opts?.project_id != null) qs.set("project_id", String(opts.project_id));
   return jsonFetch<MonthlyUsageResponse>(buildPath("/api/usage/monthly", qs));
+}
+
+// ============================================================================
+// Kanban #2728 / #2735 — GET /api/usage/sessions (per-session cost aggregate)
+// ============================================================================
+
+// UsageSessionAgentRow — per-(agent, model) spend within one session.
+// agent_name === null is the Lead/main turn; a non-null name is a subagent.
+// cost_usd is a 4-dp decimal string (same Decimal-as-string convention).
+export type UsageSessionAgentRow = {
+  agent_name: string | null;
+  model: string;
+  cost_usd: string; // e.g. "1.2345"
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+  event_count: number;
+};
+
+// UsageSessionRow — one session_ext_id aggregate, with a per-agent breakdown.
+// The BE sorts agents Lead-first then cost desc; preserve that order on render.
+export type UsageSessionRow = {
+  session_ext_id: string;
+  total_cost_usd: string; // 4-dp decimal string; sum across this session's agents
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_hit_ratio: number; // float in [0,1]; render as a percentage
+  event_count: number; // usage_events ledger rows (NOT transcript turns — #2728)
+  first_occurred_at: string; // ISO 8601
+  last_occurred_at: string; // ISO 8601
+  agents: UsageSessionAgentRow[];
+};
+
+// UsageSessionsResponse — response for GET /api/usage/sessions.
+// Sessions most-recent first (by last_occurred_at). `returned` === sessions.length;
+// when returned === the requested limit, more pages may exist (drives Load more).
+export type UsageSessionsResponse = {
+  sessions: UsageSessionRow[];
+  limit: number;
+  offset: number;
+  returned: number;
+  total_cost_usd: string; // 4-dp decimal string; sum across returned sessions
+};
+
+// listUsageSessions — GET /api/usage/sessions?project_id=P&limit=N&offset=O.
+// No X-Project-Id header — operator-level endpoint (mirrors getMonthlyUsage).
+export async function listUsageSessions(opts?: {
+  projectId?: number;
+  limit?: number;
+  offset?: number;
+}): Promise<UsageSessionsResponse> {
+  const qs = new URLSearchParams();
+  if (opts?.projectId != null) qs.set("project_id", String(opts.projectId));
+  if (opts?.limit != null) qs.set("limit", String(opts.limit));
+  if (opts?.offset != null) qs.set("offset", String(opts.offset));
+  return jsonFetch<UsageSessionsResponse>(buildPath("/api/usage/sessions", qs));
 }
 
 // ============================================================================

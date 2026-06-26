@@ -43,6 +43,7 @@ from src.models.project import Project
 from src.models.session import Session as SessionModel
 from src.models.session import SessionRun
 from src.models.task import Task
+from src.models.usage_event import UsageEvent
 from src.schemas.project import (
     KillProjectRequest,
     KillProjectResponse,
@@ -51,6 +52,7 @@ from src.schemas.project import (
     ProjectCreate,
     ProjectGrantConsent,
     ProjectRead,
+    ProjectStatsActualInteractiveCost,
     ProjectStatsCostUsage,
     ProjectStatsEntry,
     ProjectStatsEstimatedCost,
@@ -181,18 +183,20 @@ async def list_projects_stats(
     process_status — it tells the user how their project's work is
     distributed across execution modes, not which tasks are still alive.
 
-    Query strategy (four-query stitch): one SELECT for the project list,
+    Query strategy (five-query stitch): one SELECT for the project list,
     one SELECT against `tasks` GROUP BY (project_id, process_status, run_mode)
     with `MAX(updated_at)` aggregate, one SELECT against `session_runs`
     JOIN `sessions` GROUP BY project_id summing cost/token totals (Kanban
-    #871), and one SELECT against `tasks` GROUP BY project_id summing
+    #871), one SELECT against `tasks` GROUP BY project_id summing
     `estimated_cost_usd / estimated_input_tokens / estimated_output_tokens`
-    (G1 — non-cancelled tasks with non-null estimated_cost_usd). Soft-deleted
+    (G1 — non-cancelled tasks with non-null estimated_cost_usd), and one
+    SELECT against `usage_events` GROUP BY project_id summing real interactive
+    cost/token totals (#2735 — Mode A hook-capture ledger). Soft-deleted
     tasks (`status=0`) and soft-deleted projects excluded at SQL;
-    `session_runs` / `sessions` carry no soft-delete column (per
-    db-schema.md: NO audit trigger on those tables) so no filter is needed
-    on the cost join. Python loop stitches the buckets onto the project
-    rows. No N+1: exactly four queries regardless of project count.
+    `session_runs` / `sessions` / `usage_events` carry no soft-delete column
+    (per db-schema.md: NO audit trigger on those tables) so no filter is needed
+    on the cost joins. Python loop stitches the buckets onto the project
+    rows. No N+1: exactly five queries regardless of project count.
     """
     # Query 1 — project list in canonical order.
     projects_stmt = (
@@ -290,7 +294,36 @@ async def list_projects_stats(
         est_cost_stmt = est_cost_stmt.where(Task.project_id == project_id)
     est_cost_rows = (await session.execute(est_cost_stmt)).all()
 
-    # Stitch: per-project all-zero buckets; fold agg_rows + cost_rows + est_cost_rows
+    # Query 5 (#2735) — per-project real interactive cost aggregate from usage_events.
+    # usage_events is append-only with NO soft-delete column; the Project JOIN scopes to
+    # active projects only. Rows with project_id IS NULL drop out of the inner join
+    # (correct — unattributable events are not per-project). Direct project_id filter
+    # (no session hop needed — unlike session_runs).
+    # shortcut: SUM over usage_events GROUP BY project_id, ix_usage_events_project_id
+    # index exists (model __table_args__) — hash-agg on the index, fine at any scale;
+    # upgrade: no action needed (already indexed).
+    actual_cost_stmt = (
+        select(
+            UsageEvent.project_id,
+            func.coalesce(func.sum(UsageEvent.cost_usd), 0).label("sum_cost_usd"),
+            func.coalesce(func.sum(UsageEvent.input_tokens), 0).label(
+                "sum_input_tokens"
+            ),
+            func.coalesce(func.sum(UsageEvent.output_tokens), 0).label(
+                "sum_output_tokens"
+            ),
+        )
+        .join(Project, Project.id == UsageEvent.project_id)
+        .where(Project.status == RecordStatus.ACTIVE)
+        .group_by(UsageEvent.project_id)
+    )
+    if project_id is not None:
+        actual_cost_stmt = actual_cost_stmt.where(
+            UsageEvent.project_id == project_id
+        )
+    actual_cost_rows = (await session.execute(actual_cost_stmt)).all()
+
+    # Stitch: per-project all-zero buckets; fold agg_rows + cost_rows + est_cost_rows + actual_cost_rows
     by_id: dict[int, dict] = {
         p.id: {
             "counts": {str(code): 0 for code in TaskStatus.ALL},
@@ -307,6 +340,12 @@ async def list_projects_stats(
             },
             # G1 — zero-filled default; mirrors cost_usage "always-emit-all-keys" contract
             "estimated_cost": {
+                "total_cost_usd": Decimal("0"),
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
+            },
+            # #2735 — zero-filled default; mirrors estimated_cost "always-emit-all-keys" contract
+            "actual_interactive_cost": {
                 "total_cost_usd": Decimal("0"),
                 "total_input_tokens": 0,
                 "total_output_tokens": 0,
@@ -377,6 +416,21 @@ async def list_projects_stats(
         ec["total_input_tokens"] = int(sum_estimated_input_tokens)
         ec["total_output_tokens"] = int(sum_estimated_output_tokens)
 
+    # Fold the #2735 actual interactive cost aggregate (paranoia-tier skip mirrors est_cost fold above).
+    for (
+        project_id,
+        sum_cost_usd,
+        sum_input_tokens,
+        sum_output_tokens,
+    ) in actual_cost_rows:
+        bucket = by_id.get(project_id)
+        if bucket is None:
+            continue
+        ac = bucket["actual_interactive_cost"]
+        ac["total_cost_usd"] = sum_cost_usd
+        ac["total_input_tokens"] = int(sum_input_tokens)
+        ac["total_output_tokens"] = int(sum_output_tokens)
+
     return [
         ProjectStatsEntry(
             id=p.id,
@@ -389,6 +443,9 @@ async def list_projects_stats(
             last_activity_at=by_id[p.id]["last_activity_at"],
             cost_usage=ProjectStatsCostUsage(**by_id[p.id]["cost_usage"]),
             estimated_cost=ProjectStatsEstimatedCost(**by_id[p.id]["estimated_cost"]),
+            actual_interactive_cost=ProjectStatsActualInteractiveCost(
+                **by_id[p.id]["actual_interactive_cost"]
+            ),
         )
         for p in projects
     ]
