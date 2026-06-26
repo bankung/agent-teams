@@ -125,7 +125,18 @@ def _make_graph_module(
         async def _default_aget_state(config):
             return SimpleNamespace(created_at="2026-05-17T00:00:00Z")
         aget_state_impl = _default_aget_state
-    stub_graph = SimpleNamespace(ainvoke=ainvoke_impl, aget_state=aget_state_impl)
+
+    # #2664 — the default aget_state above reports created_at SET, so
+    # has_checkpoint -> True and the fresh-pickup clear in _poll_once fires;
+    # checkpointer.adelete_thread must exist (no-op stub) or it AttributeErrors.
+    async def _adelete_thread(thread_id):
+        return None
+
+    stub_graph = SimpleNamespace(
+        ainvoke=ainvoke_impl,
+        aget_state=aget_state_impl,
+        checkpointer=SimpleNamespace(adelete_thread=_adelete_thread),
+    )
     return SimpleNamespace(graph=stub_graph)
 
 

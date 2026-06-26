@@ -86,7 +86,22 @@ def _body(req: httpx.Request) -> dict[str, Any]:
 
 
 def _make_graph_module(ainvoke_impl) -> SimpleNamespace:
-    return SimpleNamespace(graph=SimpleNamespace(ainvoke=ainvoke_impl))
+    # #2664 — aget_state(created_at=None) => has_checkpoint False => the
+    # fresh-pickup clear in _poll_once is SKIPPED (prior behavior preserved);
+    # checkpointer.adelete_thread is a no-op stub for completeness.
+    async def _aget_state(config):
+        return SimpleNamespace(created_at=None)
+
+    async def _adelete_thread(thread_id):
+        return None
+
+    return SimpleNamespace(
+        graph=SimpleNamespace(
+            ainvoke=ainvoke_impl,
+            aget_state=_aget_state,
+            checkpointer=SimpleNamespace(adelete_thread=_adelete_thread),
+        )
+    )
 
 
 _CLEAN_TASK = {

@@ -475,7 +475,20 @@ async def test_multiboard_poll_injects_project_id_into_state(
             "intermediate_results": {},
         }
 
-    graph_stub = SimpleNamespace(ainvoke=fake_ainvoke)
+    # #2664 — aget_state(created_at=None) => has_checkpoint False => the
+    # fresh-pickup clear in _poll_once is SKIPPED (this test asserts the
+    # initial_state project_id, not the clear); checkpointer stub for completeness.
+    async def _aget_state(config):
+        return SimpleNamespace(created_at=None)
+
+    async def _adelete_thread(thread_id):
+        return None
+
+    graph_stub = SimpleNamespace(
+        ainvoke=fake_ainvoke,
+        aget_state=_aget_state,
+        checkpointer=SimpleNamespace(adelete_thread=_adelete_thread),
+    )
     graph_module = SimpleNamespace(graph=graph_stub)
 
     def handler(req: httpx.Request) -> httpx.Response:
