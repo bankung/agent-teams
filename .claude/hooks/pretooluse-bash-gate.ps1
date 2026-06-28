@@ -299,7 +299,7 @@ and emits a warning marker for audit.
 
 # ---------------------------------------------------------------------------
 # BIND-BOOTSTRAP ALLOW (#2706) — narrow early-allow for the two READ-ONLY commands
-# /tn-bind MUST run BEFORE a per-session binding can exist. Get-ProjectId (below)
+# /zb-bind MUST run BEFORE a per-session binding can exist. Get-ProjectId (below)
 # reads _runtime/lead_project_id_<sid>.txt, but that file is written only AFTER the
 # bind resolves the project + reads the session id — so during the bind itself
 # Get-ProjectId returns $null, the gate falls through to ASK, and EVERY fresh
@@ -371,8 +371,8 @@ if ($cmd) {
 }
 
 # ---------------------------------------------------------------------------
-# BIND-BINDING-WRITE ALLOW (#2711) — the ONE mutation /tn-bind performs.
-# /tn-bind writes the resolved project id (a bare integer) to the per-session
+# BIND-BINDING-WRITE ALLOW (#2711) — the ONE mutation /zb-bind performs.
+# /zb-bind writes the resolved project id (a bare integer) to the per-session
 # binding marker _runtime/lead_project_id_<sid>.txt AND the global
 # _runtime/lead_project_id.txt. Those writes happen DURING the bind, before any
 # per-session binding exists, so Get-ProjectId (below) is still $null and the gate

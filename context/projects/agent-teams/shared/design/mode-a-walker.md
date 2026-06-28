@@ -25,7 +25,7 @@ automation is in task *selection + sequencing*, never in bypassing a gate.
 
 Built as a **Lead skill / prompt-pattern** layered over existing primitives, NOT a persisted backend
 entity:
-- the `next-autorun` picker (`gate_resume_tasks` + `next_task`) + the `tn-tasks-next` ordering
+- the `next-autorun` picker (`gate_resume_tasks` + `next_task`) + the `zb-tasks-next` ordering
   (milestone → blocker → priority);
 - the existing bootstrap (session → project binding);
 - the existing HITL/gate flow + `resume_context` (the "stuck" path).
@@ -35,7 +35,7 @@ to a first-class persisted entity only **if** profiles must survive/share across
 question). Rationale: minimum-viable for single-project v0.8.0; the loop + boundary are orchestration
 logic, which is the skill's domain — and a subagent cannot author `.claude/**` anyway.
 
-The skill lives at `.claude/skills/zommmbeeean/SKILL.md` — the self-mod gate means the **operator
+The skill lives at `.claude/skills/zb-walker/SKILL.md` — the self-mod gate means the **operator
 installs it with the literal `ii`** (Lead drafts to `_scratch/` first).
 
 ## 3. Two orthogonal innovations (why v0.8.0 = single-project)
@@ -66,7 +66,7 @@ Per iteration:
 1. **Select** — for each project in scope, `GET /api/tasks/next-autorun`. Precedence:
    **`gate_resume_tasks` (resume) BEFORE `next_task` (fresh)** — a resumed task carries its answer in
    `resume_context` and must *continue*, not restart. Across scope + within a project, order by the
-   `tn-tasks-next` policy (milestone → blocker → priority). [v0.8.0: scope = 1 project.]
+   `zb-tasks-next` policy (milestone → blocker → priority). [v0.8.0: scope = 1 project.]
 2. **Execute** — run the FULL normal Lead lifecycle on the picked task: open → `in_progress`,
    research + specialist subagents under the existing permission gates, verify EVERY AC before the
    DONE flip, write `decisions.md` + the activity rail, **commit locally** (reversible; push is gated

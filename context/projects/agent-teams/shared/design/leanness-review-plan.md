@@ -1,7 +1,7 @@
 # Leanness review — measured plan + Phase-0 findings
 
 **Status:** Phase 0 (measure) COMPLETE — 2026-06-26. Review/measurement only; zero code edits.
-**Trigger:** operator noticed `tn-bind` costs ~500 tok → "are we lean elsewhere?" → measure-first review of load / perf / token spend.
+**Trigger:** operator noticed `zb-bind` costs ~500 tok → "are we lean elsewhere?" → measure-first review of load / perf / token spend.
 
 ## Governing rule
 Measure before optimizing. Phase 0 is the gate: only run a downstream phase the data justifies.
@@ -40,7 +40,7 @@ cache_read (49% of cost) is where the cost concentrates, but the trimmable slice
 Tail sessions dominate (db1f24ad: 370 turns = $116 ≈ 2–3× the average).
 
 ## Reframed plan
-- **Phase 1 (trim CLAUDE.md/MEMORY.md/playbook):** real but **~1–3%**. Do it because it's cheap (`tn-memory-compact`), not because it's the win.
+- **Phase 1 (trim CLAUDE.md/MEMORY.md/playbook):** real but **~1–3%**. Do it because it's cheap (`zb-memory-compact`), not because it's the win.
 - **Session hygiene = the real lever (~42% of cost):** compact/clear more often, leaner Lead-side tool outputs, shorter tail sessions. Mostly discipline (CLAUDE.md "Context hygiene" already partial), but **blocked on visibility** — no per-session cost surface exists → see task below.
 - **Runtime perf (API/FE):** clean (audit #2665→#2691 = 1 LOW finding in 5 batches). Don't re-hunt.
 
