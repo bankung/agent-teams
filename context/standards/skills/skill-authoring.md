@@ -1,12 +1,12 @@
 # Skill Authoring Standard
 
-> **Scope:** This document codifies how to write, structure, and evaluate `tn-*` skills and any future
+> **Scope:** This document codifies how to write, structure, and evaluate `zb-*` skills and any future
 > skills in this repo. It is a **Lead/dev authoring reference** — not a per-lane framework standard —
 > so it is NOT automatically wired into `projects.config.standards` (unlike e.g. the design-language
 > standard at `context/standards/web/design-language.md`).
 >
 > **Commit home:** `context/standards/skills/skill-authoring.md` (humans-commit; see §7).
-> Derived from the 18-skill corpus + #2456 pilot (tn-jobs split). Last revised: 2026-06-17.
+> Derived from the 18-skill corpus + #2456 pilot (zb-jobs split). Last revised: 2026-06-17.
 
 ---
 
@@ -17,7 +17,7 @@ Every `SKILL.md` MUST open with a YAML front-matter block between `---` fences. 
 
 ```yaml
 ---
-name: tn-<verb>
+name: zb-<verb>
 description: >-
   <trigger-rich paragraph — see §1.1>
 argument-hint: "<verb syntax shown to the user>"
@@ -44,8 +44,8 @@ Rules:
   `## Usage` section.
 - Never duplicate prose from the body — the description is a trigger hint, not a manual.
 
-Good: `tn-jobs` — lists ~12 natural-language triggers (job search, JobsDB, Michael Page, comp band, etc.).
-Avoid: `tn-release` — description is one long run-on sentence; missing the `Use when …` pattern.
+Good: `zb-jobs` — lists ~12 natural-language triggers (job search, JobsDB, Michael Page, comp band, etc.).
+Avoid: `zb-release` — description is one long run-on sentence; missing the `Use when …` pattern.
 
 ### 1.2 `allowed-tools` — least-privilege
 
@@ -86,10 +86,10 @@ tags      : array of free-form strings, lowercase, hyphen-separated.
 
 | Category | Description | Skills |
 |---|---|---|
-| `kanban` | Kanban task / milestone lifecycle on the agent-teams backend | tn-task, tn-task-create, tn-task-done, tn-task-update, tn-task-attach, tn-tasks-next, tn-milestone-create, tn-milestone-done, tn-milestones, tn-report, tn-spec |
-| `platform` | Cross-cutting platform ops: git, release, bind, audit | tn-git-commit, tn-release, tn-bind, tn-audit |
-| `review` | Quality / adversarial review passes | tn-intense-review |
-| `secretary` | Personal/secretary domain (email, job-search) | tn-email, tn-jobs |
+| `kanban` | Kanban task / milestone lifecycle on the agent-teams backend | zb-task, zb-task-create, zb-task-done, zb-task-update, zb-task-attach, zb-tasks-next, zb-milestone-create, zb-milestone-done, zb-milestones, zb-report, zb-spec |
+| `platform` | Cross-cutting platform ops: git, release, bind, audit | zb-git-commit, zb-release, zb-bind, zb-audit |
+| `review` | Quality / adversarial review passes | zb-intense-review |
+| `secretary` | Personal/secretary domain (email, job-search) | zb-email, zb-jobs |
 
 Four categories cover all 18 skills. Add a new category only when a new skill genuinely doesn't fit —
 do not fragment `kanban` into sub-categories.
@@ -105,9 +105,9 @@ A single `SKILL.md` is the default. Keep it flat when:
 - Total line count ≤ ~150 lines (body only — not counting frontmatter), **OR**
 - The skill has ≤ 3 distinct verbs / procedures.
 
-Most skills in the current corpus fit comfortably in a flat file (tn-bind, tn-task*, tn-milestone*,
-tn-git-commit, etc. — all well under ~150 body lines). The two exceptions are the split targets: the
-(now-split) `tn-jobs` pilot, and `tn-email` (565 lines, **17 verb playbooks** §5a–5q + a large API
+Most skills in the current corpus fit comfortably in a flat file (zb-bind, zb-task*, zb-milestone*,
+zb-git-commit, etc. — all well under ~150 body lines). The two exceptions are the split targets: the
+(now-split) `zb-jobs` pilot, and `zb-email` (565 lines, **17 verb playbooks** §5a–5q + a large API
 matrix) — the fattest skill, queued for the same split in #2459. Both clear the threshold below on
 BOTH axes, so both split. A skill stays flat only when it is genuinely short, OR its length comes
 from a single cohesive reference block rather than many independent verbs (see §2.3) — no skill in
@@ -118,7 +118,7 @@ the current corpus is in that "long-but-correctly-flat" category.
 Split when **both** of the following hold:
 
 1. The flat file exceeds **~150 body lines** (the threshold derived from the #2456 pilot — the
-   pre-split `tn-jobs` was ~300 lines; the thin index landed at 119 lines with no information loss).
+   pre-split `zb-jobs` was ~300 lines; the thin index landed at 119 lines with no information loss).
 2. The excess is due to **≥ 4 verb-level procedures** that each carry their own steps, guards, and
    examples — not due to a single large reference table that must stay collocated.
 
@@ -138,7 +138,7 @@ When splitting, the thin index (`SKILL.md`) keeps:
 Each `references/<verb>.md` contains the verb's own steps, examples, and verb-specific guards.
 A `references/usage.md` provides invocation examples (replaces the Usage section in the thin index).
 
-A **cohesive reference block** — one unit that is read together (e.g. tn-email's §2 API capability
+A **cohesive reference block** — one unit that is read together (e.g. zb-email's §2 API capability
 matrix: endpoints, HTTP codes, tiers) — moves to a SINGLE `references/api-reference.md`, kept whole;
 do NOT fragment it per-endpoint. The split separates *independent verbs* into per-verb files while
 keeping a cohesive reference intact as one file.
@@ -172,13 +172,13 @@ Every `SKILL.md` body MUST contain these sections in order. The heading names ar
 ## Related skills  (links to compose-boundary partner(s) and adjacent skills)
 ```
 
-Sections `## 0` and `## 1` are convention-named from the tn-jobs pattern; their actual heading text
+Sections `## 0` and `## 1` are convention-named from the zb-jobs pattern; their actual heading text
 can differ as long as they appear first and are clearly marked MANDATORY / NON-NEGOTIABLE.
 
 ### Compose boundary (§0) — mandatory for orchestration skills
 
 When a skill delegates a specific mechanics layer to another skill, state the boundary in §0 and
-mark it MANDATORY. The pattern from tn-jobs: "tn-jobs owns job LOGIC. tn-email owns email MECHANICS."
+mark it MANDATORY. The pattern from zb-jobs: "zb-jobs owns job LOGIC. zb-email owns email MECHANICS."
 
 Rules:
 - Logic-owner: classifies, deduplicates, decides, writes results. Calls the mechanics-owner.
@@ -282,9 +282,9 @@ do not block a skill that passes E1–E5.
 
 ---
 
-## 6. Worked Example — tn-jobs (the #2456 Pilot)
+## 6. Worked Example — zb-jobs (the #2456 Pilot)
 
-`tn-jobs` is the canonical reference for the full layout + compose-boundary + metadata pattern.
+`zb-jobs` is the canonical reference for the full layout + compose-boundary + metadata pattern.
 
 ### 6.1 Before (#2456 pilot input)
 
@@ -295,7 +295,7 @@ do not block a skill that passes E1–E5.
 ### 6.2 After (#2456 pilot result)
 
 ```
-.claude/skills/tn-jobs/
+.claude/skills/zb-jobs/
   SKILL.md           — 119 lines (thin index)
   references/
     mine-alerts.md
@@ -316,7 +316,7 @@ Thin index keeps: frontmatter + metadata, §0 compose boundary (MANDATORY), §1 
 
 ```yaml
 ---
-name: tn-jobs
+name: zb-jobs
 description: >-
   Job-search operations playbook — mine alert emails, sweep application responses,
   reconcile against the tracker, deep-dive a company/role, check live posting status,
