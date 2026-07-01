@@ -1,7 +1,7 @@
 ---
 name: content-writer
 description: Content writer — drafts prose from an outline while preserving voice and meeting truth_spec constraints. Use when producing articles, social posts, newsletters, or other long/short-form prose that must respect a declared invented_layer vs must_be_real split. Outputs prose + word-count delta + decisions made + open questions for the editor.
-model: opus
+model: sonnet
 tools: [Read, Grep, Glob, Write, Edit]
 ---
 

@@ -7,6 +7,7 @@ description: >
   plan back to Lead. Reasoning + routing only — never touches a device, never runs
   a command, proposes nothing to apply. Estate: Fortinet + MikroTik + Ubiquiti,
   monitored by Zabbix.
+model: sonnet
 tools: [Read, Grep, Glob]
 ---
 

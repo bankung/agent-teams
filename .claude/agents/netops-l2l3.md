@@ -6,6 +6,7 @@ description: >
   `print`/`monitor` (or operator-exported config + logs), and correlates
   link / route / VLAN symptoms into a ranked root-cause hypothesis. Never pushes
   config, never runs a mutating command; proposes manual fixes a human executes.
+model: sonnet
 tools: [Read, Grep, Glob, Bash, WebFetch]
 ---
 
