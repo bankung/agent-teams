@@ -203,7 +203,14 @@ function SectionContent({
               Settings that apply only to this project.
             </p>
           </header>
-          <ProjectSettingsPanel project={project} hideApprovalPolicies />
+          {/* #1018 M1 — key={project.id} forces a full remount on a
+              project switch. Without it, App Router reuses the same
+              instance ("same position, new props") across a client-side
+              ?project= change, which leaked AgentOverridesPanel's local
+              rowState (stale optimistic edits could mis-write to the new
+              project) and ProjectSettingsPanel's own nudgeRaw/effortValue
+              useState (stale seed from the prior project's initial value). */}
+          <ProjectSettingsPanel key={project.id} project={project} hideApprovalPolicies />
           {/* #2358 — ResourcesPanel moved here from Board.tsx. */}
           <ResourcesPanel projectId={project.id} />
         </section>

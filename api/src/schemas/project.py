@@ -1123,6 +1123,95 @@ class ProgressStatsResponse(BaseModel):
         )
 
 
+# ---------------------------------------------------------------------------
+# Kanban #1018 (2026-07-01) — per-project agent enable/disable + notes.
+#
+# ADDITIVE to the #777 agent_overrides tier-map — that JSONB column keeps its
+# exact shape/validators/spawn-precedence untouched (see api/src/models/task.py:248
+# comment for the precedence convention this must not disturb). The new
+# enabled/notes state lives in a NEW subkey of `projects.config`:
+#
+#     config.agent_settings: {"<agent-name>": {"enabled": bool, "notes": str|null}}
+#
+# Absent agent OR absent subkey = enabled (backfill default) — mirrors the
+# `enabled_roles` "key-absent = unrestricted" convention above. No migration:
+# `config` is already JSONB with a documented subkey precedent
+# (`enabled_roles`, `tool_grants`).
+#
+# GET/PATCH /api/projects/{id}/agent-overrides assemble a UNIFIED view by
+# unioning agent names present in `agent_overrides` (tier) and
+# `config.agent_settings` (enabled/notes) — see routers/projects.py.
+# ---------------------------------------------------------------------------
+
+
+class AgentOverrideItem(BaseModel):
+    """One row of the assembled GET/PATCH `agent-overrides` response.
+
+    `name` is always present (the union key). `model_override` mirrors
+    `AgentModelLiteral | None` (from `agent_overrides`, the #777 tier map —
+    untouched by this feature). `enabled` defaults `true` when the agent has
+    no `config.agent_settings` entry (backfill default). `notes` is free text,
+    `None` when unset.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    enabled: bool = True
+    model_override: AgentModelLiteral | None = None
+    notes: str | None = None
+
+
+class AgentOverridesRead(BaseModel):
+    """Response for GET/PATCH /api/projects/{id}/agent-overrides.
+
+    `agents` — sorted-by-name array; an agent with NO override at all (absent
+    from both `agent_overrides` and `config.agent_settings`) is simply ABSENT
+    from this array (the FE overlays it onto the full gallery list from
+    GET /api/agents at 'enabled' default).
+
+    `lead_overrides` — reserved key, always `{}` for now. Implementing it is
+    Kanban #1024 scope — deliberately NOT built here.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    agents: list[AgentOverrideItem]
+    lead_overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentOverridePatchItem(BaseModel):
+    """One upsert entry in the PATCH /api/projects/{id}/agent-overrides body.
+
+    `name` is REQUIRED — every other field is OPTIONAL and independently
+    omittable for true partial-upsert semantics (see router for the exact
+    per-field apply rules): omitted = leave unchanged; `model_override`
+    present-and-null = clear the #777 tier override; `enabled`/`notes`
+    present = set in `config.agent_settings`.
+
+    Name-existence (must be a real installed agent) and `model_override`
+    enum validation happen in the ROUTER, not here — the router reuses the
+    same `list_agents()` service that backs `GET /api/agents` (no
+    re-implementation / no hardcoded name list), so this schema only pins
+    the wire SHAPE.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., min_length=1, max_length=64)
+    enabled: bool | None = None
+    model_override: AgentModelLiteral | None = None
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class AgentOverridesPatch(BaseModel):
+    """Request body for PATCH /api/projects/{id}/agent-overrides."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agents: list[AgentOverridePatchItem] = Field(..., min_length=1, max_length=200)
+
+
 class ProjectGrantConsent(BaseModel):
     """Request body for POST /api/projects/{id}/grant-consent.
 

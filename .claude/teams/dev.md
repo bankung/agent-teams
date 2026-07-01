@@ -116,6 +116,15 @@ The active project may carry `config.enabled_roles: int[]` — a whitelist of ro
 
 **Lead enforcement at spawn time:** before calling `Agent({subagent_type: "<role>", ...})`, resolve `subagent_type` to its TaskRole code and check it against `project.config.enabled_roles`. If not allowed, halt and tell operator to add it to config if desired.
 
+### Per-project agent toggle (Kanban #1018, 2026-07-01)
+
+Finer-grained sibling of the role gate. The active project may carry `config.agent_settings: {"<agent-name>": {"enabled": bool, "notes": str|null}}` — managed via `GET/PATCH /api/projects/{id}/agent-overrides` and the settings "Agents" tab. This is ADDITIVE to the `agent_overrides` tier map (#777, untouched). Semantics:
+
+- Agent absent from `agent_settings` OR `enabled` absent → **enabled** (backfill default; no behavior change for existing projects).
+- `enabled: false` → Lead must NOT spawn that agent for this project.
+
+**Lead enforcement at spawn time:** before `Agent({subagent_type: "<name>", ...})`, check `project.config.agent_settings[<name>].enabled`. If explicitly `false`, do not spawn — pick an enabled alternative or halt and tell the operator. This gate is finer than `enabled_roles` (agent NAME vs TaskRole code); **both apply** (an agent must pass the role gate AND not be disabled). Like `enabled_roles`, this is currently **Lead-discipline**; runtime hook/langgraph enforcement is a tracked follow-up.
+
 ## Subagent model logging (Kanban #887, 2026-05-13)
 
 Dev team tracks subagent tier in `tasks.subagent_models`. Every state-transition PATCH **must include the full accumulated list** (REPLACE semantics — Lead appends on its side), bundled with `process_status` / `completed_at` / `acceptance_criteria` / etc. in the same PATCH body.

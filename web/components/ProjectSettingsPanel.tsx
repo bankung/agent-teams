@@ -5,6 +5,9 @@
 // Per-project operator preferences. Mounted on /p/[name]/settings/. v1
 // surfaces one control: HITL nudge threshold (`hitl_nudge_threshold_hours`).
 // Kanban #2300 (2026-06-11) adds a second: thinking effort (`effort_mode`).
+// Kanban #1018 (2026-07-01) adds a third: per-agent enable/disable + model
+// tier + notes, delegated to <AgentOverridesPanel> (its own fetch/PATCH
+// surface against /api/projects/{id}/agent-overrides).
 // Future per-project settings drop in as sibling <section>s.
 //
 // State posture: form holds a local string for the input (so the operator
@@ -24,6 +27,7 @@ import {
   type ProjectUpdateBody,
 } from "@/lib/api";
 import { extractErrorMessage } from "@/lib/errors";
+import { AgentOverridesPanel } from "./AgentOverridesPanel";
 import { ApprovalPoliciesEditor } from "./ApprovalPoliciesEditor";
 
 // Effort mode select options. null encodes "use global default (= off)".
@@ -316,6 +320,14 @@ export function ProjectSettingsPanel({ project, hideApprovalPolicies = false }: 
         </div>
       </form>
     </section>
+
+    {/* Kanban #1018 — per-project agent enable/disable + model tier + notes.
+        key={project.id} is redundant once the parent mount is keyed (#1018
+        M1 — the whole ProjectSettingsPanel instance remounts on a project
+        switch), but is kept as defense-in-depth so this panel is safe to
+        reuse standalone, and so it can be exercised directly with an RTL
+        rerender-with-new-key in AgentOverridesPanel.test.tsx (N2). */}
+    <AgentOverridesPanel key={project.id} projectId={project.id} />
     </div>
   );
 }

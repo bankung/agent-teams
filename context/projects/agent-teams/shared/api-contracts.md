@@ -556,6 +556,16 @@ Complementary to (not replacing) `langgraph/tools/permission_gate` (tier-based, 
 
 **Route-order invariant:** FastAPI matches in REGISTRATION ORDER — the validation router's static `/agents/validate` registers before this router's `/{name}` in `main.py` (load-bearing); `RESERVED_AGENT_NAMES = {"validate"}` backstops it (reserved name → validator ERROR diagnostic + gallery-detail 404).
 
+### GET/PATCH /api/projects/{id}/agent-overrides (Kanban #1018, 2026-07-01)
+
+**Purpose:** per-project agent enable/disable + notes, **additive** alongside the #777 `agent_overrides` model-tier map (that column's shape / validators / spawn-precedence at `task.py:248` are UNTOUCHED). Enabled/notes live in a NEW `config.agent_settings` subkey (`{"<agent>": {"enabled": bool, "notes": str|null}}`); no migration (parity with the `enabled_roles` config-subkey precedent). Consumed by the project-settings "Agents" surface (#1018 FE), which overlays this onto the full roster from `GET /api/agents`.
+
+**Headers:** `X-Project-Id` required on both. Gate order: 400 missing header → 404 unknown/soft-deleted project → 400 header/path mismatch.
+
+**GET 200:** `{"agents": [{"name", "enabled", "model_override": haiku|sonnet|opus|null, "notes": str|null}], "lead_overrides": {}}` — sorted by name; an agent with NO override at all (absent from BOTH `agent_overrides` and `config.agent_settings`) is ABSENT from the array (FE defaults it to enabled). `lead_overrides` is a reserved key, always `{}` (#1024 scope).
+
+**PATCH 200:** body `{"agents": [{"name" REQUIRED, "enabled"?, "model_override"?, "notes"?}]}` (1..200 items) — per-agent partial UPSERT: each field independently omittable (omitted = leave unchanged); `model_override: null` clears the #777 tier; `enabled`/`notes` write to `config.agent_settings`. Both JSONB blobs read-modify-written in ONE commit (other agents' entries + other `config` keys preserved). Returns the same assembled shape (post-write). **422:** unknown agent name (validated against the live `.claude/agents` scan behind `GET /api/agents` — no hardcoded list), bad `model_override` enum, or bad body shape. Live-verified 2026-07-01 (happy round-trip + `config.standards` preservation + 4 negatives).
+
 ### Async-HITL gates (`task_gates`) — Kanban #2564 (applied 2026-06-24, migration `0072_task_gates`)
 
 The async-HITL gate foundation (`design/async-hitl-gates.md` §4 + §7) — the "stuck"/HITL path of the Mode-A continuous runner. A gate is a sub-event of a work-task (an async HITL ask), NOT a board task. Three endpoints; all require the `X-Project-Id` header. Coexists with the legacy `/api/tasks/{id}/decide` flow — `blocked_by` semantics unchanged.

@@ -2731,6 +2731,62 @@ export async function getAgentDetail(name: string): Promise<AgentDetail> {
 }
 
 // ============================================================================
+// Kanban #1018 — per-project agent overrides (enable/disable + model tier +
+// notes). X-Project-Id scoped, unlike the roster reads above. Only agents WITH
+// an override appear in the response array; any roster agent absent from it is
+// implicitly enabled with no tier override (the FE merges roster + overrides —
+// see AgentOverridesPanel).
+export type AgentOverride = {
+  name: string;
+  enabled: boolean;
+  model_override: AgentModelTier | null;
+  notes: string | null;
+};
+
+// lead_overrides is reserved for #1024 (not read/written here — v1 scope is
+// per-agent only).
+export type AgentOverridesResponse = {
+  agents: AgentOverride[];
+  lead_overrides: Record<string, unknown>;
+};
+
+// Partial per-agent upsert body — `name` is the only required field; any
+// omitted field is left unchanged server-side. `model_override: null` clears
+// the tier back to "Default".
+export type AgentOverridePatch = {
+  name: string;
+  enabled?: boolean;
+  model_override?: AgentModelTier | null;
+  notes?: string | null;
+};
+
+export async function getAgentOverrides(
+  projectId: number,
+): Promise<AgentOverridesResponse> {
+  return jsonFetch<AgentOverridesResponse>(
+    `/api/projects/${projectId}/agent-overrides`,
+    { headers: { "X-Project-Id": String(projectId) } },
+  );
+}
+
+export async function patchAgentOverrides(
+  projectId: number,
+  agents: AgentOverridePatch[],
+): Promise<AgentOverridesResponse> {
+  return jsonFetch<AgentOverridesResponse>(
+    `/api/projects/${projectId}/agent-overrides`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Project-Id": String(projectId),
+      },
+      body: JSON.stringify({ agents }),
+    },
+  );
+}
+
+// ============================================================================
 // Kanban #2481 — gated agent WRITE endpoints (create + edit). Platform-level
 // (NO X-Project-Id; mirrors the gallery reads). Both write paths are guarded
 // server-side by the operator-proof header (X-Operator-Token = the operator's

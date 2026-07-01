@@ -21,7 +21,10 @@ import shutil
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
+import anyio
+import anyio.to_thread
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi import status as http_status
 from sqlalchemy import Integer, select
@@ -45,6 +48,10 @@ from src.models.session import SessionRun
 from src.models.task import Task
 from src.models.usage_event import UsageEvent
 from src.schemas.project import (
+    AgentModelLiteral,
+    AgentOverrideItem,
+    AgentOverridesPatch,
+    AgentOverridesRead,
     KillProjectRequest,
     KillProjectResponse,
     PauseProjectRequest,
@@ -63,6 +70,7 @@ from src.schemas.project import (
     ReviveProjectResponse,
     UnpauseProjectRequest,
 )
+from src.services.agent_validation import default_agents_dir, list_agents
 from src.services.budget_gate import reconcile_budget
 from src.services.kill_switch import kill_project, revive_project
 from src.services.operator_auth import OperatorDecision, require_operator_proof
@@ -609,6 +617,180 @@ async def get_project_progress_stats(
         velocity=velocity,
         generated_at=now,
     )
+
+
+# ---------------------------------------------------------------------------
+# Kanban #1018 (2026-07-01) — per-project agent enable/disable + notes.
+#
+# ADDITIVE alongside #777 `agent_overrides` (tier map) — that column's shape,
+# validators, and spawn-precedence convention (task.py:248 comment) are
+# UNTOUCHED by this feature. See the schema module docstring above
+# `AgentOverrideItem` for the full design.
+# ---------------------------------------------------------------------------
+
+
+def _assemble_agent_overrides(project: Project) -> AgentOverridesRead:
+    """Union `agent_overrides` (tier) + `config.agent_settings` (enabled/notes).
+
+    Pure function of the two JSONB blobs already on the ORM instance — no I/O.
+    Sorted by name asc. An agent absent from BOTH sources never enters the
+    union (per contract: "no override at all = absent from the array").
+
+    Kanban #1018 M2 (code review): `agent_overrides` (the #777 tier map) is
+    value-tolerant storage — NO DB CHECK on its values, and the write-path
+    Literal gate can tighten/drift over time (legacy rows, hand edits, direct
+    migrations). A tier string outside the CURRENT `AgentModelLiteral` enum
+    would otherwise raise a Pydantic ValidationError when constructing
+    `AgentOverrideItem` below — a 500 on a READ endpoint. Normalize any
+    out-of-enum value to None here, mirroring this file's existing
+    "value-tolerant on read, strict on write" convention (see
+    `ProjectRead.tools_config` / `ProjectRead.approval_policies`). The WRITE
+    path (`AgentOverridePatchItem.model_override: AgentModelLiteral | None`)
+    is untouched — still strict, 422 on a bad tier at the boundary.
+    """
+    tiers: dict[str, str] = project.agent_overrides or {}
+    settings: dict[str, Any] = (project.config or {}).get("agent_settings") or {}
+    valid_tiers = set(AgentModelLiteral.__args__)  # {"haiku", "sonnet", "opus"}
+
+    names = sorted(set(tiers) | set(settings))
+    agents = []
+    for name in names:
+        entry = settings.get(name) or {}
+        raw_tier = tiers.get(name)
+        agents.append(
+            AgentOverrideItem(
+                name=name,
+                enabled=entry.get("enabled", True),
+                model_override=raw_tier if raw_tier in valid_tiers else None,
+                notes=entry.get("notes"),
+            )
+        )
+    return AgentOverridesRead(agents=agents, lead_overrides={})
+
+
+@router.get("/{project_id}/agent-overrides", response_model=AgentOverridesRead)
+async def get_project_agent_overrides(
+    project_id: int,
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+) -> AgentOverridesRead:
+    """Unified per-agent override view: enable/disable + notes + model tier (Kanban #1018).
+
+    Gate order mirrors the sibling `/progress-stats` / `/pl` endpoints:
+    400 missing X-Project-Id header -> 404 unknown/soft-deleted project ->
+    400 header/path project_id mismatch.
+
+    Assembled by unioning agent names present in `agent_overrides` (the #777
+    tier map, untouched) and `config.agent_settings` (enabled/notes, this
+    feature's new subkey). An agent with no override at all is simply absent
+    from `agents` — the FE overlays this onto the full gallery list from
+    GET /api/agents. `lead_overrides` is a reserved key (Kanban #1024 scope),
+    always `{}` here.
+    """
+    # 404 first (unknown/soft-deleted project is invisible regardless of header
+    # match) — mirrors get_or_404's ordering; the project must exist before we
+    # can even ask whether it matches the session header.
+    project = await get_active_project_or_404(
+        session, project_id, detail=f"Project id={project_id} not found"
+    )
+    # 400 cross-project mismatch — parity with /progress-stats.
+    if project_id != session_project_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"X-Project-Id header {session_project_id} does not match "
+                f"path project_id {project_id}"
+            ),
+        )
+    return _assemble_agent_overrides(project)
+
+
+@router.patch("/{project_id}/agent-overrides", response_model=AgentOverridesRead)
+async def patch_project_agent_overrides(
+    project_id: int,
+    payload: AgentOverridesPatch,
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+) -> AgentOverridesRead:
+    """Per-agent UPSERT (merge, not whole-dict replace) of enable/notes/tier (Kanban #1018).
+
+    Same gate order as the GET sibling. For each entry: `name` MUST be a real
+    installed agent — validated by calling the SAME `list_agents()` service
+    that backs GET /api/agents (no re-implementation / no hardcoded name
+    list); an unknown name -> 422 naming the offending value.
+    `model_override`'s enum is enforced by `AgentModelLiteral` at the Pydantic
+    boundary (422 before this handler runs).
+
+    Apply semantics per entry (true partial upsert):
+      - model_override present & non-null -> set agent_overrides[name]
+      - model_override present & null     -> clear agent_overrides[name]
+      - model_override omitted            -> leave agent_overrides[name] unchanged
+      - enabled / notes present           -> set config.agent_settings[name].{field}
+      - enabled / notes omitted           -> leave that field unchanged
+
+    Both JSONB blobs are read-modify-written in ONE commit; other agents'
+    entries and other `config` keys (`standards`, `enabled_roles`, ...) are
+    never dropped.
+    """
+    project = await get_active_project_or_404(
+        session, project_id, detail=f"Project id={project_id} not found"
+    )
+    if project_id != session_project_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"X-Project-Id header {session_project_id} does not match "
+                f"path project_id {project_id}"
+            ),
+        )
+
+    # Validate every name against the SAME scan that backs GET /api/agents —
+    # reused, not re-implemented (per task brief). One filesystem scan for the
+    # whole batch (not per-entry) since list_agents() is a full-directory read.
+    agents_dir = default_agents_dir(Path(get_settings().repo_root))
+    known_rows = await anyio.to_thread.run_sync(lambda: list_agents(agents_dir))
+    known_names = {row["name"] for row in known_rows}
+    for item in payload.agents:
+        if item.name not in known_names:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown agent {item.name!r}; not found in the agent gallery",
+            )
+
+    # Read-modify-write BOTH blobs from the CURRENT row state (not a stale
+    # copy) so concurrent unrelated PATCHes in the same request don't collide.
+    tiers: dict[str, str] = dict(project.agent_overrides or {})
+    config: dict[str, Any] = dict(project.config or {})
+    settings: dict[str, dict[str, Any]] = dict(config.get("agent_settings") or {})
+
+    for item in payload.agents:
+        # exclude_unset distinguishes "field omitted" from "field explicitly
+        # null" per entry — the wire contract's true-partial-upsert semantics
+        # (mirrors the file's existing PATCH exclude_unset discipline).
+        fields_set = item.model_dump(exclude_unset=True)
+
+        if "model_override" in fields_set:
+            if item.model_override is None:
+                tiers.pop(item.name, None)
+            else:
+                tiers[item.name] = item.model_override
+
+        if "enabled" in fields_set or "notes" in fields_set:
+            entry = dict(settings.get(item.name) or {})
+            if "enabled" in fields_set:
+                entry["enabled"] = item.enabled
+            if "notes" in fields_set:
+                entry["notes"] = item.notes
+            settings[item.name] = entry
+
+    config["agent_settings"] = settings
+    project.agent_overrides = tiers
+    project.config = config
+    project.updated_at = func.now()
+
+    await session.commit()
+    await session.refresh(project)
+    return _assemble_agent_overrides(project)
 
 
 @router.get(
