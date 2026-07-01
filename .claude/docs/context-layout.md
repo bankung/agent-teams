@@ -60,14 +60,14 @@ The CLAUDE.md storage table is the compact version (zone · path · writer · re
 | **Project shared** | `<working_path>/shared/` | Lead | every subagent of project p | one project, every role |
 | **Role state** | `<working_path>/<role>/` | that role only | other roles in project p | one project × one role |
 
-## Path resolution — `projects.working_path`
+## Path resolution — `projects.working_path` (canonical home; decided #1185, closed-as-superseded #941)
 
 The two project-scoped zones (Project shared + Role state) resolve their filesystem path via the `projects.working_path` column:
 
 - **`working_path` is set** (typical for non-agent-teams projects) → `<working_path>/shared/` + `<working_path>/<role>/`. Lives OUTSIDE the agent-teams repo.
 - **`working_path` is null** (agent-teams itself + legacy projects) → fallback `agent-teams/context/projects/<name>/shared|<role>/`.
 
-**Rule:** every NEW non-agent-teams project SHOULD set `working_path` on creation. **Agent prompts** must use the resolved absolute path. When `working_path` changes, both the DB row AND agent prompts must update together.
+**Rule (settled, not in-progress):** every NEW non-agent-teams project MUST set `working_path` on creation. **Agent prompts** must use the resolved absolute path. When `working_path` changes, both the DB row AND agent prompts must update together. The architectural question (context-with-code vs context-with-platform) was decided in favor of per-repo (`working_path`) via #1185; #941 (the audit/decision task) is closed as superseded by #1620 + this resolution — this is the canonical mechanics reference, `.claude/docs/lessons.md` keeps only the incident narrative.
 
 ## Q3 — operator memory dir vs project shared/ (the detail behind CLAUDE.md's Q3)
 

@@ -112,4 +112,4 @@ Universal anti-patterns in root CLAUDE.md and [.claude/docs/lessons.md](.claude/
 
 - **Research-first:** non-trivial SEO tasks open with a researcher spawn (Haiku) before the specialist. "Non-trivial" signals: unfamiliar algorithm-update reference, new SERP feature, new schema type, market the team hasn't worked before, comparison decision.
 - **Firecrawl-first for external fetch:** seo-strategist + technical-seo-specialist default to the `firecrawl` skill for competitor / SERP / live-site fetching. WebFetch is fallback only.
-- **AC at task creation:** every Kanban task carries `acceptance_criteria` in the same POST call.
+- **AC discipline** → see CLAUDE.md + `/zb-task-create` (do not restate here).

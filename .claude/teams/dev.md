@@ -153,16 +153,7 @@ Methodology (flow, severity scales, wrap-up summary template): [`context/teams/d
 
 ## Task creation discipline
 
-When Lead creates a new task via `POST /api/tasks`, `acceptance_criteria` **must be in the same curl call body** — never create-then-patch-later.
-
-Rule: before writing the curl command, draft at least 3 ACs. If the task is too vague to write ACs, the description needs more clarity first.
-
-AC format:
-```json
-"acceptance_criteria": [
-  {"text": "...", "status": "pending", "verified_by": null, "verified_at": null, "notes": null}
-]
-```
+AC discipline → see CLAUDE.md + `/zb-task-create` (do not restate the JSON shape here). Dev-specific: none beyond the universal rule.
 
 ## Dev-specific anti-patterns
 

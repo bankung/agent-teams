@@ -102,7 +102,7 @@ Before returning:
 
 - If a file is large, paste only the relevant section and tell the subagent to read the full file at the path given.
 - Standards must include every framework in the lane — the subagent can't decide which framework applies; Lead has already decided.
-- Parallel spawns: only when independent. Same artifact with an unstable contract → sequential, with the producing role first (e.g., `dev-backend` before `dev-frontend`; `novel-writer` before `novel-editor`).
+- **Parallel-vs-sequential (canonical statement — the one home for this rule; do not re-derive per-playbook):** spawn in parallel only when the artifacts are independent AND the contract between them is already stable. If one subagent's output is the other's input, or the shared artifact's shape (API contract / schema / draft) is still moving, sequence producer-before-consumer instead — e.g. `dev-backend` before `dev-frontend` (API contract), `novel-writer` before `novel-editor` (draft must exist first), `sem-campaign-lead` before the per-platform specialists (budget/ROAS brief must be locked first), `bi-analyst` before `sql-optimizer`/`dashboard-designer` (metric definitions must be locked first).
 
 ## Cross-project task filing
 

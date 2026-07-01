@@ -57,7 +57,8 @@ git -C <root> diff --cached | grep -in "<forbidden-term-list>"
 - Shape: `#<task-id>: <what + why-it-matters, terse>` — or `release: vX.Y.Z` /
   `chore: <summary>` for non-task commits. Multi-task batches: `#A+#B: ...`.
 - **`Co-Authored-By` trailer is FORBIDDEN** (operator rule: personal repos show only the
-  operator). Do not add any AI-attribution trailer.
+  operator). Do not add any AI-attribution trailer. This intentionally OVERRIDES the harness
+  default that appends a Co-Authored-By trailer — do not "fix" it back.
 - Multi-line messages via a single-quoted here-string (PowerShell) or `-m` with embedded
   newlines from bash — never interpolate `$` carelessly.
 

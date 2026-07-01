@@ -159,6 +159,15 @@ _DETAIL_REQUIRES_HUMAN_REVIEW = (
     "PATCH requires_human_review=false explicitly to unblock."
 )
 
+# Kanban #2765 (E1 server-side validation gate): a task cannot land at
+# process_status=5 (DONE) while its resolved acceptance_criteria still
+# carries an unresolved item (status 'pending' or 'failed'). Source-text-
+# locked by test_tasks_ac_done_gate — keep both in sync.
+_DETAIL_AC_NOT_ALL_RESOLVED = (
+    "cannot set process_status=5 (DONE): acceptance_criteria has unresolved "
+    "item(s) — {offenders}. Every criterion must be 'passed' or 'na' first."
+)
+
 # #771 cross-row rejections → 422; parent_task_id legacy → 400 (do not migrate)
 
 # Kanban #771: maximum depth for the PATCH-time blocked_by cycle walk. Pins a
@@ -2528,6 +2537,28 @@ async def update_task(
     assert_is_pending_with_process_status(
         resolved_is_pending, resolved_process_status
     )
+
+    # Kanban #2765 (E1) resolved-final gate: process_status=5 (DONE) requires
+    # every acceptance_criteria item to be resolved ('passed' or 'na'). Uses
+    # the RESOLVED AC array (PATCH-supplied wins, else the stored row's) so a
+    # caller that sends a freshly-verified AC array + process_status=5 in the
+    # SAME body (the zb-task-done paved path) is judged on the NEW array, not
+    # stale stored state. AC empty/None never blocks (nothing to resolve).
+    if resolved_process_status == TaskStatus.DONE:
+        resolved_ac_for_gate = _resolved(updates, task, "acceptance_criteria")
+        if isinstance(resolved_ac_for_gate, list):
+            offenders = [
+                item.get("text", "<no text>")
+                for item in resolved_ac_for_gate
+                if isinstance(item, dict) and item.get("status") in ("pending", "failed")
+            ]
+            if offenders:
+                raise HTTPException(
+                    status_code=422,
+                    detail=_DETAIL_AC_NOT_ALL_RESOLVED.format(
+                        offenders="; ".join(offenders)
+                    ),
+                )
 
     # Kanban #771/#1004/#1868: FK-reference PATCH validation (extracted #2675).
     await _validate_blocked_by_patch(session, task, task_id, updates)

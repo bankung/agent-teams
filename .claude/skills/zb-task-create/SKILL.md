@@ -63,6 +63,9 @@ Read your own draft against these 5 points and fix any miss before Step 3:
 5. **GROUNDED** — are the load-bearing claims (paths, columns, endpoints, library behavior) verified
    against the real code/config, not assumed? Glob/grep/curl the critical ones first.
 
+If this task's own work will edit `.claude/**`, `context/teams/**`, or another project's platform
+files from a session NOT bound to agent-teams → see CLAUDE.md "Cross-project edits" (L30).
+
 This is a Lead-applied soft discipline (NOT a hard hook) — consistent with the project's
 "self-review over hard gates" posture. Apply it, fix the draft, then continue.
 

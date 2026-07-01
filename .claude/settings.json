@@ -248,7 +248,13 @@
       "Write(/context/projects/*/shared/**)",
       "Edit(/context/projects/*/shared/**)",
       "Write(/context/teams/**)",
-      "Edit(/context/teams/**)"
+      "Edit(/context/teams/**)",
+      "Write(/context/standards/**)",
+      "Edit(/context/standards/**)",
+      "Write(/.claude/settings.json)",
+      "Edit(/.claude/settings.json)",
+      "Write(/.claude/hooks/**)",
+      "Edit(/.claude/hooks/**)"
     ],
     "defaultMode": "default",
     "additionalDirectories": [
