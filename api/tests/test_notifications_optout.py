@@ -175,12 +175,11 @@ async def test_optout_endpoint_idempotent(client) -> None:
 
 @pytest.mark.asyncio
 async def test_digest_fire_respects_optout(
-    client, monkeypatch, smtp_success_mock, ntfy_success_mock, smtp_env, ntfy_env
+    client, monkeypatch, smtp_success_mock, smtp_env
 ) -> None:
     """POST /api/digest/fire skips email when project 1 has digest_email_enabled=False.
 
     Positive assertion: ok=False and email_skipped_reason='opted_out_per_project'.
-    Push channel fires independently (push is not gated by this opt-out).
     Negative assertion: ok is not True (email was not sent despite mock SMTP).
     """
     # Set opted-out state directly via PATCH /api/projects/1 config.
@@ -191,13 +190,7 @@ async def test_digest_fire_respects_optout(
     )
 
     try:
-        with (
-            patch("smtplib.SMTP", return_value=smtp_success_mock),
-            patch(
-                "src.services.notify_ntfy.httpx.Client",
-                return_value=ntfy_success_mock,
-            ),
-        ):
+        with patch("smtplib.SMTP", return_value=smtp_success_mock):
             resp = await client.post("/api/digest/fire")
 
         assert resp.status_code == 200, resp.text
@@ -216,9 +209,9 @@ async def test_digest_fire_respects_optout(
             f"Expected SMTP not called when opted out, got call_count={smtp_success_mock.sendmail.call_count}"
         )
 
-        # Push is independent — still fires.
-        assert body["push_ok"] is True, (
-            f"Push should still fire regardless of email opt-out, got push_ok={body['push_ok']!r}"
+        # push_ok is always False (push channel not configured).
+        assert body["push_ok"] is False, (
+            f"Expected push_ok=False, got push_ok={body['push_ok']!r}"
         )
 
     finally:

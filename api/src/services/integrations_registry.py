@@ -154,28 +154,6 @@ INTEGRATIONS_REGISTRY: Final[tuple[IntegrationEntry, ...]] = (
         },
     },
     {
-        "id": "ntfy",
-        "label": "ntfy Push",
-        "category": "notifications",
-        "env_vars": [
-            {"name": "NTFY_TOPIC", "required": True},
-            {"name": "PUSH_ENABLED", "required": False},
-            {"name": "NTFY_ACCESS_TOKEN", "required": False},
-        ],
-        "setup": {
-            "steps": [
-                "Choose a hard-to-guess topic name (anyone who knows it can read "
-                "your notifications on the public ntfy.sh server).",
-                "Add NTFY_TOPIC=<your topic> to .env; set PUSH_ENABLED=true to "
-                "enable sends.",
-                "Optional: set NTFY_ACCESS_TOKEN for a private/self-hosted relay.",
-            ],
-            "links": [
-                {"label": "ntfy.sh", "url": "https://ntfy.sh"},
-            ],
-        },
-    },
-    {
         "id": "email_digest",
         "label": "Email Digest (Gmail SMTP)",
         "category": "notifications",

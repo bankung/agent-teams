@@ -6,7 +6,6 @@
 //   1. InstallPwaNudge (iOS-non-standalone only — top of panel)
 //   2. Master "Enable push notifications" toggle (D7 — explicit opt-in)
 //   3. List of active PushSubscriptionRow rows
-//   4. ntfy.sh fallback URL placeholder (disabled; "future feature")
 //
 // State ownership:
 //   - The list of server-side subscriptions is fetched on mount + after any
@@ -20,7 +19,6 @@
 // AC mapping:
 //   - AC3 (notification click → deep-link) is service-worker-side (sw.js).
 //   - AC6 (iOS install nudge) → InstallPwaNudge child.
-//   - AC7 (ntfy.sh fallback URL field) → bottom of the panel.
 //   - D7 (explicit "Enable push" toggle, no auto-prompt) → master toggle.
 
 import { useCallback, useEffect, useState } from "react";
@@ -259,8 +257,7 @@ export function PushNotificationsPanel() {
           <p className="text-[12px] text-zinc-500 dark:text-zinc-400 leading-5">
             This browser does not support Web Push. On iOS Safari you must
             install agent-teams to the home screen first (see the hint
-            above). Otherwise, use the ntfy.sh fallback below once
-            implemented.
+            above).
           </p>
         ) : null}
         {status === "missing_vapid_key" ? (
@@ -313,34 +310,6 @@ export function PushNotificationsPanel() {
         )}
       </div>
 
-      {/* ntfy.sh fallback — disabled placeholder per Lead D-spec. The BE
-          NotificationKind Literal is `telegram | web_push` only as of slice
-          A; submitting `kind='ntfy'` would 422. Field rendered greyed out
-          with a "future feature" hint so the operator sees the planned
-          fallback without being able to misuse it. */}
-      <div className="flex flex-col gap-1.5 rounded-md border border-dashed border-zinc-300 bg-zinc-50/40 p-3 dark:border-zinc-700 dark:bg-zinc-900/40">
-        <label
-          htmlFor="ntfy-url-field"
-          className="text-sm font-medium text-zinc-500 dark:text-zinc-400"
-        >
-          ntfy.sh fallback URL{" "}
-          <span className="ml-1 rounded bg-zinc-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
-            Coming soon
-          </span>
-        </label>
-        <input
-          id="ntfy-url-field"
-          type="text"
-          disabled
-          placeholder="https://ntfy.sh/your-topic"
-          className="rounded border border-zinc-200 bg-zinc-100 px-2 py-1.5 text-sm text-zinc-400 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-500 disabled:cursor-not-allowed"
-        />
-        <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-5">
-          Future fallback channel for browsers without Web Push support
-          (e.g. Linux Firefox sandboxed, older iOS). Backend adapter ships
-          in a follow-up slice.
-        </p>
-      </div>
     </section>
   );
 }

@@ -5,18 +5,18 @@ as every other mutation route:
   1. Layer-0 (#1799) per-agent-name tool-grant gate — _enforce_tool_grant_or_403
   2. Tier gate   (#1859) operator-proof tier gate    — _enforce_operator_tier_or_403
      EXCEPT external-send, which escalates via _escalate_external_send_or_202
-     (out-of-band ntfy push + 202 HALT unless the operator-proof is present).
+     (202 HALT unless the operator-proof is present).
 
 Tier model under test:
   reply / forward    -> EmailTier.REPLY          (PROOF — 403 if absent + ACTIVE)
   send-internal      -> EmailTier.SEND_INTERNAL  (PROOF)
-  external-send      -> EmailTier.EXTERNAL_SEND  (PUSH + 202 HALT unless proven)
+  external-send      -> EmailTier.EXTERNAL_SEND  (202 HALT unless proven)
 
 What these tests lock:
   - AC[0]/AC[3]: tier-gate enforcement — gate ACTIVE + no token -> 403 (NEGATIVE
     lock: upstream send NEVER called); gate ACTIVE + valid token -> 200 (POSITIVE:
     upstream send really fires); gate INACTIVE -> dormant passthrough.
-  - AC[1]: external-send WITHOUT proof -> ntfy push fired + 202 HALT + NO send.
+  - AC[1]: external-send WITHOUT proof -> 202 HALT + NO send.
   - AC[2]: an EXECUTED send creates a Kanban [email-audit] chore task (real DB row)
     + one email-actions.jsonl line.
   - Schema validation: missing recipient / body -> 422.
@@ -244,34 +244,21 @@ async def test_outlook_forward_active_gate_valid_token_200(client, monkeypatch, 
 
 
 # ===========================================================================
-# AC[1] — external-send escalation: ntfy push fired + 202 HALT + NO send
+# AC[1] — external-send escalation: 202 HALT + NO send
 # ===========================================================================
 
 
 @pytest.mark.asyncio
-async def test_gmail_external_send_no_proof_fires_push_and_halts_202(client, monkeypatch, _no_db_audit):
-    """AC[1]: external-send WITHOUT proof (gate ACTIVE) -> ntfy push + 202 HALT, NO send.
+async def test_gmail_external_send_no_proof_halts_202(client, monkeypatch, _no_db_audit):
+    """AC[1]: external-send WITHOUT proof (gate ACTIVE) -> 202 HALT, NO send.
 
-    POSITIVE: send_push is invoked. NEGATIVE lock: send_message is NEVER called
-    (the 202 fires before any upstream send).
+    NEGATIVE lock: send_message is NEVER called (the 202 fires before any upstream send).
     """
     monkeypatch.setenv(_KEY_ENV, _TOKEN)
     _seed_gmail(monkeypatch)
     from src.tools.email import gmail_client
 
-    pushes: list = []
     sends: list = []
-
-    def _fake_push(message, **kwargs):
-        pushes.append(message)
-
-        class _R:
-            ok = True
-            detail = "sent"
-
-        return _R()
-
-    monkeypatch.setattr(tools_email, "send_push", _fake_push)
     monkeypatch.setattr(
         gmail_client, "send_message",
         lambda c, **k: sends.append(k) or {"message_id": "m", "thread_id": "t"},
@@ -283,22 +270,18 @@ async def test_gmail_external_send_no_proof_fires_push_and_halts_202(client, mon
     )
     assert resp.status_code == 202, resp.text
     assert resp.json()["detail"]["halt_reason"] == "operator_confirm_required"
-    # POSITIVE: the out-of-band push really fired.
-    assert len(pushes) == 1
     # NEGATIVE lock: no mail was sent on the HALT path.
     assert sends == [], "send_message must NOT fire on the 202 HALT path"
 
 
 @pytest.mark.asyncio
-async def test_gmail_external_send_with_proof_fires_send_no_push(client, monkeypatch, _no_db_audit):
-    """external-send WITH a valid token -> send fires, NO redundant push (confirmed path)."""
+async def test_gmail_external_send_with_proof_fires_send(client, monkeypatch, _no_db_audit):
+    """external-send WITH a valid token -> send fires (confirmed path)."""
     monkeypatch.setenv(_KEY_ENV, _TOKEN)
     _seed_gmail(monkeypatch)
     from src.tools.email import gmail_client
 
-    pushes: list = []
     sends: list = []
-    monkeypatch.setattr(tools_email, "send_push", lambda *a, **k: pushes.append(1))
     monkeypatch.setattr(
         gmail_client, "send_message",
         lambda c, **k: sends.append(k) or {"message_id": "m-ext", "thread_id": "t-ext"},
@@ -312,7 +295,6 @@ async def test_gmail_external_send_with_proof_fires_send_no_push(client, monkeyp
     assert resp.status_code == 200, resp.text
     assert resp.json()["message_id"] == "m-ext"
     assert len(sends) == 1
-    assert pushes == [], "no push should fire when the operator-proof is already present"
 
 
 @pytest.mark.asyncio
@@ -323,7 +305,6 @@ async def test_outlook_external_send_no_proof_halts_202(client, monkeypatch, _no
     from src.tools.email import outlook_client
 
     sends: list = []
-    monkeypatch.setattr(tools_email, "send_push", lambda *a, **k: None)
     monkeypatch.setattr(
         outlook_client, "send_message",
         lambda c, **k: sends.append(k) or {"message_id": None, "thread_id": None},
@@ -690,7 +671,6 @@ async def test_external_send_unaffected_by_internal_domain(client, monkeypatch, 
     from src.tools.email import gmail_client
 
     sends: list = []
-    monkeypatch.setattr(tools_email, "send_push", lambda *a, **k: None)
     monkeypatch.setattr(
         gmail_client, "send_message",
         lambda c, **k: sends.append(k) or {"message_id": "m-ext", "thread_id": "t"},

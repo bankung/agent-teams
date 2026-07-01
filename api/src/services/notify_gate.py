@@ -6,7 +6,7 @@ Mode-A runner (Task C #2566) both call so the policy lives in a single place.
 What it does, given a gate (gate_id, gate_tier, question_payload):
   1. Resolve whether a `telegram` NotificationTarget exists for the task/project
      AND the bot token is present. Absent EITHER -> soft no-op (no notify, no
-     crash), exactly the ntfy posture (`_fire_hitl_push`).
+     crash) — soft no-op is the designed fail-open posture for unconfigured channels.
   2. Build the message + (maybe) inline buttons per the LOCKED tier policy
      (`mode-a-autonomy-boundary.md` §3 + `async-hitl-gates.md` §6):
 

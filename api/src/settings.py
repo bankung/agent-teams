@@ -65,7 +65,7 @@ class Settings(BaseSettings):
 
     # Kanban #2565 — Telegram async-HITL channel (Mode-A automation, 0.8 #5).
     # BOTH are read at CALL TIME via os.environ inside notify_telegram.py and
-    # scripts/telegram_poller.py (mirrors the notify_telegram / notify_ntfy
+    # scripts/telegram_poller.py (mirrors the notify_telegram
     # env-at-call-time pattern), so these fields are DECLARATIVE — they document
     # the canonical names + supply a default-empty so an unconfigured deployment
     # soft-fails (the adapter surfaces `missing_env_TELEGRAM_BOT_TOKEN` and the

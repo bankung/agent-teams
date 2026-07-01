@@ -288,61 +288,6 @@ def _patch_sets_operator_only_verified_by(updates: dict) -> bool:
     return False
 
 
-def _fire_hitl_push(task_id: int, title: str, question_payload: dict | None) -> None:
-    """Kanban #1450: fire ntfy push when a task transitions into HITL state.
-
-    Soft-fail — exceptions are caught and logged; never raises to the caller.
-    The push gate (PUSH_ENABLED, NTFY_TOPIC) is handled inside send_push itself
-    so this function needs no extra guard — it simply passes through.
-
-    Args:
-        task_id:         Row id, used to construct the click_url.
-        title:           Resolved task title (post-PATCH value, captured before
-                         the ORM object expires after commit).
-        question_payload: Resolved question_payload dict or None.  Used to
-                          extract a short message snippet for the push body.
-    """
-    import os
-    from src.services.notify_ntfy import send_push
-
-    try:
-        # Compose the message body: prefer question text, fall back to title.
-        qp = question_payload or {}
-        question_text = qp.get("question") if isinstance(qp, dict) else None
-        if question_text:
-            body = str(question_text)[:120]
-        else:
-            body = "Tap to view"
-
-        # click_url: WEB_BASE_URL + /approve/<id> (Kanban #1452 — phone HITL
-        # push-tap flow). Phone operator lands on the mobile approve page which
-        # POSTs back to /api/tasks/{id}/decide with the HitlResolveRequest body
-        # shape. Was /tasks/<id> pre-#1452 (#955.B), pointing at the desktop
-        # task focus view — wrong target for phone push.
-        base_url = os.environ.get("WEB_BASE_URL", "http://localhost:5431").rstrip("/")
-        click_url = f"{base_url}/approve/{task_id}"
-
-        truncated_title = title[:50] if title else ""
-        push_title = f"Agent-Teams: {truncated_title}"
-
-        result = send_push(
-            body,
-            title=push_title,
-            priority=4,
-            click_url=click_url,
-            tags="warning,robot",
-        )
-        if not result.ok:
-            logger.warning(
-                "hitl_push: task=%d send_push returned ok=False detail=%s",
-                task_id,
-                result.detail,
-            )
-        else:
-            logger.info("hitl_push: task=%d push sent", task_id)
-    except Exception:  # noqa: BLE001 — never crash the API response
-        logger.exception("hitl_push: unexpected error on task=%d; push skipped", task_id)
-
 # Auto-stamp started_at / completed_at / halted_at on ps=2 / ps=5 / ps=8
 # transitions. The transition block below stamps only when the field is
 # currently NULL and uses setdefault, so a client-supplied value is respected
@@ -1973,20 +1918,6 @@ async def create_task(
         raise HTTPException(status_code=400, detail=detail) from exc
     await session.refresh(task)
 
-    # Kanban #1450: fire ntfy push when a task is created with interaction_kind
-    # in ('question', 'decision').  Fires once per creation; no idempotency
-    # concern on POST (each POST is a new row).  Soft-fail: push error does NOT
-    # block the 201 response.
-    if payload.interaction_kind in (
-        TaskInteractionKind.QUESTION, TaskInteractionKind.DECISION
-    ):
-        _post_qp = (
-            payload.question_payload.model_dump(mode="json")
-            if payload.question_payload is not None
-            else None
-        )
-        _fire_hitl_push(task.id, payload.title or "", _post_qp)
-
     return task
 
 
@@ -2963,7 +2894,7 @@ async def update_task(
             )
 
     # #2671(a): compute the HITL work->question/decision transition ONCE; reused
-    # by the web_push hook (inside the helper) and the ntfy _fire_hitl_push below.
+    # by the web_push/telegram hook (inside the helper).
     _hitl_transition_in = (
         "interaction_kind" in updates
         and _resolved_interaction_kind_for_done in (
@@ -2992,15 +2923,6 @@ async def update_task(
     )
 
     await session.refresh(task)
-
-    # Kanban #1450: fire ntfy push when interaction_kind transitions INTO HITL
-    # state via PATCH.  Idempotency rule: only fire when `interaction_kind` is
-    # IN the patch body (i.e., the caller is explicitly setting the value —
-    # not just patching an unrelated field on an already-HITL task).
-    # Pre-PATCH value must NOT already be question/decision (transition-in guard).
-    # Soft-fail: push error does NOT block the 200 response.
-    if _hitl_transition_in:
-        _fire_hitl_push(task_id, _notify_task_title or "", _notify_question_payload)
 
     return task
 

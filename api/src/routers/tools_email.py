@@ -94,7 +94,6 @@ from src.services.session_project import (
     require_project_id_header,
 )
 from src.services.operator_auth import OperatorDecision, _gate_active, require_operator_proof
-from src.services.notify_ntfy import send_push
 from src.services.tool_grants import GrantDecision, check_grant
 from src.tools.email import (
     gate,
@@ -191,7 +190,7 @@ async def _enforce_tool_grant_or_403(
 #   reply          PROOF — operator-proof required; 403 if absent.
 #   send_internal  PROOF — operator-proof required; 403 if absent.
 #   delete         PROOF — operator-proof required; 403 if absent. (trash = delete-class)
-#   external_send  ESCALATE — operator-proof + out-of-band push/ntfy confirm + HITL resume.
+#   external_send  ESCALATE — operator-proof + 202 HALT pending out-of-band confirm.
 #
 # FAIL-OPEN when unset: `require_operator_proof` returns OPERATOR for any request
 # when OPERATOR_ACTION_KEY is unset (gate INACTIVE), so this 403 is DORMANT on the
@@ -388,7 +387,7 @@ async def _write_send_audit_task(
 # ---------------------------------------------------------------------------
 #
 # send-internal is the LOWER-blast send tier: it requires an operator-proof but
-# does NOT escalate via the out-of-band ntfy confirm that external-send does. But
+# does NOT escalate via the out-of-band 202 HALT that external-send does. But
 # the route enforced NOTHING about the recipient being internal — an agent with a
 # SEND_INTERNAL proof could mail ANY external address through it, bypassing the
 # external-send confirm. This gate closes that downgrade.
@@ -492,9 +491,9 @@ _DETAIL_OPERATOR_PROOF_REQUIRED_TEMPLATE = (
 # Source-text-locked: pinned by the #1859 external-send escalation test.
 _DETAIL_EXTERNAL_SEND_CONFIRM_PENDING = (
     "operator_confirm_pending: external-send is the highest-blast tier and "
-    "escalates to an out-of-band push/ntfy confirmation. A push was emitted; "
-    "approve it (or re-issue carrying X-Operator-Token after approving) to "
-    "resume. HALT semantics mirror the HITL interrupt/resume loop."
+    "requires out-of-band operator confirmation. Re-issue carrying "
+    "X-Operator-Token after approving to resume. "
+    "HALT semantics mirror the HITL interrupt/resume loop."
 )
 
 
@@ -530,13 +529,11 @@ def _escalate_external_send_or_202(
     project_id: int,
     summary: str,
 ) -> None:
-    """Highest-blast (`external_send`) escalation: out-of-band push/ntfy confirm.
+    """Highest-blast (`external_send`) escalation: operator out-of-band confirm gate.
 
-    Reuses the EXISTING notification infra (`services.notify_ntfy.send_push`, the
-    same primitive `routers/tasks.py::_fire_hitl_push` uses) — it does NOT build a
-    new notification system. Reuses the HITL HALT/resume SEMANTICS (the request
-    HALTS with a 202 + `halt_reason`, mirroring the interrupt/resume loop) WITHOUT
-    a new DB row: the operator resumes by re-issuing the call carrying a valid
+    Reuses the HITL HALT/resume SEMANTICS (the request HALTS with a 202 +
+    `halt_reason`, mirroring the interrupt/resume loop) WITHOUT a new DB row:
+    the operator resumes by re-issuing the call carrying a valid
     `X-Operator-Token`, which makes `operator_proof is OPERATOR` true on the
     retry and lets this helper pass through. No pending-confirm table is needed
     for the single-operator MVP (see report — migration explicitly NOT taken).
@@ -544,38 +541,12 @@ def _escalate_external_send_or_202(
     Flow:
       - operator_proof IS OPERATOR  -> the operator already approved out-of-band
         (presented the token); pass through (the caller proceeds with the send).
-      - operator_proof NOT OPERATOR -> fire an ntfy push (best-effort; send_push
-        soft-fails and is itself gated by PUSH_ENABLED/NTFY_TOPIC) and raise
-        HTTP 202 with `halt_reason=operator_confirm_required`. The caller does
-        NOT proceed; the external send is HALTED pending the out-of-band tap.
+      - operator_proof NOT OPERATOR -> raise HTTP 202 with
+        `halt_reason=operator_confirm_required`. The caller does NOT proceed;
+        the external send is HALTED pending the out-of-band confirmation.
     """
     if operator_proof is OperatorDecision.OPERATOR:
         return
-
-    # Out-of-band confirm — reuse the ntfy push primitive. Best-effort: send_push
-    # never raises and self-gates on PUSH_ENABLED/NTFY_TOPIC, so an unconfigured
-    # push channel does NOT turn the HALT into a 500 — the 202 still fires.
-    base_url = os.environ.get("WEB_BASE_URL", "http://localhost:5431").rstrip("/")
-    click_url = f"{base_url}/approve/email-send"
-    try:
-        result = send_push(
-            f"External email send awaiting your confirmation ({summary[:80]}).",
-            title="Agent-Teams: confirm external email send",
-            priority=5,
-            click_url=click_url,
-            tags="warning,email,robot",
-        )
-        if not result.ok:
-            logger.warning(
-                "external_send confirm: project=%d push ok=False detail=%s",
-                project_id,
-                result.detail,
-            )
-    except Exception:  # noqa: BLE001 — push is observability; never 500 the HALT.
-        logger.exception(
-            "external_send confirm: project=%d unexpected push error; HALT still raised",
-            project_id,
-        )
 
     raise HTTPException(
         status_code=202,
@@ -1305,15 +1276,15 @@ async def gmail_external_send(
     """Compose + send a NEW Gmail message, EXTERNAL recipient (`external_send` tier).
 
     Highest-blast tier: instead of a bare 403, an absent operator-proof triggers
-    `_escalate_external_send_or_202` — an out-of-band ntfy push + a 202 HALT. The
-    operator resumes by re-issuing the call carrying a valid X-Operator-Token,
-    which passes the helper through and lets the send fire. NO mail is sent on the
-    HALT path (the 202 is raised BEFORE any upstream send).
+    `_escalate_external_send_or_202` — a 202 HALT. The operator resumes by
+    re-issuing the call carrying a valid X-Operator-Token, which passes the
+    helper through and lets the send fire. NO mail is sent on the HALT path
+    (the 202 is raised BEFORE any upstream send).
     """
     await _enforce_tool_grant_or_403(
         session, session_project_id, agent_role, "gmail.external_send"
     )
-    # EXTERNAL_SEND escalation — fires ntfy + raises 202 HALT unless proven.
+    # EXTERNAL_SEND escalation — raises 202 HALT unless proven.
     _escalate_external_send_or_202(
         operator_proof, project_id=session_project_id, summary=f"to {body.to}",
     )
@@ -2347,9 +2318,9 @@ async def outlook_external_send(
     """Compose + send a NEW Outlook message, EXTERNAL recipient (`external_send` tier).
 
     Highest-blast tier: an absent operator-proof triggers
-    `_escalate_external_send_or_202` (out-of-band ntfy push + 202 HALT). The
-    operator resumes by re-issuing with a valid X-Operator-Token. NO mail is sent
-    on the HALT path (the 202 fires BEFORE any upstream send).
+    `_escalate_external_send_or_202` (202 HALT). The operator resumes by
+    re-issuing with a valid X-Operator-Token. NO mail is sent on the HALT
+    path (the 202 fires BEFORE any upstream send).
     """
     await _enforce_tool_grant_or_403(
         session, session_project_id, agent_role, "outlook.external_send"

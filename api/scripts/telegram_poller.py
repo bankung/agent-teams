@@ -1,7 +1,7 @@
 """Inbound Telegram poller for async-HITL gate resolution (Kanban #2565).
 
 A DUMB local loop — NO AI / NO LLM. It long-polls Telegram `getUpdates`
-(purely OUTBOUND — no inbound port, no public URL, no Tailscale), and when the
+(purely OUTBOUND — no inbound port, no public URL), and when the
 OPERATOR taps an inline approve/reject button on a gate notification, it resolves
 that gate via the agent-teams API. The AI never runs here; this process only
 moves an operator's tap into a durable DB write (through the API).

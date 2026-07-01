@@ -38,7 +38,6 @@ from src.routers import milestones as milestones_router
 from src.routers import notifications as notifications_router
 from src.routers import decisions as decisions_router
 from src.routers import push as push_router
-from src.routers import push_ntfy as push_ntfy_router
 from src.routers import templates as templates_router
 from src.routers import pl as pl_router
 from src.routers.pl import pnl_router
@@ -433,8 +432,6 @@ def create_app() -> FastAPI:
     app.include_router(shared_search_router.router, prefix="/api")
     # Kanban #955.A — Web Push subscription CRUD (browser PushManager endpoints).
     app.include_router(push_router.router, prefix="/api")
-    # Kanban #1192 — ntfy push-notification fire endpoint (POST /api/push/fire).
-    app.include_router(push_ntfy_router.router, prefix="/api")
     # Kanban #1326 (M3) — credentials vault (per-project, Fernet-encrypted).
     app.include_router(credentials_router.router, prefix="/api")
     # Kanban #1327 (M4a) — email-to-task ingest webhook.
