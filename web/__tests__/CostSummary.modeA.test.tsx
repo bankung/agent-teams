@@ -83,8 +83,8 @@ describe("CostSummary — Mode A re-pointed to actual_interactive_cost (#2735)",
     const a = makeEntry();
     const b = makeEntry();
     b.id = 2;
-    // 777 + 777 = 1554 → "$1554.00".
+    // 777 + 777 = 1554 → "$1,554.00".
     render(<CostSummary stats={[a, b]} />);
-    expect(screen.getByText("$1554.00")).toBeInTheDocument();
+    expect(screen.getByText("$1,554.00")).toBeInTheDocument();
   });
 });

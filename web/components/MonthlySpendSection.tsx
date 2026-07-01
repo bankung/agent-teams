@@ -19,12 +19,12 @@ function parseUsd(raw: string): number {
 }
 
 function formatUsd(n: number): string {
-  return `$${n.toFixed(2)}`;
+  return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 // 4-dp tooltip value keeps precision visible without cluttering the row label.
 function formatUsd4(n: number): string {
-  return `$${n.toFixed(4)}`;
+  return `$${n.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`;
 }
 
 function fmtDate(iso: string): string {

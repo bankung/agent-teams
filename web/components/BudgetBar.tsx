@@ -71,7 +71,7 @@ export function BudgetBar({
       className="flex items-center gap-1.5 text-[11px] tabular-nums"
       title={tooltip}
       role="img"
-      aria-label={`Budget: $${safeSpend.toFixed(2)} of $${capUsd.toFixed(2)} ${period} (${displayPct}%)`}
+      aria-label={`Budget: $${safeSpend.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} of $${capUsd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${period} (${displayPct}%)`}
     >
       <div
         className="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800"

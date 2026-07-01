@@ -24,7 +24,7 @@ function parseUsd(raw: string): number {
 }
 
 function formatUsd(n: number): string {
-  return `$${n.toFixed(2)}`;
+  return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function formatInt(n: number): string {
