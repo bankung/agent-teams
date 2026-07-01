@@ -71,7 +71,7 @@ hit gate -> INSERT gate(status=open) + work-task ps->8 + operator_gate=<tier> + 
 - **Inbound:** a **dumb local poller** (no AI) using Telegram **`getUpdates` long-poll** (outbound-only → no inbound port, no public URL, **no Tailscale**). On an operator reply it calls the resolve endpoint with `{gate_id, answer, provenance}`.
 - **Telegram > MS Teams** for the "drop Tailscale" goal: Teams typically needs a webhook / public endpoint → would re-introduce the inbound exposure Tailscale was solving.
 - **Security:** the poller writes approvals → **lock it to the operator's known chat_id** (ignore all other senders).
-- **Removal scope:** ntfy → removable once Telegram replaces it. **Tailscale → removable only if its sole job was the `/approve` hop** — verify it isn't also serving remote board/API access before deleting.
+- **Removal scope:** ntfy → removable once Telegram replaces it. **Tailscale → removable only if its sole job was the `/approve` hop** — verify it isn't also serving remote board/API access before deleting. -> DONE in #2756/#2757 (2026-07-01): ntfy removed; Tailscale helper scripts removed (board/API access still works via manual Tailscale VPN — scripts were convenience wrappers only).
 
 ## 6. Tier → channel policy (LOCKED: 3 levels, not binary)
 

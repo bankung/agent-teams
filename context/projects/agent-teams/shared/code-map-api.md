@@ -59,9 +59,7 @@ Test LOC exceeds source LOC by 45%. The test suite is the largest single body of
 | `decisions.py` | 142 | Retro decisions feed (read-only JSONB decisions.md snapshot) | `task` model | ~3 endpoints | — | live | `web/lib/api.ts` (referenced in comments) |
 | `tool_calls.py` | 141 | Specialist tool-call audit timeline (sub-resource of tasks) | `tool_call_writer` | ~3 endpoints | `test_tool_calls.py` | live | `web/lib/api.ts:1111` |
 | `usage.py` | 136 | Cross-project LLM provider cost rollup | `cost_tracker`, `token_counter` | ~2 endpoints (`GET /api/usage/daily`) | `test_usage_daily.py` | live | `web/lib/api.ts:2301` |
-| `dashboard.py` | 108 | Cross-project active-task list (operator-level) | `project`, `task` models | ~2 endpoints | `test_dashboard_active_tasks.py` | live | `web/lib/api.ts:1572` |
-| `push_ntfy.py` | 98 | ntfy push-notification fire (POST /api/push/fire) | `notify_ntfy` | 1 endpoint | `test_push_ntfy_router.py` | live | called manually / from `tasks.py` HITL trigger |
-| `events.py` | 96 | SSE stream for row-changed events (`/api/events/stream`) | `row_changed_listener` | 1 endpoint | `test_sse.py` | live | `web/lib/WildcardSSEContext.tsx:79`, `useRowChangedEvents.ts:73` |
+| `dashboard.py` | 108 | Cross-project active-task list (operator-level) | `project`, `task` models | ~2 endpoints | `test_dashboard_active_tasks.py` | live | `web/lib/api.ts:1572` || `events.py` | 96 | SSE stream for row-changed events (`/api/events/stream`) | `row_changed_listener` | 1 endpoint | `test_sse.py` | live | `web/lib/WildcardSSEContext.tsx:79`, `useRowChangedEvents.ts:73` |
 | `settings.py` | 83 | Integrations settings popup (toggle enable/disable) | `integrations_registry` | ~2 endpoints | `test_settings_router.py` | live | `web/lib/api.ts:1759` |
 | `teams.py` | 44 | Global team registry (GET /api/teams) | `constants` | 1 endpoint | — | live | `web/lib/api.ts:1637` |
 | `templates.py` | 37 | Action template library (GET /api/templates/actions) | `action_templates` | 1 endpoint | — | live | `web/lib/api.ts:1647`, `web/components/ActionTemplatePicker.tsx:6` |
@@ -128,7 +126,7 @@ Grouped by function:
 | `is_pending.py` | 46 | Assert task is in pending state | live |
 | `run_mode.py` | 60 | Consent gate for run_mode changes | live |
 | `handoff_spawn.py` | 175 | Spawn child task from handoff template on DONE-flip | live |
-| `notification_router.py` | 422 | DeliveryTarget DSL — fan-out push to web/ntfy/telegram/email | live |
+| `notification_router.py` | 422 | DeliveryTarget DSL — fan-out push to web/telegram/email | live |
 | `audit_flag.py` | 325 | Audit-report → flag creation + routing | live |
 | `action_templates.py` | 149 | Action template library lookup | live |
 | `task_comment.py` | 56 | Task comment post helper | live |
@@ -168,9 +166,7 @@ Grouped by function:
 
 **Notifications / push**:
 | module | LOC | purpose | status |
-|---|---|---|---|
-| `notify_ntfy.py` | 160 | ntfy.sh push adapter | live |
-| `notify_telegram.py` | 162 | Telegram bot adapter | live (dormant if TELEGRAM_BOT_TOKEN unset) |
+|---|---|---|---|| `notify_telegram.py` | 162 | Telegram bot adapter | live (dormant if TELEGRAM_BOT_TOKEN unset) |
 | `notify_email.py` | 158 | Gmail SMTP adapter for digest | live |
 | `notify_web_push.py` | 309 | VAPID web push adapter | live |
 
@@ -278,7 +274,7 @@ Single `Project` ORM class; wide column set (JSONB: approval_policies, tools_con
 
 ### Config: mixed Settings + os.environ
 
-`api/src/settings.py` defines 9 fields via `pydantic-settings`. There are 88 additional `os.getenv`/`os.environ` calls across `src/` (46 in services alone). Many service-level env vars (TELEGRAM_BOT_TOKEN, GMAIL_*, NTFY_*, BACKUP_*, HEALTH_MONITOR_*, OPERATOR_ACTION_KEY) are read raw, not declared in `Settings`. Partial list of env-gated features:
+`api/src/settings.py` defines 9 fields via `pydantic-settings`. There are 88 additional `os.getenv`/`os.environ` calls across `src/` (46 in services alone). Many service-level env vars (TELEGRAM_BOT_TOKEN, GMAIL_*, BACKUP_*, HEALTH_MONITOR_*, OPERATOR_ACTION_KEY) are read raw, not declared in `Settings`. Partial list of env-gated features:
 
 | env var | gates |
 |---|---|
@@ -297,9 +293,9 @@ Single `Project` ORM class; wide column set (JSONB: approval_policies, tools_con
 
 `pl.py` defines two `APIRouter` objects exported separately (`router` and `pnl_router`) and mounted independently in `main.py`. `resources.py` similarly defines `router_project` and `router_resource`. Both are registered correctly; the pattern is consistent but non-obvious to newcomers.
 
-### Notification fan-out has 4 adapters
+### Notification fan-out has 3 adapters
 
-`services/notification_router.py` dispatches to: `notify_web_push.py` (VAPID), `notify_ntfy.py` (ntfy.sh), `notify_telegram.py` (Telegram bot), `notify_email.py` (Gmail SMTP). Each adapter is independently gated by env vars and silently skips if unconfigured. The `OPERATOR_ACTION_KEY` env gates a second layer for email/calendar mutations.
+`services/notification_router.py` dispatches to: `notify_web_push.py` (VAPID), `notify_telegram.py` (Telegram bot), `notify_email.py` (Gmail SMTP). ntfy was removed in #2756. Each adapter is independently gated by env vars and silently skips if unconfigured. The `OPERATOR_ACTION_KEY` env gates a second layer for email/calendar mutations.
 
 ### TODO count in tasks.py
 

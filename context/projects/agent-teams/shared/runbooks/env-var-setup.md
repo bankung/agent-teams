@@ -100,9 +100,7 @@ All container-bound vars are in ROOT `.env`. The api service maps:
 | `APP_ENV` / `APP_DEBUG` | root `.env` | runtime flags |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | root `.env` | LLM provider keys |
 | `BACKUP_*` | root `.env` | off-site backup config (#959) |
-| `GMAIL_SMTP_*` + `DIGEST_EMAIL_*` | root `.env` | digest email channel (#1217) |
-| `NTFY_*` + `PUSH_ENABLED` | root `.env` | push channel (#1192 / #1218) |
-| `WEB_BASE_URL` | root `.env` | deep-link generation in emails / pushes |
+| `GMAIL_SMTP_*` + `DIGEST_EMAIL_*` | root `.env` | digest email channel (#1217) || `WEB_BASE_URL` | root `.env` | deep-link generation in emails / pushes |
 | `SECRET_KEY` | root `.env` | itsdangerous token signing (#1437) |
 
 For exact compose mapping lines, see `docker-compose.yml` `api.environment:` block.

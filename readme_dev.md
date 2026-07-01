@@ -245,7 +245,7 @@ All entries below are part of the 2026-05-17 hardening sprint (22/27 prevention 
 
 ## Notification channels
 
-The api supports two parallel notification channels: email digest and push notifications (ntfy.sh). Both are optional and independently gated by env vars. Delivery attempts are logged to `tasks_history` with operation code `'N'` for audit.
+The api supports two parallel notification channels: email digest and push notifications (Telegram + VAPID web push; ntfy removed #2756). Both are optional and independently gated by env vars. Delivery attempts are logged to `tasks_history` with operation code `'N'` for audit.
 
 ### Configuration
 
@@ -263,14 +263,15 @@ All notification vars live in the root `.env` file and are mapped via `docker-co
 | `DIGEST_EMAIL_RECIPIENT` | unset | Recipient email (where the daily digest goes) |
 | `DIGEST_EMAIL_ENABLED` | `1` | Set to `"0"` to disable; `"1"` to enable. Unsubscribe link in email allows per-account opt-out. |
 
-**Push notifications (ntfy.sh):**
+**Push notifications (Telegram + Web Push):**
+
+ntfy was removed in #2756. Push is now delivered via the Telegram bot adapter (`notify_telegram.py`) and the VAPID web-push adapter (`notify_web_push.py`). See `notification_router.py` for the fan-out logic.
 
 | Env var | Default | Effect |
 |---|---|---|
-| `NTFY_BASE_URL` | unset | Base URL (`https://ntfy.sh` for public; `http://<host>:8080` for self-hosted) |
-| `NTFY_TOPIC` | unset | Topic name (alphanumeric + dashes; e.g., `agent-teams-abc123`). Topics are **world-readable** — use an obscure name. |
-| `NTFY_ACCESS_TOKEN` | unset | Optional Bearer token for private self-hosted instances |
-| `PUSH_ENABLED` | `1` | Set to `"0"` to disable; `"1"` to enable |
+| `TELEGRAM_BOT_TOKEN` | unset | Bot token from BotFather; enables Telegram push adapter |
+| `TELEGRAM_OPERATOR_CHAT_ID` | unset | Operator's chat ID; the poller rejects messages from any other sender |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | unset | VAPID keys for browser web-push subscriptions (fail-open if unset) |
 
 **Deep linking + opt-out tokens:**
 
@@ -287,16 +288,7 @@ curl -X POST http://localhost:8456/api/digest/fire \
   -H "X-Project-Id: 1" \
   -H "Content-Type: application/json"
 ```
-Sends digest email (if `DIGEST_EMAIL_ENABLED=1`) and push notification (if `PUSH_ENABLED=1`) with a summary of all tasks from the past 24 hours. Runs atomically — if either channel fails, both are retried on the next scheduled tick (or manual trigger). [Task #1217]
-
-**Fire an ad-hoc push notification:**
-```bash
-curl -X POST http://localhost:8456/api/push/fire \
-  -H "X-Project-Id: 1" \
-  -H "Content-Type: application/json" \
-  -d '{"title": "Build failed", "message": "3 tests broke in api/"}'
-```
-[Task #1192]
+Sends digest email (if `DIGEST_EMAIL_ENABLED=1`) and push notification (Telegram + web push, if configured) with a summary of all tasks from the past 24 hours. Runs atomically — if either channel fails, both are retried on the next scheduled tick (or manual trigger). [Task #1217]
 
 **Operator unsubscribe from digest:**
 ```
@@ -320,9 +312,9 @@ curl -X PATCH http://localhost:8456/api/projects/1 \
    - Google issues a 16-char password. Copy it.
    - Add to `.env`: `GMAIL_SMTP_APP_PASSWORD=<16-char-password>`
 
-2. **ntfy topic** (required for push; ignore if push disabled):
-   - Pick an alphanumeric + dashes string at least 8 chars long (e.g., `agent-teams-a7k9j2`).
-   - Add to `.env`: `NTFY_TOPIC=agent-teams-a7k9j2`
+2. **Telegram bot** (required for push; ignore if push disabled):
+   - Create a bot via BotFather (`/newbot`), copy the token, and send yourself a message to get your chat ID.
+   - Add to `.env`: `TELEGRAM_BOT_TOKEN=<token>` and `TELEGRAM_OPERATOR_CHAT_ID=<chat_id>`
 
 3. **Restart the api:**
    ```bash
@@ -334,7 +326,7 @@ curl -X PATCH http://localhost:8456/api/projects/1 \
    curl -X POST http://localhost:8456/api/digest/fire -H "X-Project-Id: 1"
    ```
 
-See [context/projects/agent-teams/shared/runbooks/env-var-setup.md](context/projects/agent-teams/shared/runbooks/env-var-setup.md) for detailed troubleshooting and self-hosted ntfy instructions.
+See [context/projects/agent-teams/shared/runbooks/env-var-setup.md](context/projects/agent-teams/shared/runbooks/env-var-setup.md) for detailed troubleshooting and env-var wiring guidance.
 
 ---
 

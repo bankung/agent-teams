@@ -72,4 +72,4 @@ read at call time, never hardcoded. Absent token ⇒ notify soft-fails (`ok=Fals
 
 - `async-hitl-gates.md` — the gate *mechanism* (`task_gates` table, resolve flow, Telegram poller, coexistence with the legacy ntfy/web flow). This doc is the *policy* layered on top.
 - `#2531` — the runner; its AC3 (clean stuck exit) + AC4 (compaction resilience) are realized by Task C.
-- ntfy + Tailscale stay in place during v0.8.0 (coexist); removal is evaluated at v0.9.0 once Telegram is proven and Tailscale's non-HITL uses (remote board/API) are confirmed gone.
+- ntfy + Tailscale stay in place during v0.8.0 (coexist); removal is evaluated at v0.9.0 once Telegram is proven and Tailscale's non-HITL uses (remote board/API) are confirmed gone. -> DONE in #2756/#2757 (v0.8.0, 2026-07-01): ntfy removed; Tailscale helper scripts removed; bash-hygiene hook swapped to Telegram.

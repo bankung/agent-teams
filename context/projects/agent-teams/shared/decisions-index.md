@@ -92,6 +92,6 @@ covers: active decisions.md 2026-05-20 onward; older in decisions-archive-2026-0
 - 2026-05-28 — web 500 (.next hot-reload corruption): heal-script + runbook, not autoheal sidecar — Kanban #1625
 - 2026-05-28 — projects.team CHECK dropped; team enum is app-validated single-source — Kanban #1620
 - 2026-05-22 — Env-var wiring trap documented (root .env + compose mapping) — Kanban #1449
-- 2026-05-22 — Mobile push provider pick: ntfy — Kanban #1192
+- 2026-05-22 — Mobile push provider pick: ntfy — Kanban #1192 (superseded: ntfy removed #2756/#2757; push = Telegram + web push)
 - 2026-05-22 — Cron scheduling: Path A pick + 5 standard schedules + quiet hours parking — Kanban #1283
 - 2026-05-20 — Compact + reward-hacking pass on dev-*.md agents — Kanban #1293 PILOT GATE

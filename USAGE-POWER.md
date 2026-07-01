@@ -73,24 +73,24 @@ Lead: (spawns dev-backend and dev-frontend simultaneously)
 
 ## 4. Mobile remote access
 
-**Status: Production.**
+**Status: Production (Tailscale VPN still works; ntfy removed #2756; push is now Telegram #2757).**
 
-**What it does:** Access the Kanban board from your phone (iOS or Android) via Tailscale VPN. View task status, create tasks, answer HITL questions, trigger notifications.
+**What it does:** Access the Kanban board from your phone (iOS or Android) via Tailscale VPN. View task status, create tasks, answer HITL questions. HITL alerts are delivered via Telegram.
 
 **When to use:** You're away from your desk but want to check if agents finished work, or answer a question that's blocking an agent.
 
-**Setup:** See [readme_remote-access.md](readme_remote-access.md) — install Tailscale on your home machine + phone, then visit `http://<machine>.<tailnet>.ts.net:5431/p/<project>` from your phone.
+**Setup:** See [readme_remote-access.md](readme_remote-access.md) — install Tailscale on your home machine + phone, then visit `http://<machine>.<tailnet>.ts.net:5431/p/<project>` from your phone. For push alerts, configure `TELEGRAM_BOT_TOKEN` + `TELEGRAM_OPERATOR_CHAT_ID` in root `.env`.
 
 **Example:**
 ```
 At a coffee shop on cellular:
-  - Phone shows "task #523 waiting for your input"
-  - Click the notification, answer the question
+  - Telegram message: "task #523 waiting for your input"
+  - Tap the inline button to answer
   - Agent resumes, finishes in 10 min
-  - Phone notification: "task #523 DONE"
+  - Telegram message: "task #523 DONE"
 ```
 
-**Gotcha:** Push notifications (task changes, HITL blocks) are optional. Set up `NTFY_TOPIC` in `.env` to receive them on your phone.
+**Gotcha:** Push notifications require a Telegram bot. The `bin/tailscale-status.*` and `bin/remote-url.*` helper scripts were removed in #2756 — run `tailscale status` and `tailscale ip -4` directly instead.
 
 ---
 
@@ -245,4 +245,4 @@ POST /api/tools/email/calendar/events
 
 - **Kanban task structure:** see [README.md](README.md#what-happens-next) — tasks are the unit of work; acceptance criteria unlock structured handoff
 - **Full developer guide:** see [readme_dev.md](readme_dev.md) — architecture, storage zones, agent customization
-- **Remote access & notifications:** see [readme_remote-access.md](readme_remote-access.md) — Tailscale, ntfy, email digest
+- **Remote access & notifications:** see [readme_remote-access.md](readme_remote-access.md) — Tailscale, Telegram push, email digest
