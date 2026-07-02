@@ -396,6 +396,8 @@ def create_app() -> FastAPI:
     app.include_router(tool_calls_router.router, prefix="/api")
     # Kanban #1305 — task-output listing + file serving (sub-resource of tasks).
     app.include_router(task_outputs_router.router, prefix="/api")
+    # Kanban #2558 — cross-task aggregate output listing (project-scoped).
+    app.include_router(task_outputs_router.router_project, prefix="/api")
     # Kanban #1082 — auditor cross-project daily-rollup aggregation.
     app.include_router(audit_router.router, prefix="/api")
     # Kanban #953 — per-project financial separation (transactions ledger + P&L).

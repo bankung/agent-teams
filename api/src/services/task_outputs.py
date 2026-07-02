@@ -53,6 +53,7 @@ Security (this serves files over HTTP):
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -313,3 +314,177 @@ def resolve_output_file(
     """
     entries = _collect_entries(project, task_id, repo_root)
     return entries.get(filename)
+
+
+# =============================================================================
+# Cross-task aggregate listing (Kanban #2558) — GET /api/projects/{id}/outputs
+# =============================================================================
+#
+# Reuses every building block above. The one new piece is TASK-ID DISCOVERY:
+# the per-task functions above take a task_id as input and resolve its output
+# dir; the aggregate walker instead has to find every task_id that HAS outputs
+# on disk, per the same three-branch convention documented in the module
+# docstring. Once a task_id is discovered, `_collect_entries` (already
+# security-reviewed: containment, no-symlink-escape, is_safe_filename skip) is
+# called for it unchanged — the walker only ever ADDS a discovery layer on top,
+# it never re-implements the trust boundary.
+
+# Task-id discovery is capped independently of MAX_OUTPUT_FILES — a project
+# could have thousands of tasks; this bounds the number of directories probed
+# before the per-task 50-file cap even applies. shortcut: flat cap, fine at
+# current scale (a few hundred tasks with outputs); upgrade: paginate the
+# discovery walk itself if a project ever approaches this ceiling.
+MAX_DISCOVERED_TASK_IDS = 2000
+
+
+# `str.isdigit()` accepts Unicode digit categories (fullwidth '１２３', superscript
+# '²', Devanagari '१२३', ...) that `int()` either can't parse (raises ValueError
+# -> unhandled 500 for the WHOLE aggregate request) or silently parses into an
+# ASCII-equivalent integer (collides with a real task's numeric id). A task_id
+# directory/file name must be plain ASCII digits — `str.isascii()` (which
+# `_ASCII_DIGITS_RE` implicitly enforces via `[0-9]`) closes both failure modes.
+_ASCII_DIGITS_RE = re.compile(r"^[0-9]+$")
+
+
+def _discover_task_ids_with_outputs(project: Project, repo_root: Path) -> set[int]:
+    """Find every task_id that has an outputs location on disk (existence only).
+
+    Mirrors the three `_collect_entries` branches for WHERE outputs live, but
+    only lists directory/file names — it does not open or stat file content.
+    Capped at `MAX_DISCOVERED_TASK_IDS`; a project exceeding the cap logs a
+    warning (mirrors the MAX_OUTPUT_FILES truncation-warning pattern) and only
+    the numerically LARGEST ids up to the cap are scanned further — task ids
+    are assigned by DB auto-increment, so the largest ids skew newest, keeping
+    the kept pool consistent with the endpoint's own mtime-DESC/task_id-DESC
+    sort contract (truncating to the smallest ids would silently drop the
+    newest tasks' outputs before the sort ever sees them).
+    """
+    task_ids: set[int] = set()
+
+    working = _usable_working_path(project)
+    if working is not None:
+        if project.team == _DATA_ANALYTICS_TEAM:
+            outputs_root = working / "analysis" / "outputs"
+        else:
+            outputs_root = working / "outputs"
+        try:
+            entries = list(outputs_root.iterdir())
+        except (FileNotFoundError, NotADirectoryError, PermissionError):
+            entries = []
+        for entry in entries:
+            if entry.is_dir() and _ASCII_DIGITS_RE.match(entry.name):
+                task_ids.add(int(entry.name))
+    else:
+        # working_path null → role-state folders under the repo-root project dir.
+        project_dir = repo_root / "context" / "projects" / project.name
+        try:
+            role_dirs = list(d for d in project_dir.iterdir() if d.is_dir())
+        except (FileNotFoundError, NotADirectoryError, PermissionError):
+            role_dirs = []
+        for role_dir in role_dirs:
+            try:
+                role_entries = list(role_dir.iterdir())
+            except (FileNotFoundError, NotADirectoryError, PermissionError):
+                continue
+            for entry in role_entries:
+                # (a) a `<task_id>/` subdirectory.
+                if entry.is_dir() and _ASCII_DIGITS_RE.match(entry.name):
+                    task_ids.add(int(entry.name))
+                    continue
+                # (b) a direct `task-<task_id>-*` file.
+                if entry.is_file() and entry.name.startswith("task-"):
+                    rest = entry.name[len("task-") :]
+                    digits = rest.split("-", 1)[0]
+                    if _ASCII_DIGITS_RE.match(digits):
+                        task_ids.add(int(digits))
+
+    if len(task_ids) > MAX_DISCOVERED_TASK_IDS:
+        logger.warning(
+            "task_outputs: project=%r has %d discovered task ids with outputs "
+            "exceeding MAX_DISCOVERED_TASK_IDS=%d; truncating",
+            project.name,
+            len(task_ids),
+            MAX_DISCOVERED_TASK_IDS,
+        )
+        # Keep the LARGEST ids (descending sort) — see docstring above.
+        task_ids = set(sorted(task_ids, reverse=True)[:MAX_DISCOVERED_TASK_IDS])
+
+    return task_ids
+
+
+def _role_for_entry(project: Project, repo_root: Path, path: Path) -> str | None:
+    """Derive the owning role-dir name for a file, or None when not applicable.
+
+    Only the null-working_path convention (branch 3) has a role subdivision —
+    `<repo_root>/context/projects/<name>/<role>/...`. The working_path branches
+    (1/2) store outputs flat under `<working>/outputs/<id>/` with no per-role
+    folder, so `role` is structurally None there. Derived by reading `.parts`
+    off the ALREADY-RESOLVED entry path returned by `_collect_entries` — this
+    does not re-touch the filesystem or re-derive containment, it only reads
+    path segments that `_scan_dir_direct_files` has already validated.
+    """
+    if _usable_working_path(project) is not None:
+        return None
+    project_dir = repo_root / "context" / "projects" / project.name
+    try:
+        rel_parts = path.relative_to(project_dir).parts
+    except ValueError:
+        return None
+    return rel_parts[0] if rel_parts else None
+
+
+def list_project_outputs(
+    project: Project, repo_root: Path
+) -> list[dict[str, object]]:
+    """List every output file across every task in `project` (contract #2558).
+
+    Flat, unsorted (caller sorts/paginates) list of
+    `{filename, task_id, role, mtime (float, epoch seconds), size, mime, kind}`.
+    `mtime` is left as a raw epoch float here — the router converts to
+    ISO-8601 UTC and joins task titles (DB access does not belong in this
+    filesystem-only service module, matching the existing split with
+    `list_task_outputs`). `role` is the owning role-dir name (null-working_path
+    convention only) or `None` (working_path conventions have no role
+    subdivision — see `_role_for_entry`).
+
+    Per-task file caps (`MAX_OUTPUT_FILES`) and per-file size caps
+    (`MAX_FILE_BYTES`) apply exactly as in the single-task listing, because
+    this reuses `_collect_entries`/`_scan_dir_direct_files` unchanged — same
+    security posture (containment, symlink-escape rejection, unsafe-name skip).
+    """
+    import mimetypes
+
+    result: list[dict[str, object]] = []
+    for task_id in _discover_task_ids_with_outputs(project, repo_root):
+        entries = _collect_entries(project, task_id, repo_root)
+        sorted_names = sorted(entries)
+        if len(sorted_names) > MAX_OUTPUT_FILES:
+            logger.warning(
+                "task_outputs: project=%r task_id=%d has %d entries exceeding "
+                "MAX_OUTPUT_FILES=%d; truncating to %d (aggregate listing)",
+                project.name,
+                task_id,
+                len(sorted_names),
+                MAX_OUTPUT_FILES,
+                MAX_OUTPUT_FILES,
+            )
+            sorted_names = sorted_names[:MAX_OUTPUT_FILES]
+        for filename in sorted_names:
+            path = entries[filename]
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            mime, _ = mimetypes.guess_type(filename)
+            result.append(
+                {
+                    "filename": filename,
+                    "task_id": task_id,
+                    "role": _role_for_entry(project, repo_root, path),
+                    "mtime": st.st_mtime,
+                    "size": st.st_size,
+                    "mime": mime or "application/octet-stream",
+                    "kind": kind_for_filename(filename),
+                }
+            )
+    return result

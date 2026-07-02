@@ -1,5 +1,5 @@
 """Tests for task outputs — resolver service + the two GET endpoints
-(Kanban #1305).
+(Kanban #1305), extended with the cross-task aggregate (Kanban #2558).
 
 Coverage matrix:
 
@@ -23,6 +23,21 @@ Coverage matrix:
    - traversal filenames (.., %2f-decoded /, backslash, absolute, null byte) → 404.
    - symlink that escapes the outputs root is NOT served (containment) → 404.
    - same gate chain (400/404/410) before filename handling.
+
+4. list_project_outputs service (#2558) — unit, tmp_path-based
+   - discovers outputs across MULTIPLE task ids under one project.
+   - a crafted non-digit / traversal-shaped directory name is NOT treated as
+     a task id (discovery predicate + downstream containment both hold).
+
+5. GET /api/projects/{project_id}/outputs endpoint (#2558)
+   - 400 missing header / 400 header != path project_id / 404 unknown project.
+   - 200 + sorted (mtime DESC, task_id DESC, filename ASC) + paginated
+     {items, total} envelope; offset-beyond-total → empty items, total intact.
+   - task_title joined from the DB (present) and null (task never existed).
+   - a file under a SOFT-DELETED task's id still appears with its title
+     (files outlive tasks, per the module docstring's `_collect_entries` note
+     — the walker's source of truth is the filesystem, not task.status).
+   - empty store → {items: [], total: 0}.
 
 All filesystem fixtures use tmp_path (the project's working_path is pointed at a
 tmp dir) — tests NEVER write into real role-state folders. The null-branch role
@@ -780,5 +795,407 @@ async def test_control_char_filename_serve_path_404(
             headers=headers,
         )
         assert resp.status_code == 404, resp.text
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+# =============================================================================
+# 9. list_project_outputs service — cross-task discovery (Kanban #2558)
+# =============================================================================
+
+
+def test_list_project_outputs_aggregates_multiple_tasks(tmp_path: Path) -> None:
+    """Multiple task ids under one project all surface in ONE flat listing."""
+    proj = _fake_project("p", team="dev", working_path=str(tmp_path))
+    for task_id, fname, content in (
+        (10, "a.png", b"png-bytes"),
+        (20, "b.csv", b"csv,bytes"),
+    ):
+        outdir = tmp_path / "outputs" / str(task_id)
+        outdir.mkdir(parents=True)
+        (outdir / fname).write_bytes(content)
+
+    listing = svc.list_project_outputs(proj, repo_root=Path("/repo"))
+    by_name = {e["filename"]: e for e in listing}
+    assert set(by_name) == {"a.png", "b.csv"}
+    assert by_name["a.png"]["task_id"] == 10
+    assert by_name["a.png"]["kind"] == "chart"
+    assert by_name["a.png"]["role"] is None  # working_path convention: no role dir
+    assert by_name["b.csv"]["task_id"] == 20
+    assert by_name["b.csv"]["size"] == len(b"csv,bytes")
+
+
+def test_list_project_outputs_role_from_null_working_path(tmp_path: Path) -> None:
+    """Null-working_path convention: `role` is the owning role-dir name."""
+    name = "proj-role"
+    proj_dir = tmp_path / "context" / "projects" / name
+    role_a = proj_dir / "dev-backend"
+    role_a.mkdir(parents=True)
+    (role_a / "task-55-note.md").write_text("# note")
+
+    proj = _fake_project(name, team="dev", working_path=None)
+    listing = svc.list_project_outputs(proj, repo_root=tmp_path)
+    assert len(listing) == 1
+    assert listing[0]["role"] == "dev-backend"
+    assert listing[0]["task_id"] == 55
+
+
+def test_list_project_outputs_non_digit_dir_not_treated_as_task_id(
+    tmp_path: Path,
+) -> None:
+    """A non-digit / traversal-shaped directory under outputs/ is IGNORED by
+    discovery (the ASCII-digits-only gate) — it never becomes a task_id, and
+    containment (inherited from `_scan_dir_direct_files`/`_collect_entries`)
+    would reject an escape attempt regardless. POSITIVE lock: a real
+    numeric-id sibling still surfaces, proving the skip is selective, not a
+    broken walk.
+    """
+    proj = _fake_project("p", team="dev", working_path=str(tmp_path))
+    outputs_root = tmp_path / "outputs"
+    outputs_root.mkdir(parents=True)
+    # The filesystem itself refuses a literal ".." directory entry (iterdir()
+    # can never yield one), so the realistic attack surface is a stray
+    # non-numeric directory name — the discovery gate must skip it.
+    stray = outputs_root / "not-a-task-id"
+    stray.mkdir()
+    (stray / "shouldnt-appear.txt").write_text("nope")
+    legit = outputs_root / "99"
+    legit.mkdir()
+    (legit / "real.txt").write_text("ok")
+
+    task_ids = svc._discover_task_ids_with_outputs(proj, repo_root=Path("/repo"))
+    assert task_ids == {99}
+    listing = svc.list_project_outputs(proj, repo_root=Path("/repo"))
+    assert [e["filename"] for e in listing] == ["real.txt"]
+
+
+def test_list_project_outputs_unicode_digit_dir_does_not_crash_or_collide(
+    tmp_path: Path,
+) -> None:
+    """`str.isdigit()` accepts Unicode digit categories that `int()` either
+    can't parse (crash) or silently misparses into an ASCII-equivalent int
+    (collision). Regression lock for the fix: a directory named with
+    superscript digits must NOT crash discovery, and a directory named with
+    FULLWIDTH digits (which DOES parse via `int()`) must NOT be treated as
+    the same task_id as a genuine ASCII-named sibling.
+    """
+    proj = _fake_project("p", team="dev", working_path=str(tmp_path))
+    outputs_root = tmp_path / "outputs"
+    outputs_root.mkdir(parents=True)
+    # Superscript '²' — isdigit() True, int() raises ValueError if unguarded.
+    crash_candidate = outputs_root / "²"
+    crash_candidate.mkdir()
+    (crash_candidate / "would-crash.txt").write_text("nope")
+    # Fullwidth '123' — isdigit() True AND int() succeeds -> 123, which would
+    # silently collide with a genuine ASCII-named task 123 if unguarded.
+    collision_candidate = outputs_root / "１２３"
+    collision_candidate.mkdir()
+    (collision_candidate / "attacker.txt").write_text("should not merge into 123")
+    genuine = outputs_root / "123"
+    genuine.mkdir()
+    (genuine / "real.txt").write_text("genuine task 123 output")
+
+    # POSITIVE + NEGATIVE: discovery does not crash (positive: it returns),
+    # and the discovered set is EXACTLY {123} — neither Unicode-digit name
+    # contributes a task_id (negative lock against both the crash path and
+    # the silent-collision path).
+    task_ids = svc._discover_task_ids_with_outputs(proj, repo_root=Path("/repo"))
+    assert task_ids == {123}
+
+    listing = svc.list_project_outputs(proj, repo_root=Path("/repo"))
+    # NEGATIVE: the attacker file must never appear (would prove a collision).
+    assert [e["filename"] for e in listing] == ["real.txt"]
+
+
+def test_discovery_truncation_keeps_largest_ids_not_smallest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Truncation at MAX_DISCOVERED_TASK_IDS must keep the numerically
+    LARGEST ids (newest-skewing, since task ids are DB auto-increment), not
+    the smallest — the endpoint's own sort contract is mtime DESC with a
+    task_id DESC tiebreak, so keeping the smallest ids would silently drop
+    the newest tasks' outputs before the sort ever runs.
+    """
+    monkeypatch.setattr(svc, "MAX_DISCOVERED_TASK_IDS", 3)
+    proj = _fake_project("p", team="dev", working_path=str(tmp_path))
+    outputs_root = tmp_path / "outputs"
+    outputs_root.mkdir(parents=True)
+    for i in (1, 2, 3, 4, 5):
+        d = outputs_root / str(i)
+        d.mkdir()
+        (d / "f.txt").write_text("x")
+
+    task_ids = svc._discover_task_ids_with_outputs(proj, repo_root=Path("/repo"))
+    # POSITIVE: kept the 3 largest. NEGATIVE: did NOT keep the 3 smallest
+    # ({1,2,3}) — the bug this test locks against.
+    assert task_ids == {3, 4, 5}
+
+
+# =============================================================================
+# 10. GET /api/projects/{project_id}/outputs endpoint (Kanban #2558)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_project_outputs_400_when_header_missing(client) -> None:
+    resp = await client.get("/api/projects/1/outputs")
+    assert resp.status_code == 400
+    assert resp.json() == {
+        "detail": "X-Project-Id header is required for task endpoints"
+    }
+
+
+@pytest.mark.asyncio
+async def test_project_outputs_400_on_header_path_mismatch(client) -> None:
+    resp = await client.get(
+        "/api/projects/1/outputs", headers={"X-Project-Id": "2"}
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json() == {
+        "detail": "X-Project-Id header 2 does not match path project_id 1"
+    }
+
+
+@pytest.mark.asyncio
+async def test_project_outputs_404_on_unknown_project(client) -> None:
+    resp = await client.get(
+        "/api/projects/999999999/outputs",
+        headers={"X-Project-Id": "999999999"},
+    )
+    assert resp.status_code == 404
+    assert resp.json() == {"detail": "Project id=999999999 not found"}
+
+
+@pytest.mark.asyncio
+async def test_project_outputs_empty_store_returns_empty(
+    client, scaffold_cleanup, tmp_path
+) -> None:
+    """A project with no output files anywhere → 200 + {items: [], total: 0}."""
+    name = scaffold_cleanup(_unique_name("k2558-empty"))
+    proj = await client.post(
+        "/api/projects",
+        json=_project_create_payload(name, working_path=str(tmp_path)),
+    )
+    project_id = proj.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    resp = await client.get(f"/api/projects/{project_id}/outputs", headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"items": [], "total": 0}
+
+
+@pytest.mark.asyncio
+async def test_project_outputs_happy_path_sorted_and_titled(
+    client, scaffold_cleanup, tmp_path
+) -> None:
+    """Two tasks' outputs aggregate into one listing, sorted mtime DESC, with
+    task_title joined from the DB and download_url pointing at the per-task route.
+    """
+    name = scaffold_cleanup(_unique_name("k2558-happy"))
+    proj = await client.post(
+        "/api/projects",
+        json=_project_create_payload(name, working_path=str(tmp_path)),
+    )
+    project_id = proj.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    create_a = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k2558-task-a"},
+        headers=headers,
+    )
+    task_a = create_a.json()["id"]
+    create_b = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k2558-task-b"},
+        headers=headers,
+    )
+    task_b = create_b.json()["id"]
+
+    # task_a's file written FIRST (older mtime) so task_b sorts before it
+    # under mtime DESC.
+    outdir_a = tmp_path / "outputs" / str(task_a)
+    outdir_a.mkdir(parents=True)
+    (outdir_a / "older.txt").write_text("older")
+    outdir_b = tmp_path / "outputs" / str(task_b)
+    outdir_b.mkdir(parents=True)
+    (outdir_b / "newer.csv").write_text("a,b\n1,2\n")
+    # Force a real mtime gap so DESC ordering is deterministic even on fast
+    # filesystems with coarse mtime resolution.
+    older_ts = (outdir_a / "older.txt").stat().st_mtime - 5
+    os.utime(outdir_a / "older.txt", (older_ts, older_ts))
+
+    try:
+        resp = await client.get(
+            f"/api/projects/{project_id}/outputs", headers=headers
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["total"] == 2
+        assert [e["filename"] for e in body["items"]] == ["newer.csv", "older.txt"]
+        newer = body["items"][0]
+        assert newer["task_id"] == task_b
+        assert newer["task_title"] == "k2558-task-b"
+        assert newer["role"] is None  # working_path convention
+        assert newer["kind"] == "export"
+        assert newer["download_url"] == f"/api/tasks/{task_b}/outputs/newer.csv?download=1"
+        # mtime is ISO-8601 UTC (Z-suffixed or +00:00 offset).
+        assert newer["mtime"].endswith("Z") or "+00:00" in newer["mtime"]
+    finally:
+        await client.delete(f"/api/tasks/{task_a}", headers=headers)
+        await client.delete(f"/api/tasks/{task_b}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_project_outputs_pagination_offset_beyond_total(
+    client, scaffold_cleanup, tmp_path
+) -> None:
+    """?offset beyond total → items=[] but total still reflects the full count."""
+    name = scaffold_cleanup(_unique_name("k2558-page"))
+    proj = await client.post(
+        "/api/projects",
+        json=_project_create_payload(name, working_path=str(tmp_path)),
+    )
+    project_id = proj.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    create = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k2558-page-task"},
+        headers=headers,
+    )
+    task_id = create.json()["id"]
+    outdir = tmp_path / "outputs" / str(task_id)
+    outdir.mkdir(parents=True)
+    (outdir / "one.txt").write_text("1")
+    (outdir / "two.txt").write_text("2")
+    try:
+        # limit=1 baseline — proves paging actually slices (POSITIVE).
+        first_page = await client.get(
+            f"/api/projects/{project_id}/outputs?limit=1&offset=0",
+            headers=headers,
+        )
+        assert first_page.status_code == 200, first_page.text
+        assert len(first_page.json()["items"]) == 1
+        assert first_page.json()["total"] == 2
+
+        # offset beyond total — items empty, total unchanged (NEGATIVE lock:
+        # total must NOT collapse to len(items)).
+        beyond = await client.get(
+            f"/api/projects/{project_id}/outputs?limit=50&offset=999",
+            headers=headers,
+        )
+        assert beyond.status_code == 200, beyond.text
+        assert beyond.json() == {"items": [], "total": 2}
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_project_outputs_null_title_for_id_without_db_row(
+    client, scaffold_cleanup, tmp_path
+) -> None:
+    """A files-only task_id (never a real task row) → task_title: null.
+
+    Simulates the "files may outlive tasks" case cheaply: write output files
+    under a task_id that was never created via POST /api/tasks in this
+    project, so no DB row exists for it at all.
+    """
+    name = scaffold_cleanup(_unique_name("k2558-notitle"))
+    proj = await client.post(
+        "/api/projects",
+        json=_project_create_payload(name, working_path=str(tmp_path)),
+    )
+    project_id = proj.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    ghost_task_id = 8_000_000_001  # astronomically unlikely to be a real row
+    outdir = tmp_path / "outputs" / str(ghost_task_id)
+    outdir.mkdir(parents=True)
+    (outdir / "orphan.txt").write_text("orphaned output")
+
+    resp = await client.get(f"/api/projects/{project_id}/outputs", headers=headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["items"][0]["task_id"] == ghost_task_id
+    assert body["items"][0]["task_title"] is None
+
+
+@pytest.mark.asyncio
+async def test_project_outputs_soft_deleted_task_file_still_listed(
+    client, scaffold_cleanup, tmp_path
+) -> None:
+    """A file under a SOFT-DELETED task's id still appears WITH its title.
+
+    Mirrors the module docstring: "files may outlive tasks" — the walker's
+    source of truth is the filesystem, and the title join intentionally does
+    NOT filter by task.status (soft-deleted rows keep their title on the wire).
+    """
+    name = scaffold_cleanup(_unique_name("k2558-softdel"))
+    proj = await client.post(
+        "/api/projects",
+        json=_project_create_payload(name, working_path=str(tmp_path)),
+    )
+    project_id = proj.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    create = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k2558-softdel-task"},
+        headers=headers,
+    )
+    task_id = create.json()["id"]
+    outdir = tmp_path / "outputs" / str(task_id)
+    outdir.mkdir(parents=True)
+    (outdir / "survivor.txt").write_text("still here")
+
+    # Soft-delete the task (DELETE = status=0, not a hard delete).
+    delete = await client.delete(f"/api/tasks/{task_id}", headers=headers)
+    assert delete.status_code == 204
+
+    resp = await client.get(f"/api/projects/{project_id}/outputs", headers=headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["items"][0]["filename"] == "survivor.txt"
+    assert body["items"][0]["task_id"] == task_id
+    # POSITIVE: title still present (files outlive tasks — not filtered).
+    assert body["items"][0]["task_title"] == "k2558-softdel-task"
+
+
+@pytest.mark.asyncio
+async def test_project_outputs_download_url_serves(
+    client, scaffold_cleanup, tmp_path
+) -> None:
+    """The listed download_url actually 200s via the EXISTING per-task route
+    (no second file-serving path was introduced).
+    """
+    name = scaffold_cleanup(_unique_name("k2558-dlurl"))
+    proj = await client.post(
+        "/api/projects",
+        json=_project_create_payload(name, working_path=str(tmp_path)),
+    )
+    project_id = proj.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+    create = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k2558-dlurl-task"},
+        headers=headers,
+    )
+    task_id = create.json()["id"]
+    outdir = tmp_path / "outputs" / str(task_id)
+    outdir.mkdir(parents=True)
+    (outdir / "fetchme.txt").write_text("payload")
+    try:
+        listing = await client.get(
+            f"/api/projects/{project_id}/outputs", headers=headers
+        )
+        assert listing.status_code == 200, listing.text
+        download_url = listing.json()["items"][0]["download_url"]
+        assert download_url == f"/api/tasks/{task_id}/outputs/fetchme.txt?download=1"
+
+        served = await client.get(download_url, headers=headers)
+        assert served.status_code == 200, served.text
+        assert served.headers["content-disposition"] == (
+            'attachment; filename="fetchme.txt"'
+        )
+        assert served.text == "payload"
     finally:
         await client.delete(f"/api/tasks/{task_id}", headers=headers)

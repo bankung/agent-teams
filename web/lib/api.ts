@@ -2617,6 +2617,61 @@ export async function fetchTaskOutputBytes(
   return response.blob();
 }
 
+// ============================================================================
+// Kanban #2558 — cross-task aggregate output listing (Artifacts page).
+// ============================================================================
+
+// ProjectOutputItem — mirror of api/src/schemas/task_outputs.py:ProjectOutputItem.
+// `role` is the agent-slug string derived from the output folder name (e.g.
+// "dev-frontend") — a DIFFERENT vocabulary from TaskRoleValue (the numeric
+// assigned_role enum on TaskRead); do not conflate the two. `task_title` is
+// null when the owning task_id has no live DB row (files can outlive their
+// task — never-deleted vs never-existed both surface as null). `download_url`
+// is a path relative to the API origin (NOT the web origin) — resolve it via
+// apiOrigin() below, mirroring how fetchTaskOutputBytes builds its URL.
+export type ProjectOutputItem = {
+  filename: string;
+  task_id: number;
+  task_title: string | null;
+  role: string | null;
+  mtime: string; // ISO 8601 UTC
+  size: number;
+  mime: string;
+  kind: string;
+  download_url: string;
+};
+
+export type ProjectOutputsResponse = {
+  items: ProjectOutputItem[];
+  total: number;
+};
+
+// apiOrigin — resolves the same base URL jsonFetch/fetchTaskOutputBytes use
+// (NEXT_PUBLIC_API_URL in the browser), for building an absolute href from a
+// BE-relative path (e.g. download_url) OUTSIDE of a fetch() call — anchors
+// (<a href>) navigate against the WEB origin by default, so a bare relative
+// download_url would 404 against the Next.js app instead of the API.
+export function apiOrigin(): string {
+  return apiBaseUrl();
+}
+
+export type ListProjectOutputsOpts = { limit?: number; offset?: number };
+
+// listProjectOutputs — GET /api/projects/{id}/outputs?limit=&offset=. Sorted
+// mtime DESC (BE-side); `total` is the full pre-slice count for pagination.
+export async function listProjectOutputs(
+  projectId: number,
+  opts: ListProjectOutputsOpts = {},
+): Promise<ProjectOutputsResponse> {
+  const qs = new URLSearchParams();
+  if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
+  if (opts.offset !== undefined) qs.set("offset", String(opts.offset));
+  const path = buildPath(`/api/projects/${projectId}/outputs`, qs);
+  return jsonFetch<ProjectOutputsResponse>(path, {
+    headers: { "X-Project-Id": String(projectId) },
+  });
+}
+
 // deleteResource — DELETE /api/resources/{id}. Operator-gated; soft-delete +
 // move file to trash. 204 (no body) on success; idempotent. Returns void.
 export async function deleteResource(resourceId: number): Promise<void> {

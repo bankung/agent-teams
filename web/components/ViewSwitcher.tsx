@@ -1,13 +1,14 @@
 "use client";
 
-// ViewSwitcher — Wave A (#1). Unified segmented control for the four per-project
-// views: Board · List · Calendar · Gantt.
+// ViewSwitcher — Wave A (#1). Unified segmented control for the per-project
+// views: Board · List · Calendar · Gantt · Artifacts (#2558).
 //
 // Routing model:
-//   - Board    → /p/<name>            (kanban; no view param)
-//   - List     → /p/<name>?view=list  (the SAME board route in list mode)
-//   - Calendar → /p/<name>/calendar
-//   - Gantt    → /p/<name>/gantt
+//   - Board     → /p/<name>            (kanban; no view param)
+//   - List      → /p/<name>?view=list  (the SAME board route in list mode)
+//   - Calendar  → /p/<name>/calendar
+//   - Gantt     → /p/<name>/gantt
+//   - Artifacts → /p/<name>/artifacts  (#2558 — cross-task output file listing)
 //
 // Why List is a query param, not a route: list mode is a render variant of the
 // board page (it shares the board's task state, filters, deep-link + SSE
@@ -34,7 +35,7 @@ import Link from "next/link";
 
 import { Icon } from "@/components/Icon";
 
-export type ViewKey = "board" | "list" | "calendar" | "gantt";
+export type ViewKey = "board" | "list" | "calendar" | "gantt" | "artifacts";
 
 type ViewDef = {
   key: ViewKey;
@@ -73,6 +74,13 @@ const VIEWS: ViewDef[] = [
     label: "Gantt",
     icon: "sprint",
     href: (n) => `/p/${encodeURIComponent(n)}/gantt`,
+    inPlace: false,
+  },
+  {
+    key: "artifacts",
+    label: "Artifacts",
+    icon: "task-card",
+    href: (n) => `/p/${encodeURIComponent(n)}/artifacts`,
     inPlace: false,
   },
 ];
