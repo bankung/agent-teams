@@ -1947,9 +1947,7 @@ async def _fire_post_patch_notifications(
     task_id: int,
     updates: dict[str, Any],
     hitl_transition_in: bool,
-    _resolved_interaction_kind_for_done: Any,
     _resolved_ps_for_done: Any,
-    _pre_patch_interaction_kind: Any,
     _pre_patch_process_status: Any,
     _pre_patch_halt_reason: Any,
     _notify_task_title: Any,
@@ -1982,9 +1980,9 @@ async def _fire_post_patch_notifications(
         from src.services.notification_router import deliver as _push_deliver
 
         # HITL-needed hook — fires when interaction_kind transitions from
-        # 'work' (or NULL) → 'question' or 'decision'. Uses pre-captured
-        # values (_pre_patch_interaction_kind, _notify_*) since the ORM
-        # object is expired after commit (async-session lazy-load guard).
+        # 'work' (or NULL) → 'question' or 'decision'. Uses the precomputed
+        # hitl_transition_in bool (and _notify_*) since the ORM object is
+        # expired after commit (async-session lazy-load guard).
         if hitl_transition_in:
             _hitl_qp = _notify_question_payload or {}
             _hitl_body = (
@@ -2942,9 +2940,7 @@ async def update_task(
         task_id=task_id,
         updates=updates,
         hitl_transition_in=_hitl_transition_in,
-        _resolved_interaction_kind_for_done=_resolved_interaction_kind_for_done,
         _resolved_ps_for_done=_resolved_ps_for_done,
-        _pre_patch_interaction_kind=_pre_patch_interaction_kind,
         _pre_patch_process_status=_pre_patch_process_status,
         _pre_patch_halt_reason=_pre_patch_halt_reason,
         _notify_task_title=_notify_task_title,
