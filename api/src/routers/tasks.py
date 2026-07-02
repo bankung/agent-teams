@@ -320,6 +320,16 @@ async def list_tasks(
     run_mode: Literal["manual", "auto_pickup", "auto_headless"] | None = Query(
         default=None, description="Filter by tasks.run_mode (e.g. auto_pickup / manual)."
     ),
+    task_type: Literal["bug", "feature", "chore", "docs", "refactor", "audit"]
+    | None = Query(
+        default=None,
+        description=(
+            "Filter by tasks.task_type (#2699 F5). Mirrors run_mode's Literal-Query "
+            "pattern — an invalid value 422s at the FastAPI boundary rather than "
+            "silently no-op filtering. Replaces the FE fetch-500-then-client-filter "
+            "shortcut in web/lib/api.ts listProjectAuditTasks."
+        ),
+    ),
     parent_task_id: int | None = Query(
         default=None,
         ge=1,
@@ -458,6 +468,10 @@ async def list_tasks(
         stmt = stmt.where(Task.assigned_role == assigned_role)
     if run_mode is not None:
         stmt = stmt.where(Task.run_mode == run_mode)
+    # Kanban #2699 F5: filter by task_type (e.g. audit-only lists). Query-level
+    # Literal already 422s on garbage before this line runs.
+    if task_type is not None:
+        stmt = stmt.where(Task.task_type == task_type)
     # Kanban #1868: filter to a single milestone's tasks.
     if milestone_id is not None:
         stmt = stmt.where(Task.milestone_id == milestone_id)

@@ -59,7 +59,7 @@ export function resolveSettingsSection(
   return match ? match.id : DEFAULT_SETTINGS_SECTION;
 }
 
-// Whether a section needs the audit-task fetch (listAllTasks). Only Advanced
+// Whether a section needs the audit-task fetch (listProjectAuditTasks). Only Advanced
 // renders AuditHistorySection, so every other section skips the fetch for a
 // lighter payload. ApprovalPoliciesEditor (also under Advanced) fetches its own
 // closed-task stats client-side, so the server fetch is purely for audit rows.

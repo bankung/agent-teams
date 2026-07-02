@@ -25,7 +25,7 @@ import Link from "next/link";
 
 import {
   getProjectByName,
-  listAllTasks,
+  listProjectAuditTasks,
   HttpError,
   type ProjectRead,
   type TaskRead,
@@ -76,22 +76,14 @@ export default async function SettingsPage(props: Props) {
   const section = resolveSettingsSection(searchParams?.section, hasProject);
 
   // #2716 — audit fetch is gated on the active section: only Advanced renders
-  // AuditHistorySection, so every other section skips listAllTasks for a lighter
-  // payload. The project object is still resolved above (the nav needs to know
-  // project scope exists) — only the task fetch is deferred.
+  // AuditHistorySection, so every other section skips the task fetch for a
+  // lighter payload. The project object is still resolved above (the nav
+  // needs to know project scope exists) — only the task fetch is deferred.
+  // Kanban #2699 F5: server-filtered + pre-sorted via listProjectAuditTasks
+  // (replaces the old listAllTasks + inline task_type filter/sort duplicate).
   let auditTasks: TaskRead[] = [];
   if (project && sectionNeedsAudit(section)) {
-    const allTasks = await listAllTasks(project.id);
-    // Mirror the auditTasks sort from /p/[name]/settings (completed_at desc,
-    // then id desc).
-    auditTasks = [...allTasks.filter((t) => t.task_type === "audit")].sort(
-      (a, b) => {
-        const aDone = a.completed_at ?? "";
-        const bDone = b.completed_at ?? "";
-        if (aDone === bDone) return b.id - a.id;
-        return aDone < bDone ? 1 : -1;
-      },
-    );
+    auditTasks = await listProjectAuditTasks(project.id);
   }
 
   return (

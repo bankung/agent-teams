@@ -716,21 +716,15 @@ export async function unpauseProject(
 }
 
 // listProjectAuditTasks — convenience wrapper for the Audit History section
-// on the project detail page. The BE /api/tasks endpoint has no `task_type`
-// query param (single source of truth for that filter today is client-side),
-// so we fetch every task for the project (cap=500 matches the Board page's
-// initial-load cap) and filter to task_type='audit'. Sorted by completed_at
-// DESC so the freshest verdict is first; tasks without a completed_at fall
-// to the bottom (typically not-yet-DONE audit rows).
-//
-// If the volume ever grows past the 500-row cap, swap to a paginated fetch
-// or land a BE `task_type` filter param — both are forward-compat.
+// on the project detail page. Server-filters via ?task_type=audit (Kanban
+// #2699 F5 — replaces the old fetch-500-then-client-filter shortcut). Sorted
+// by completed_at DESC so the freshest verdict is first; tasks without a
+// completed_at fall to the bottom (typically not-yet-DONE audit rows).
 export async function listProjectAuditTasks(
   projectId: number,
   limit = 500,
 ): Promise<TaskRead[]> {
-  const all = await listTasks(projectId, { limit });
-  const audits = all.filter((t) => t.task_type === "audit");
+  const audits = await listTasks(projectId, { limit, task_type: "audit" });
   audits.sort((a, b) => {
     const aDone = a.completed_at ?? "";
     const bDone = b.completed_at ?? "";
@@ -755,6 +749,8 @@ type ListTasksOpts = {
   // tasks. Either may be sent independently (open-ended range).
   due_from?: string;
   due_to?: string;
+  // Kanban #2699 F5 — server-side task_type filter (e.g. 'audit').
+  task_type?: TaskTypeValue;
 };
 
 export async function listTasks(
@@ -772,6 +768,7 @@ export async function listTasks(
     qs.set("milestone_id", String(opts.milestone_id));
   if (opts.due_from !== undefined) qs.set("due_from", opts.due_from);
   if (opts.due_to !== undefined) qs.set("due_to", opts.due_to);
+  if (opts.task_type !== undefined) qs.set("task_type", opts.task_type);
   if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
   const path = buildPath("/api/tasks", qs);
   return jsonFetch<TaskRead[]>(path, {
