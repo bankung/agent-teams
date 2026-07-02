@@ -85,8 +85,6 @@ export function WildcardSSEProvider({
     let firstEventMs: number | null = null;
     let trailingTimer: ReturnType<typeof setTimeout> | null = null;
     let hardCapTimer: ReturnType<typeof setTimeout> | null = null;
-    // Stable local for the cleanup below (ref-value-in-cleanup lint guard).
-    const subscribers = subscribersRef.current;
 
     const clearTimers = () => {
       if (trailingTimer !== null) {
@@ -160,7 +158,11 @@ export function WildcardSSEProvider({
       clearTimers();
       buffer = [];
       firstEventMs = null;
-      subscribers.clear();
+      // Kanban #2699 FE audit F3 — do NOT clear subscribersRef here. It is the
+      // LIVE shared Set across StrictMode mount/cleanup/remount; subscribers
+      // remove themselves via their own unsub() (see subscribe() above).
+      // Clearing it here evicted subscribers registered during the first
+      // mount, silently dropping events until they happened to re-subscribe.
       setConnectionState("offline");
     };
   }, []);
