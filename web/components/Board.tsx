@@ -276,6 +276,15 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [tasks, setTasks] = useState<TaskRead[]>(initialTasks);
+  // #2699 F2 — stable read-latest-tasks ref for onSameLaneReorder (keeps its
+  // useCallback deps free of `tasks`, so an unrelated SSE-driven setTasks no
+  // longer invalidates it every tick). Synced post-commit (react-hooks/refs:
+  // no ref writes during render) — mirrors AgentFormModal.tsx/ModalShell.tsx's
+  // editAgentRef/onCloseRef pattern.
+  const tasksRef = useRef(tasks);
+  useEffect(() => {
+    tasksRef.current = tasks;
+  });
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
   // #1001 follow-up (2026-05-20) — `?task=<id>` deep-link state. Set when
@@ -362,11 +371,18 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
     setDonePagination({ count: DONE_PAGE, filterKey: currentFilterKey });
   }
   const visibleDoneCount = donePagination.count;
-  const setVisibleDoneCount = (updater: number | ((n: number) => number)) =>
-    setDonePagination((prev) => ({
-      count: typeof updater === "function" ? updater(prev.count) : updater,
-      filterKey: prev.filterKey,
-    }));
+  // #2699 F2 — useCallback (not a plain const) so the wrapper's identity is
+  // stable across renders. It closes only over setDonePagination (a useState
+  // setter, itself stable), so `[]` deps are correct — the inline functional
+  // updater always reads the LATEST donePagination.prev at call time.
+  const setVisibleDoneCount = useCallback(
+    (updater: number | ((n: number) => number)) =>
+      setDonePagination((prev) => ({
+        count: typeof updater === "function" ? updater(prev.count) : updater,
+        filterKey: prev.filterKey,
+      })),
+    [],
+  );
   const [doneHasMore, setDoneHasMore] = useState(initialDoneHasMore);
   const [doneLoadingMore, setDoneLoadingMore] = useState(false);
 
@@ -556,10 +572,13 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
   // relying on the `grouped` memo (which is declared below) to avoid a
   // "used before declaration" error — the result is identical since
   // sortDoneLane is a pure function.
+  // #2699 F2 — reads tasksRef.current (see onSameLaneReorder above) so this
+  // callback (passed to BoardDndCanvas as onLoadMoreDone) is also stable
+  // across an SSE-driven setTasks; otherwise it alone would defeat the memo.
   const handleLoadMoreDone = useCallback(async () => {
     if (!doneHasMore || doneLoadingMore) return;
     const sortedDone = sortDoneLane(
-      tasks.filter((t) => t.process_status === TaskStatus.DONE),
+      tasksRef.current.filter((t) => t.process_status === TaskStatus.DONE),
     );
     const lastDone = sortedDone[sortedDone.length - 1];
     if (!lastDone) return;
@@ -584,14 +603,18 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
     } finally {
       setDoneLoadingMore(false);
     }
-  }, [doneHasMore, doneLoadingMore, tasks, project.id, pushToast]);
+  }, [doneHasMore, doneLoadingMore, project.id, pushToast, setVisibleDoneCount]);
 
   // Same-lane: no optimistic mutation (dnd-kit transform handles visual; snap-back on 422). Details: shared/decisions.md 2026-05-14
+  // #2699 F2 — reads tasksRef.current (not the `tasks` state var) so this
+  // callback's identity is stable across an SSE tick's setTasks; the reorder
+  // math still reads the CURRENT tasks snapshot at call time via the ref.
   const onSameLaneReorder = useCallback(
     (taskId: number, overTaskId: number, laneIds: number[]) => {
-      const original = tasks.find((t) => t.id === taskId);
+      const currentTasks = tasksRef.current;
+      const original = currentTasks.find((t) => t.id === taskId);
       if (!original) return;
-      const overTask = tasks.find((t) => t.id === overTaskId);
+      const overTask = currentTasks.find((t) => t.id === overTaskId);
       if (!overTask) return;
       const oldIndex = laneIds.indexOf(original.id);
       const newIndex = laneIds.indexOf(overTask.id);
@@ -609,7 +632,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
           pushToast(`Task #${taskId}: ${msg}`);
         });
     },
-    [tasks, project.id, pushToast],
+    [project.id, pushToast],
   );
 
   // #1238 GOV3 — audit-task tally is computed against the unfiltered list so
