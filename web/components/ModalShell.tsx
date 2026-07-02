@@ -22,6 +22,8 @@
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useRef } from "react";
 
+import { useFocusTrap } from "@/lib/useFocusTrap";
+
 // Tailwind max-width tokens for the sm:max-w-* panel constraint.
 // Callers pass the token; ModalShell maps it to the full class so Tailwind's
 // static analyser can see all class strings at build time.
@@ -102,6 +104,11 @@ export function ModalShell({
     return () => document.removeEventListener("keydown", handleEsc);
   }, [open, handleEsc]);
 
+  // FOCUS-1 (#1315 deferred review) — initial focus + Tab trap + restore.
+  // Shared across every ModalShell consumer (~20 modals) via one hook.
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  useFocusTrap(panelRef, open);
+
   if (!open) return null;
   if (typeof document === "undefined") return null;
 
@@ -118,9 +125,11 @@ export function ModalShell({
     >
       {/* Panel — role="dialog" + aria-modal live here, not on the backdrop */}
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={labelledBy}
+        tabIndex={-1}
         className={`flex w-full max-w-none flex-col overflow-y-auto rounded-none border-0 bg-white p-4 dark:bg-zinc-900 ${scrollable ? DESKTOP_PRE_SCROLLABLE : DESKTOP_PRE_DEFAULT} ${panelMaxW} ${scrollable ? DESKTOP_POST_SCROLLABLE : DESKTOP_POST_DEFAULT} sm:rounded sm:border sm:border-zinc-200 sm:dark:border-zinc-800${panelExtraClassName ? ` ${panelExtraClassName}` : ""}`}
       >
         {children}

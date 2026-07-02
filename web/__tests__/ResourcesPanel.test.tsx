@@ -92,7 +92,8 @@ describe("ResourcesPanel — collapse + lazy load", () => {
 
     // Row renders after the fetch resolves.
     expect(await screen.findByText("data.csv")).toBeInTheDocument();
-    expect(mockListResources).toHaveBeenCalledWith(1);
+    // PERF-1 — refresh() now passes { limit: PAGE_SIZE } explicitly.
+    expect(mockListResources).toHaveBeenCalledWith(1, { limit: 50 });
     // Tag chips: size + format + row_count.
     const row = document.querySelector('[data-resources-row="1"]');
     expect(row).not.toBeNull();
@@ -132,5 +133,117 @@ describe("ResourcesPanel — empty + add", () => {
 
     fireEvent.click(document.querySelector("[data-resources-add]")!);
     expect(await screen.findByTestId("upload-modal-open")).toBeInTheDocument();
+  });
+});
+
+// PERF-1 (#1315 deferred review) — GET /api/projects/{id}/resources supports
+// ?limit&offset (api/src/routers/resources.py, default 50/max 500); the panel
+// now wires a real "Load more" instead of silently capping at the first page.
+describe("ResourcesPanel — load more (PERF-1)", () => {
+  function make50Files(): Resource[] {
+    return Array.from({ length: 50 }, (_, i) =>
+      fileResource({ id: i + 1, filename: `f${i}.csv`, tags: {} }),
+    );
+  }
+
+  it("shows Load more after a full 50-row page and calls listResources with limit/offset", async () => {
+    const page1 = make50Files();
+    mockListResources.mockResolvedValueOnce(page1);
+    render(<ResourcesPanel projectId={1} />);
+    fireEvent.click(screen.getByRole("button", { name: /resources/i }));
+
+    await screen.findByText("f0.csv");
+    expect(mockListResources).toHaveBeenCalledWith(1, { limit: 50 });
+
+    const btn = document.querySelector("[data-resources-load-more]");
+    expect(btn).not.toBeNull();
+
+    const page2 = [fileResource({ id: 51, filename: "f50.csv", tags: {} })];
+    mockListResources.mockResolvedValueOnce(page2);
+    fireEvent.click(btn!);
+
+    await waitFor(() => {
+      expect(mockListResources).toHaveBeenCalledWith(1, {
+        limit: 50,
+        offset: 50,
+      });
+    });
+    expect(await screen.findByText("f50.csv")).toBeInTheDocument();
+  });
+
+  it("hides Load more once a short page (<50 rows) returns", async () => {
+    const shortPage = [fileResource({ id: 1, filename: "only.csv", tags: {} })];
+    mockListResources.mockResolvedValueOnce(shortPage);
+    render(<ResourcesPanel projectId={1} />);
+    fireEvent.click(screen.getByRole("button", { name: /resources/i }));
+
+    await screen.findByText("only.csv");
+    // A page shorter than PAGE_SIZE (1 < 50) means no more rows.
+    expect(document.querySelector("[data-resources-load-more]")).toBeNull();
+  });
+
+  it("does not fetch more rows without a click (no auto-pagination)", async () => {
+    mockListResources.mockResolvedValueOnce(make50Files());
+    render(<ResourcesPanel projectId={1} />);
+    fireEvent.click(screen.getByRole("button", { name: /resources/i }));
+
+    await screen.findByText("f0.csv");
+    expect(mockListResources).toHaveBeenCalledTimes(1);
+  });
+});
+
+// TYPE-1 (#1315 deferred review) — the mime chip is suppressed when it's just
+// the detected format's canonical mime restated; content_type_resolved (tags)
+// is preferred over the top-level content_type column when both are present.
+describe("ResourcesPanel — mime chip de-dup (TYPE-1)", () => {
+  it("suppresses the mime chip when it duplicates format_detected (csv / text/csv)", async () => {
+    mockListResources.mockResolvedValue([
+      fileResource({
+        content_type: "text/csv",
+        tags: { format_detected: "csv" },
+      }),
+    ]);
+    render(<ResourcesPanel projectId={1} />);
+    fireEvent.click(screen.getByRole("button", { name: /resources/i }));
+    await screen.findByText("data.csv");
+
+    const row = document.querySelector('[data-resources-row="1"]');
+    expect(row?.querySelector('[data-resources-chip="fmt"]')).not.toBeNull();
+    expect(row?.querySelector('[data-resources-chip="mime"]')).toBeNull();
+  });
+
+  it("keeps the mime chip when it does NOT duplicate the format (xlsx has no canonical mime)", async () => {
+    mockListResources.mockResolvedValue([
+      fileResource({
+        content_type:
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        tags: { format_detected: "xlsx" },
+      }),
+    ]);
+    render(<ResourcesPanel projectId={1} />);
+    fireEvent.click(screen.getByRole("button", { name: /resources/i }));
+    await screen.findByText("data.csv");
+
+    const row = document.querySelector('[data-resources-row="1"]');
+    const mimeChip = row?.querySelector('[data-resources-chip="mime"]');
+    expect(mimeChip).not.toBeNull();
+    expect(mimeChip?.textContent).toContain("spreadsheetml");
+  });
+
+  it("prefers tags.content_type_resolved over the top-level content_type column", async () => {
+    mockListResources.mockResolvedValue([
+      fileResource({
+        content_type: "application/octet-stream", // stale top-level value
+        tags: { format_detected: "json", content_type_resolved: "application/json" },
+      }),
+    ]);
+    render(<ResourcesPanel projectId={1} />);
+    fireEvent.click(screen.getByRole("button", { name: /resources/i }));
+    await screen.findByText("data.csv");
+
+    const row = document.querySelector('[data-resources-row="1"]');
+    // application/json === json's canonical mime -> suppressed (also proves
+    // the resolved tag value, not the stale octet-stream, drove the check).
+    expect(row?.querySelector('[data-resources-chip="mime"]')).toBeNull();
   });
 });

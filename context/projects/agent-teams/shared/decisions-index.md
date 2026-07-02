@@ -1,6 +1,6 @@
 ---
 purpose: bootstrap hot-read INDEX for decisions.md (1 line per decision)
-updated: 2026-06-26
+updated: 2026-07-02
 covers: active decisions.md 2026-05-20 onward; older in decisions-archive-2026-05.md
 ---
 
@@ -19,6 +19,7 @@ covers: active decisions.md 2026-05-20 onward; older in decisions-archive-2026-0
 > **[CRIT]** = anti-re-litigation decision (do-not-revisit without reopening the entry). Pull its
 > body before touching that area.
 
+- 2026-07-02 — #2125 Resources panel a11y/perf (deferred #1315): shared `useFocusTrap` hook, zero-dep (ModalShell ~20 modals + preview drawer); PERF-1 WIRED "Load more" (API `?limit&offset` pre-existed, resources.py:406); mime-chip canonical-suppress + hidden-both tabpanels + stable CSV keys + upload `accept` hint; SSRF HEAD-probe known-gap recorded (resources.py:111, #1309 follow-up); jsdom gotcha: visibility via `[hidden]`, never `offsetParent`. vitest 493 ×15 exit-0 + Lead re-run green. from ms25
 - 2026-07-01 — #1018 per-project agent enable/disable + tier + notes (agent-gallery, v0.8.0): ADDITIVE (operator-locked) — #777 `agent_overrides` tier map untouched, enabled/notes in new `config.agent_settings`; new GET/PATCH /api/projects/{id}/agent-overrides unified view; Agents tab in ProjectSettingsPanel; Lead spawn-filter rule in dev.md. Reviews: security clean; dev-reviewer M1 (stale rowState cross-project→wrong-write, fixed `key={project.id}`) + M2 (GET 500 on legacy tier, fixed normalize→None). Live-curl + tsc/lint + vitest ×15 (481) green. AC4→dev.md rule (runtime #2769), AC6 audit→#2768. from #50
 - 2026-06-26 — #2716 /settings two-pane category nav (Phase-0 UI/easy-setup): left `SettingsNav` (ViewSwitcher pattern) + right active-section pane, `?section=` state (Server Component, default Appearance, back-compat); single-source `web/lib/settingsCategories.ts`; retired `AdvancedSettingsDisclosure` (own flat category); audit-fetch gated to Advanced. tsc/lint/vitest green (host). PARKED on operator: visual render + CI vitest. from 0.8.0 theme
 - 2026-06-26 — #2664 re-queued TODO tasks now run FRESH: worker `_poll_once` clears the stale LangGraph checkpoint (`hitl.clear_checkpoint`→`adelete_thread`) before invoke, `has_checkpoint`-guarded; HITL + transient-retry resume UNTOUCHED (AC2 data-loss invariant confirmed by dev-reviewer + regression test) + FE destructive-drop confirm (ModalShell). PARKED on operator: merge + Mode B live-gating. from #2660

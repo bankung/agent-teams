@@ -38,6 +38,19 @@ const PIPELINE_STAGES = [
 ] as const;
 const STAGE_INTERVAL_MS = 700;
 
+// NIT-4 (#1315 deferred review) — the file input's `accept` hint. The BE
+// (api/src/services/resource_verify.py `detect_format`) never rejects an
+// upload by extension or mime — any file is accepted, parsed if a format
+// parser exists, or stored with `parser_unavailable: true` for anything else
+// (a permissive-by-design pipeline, confirmed by reading the router + verify
+// module). So this list is scoped to the formats the parser actively
+// understands (full CSV/TSV/JSON parsing; xlsx/pdf are detected + tagged
+// though not fully parsed yet, matching `detect_format`'s known keys) — a UI
+// hint that narrows the OS file picker's default view, NOT an enforced
+// allowlist. It never blocks a drag-drop or a picker's "All files" filter.
+const ACCEPTED_FILE_TYPES =
+  ".csv,.tsv,.tab,.json,.xlsx,.xlsm,.pdf,text/csv,text/tab-separated-values,application/json,application/pdf";
+
 type Props = {
   projectId: number;
   open: boolean;
@@ -211,9 +224,18 @@ export function ResourceUploadModal({
           {tabBtn("link", "Add link")}
         </div>
 
-        {tab === "file" ? (
-          <div className="mt-3" role="tabpanel" id="resource-panel-file" aria-labelledby="resource-tab-file" data-resource-file-panel>
-            {/* Native HTML5 drag-drop zone + click-to-pick. No dependency. */}
+        {/* NIT-2 (#1315 deferred review) — both tabpanels stay mounted; the
+            inactive one carries the `hidden` attribute instead of being
+            unmounted. Keeps each panel's `aria-labelledby` -> tab connection
+            live (WAI-ARIA APG tabpanel pattern) instead of the previously
+            inactive tab's aria-controls pointing at nothing. `hidden` sets
+            display:none via the UA stylesheet, so the hidden panel's inputs
+            are neither visible nor focusable/tabbable (useFocusTrap's
+            getFocusable() explicitly excludes anything under a `[hidden]`
+            ancestor) and native form validation is skipped on hidden fields
+            — no submit/behavior change. */}
+        <div className="mt-3" role="tabpanel" id="resource-panel-file" aria-labelledby="resource-tab-file" hidden={tab !== "file"} data-resource-file-panel>
+          {/* Native HTML5 drag-drop zone + click-to-pick. No dependency. */}
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
@@ -252,6 +274,7 @@ export function ResourceUploadModal({
             <input
               ref={fileInputRef}
               type="file"
+              accept={ACCEPTED_FILE_TYPES}
               className="sr-only"
               onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
               disabled={submitting}
@@ -288,9 +311,8 @@ export function ResourceUploadModal({
                 <span>{PIPELINE_STAGES[stageIndex]}</span>
               </div>
             )}
-          </div>
-        ) : (
-          <div className="mt-3" role="tabpanel" id="resource-panel-link" aria-labelledby="resource-tab-link" data-resource-link-panel>
+        </div>
+        <div className="mt-3" role="tabpanel" id="resource-panel-link" aria-labelledby="resource-tab-link" hidden={tab !== "link"} data-resource-link-panel>
             <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
               URL <span className="text-red-600 dark:text-red-400">*</span>
               <input
@@ -322,8 +344,7 @@ export function ResourceUploadModal({
                 data-resource-link-label
               />
             </label>
-          </div>
-        )}
+        </div>
 
         {error !== null && (
           <p
