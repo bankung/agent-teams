@@ -354,6 +354,27 @@ function buildPath(base: string, qs: URLSearchParams): string {
   return qs.toString() ? `${base}?${qs}` : base;
 }
 
+// #2726 N4 — shared param-serialization for listTasks/listAllTasks (previously
+// duplicated inline in each). `limit`/`offset` are NOT included here: listTasks
+// takes limit from opts (optional, caller-controlled) while listAllTasks always
+// forwards its own paging limit/offset instead of opts.limit — kept as the two
+// call sites' own qs.set() calls so this helper's output is identical either way.
+function buildTasksQs(opts: Omit<ListTasksOpts, "limit">): URLSearchParams {
+  const qs = new URLSearchParams();
+  if (opts.pending) qs.set("pending", "true");
+  if (opts.process_status !== undefined)
+    qs.set("process_status", String(opts.process_status));
+  if (opts.top_level_only) qs.set("top_level_only", "true");
+  else if (opts.parent_task_id !== undefined)
+    qs.set("parent_task_id", String(opts.parent_task_id));
+  if (opts.milestone_id !== undefined)
+    qs.set("milestone_id", String(opts.milestone_id));
+  if (opts.due_from !== undefined) qs.set("due_from", opts.due_from);
+  if (opts.due_to !== undefined) qs.set("due_to", opts.due_to);
+  if (opts.task_type !== undefined) qs.set("task_type", opts.task_type);
+  return qs;
+}
+
 // applyActor — stamp X-Actor header when actor is a non-empty string.
 function applyActor(
   headers: Record<string, string>,
@@ -757,18 +778,7 @@ export async function listTasks(
   projectId: number,
   opts: ListTasksOpts = {},
 ): Promise<TaskRead[]> {
-  const qs = new URLSearchParams();
-  if (opts.pending) qs.set("pending", "true");
-  if (opts.process_status !== undefined)
-    qs.set("process_status", String(opts.process_status));
-  if (opts.top_level_only) qs.set("top_level_only", "true");
-  else if (opts.parent_task_id !== undefined)
-    qs.set("parent_task_id", String(opts.parent_task_id));
-  if (opts.milestone_id !== undefined)
-    qs.set("milestone_id", String(opts.milestone_id));
-  if (opts.due_from !== undefined) qs.set("due_from", opts.due_from);
-  if (opts.due_to !== undefined) qs.set("due_to", opts.due_to);
-  if (opts.task_type !== undefined) qs.set("task_type", opts.task_type);
+  const qs = buildTasksQs(opts);
   if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
   const path = buildPath("/api/tasks", qs);
   return jsonFetch<TaskRead[]>(path, {
@@ -783,6 +793,10 @@ export async function listTasks(
 // Only the opts fields that are safe to combine with offset are forwarded
 // (pending / process_status / top_level_only / parent_task_id / milestone_id /
 // due_from / due_to). `opts.limit` is intentionally ignored — the caller wants ALL rows.
+// shortcut: sequential paging (one round-trip per 500-row page, awaited in a
+// loop) — fine up to a few thousand rows; ceiling is request-count fan-out on
+// very large projects. Upgrade: BE returns a total-count header so the FE can
+// fire all pages in parallel (Promise.all) instead of walking one at a time.
 const _PAGE = 500;
 export async function listAllTasks(
   projectId: number,
@@ -791,17 +805,7 @@ export async function listAllTasks(
   const all: TaskRead[] = [];
   let offset = 0;
   while (true) {
-    const qs = new URLSearchParams();
-    if (opts.pending) qs.set("pending", "true");
-    if (opts.process_status !== undefined)
-      qs.set("process_status", String(opts.process_status));
-    if (opts.top_level_only) qs.set("top_level_only", "true");
-    else if (opts.parent_task_id !== undefined)
-      qs.set("parent_task_id", String(opts.parent_task_id));
-    if (opts.milestone_id !== undefined)
-      qs.set("milestone_id", String(opts.milestone_id));
-    if (opts.due_from !== undefined) qs.set("due_from", opts.due_from);
-    if (opts.due_to !== undefined) qs.set("due_to", opts.due_to);
+    const qs = buildTasksQs(opts);
     qs.set("limit", String(_PAGE));
     qs.set("offset", String(offset));
     const page = await jsonFetch<TaskRead[]>(buildPath("/api/tasks", qs), {

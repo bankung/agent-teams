@@ -152,10 +152,15 @@ export function TaskDetail({
   const pickerOpenRef = useRef(pickerOpen);
   const submittingRef = useRef(submitting);
   const onCloseRef = useRef(onClose);
-  useEffect(() => { cancelOpenRef.current = cancelOpen; }, [cancelOpen]);
-  useEffect(() => { pickerOpenRef.current = pickerOpen; }, [pickerOpen]);
-  useEffect(() => { submittingRef.current = submitting; }, [submitting]);
-  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+  // #2726 N4/F6 — one no-deps effect (not a render-time assignment): react-hooks/refs
+  // errors on writing ref.current during render (verified via scratch host-eslint
+  // run, #2726). Runs every render, same as Board.tsx's tasksRef (Board.tsx:284-287).
+  useEffect(() => {
+    cancelOpenRef.current = cancelOpen;
+    pickerOpenRef.current = pickerOpen;
+    submittingRef.current = submitting;
+    onCloseRef.current = onClose;
+  });
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
