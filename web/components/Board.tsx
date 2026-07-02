@@ -1005,6 +1005,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
           task={selectedTask}
           allTasks={tasks}
           projectId={project.id}
+          milestones={milestones}
           onClose={() => setSelectedTaskId(null)}
           onPatch={onPatchedTask}
           onError={pushToast}

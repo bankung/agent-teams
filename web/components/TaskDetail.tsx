@@ -6,7 +6,6 @@ import {
   cancelTask,
   getTaskBlocks,
   invalidateAnswer,
-  listMilestones,
   patchTask,
   submitAnswer,
   type AcceptanceCriterion,
@@ -41,6 +40,12 @@ type Props = {
   task: TaskRead;
   allTasks: TaskRead[];
   projectId: number;
+  // #2699 FE audit F1 — Board already loads the project's milestones
+  // (Board.tsx:401); TaskDetail consumes that list instead of re-fetching an
+  // identical GET on every drawer mount. Same shape as the old own-fetch: may
+  // be [] transiently if the drawer opens before Board's effect resolves —
+  // MilestoneCombobox already degrades gracefully (falls back to "#<id>").
+  milestones: MilestoneRead[];
   onClose: () => void;
   onPatch: (updated: TaskRead) => void;
   onError: (message: string) => void;
@@ -72,6 +77,7 @@ export function TaskDetail({
   task,
   allTasks,
   projectId,
+  milestones,
   onClose,
   onPatch,
   onError,
@@ -96,7 +102,6 @@ export function TaskDetail({
   }, [task.id, task.model_override]);
 
   // #1868 — milestone + due date optimistic-PATCH state (same posture as model_override)
-  const [milestones, setMilestones] = useState<MilestoneRead[]>([]);
   const [milestoneId, setMilestoneId] = useState<number | null>(
     task.milestone_id ?? null,
   );
@@ -140,21 +145,6 @@ export function TaskDetail({
     });
     onPatch(patched);
   };
-
-  // Fetch milestones once for the picker; failure degrades to empty list.
-  useEffect(() => {
-    let cancelled = false;
-    listMilestones(projectId, { limit: 500 })
-      .then((rows) => {
-        if (!cancelled) setMilestones(rows);
-      })
-      .catch(() => {
-        if (!cancelled) setMilestones([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId]);
 
   // MED-2: stash deps in refs so the keydown listener subscribes ONCE ([] deps),
   // not on every SSE tick that re-creates the onClose arrow in Board.

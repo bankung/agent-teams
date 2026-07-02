@@ -20,12 +20,16 @@ import {
   fireEvent,
   configure,
 } from "@testing-library/react";
-import type { AcceptanceCriterion, TaskRead } from "@/lib/api";
+import type { AcceptanceCriterion, MilestoneRead, TaskRead } from "@/lib/api";
 
 configure({ asyncUtilTimeout: 5000 });
 
 // ── api mock ──────────────────────────────────────────────────────────────────
 const mockPatchTask = vi.fn();
+// #2699 FE audit F1 — listMilestones is mocked (not stubbed to resolve) so a
+// call to it fails loudly; TaskDetail must NOT call it (milestones is now a
+// caller-supplied prop, not an own-fetch). See "no listMilestones fetch" below.
+const mockListMilestones = vi.fn();
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -33,9 +37,10 @@ vi.mock("@/lib/api", async (importOriginal) => {
     ...actual,
     patchTask: (...args: Parameters<typeof actual.patchTask>) =>
       mockPatchTask(...args),
-    // TaskDetail also calls these — stub them so the component mounts cleanly
+    // TaskDetail also calls this — stub it so the component mounts cleanly
     getTaskBlocks: vi.fn().mockResolvedValue([]),
-    listMilestones: vi.fn().mockResolvedValue([]),
+    listMilestones: (...args: Parameters<typeof actual.listMilestones>) =>
+      mockListMilestones(...args),
   };
 });
 
@@ -54,8 +59,17 @@ vi.mock("@/components/ModelTierSelect", () => ({
     <select data-testid="model-tier-select" {...props} />
   ),
 }));
+// #2699 FE audit F1 — renders the `milestones` prop titles it receives (rather
+// than a props-blind stub) so a test can assert the list TaskDetail passes
+// down came from ITS OWN `milestones` prop, not an own-fetch.
 vi.mock("@/components/MilestoneCombobox", () => ({
-  MilestoneCombobox: () => <div data-testid="milestone-combobox-stub" />,
+  MilestoneCombobox: ({ milestones }: { milestones: { id: number; title: string }[] }) => (
+    <div data-testid="milestone-combobox-stub">
+      {milestones.map((m) => (
+        <span key={m.id}>{m.title}</span>
+      ))}
+    </div>
+  ),
 }));
 vi.mock("@/components/DatePicker", () => ({
   DatePicker: () => <div data-testid="date-picker-stub" />,
@@ -119,10 +133,29 @@ function makeTask(over: Partial<TaskRead> = {}): TaskRead {
   };
 }
 
+// #2699 FE audit F1 — factory for the milestones prop test below.
+function makeMilestone(over: Partial<MilestoneRead> = {}): MilestoneRead {
+  return {
+    id: 1,
+    project_id: 1,
+    title: "milestone",
+    description: null,
+    milestone_status: "active",
+    start_date: null,
+    target_date: null,
+    sort_order: null,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    released_at: null,
+    ...over,
+  };
+}
+
 beforeEach(() => {
   mockPatchTask.mockReset();
   // Default: resolve with the patched task (caller overrides per test)
   mockPatchTask.mockResolvedValue(makeTask());
+  mockListMilestones.mockReset();
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -148,6 +181,7 @@ describe("AcEditor — terminal read-only (ps=5 and ps=6)", () => {
         task={task}
         allTasks={[task]}
         projectId={1}
+        milestones={[]}
         onClose={vi.fn()}
         onPatch={vi.fn()}
         onError={vi.fn()}
@@ -167,6 +201,7 @@ describe("AcEditor — terminal read-only (ps=5 and ps=6)", () => {
         task={task}
         allTasks={[task]}
         projectId={1}
+        milestones={[]}
         onClose={vi.fn()}
         onPatch={vi.fn()}
         onError={vi.fn()}
@@ -176,6 +211,41 @@ describe("AcEditor — terminal read-only (ps=5 and ps=6)", () => {
       expect(document.querySelector("[data-ac-edit-trigger]")).toBeNull();
       expect(document.querySelector("[data-description-edit-trigger]")).toBeNull();
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (e) Kanban #2699 FE audit F1 — milestones is a prop, not an own-fetch
+// ─────────────────────────────────────────────────────────────────────────────
+describe("TaskDetail — milestones prop (no own listMilestones fetch)", () => {
+  it("renders milestones from the prop without calling listMilestones", async () => {
+    const task = makeTask();
+    const milestones = [
+      makeMilestone({ id: 1, title: "v1.0 launch" }),
+      makeMilestone({ id: 2, title: "v1.1 polish", milestone_status: "planned" }),
+    ];
+
+    render(
+      <TaskDetail
+        task={task}
+        allTasks={[task]}
+        projectId={1}
+        milestones={milestones}
+        onClose={vi.fn()}
+        onPatch={vi.fn()}
+        onError={vi.fn()}
+      />,
+    );
+
+    // The prop's titles reached the milestone picker — proves TaskDetail
+    // rendered from the prop it was handed, not from a local fetch result.
+    // findByText's internal await also settles any pending effects, so the
+    // listMilestones assertion below is not racing a still-mounting component.
+    expect(await screen.findByText("v1.0 launch")).toBeInTheDocument();
+    expect(screen.getByText("v1.1 polish")).toBeInTheDocument();
+
+    // The AC's actual claim: zero calls to listMilestones.
+    expect(mockListMilestones).not.toHaveBeenCalled();
   });
 });
 
@@ -194,6 +264,7 @@ describe("TaskDetail — description edit", () => {
         task={task}
         allTasks={[task]}
         projectId={1}
+        milestones={[]}
         onClose={vi.fn()}
         onPatch={onPatch}
         onError={vi.fn()}
@@ -227,6 +298,7 @@ describe("TaskDetail — description edit", () => {
         task={task}
         allTasks={[task]}
         projectId={1}
+        milestones={[]}
         onClose={vi.fn()}
         onPatch={vi.fn()}
         onError={vi.fn()}
