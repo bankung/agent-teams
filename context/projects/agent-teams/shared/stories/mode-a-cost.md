@@ -1,14 +1,16 @@
 ---
 story: mode-a-cost
-version: 9
-updated: 2026-06-25
-updated_by: lead @ #2694
+version: 10
+updated: 2026-07-02
+updated_by: lead @ #2409
 ---
 
 <!-- STORY DOC — mutable thread STATE ("what is true NOW"), single writer = Lead.
      Counterpart: the activity rail holds the immutable per-task EVENTS. Rules locked 2026-06-12 (#2332). -->
 
 ## Current state
+
+- **Calendar new-task path now cost-gated — #2409 (walker it.2 2026-07-02, on `dev`, local).** CalendarView threads an optional `project?: ProjectRead` into its NewTaskModal mount and `calendar/page.tsx` supplies it — the #1304 confirm modal now fires from the per-day "+" path exactly like the Board path (was: `project` undefined → ungated). Proof = vitest (`CalendarView.costgate.test.tsx`, 2 tests driving the calendar-native trigger, over-threshold gate + at-threshold passthrough); live modal still never fires on the ollama stack ($0 forecast — see Gotchas). Suite 495/48, ×15 exit-0. Remaining #1304 follow-ups: #2408 calibration, #2410 tier pricing.
 
 - **Binding workstream COMMITTED + PUSHED + review-hardened — `e127053` on `origin/dev` (2026-06-25).** Phases 1/A/A.2/B (#2662/#2679/#2692/#2680) + the `/zb-intense-review` fix set (WARN-1 null-session global-fallback closed, `\z` UUID guard, `-LiteralPath`, accurate logs, cross-phase doc-drift) all on remote. **KNOWN-GAP-1 (#2694) RESOLVED + premise CORRECTED:** the global `lead_project_id.txt` is NOT dead/legacy — it is the deliberate one-way channel the **session-less Telegram HITL poller daemon** (`api/scripts/telegram_poller.py`, #2565; env `TELEGRAM_POLLER_PROJECT_ID` first → global fallback, re-resolved each batch) reads to follow the active project. seo-ranking was a red herring (unregistered + cosmetic `project=?`; its in-session `.ps1` now resolves per-session, the session-less `.sh` twin legitimately reads the global). **Invariant LOCKED: interactive sessions WRITE/overwrite the global, NEVER read it; only session-less daemons read it.** Operator caught a new session still READING the global in zb-bind → fixed (zb-bind + CLAUDE.md reframed write-only/never-read; seo-ranking.ps1 migrated per-session; AGENTS.md flagged for Codex regen). Fix ii-applied + parse-clean; pending commit&push.
 
@@ -31,7 +33,7 @@ updated_by: lead @ #2694
 
 ## Open threads
 
-- **#2408 / #2409 / #2410** — #1304 forecast follow-ups (calibration ±30%+80%-saving; CalendarView gate; model_override tier→provider pricing). LOW, milestone 37.
+- **#2408 / #2410** — #1304 forecast follow-ups (calibration ±30%+80%-saving; model_override tier→provider pricing). LOW, milestone 37. (#2409 CalendarView gate CLOSED 2026-07-02 — see Current state.)
 - **#2360** — verify PreCompact fires on AUTO-compaction (manual `/compact` does NOT, see Gotchas); then keep the hook or remove it as redundant vs SessionEnd. LOW, milestone 37.
 - **MEASURE GATE** (workstream checkpoint, no task id) — answer "is context-reading a *material* share of Mode A tokens?" BEFORE building any optimization (#1678, pickup-pack). Currently **UNANSWERED**: the ledger records session/task token TOTALS, not a context-read line-item — needs more accumulated sessions + finer attribution (or input/cache-read share analysis).
 - **#2362** — post-review nits: W2 error-path `$rawIn` in DROP-unparseable fallback; 422 test covers 1 of 4 token fields; hook `project_id` int-validate; parser mtime fallback. LOW, milestone 37.
@@ -55,6 +57,7 @@ updated_by: lead @ #2694
 
 ## Changelog
 
+- v10 2026-07-02 #2409 — calendar path gated: optional `project` prop threaded page→CalendarView→NewTaskModal mount (+15/-1 source, new 2-test costgate vitest driving the per-day "+" trigger). Open-threads trimmed to #2408/#2410. Walker it.2; dev-frontend/sonnet; suite 495/48 ×15 exit-0.
 - v9 2026-06-25 #2694 — KNOWN-GAP-1 RESOLVED + premise CORRECTED. Workstream committed+pushed `e127053` (+ intense-review fix set). Operator caught a new session still READING the global `lead_project_id.txt` in zb-bind. Repo-wide grep found the REAL reader: the session-less **Telegram poller daemon** (`api/scripts/telegram_poller.py` #2565, env-first→global-fallback, re-resolved each batch) — NOT seo-ranking (unregistered + cosmetic `project=?`). So the global is KEPT by design (poller channel). **Invariant LOCKED:** sessions WRITE/overwrite the global, never READ; only session-less daemons read. Fixes: zb-bind + CLAUDE.md reframed (write-only/never-read); seo-ranking.ps1 in-session read migrated per-session (`.sh` twin + smoke fixture legitimately session-less/env-override); AGENTS.md flagged for Codex regen. .claude edits ii-applied + parse-clean.
 - v8 2026-06-24 #2680 — skills per-session binding (Phase B): bin/lead-project-id.ps1 CLI (per-session resolve, UUID guard, fail-loud); 13 zb-* skill refs migrated off the global to the CLI; mutating skills abort on non-zero -> closes the wrong-project-write hole. Verified CLI + grep 0 reader-instructions. +15/-15 + CLI, ii-applied, not committed. Binding workstream (Phase 1/A/A.2/B) COMPLETE; residual = KNOWN-GAP-1 (session-less seo hooks).
 - v7 2026-06-24 #2692 — gate-family per-session binding (Phase A.2): Get-ProjectId gains -SessionId (per-session, no global fallback); approval-policies + pretooluse-bash + block-spawn + notify resolve via $payload.session_id; seo excluded (scheduled, no session). dev-security-reviewer APPROVE-WITH-NOTES (0 blocker/0 major); MINOR-1 UUID path-traversal guard folded into _shared + parser(#2679) + notify; NIT-1/NIT-2 fixed. Verified traversal->NULL, foreign->NULL w/ global=1, approval smoke 7/7. +57/-43, ii-applied, not committed. Remaining: skills Phase B #2680; session-less hooks KNOWN-GAP-1.
