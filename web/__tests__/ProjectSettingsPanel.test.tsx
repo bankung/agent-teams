@@ -136,9 +136,12 @@ describe("ProjectSettingsPanel — Approval policies", () => {
       target: { value: "feature auto approve" },
     });
     const condition = document.querySelector("[data-approval-policy-condition]") as HTMLElement;
-    const inputs = condition.querySelectorAll("input");
-    fireEvent.change(inputs[0], { target: { value: "task_type" } });
-    fireEvent.change(inputs[1], { target: { value: "feature" } });
+    // #2390 L1 — Field is now a <select> (was input[list=datalist]); Value
+    // remains the sole <input> in the row.
+    const fieldSelect = condition.querySelector("select") as HTMLSelectElement;
+    fireEvent.change(fieldSelect, { target: { value: "task_type" } });
+    const valueInput = condition.querySelector("input") as HTMLInputElement;
+    fireEvent.change(valueInput, { target: { value: "feature" } });
 
     fireEvent.click(document.querySelector("[data-approval-policy-save]") as HTMLButtonElement);
 
@@ -183,9 +186,12 @@ describe("ProjectSettingsPanel — Approval policies", () => {
       target: { value: "release preview" },
     });
     const condition = document.querySelector("[data-approval-policy-condition]") as HTMLElement;
-    const inputs = condition.querySelectorAll("input");
-    fireEvent.change(inputs[0], { target: { value: "title" } });
-    fireEvent.change(inputs[1], { target: { value: "release" } });
+    // #2390 L1 — Field is now a <select> (was input[list=datalist]); Value
+    // remains the sole <input> in the row.
+    const fieldSelect = condition.querySelector("select") as HTMLSelectElement;
+    fireEvent.change(fieldSelect, { target: { value: "title" } });
+    const valueInput = condition.querySelector("input") as HTMLInputElement;
+    fireEvent.change(valueInput, { target: { value: "release" } });
 
     fireEvent.click(document.querySelector("[data-approval-policy-preview]") as HTMLButtonElement);
 

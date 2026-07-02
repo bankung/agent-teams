@@ -1,5 +1,6 @@
 /**
- * Tests for approvalPolicies.ts — _not predicate fail-closed coverage (#2389).
+ * Tests for approvalPolicies.ts — _not predicate fail-closed coverage (#2389)
+ * + #2390 deep-review findings (H1 caps, M2 regex-field alignment).
  *
  * Strategy: test via the public `evaluateRuleAgainstTask` surface so no exports
  * need to be added to the module. A minimal TaskRead stub (taskWith) provides
@@ -7,7 +8,16 @@
  * filled from `BASE_TASK` defaults so TypeScript is satisfied.
  */
 import { describe, it, expect } from "vitest";
-import { evaluateRuleAgainstTask } from "@/lib/approvalPolicies";
+import {
+  MAX_CONDITIONS_PER_RULE,
+  NAME_MAX_LENGTH,
+  blankDraft,
+  draftErrors,
+  evaluateRuleAgainstTask,
+  isRegexField,
+  newCondition,
+  regexPatternError,
+} from "@/lib/approvalPolicies";
 import type { TaskRead } from "@/lib/api";
 
 // Minimal required-field defaults for TaskRead so tests only set what they care about.
@@ -173,5 +183,164 @@ describe("positive predicates sanity", () => {
     const rule = { name: "deploy rule", match: { task_title_contains: "Deploy" } };
     const task = taskWith({ title: "Deploy to production" });
     expect(evaluateRuleAgainstTask(rule, task, NOW)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2390 H1 — editor-side caps (draftErrors-surfaced)
+// ---------------------------------------------------------------------------
+
+describe("H1 caps — draftErrors", () => {
+  it("accepts a name at exactly NAME_MAX_LENGTH", () => {
+    const draft = { ...blankDraft(), name: "a".repeat(NAME_MAX_LENGTH) };
+    draft.conditions = [{ ...newCondition(), value: "x" }];
+    expect(draftErrors(draft).some((e) => e.includes("200 characters"))).toBe(false);
+  });
+
+  it("rejects a name one character over NAME_MAX_LENGTH", () => {
+    const draft = { ...blankDraft(), name: "a".repeat(NAME_MAX_LENGTH + 1) };
+    draft.conditions = [{ ...newCondition(), value: "x" }];
+    expect(draftErrors(draft)).toContain(
+      `Name must be ${NAME_MAX_LENGTH} characters or fewer.`,
+    );
+  });
+
+  it("accepts exactly MAX_CONDITIONS_PER_RULE conditions", () => {
+    const draft = blankDraft();
+    draft.name = "cap test";
+    draft.conditions = Array.from({ length: MAX_CONDITIONS_PER_RULE }, () => ({
+      ...newCondition(),
+      value: "x",
+    }));
+    expect(
+      draftErrors(draft).some((e) => e.includes("conditions")),
+    ).toBe(false);
+  });
+
+  it("rejects MAX_CONDITIONS_PER_RULE + 1 conditions", () => {
+    const draft = blankDraft();
+    draft.name = "cap test";
+    draft.conditions = Array.from({ length: MAX_CONDITIONS_PER_RULE + 1 }, () => ({
+      ...newCondition(),
+      value: "x",
+    }));
+    expect(draftErrors(draft)).toContain(
+      `A rule can have at most ${MAX_CONDITIONS_PER_RULE} conditions.`,
+    );
+  });
+
+  it("rejects a defaultAnswer over its cap", () => {
+    const draft = blankDraft();
+    draft.name = "answer cap";
+    draft.conditions = [{ ...newCondition(), value: "x" }];
+    draft.defaultAnswer = "a".repeat(201);
+    expect(draftErrors(draft).some((e) => e.includes("Default answer"))).toBe(true);
+  });
+
+  it("rejects a route label over its cap on require_attention", () => {
+    const draft = blankDraft();
+    draft.name = "label cap";
+    draft.conditions = [{ ...newCondition(), value: "x" }];
+    draft.action = "require_attention";
+    draft.label = "a".repeat(201);
+    expect(draftErrors(draft).some((e) => e.includes("Route label"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2390 M2 — target_url_pattern / content_predicate are regex, not substring
+// ---------------------------------------------------------------------------
+
+describe("M2 — regex-field alignment", () => {
+  it("isRegexField is true only for target_url_pattern / content_predicate", () => {
+    expect(isRegexField("target_url_pattern")).toBe(true);
+    expect(isRegexField("content_predicate")).toBe(true);
+    expect(isRegexField("question_text")).toBe(false);
+    expect(isRegexField("title")).toBe(false);
+  });
+
+  it("regexPatternError accepts a valid regex", () => {
+    expect(regexPatternError("linkedin\\.com")).toBeNull();
+    expect(regexPatternError("^git push.*main$")).toBeNull();
+  });
+
+  it("regexPatternError accepts an empty string (required-ness is a separate check)", () => {
+    expect(regexPatternError("")).toBeNull();
+  });
+
+  it("regexPatternError flags an unbalanced group as invalid — mirrors the .ps1 gate's try/catch [regex]::IsMatch fail path", () => {
+    // _shared.ps1 Test-PolicyRule wraps [regex]::IsMatch in try/catch and
+    // treats a throw as no-match (fail-closed); this is the TS-side
+    // equivalent input-time check using the same "new RegExp throws" signal.
+    expect(regexPatternError("(unclosed")).toBe("Invalid regex pattern.");
+  });
+
+  it("draftErrors surfaces an invalid regex on a target_url_pattern condition", () => {
+    const draft = blankDraft();
+    draft.name = "bad regex";
+    draft.conditions = [
+      { ...newCondition("target_url_pattern"), value: "(unclosed" },
+    ];
+    expect(draftErrors(draft)).toContain("Condition 1: Invalid regex pattern.");
+  });
+
+  it("draftErrors accepts a valid regex on a content_predicate condition", () => {
+    const draft = blankDraft();
+    draft.name = "good regex";
+    draft.conditions = [
+      { ...newCondition("content_predicate"), value: "git push.*main" },
+    ];
+    expect(draftErrors(draft).some((e) => e.includes("regex"))).toBe(false);
+  });
+
+  it("target_url_pattern/content_predicate always report 0 hits in the task-list preview — no URL/tool_input field exists on TaskRead to test against (H3)", () => {
+    const urlRule = {
+      name: "url rule",
+      match: { target_url_pattern: "linkedin\\.com" },
+    };
+    const contentRule = {
+      name: "content rule",
+      match: { content_predicate: "git push" },
+    };
+    const task = taskWith({ title: "Deploy to linkedin.com via git push" });
+    expect(evaluateRuleAgainstTask(urlRule, task, NOW)).toBe(false);
+    expect(evaluateRuleAgainstTask(contentRule, task, NOW)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC5 — text_contains_all / text_contains_any: engine supports them, but the
+// editor UI has no FIELD_DEFINITIONS entry or conditionToPredicate case that
+// produces them — confirms the deferral is a real UI feature-gap, not a bug
+// in what's reachable through the form.
+// ---------------------------------------------------------------------------
+
+describe("AC5 — text_contains_all/any (deferred, UI-unreachable)", () => {
+  it("the evaluator DOES support text_contains_all (multi-value AND)", () => {
+    const rule = { name: "all", match: { text_contains_all: ["spend", "deploy"] } };
+    const matches = taskWith({
+      interaction_kind: "question",
+      question_payload: { question: "spend to deploy the release" },
+    });
+    const missesOne = taskWith({
+      interaction_kind: "question",
+      question_payload: { question: "spend only" },
+    });
+    expect(evaluateRuleAgainstTask(rule, matches, NOW)).toBe(true);
+    expect(evaluateRuleAgainstTask(rule, missesOne, NOW)).toBe(false);
+  });
+
+  it("the evaluator DOES support text_contains_any (multi-value OR)", () => {
+    const rule = { name: "any", match: { text_contains_any: ["spend", "deploy"] } };
+    const matchesEither = taskWith({
+      interaction_kind: "question",
+      question_payload: { question: "deploy only, no spend word" },
+    });
+    const matchesNeither = taskWith({
+      interaction_kind: "question",
+      question_payload: { question: "unrelated question" },
+    });
+    expect(evaluateRuleAgainstTask(rule, matchesEither, NOW)).toBe(true);
+    expect(evaluateRuleAgainstTask(rule, matchesNeither, NOW)).toBe(false);
   });
 });
