@@ -36,6 +36,8 @@ from src.services.task_cost_estimator import (
     OUTPUT_TOKEN_RATIO,
     ROLE_BRIEF_TOKEN_ESTIMATE,
     forecast_task_cost,
+    resolve_forecast_model,
+    resolve_provider_model,
 )
 
 
@@ -215,6 +217,149 @@ def test_forecast_link_resource_does_not_gate_confidence(_opus_default_env) -> N
     link = _fake_resource(ResourceKind.LINK, None, {"url_scheme": "https"})
     r = forecast_task_cost(task, [tagged, link])
     assert r["confidence"] == "high"
+
+
+# ---------------------------------------------------------------------------
+# Kanban #2410 — tier-alias model_override must forecast at the SAME
+# provider/model the worker would actually spawn under (env-resolved), never
+# infer a provider from the bare tier word. STEP 1 finding: worker.py's
+# `_resolve_auto_effort` reads a tier alias ONLY as an effort-level signal
+# ('opus' -> effort='high'); llm.py's `resolve_model()` takes no task-derived
+# args at any of its 3 call sites — provider/model selection is 100% env-driven
+# regardless of model_override. So resolve_forecast_model(task) for a tier
+# alias must equal resolve_provider_model() exactly, for every configured
+# provider — proven below via monkeypatch across anthropic/openai/ollama/google
+# and unset (default) env states.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("tier", ["opus", "haiku", "sonnet"])
+def test_resolve_forecast_model_tier_alias_matches_env_provider_anthropic(
+    monkeypatch, tier
+) -> None:
+    """A tier alias resolves to the SAME (provider, model) as no-override, on
+    an anthropic-configured stack — NOT a raw ('anthropic', '<tier>') pair."""
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+    task = _fake_task(model_override=tier)
+    resolved = resolve_forecast_model(task)
+    # POSITIVE: matches the env-resolved (provider, model) the worker would use.
+    assert resolved == resolve_provider_model() == ("anthropic", "claude-sonnet-4-6")
+    # NEGATIVE (lock): NOT the pre-fix bug shape — the raw tier word is never
+    # returned as the model name.
+    assert resolved != ("anthropic", tier)
+
+
+@pytest.mark.parametrize("tier", ["opus", "haiku", "sonnet"])
+def test_resolve_forecast_model_tier_alias_matches_env_provider_ollama(
+    monkeypatch, tier
+) -> None:
+    """Same tier-alias contract on an ollama-configured stack — resolves to
+    the collapsed ('ollama', 'local') placeholder, matching the no-override
+    path exactly (not a garbage ('ollama', '<tier>') pair that happens to
+    coincidentally hit the same catch-all in resolve_pricing_key)."""
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "ollama")
+    task = _fake_task(model_override=tier)
+    resolved = resolve_forecast_model(task)
+    assert resolved == resolve_provider_model() == ("ollama", "local")
+    assert resolved != ("ollama", tier)
+
+
+@pytest.mark.parametrize("tier", ["opus", "haiku", "sonnet"])
+def test_resolve_forecast_model_tier_alias_matches_env_provider_openai(
+    monkeypatch, tier
+) -> None:
+    """Same contract on an openai-configured stack. This is the case that
+    silently broke pre-fix: ('openai', '<tier>') has no substring match in
+    resolve_pricing_key, so the ValueError branch zeroed cost + forced
+    confidence='low' even though a real, priced openai model was configured."""
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o")
+    task = _fake_task(model_override=tier)
+    resolved = resolve_forecast_model(task)
+    assert resolved == resolve_provider_model() == ("openai", "gpt-4o")
+    assert resolved != ("openai", tier)
+
+    # Full forecast_task_cost must now price this at real openai rates, not $0/low.
+    r = forecast_task_cost(_fake_task(title="x", description="y", model_override=tier), [])
+    assert r["estimated_usd"] > Decimal("0.0000")
+    assert r["confidence"] != "low"
+    assert r["provider"] == "openai"
+    assert r["model"] == "gpt-4o"
+
+
+@pytest.mark.parametrize("tier", ["opus", "haiku", "sonnet"])
+def test_resolve_forecast_model_tier_alias_matches_env_provider_google_falls_through(
+    monkeypatch, tier
+) -> None:
+    """`resolve_provider_model()` (this module) has no 'google' branch — only
+    openai/ollama are special-cased, so LANGGRAPH_LLM_PROVIDER=google falls
+    through its if/if chain into the anthropic default branch (pre-existing,
+    out-of-#2410-scope behavior; verified live during the #2410 fix — the
+    google entries live in cost_tracker.PRICING for the done-flip/actuals
+    path, not in this module's env resolver). The tier-alias INVARIANT this
+    fix establishes still holds: resolve_forecast_model(task) with a tier
+    alias equals resolve_provider_model() exactly, whatever that resolves to."""
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "google")
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    task = _fake_task(model_override=tier)
+    resolved = resolve_forecast_model(task)
+    assert resolved == resolve_provider_model() == ("anthropic", "claude-opus-4-8")
+    assert resolved != ("google", tier)
+
+
+@pytest.mark.parametrize("tier", ["opus", "haiku", "sonnet"])
+def test_resolve_forecast_model_tier_alias_matches_env_provider_default(
+    monkeypatch, tier
+) -> None:
+    """No provider env set at all -> falls to the anthropic/opus-4-8 default,
+    same as the no-override path (mirrors _opus_default_env's clearing)."""
+    monkeypatch.delenv("LANGGRAPH_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    task = _fake_task(model_override=tier)
+    resolved = resolve_forecast_model(task)
+    assert resolved == resolve_provider_model() == ("anthropic", "claude-opus-4-8")
+
+
+def test_resolve_forecast_model_full_model_name_keeps_inference(monkeypatch) -> None:
+    """A NON-tier override (a full model name) is UNCHANGED by the fix — the
+    substring-inference behavior still applies, and it does NOT need to match
+    resolve_provider_model() (that's the whole point of a full-name override:
+    it names a SPECIFIC model, independent of the env provider)."""
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "ollama")
+    task = _fake_task(model_override="claude-opus-4-8")
+    resolved = resolve_forecast_model(task)
+    assert resolved == ("anthropic", "claude-opus-4-8")
+    # NEGATIVE (lock): a full model name must NOT collapse to the env's ollama
+    # provider the way the (now-fixed) bare-tier path intentionally does.
+    assert resolved != resolve_provider_model()
+
+
+def test_resolve_forecast_model_none_override_unchanged(monkeypatch) -> None:
+    """No model_override at all -> unchanged behavior: defers to
+    resolve_provider_model() directly (no branch through the tier-alias set)."""
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    task = _fake_task(model_override=None)
+    assert resolve_forecast_model(task) == resolve_provider_model() == (
+        "openai",
+        "gpt-4o-mini",
+    )
+
+
+def test_forecast_unknown_model_override_still_low_zero_not_masked_by_tier_fix(
+    _opus_default_env,
+) -> None:
+    """Regression guard: the tier-alias fix must NOT touch the genuinely-
+    unknown-model path — re-affirms test_forecast_unknown_model_override_low_zero
+    still holds (a truly unrecognized string, not a tier word, still zeroes
+    cost + forces low confidence)."""
+    task = _fake_task(
+        title="x", description="y", model_override="totally-unknown-model-xyz"
+    )
+    r = forecast_task_cost(task, [])
+    assert r["estimated_usd"] == Decimal("0.0000")
+    assert r["confidence"] == "low"
 
 
 # ---------------------------------------------------------------------------

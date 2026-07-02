@@ -1,14 +1,16 @@
 ---
 story: mode-a-cost
-version: 10
+version: 11
 updated: 2026-07-02
-updated_by: lead @ #2409
+updated_by: lead @ #2410
 ---
 
 <!-- STORY DOC — mutable thread STATE ("what is true NOW"), single writer = Lead.
      Counterpart: the activity rail holds the immutable per-task EVENTS. Rules locked 2026-06-12 (#2332). -->
 
 ## Current state
+
+- **Tier-alias forecasts now price at the worker's REAL provider — #2410 (walker it.3 2026-07-02, on `dev`, local).** Worker read (AC1) settled the semantics: `model_override` tier is an EFFORT-ONLY signal (`worker.py:1782` — `'opus'`→effort `'high'`); provider/model is 100% env-driven. `resolve_forecast_model` now short-circuits a bare tier to `resolve_provider_model()`; full-name overrides keep substring inference. Ollama $0 = by design (was coincidence); pre-fix openai stacks silently returned $0/confidence-`low` via a swallowed ValueError — now real pricing (opus-alias → gpt-4o $2.5/1M, forecast $0.0165/high). 8 new tests in `test_cost_forecast.py` await the drain-end batched operator pytest. Gotcha entry below updated.
 
 - **Calendar new-task path now cost-gated — #2409 (walker it.2 2026-07-02, on `dev`, local).** CalendarView threads an optional `project?: ProjectRead` into its NewTaskModal mount and `calendar/page.tsx` supplies it — the #1304 confirm modal now fires from the per-day "+" path exactly like the Board path (was: `project` undefined → ungated). Proof = vitest (`CalendarView.costgate.test.tsx`, 2 tests driving the calendar-native trigger, over-threshold gate + at-threshold passthrough); live modal still never fires on the ollama stack ($0 forecast — see Gotchas). Suite 495/48, ×15 exit-0. Remaining #1304 follow-ups: #2408 calibration, #2410 tier pricing.
 
@@ -33,7 +35,7 @@ updated_by: lead @ #2409
 
 ## Open threads
 
-- **#2408 / #2410** — #1304 forecast follow-ups (calibration ±30%+80%-saving; model_override tier→provider pricing). LOW, milestone 37. (#2409 CalendarView gate CLOSED 2026-07-02 — see Current state.)
+- **#2408** — #1304 forecast follow-up (calibration ±30% + 80%-saving; needs prospective live-LLM data). LOW, milestone 37. (#2409 CalendarView gate + #2410 tier-alias pricing both CLOSED 2026-07-02 — see Current state.)
 - **#2360** — verify PreCompact fires on AUTO-compaction (manual `/compact` does NOT, see Gotchas); then keep the hook or remove it as redundant vs SessionEnd. LOW, milestone 37.
 - **MEASURE GATE** (workstream checkpoint, no task id) — answer "is context-reading a *material* share of Mode A tokens?" BEFORE building any optimization (#1678, pickup-pack). Currently **UNANSWERED**: the ledger records session/task token TOTALS, not a context-read line-item — needs more accumulated sessions + finer attribution (or input/cache-read share analysis).
 - **#2362** — post-review nits: W2 error-path `$rawIn` in DROP-unparseable fallback; 422 test covers 1 of 4 token fields; hook `project_id` int-validate; parser mtime fallback. LOW, milestone 37.
@@ -49,7 +51,7 @@ updated_by: lead @ #2409
 - **The api container does NOT hot-reload a new route on a bind-mount source edit** (Windows Docker inotify gap, same class as web `WATCHPACK_POLLING` #2386) — `docker compose -p agent-teams restart api` to load a NEW endpoint before live-verifying. Bit #2356 (the `/monthly` route 404'd until restart). (#2356)
 
 - **ORM-ahead-of-migration = LIVE OUTAGE (#1304).** api runs `uvicorn --reload` + repo bind-mount, so a backend agent's model-column edit hot-reloads into the LIVE api immediately. If the matching migration isn't applied to the live DB yet, EVERY query on that model 500s (`column … does not exist`) → total API outage — while `/health` (no DB touch) still reports healthy. Mitigation: apply the migration to live in the SAME session as the model edit (or revert the ORM); never leave the ORM ahead of the live schema. Live `alembic upgrade` needs `MIGRATION_TARGET=live` (env.py guard).
-- **Forecast reflects the CONFIGURED runtime model (#1304).** `resolve_provider_model()` reads env; the operator's ollama-default stack → every forecast `$0.0000` (free local) → the confirm modal never fires in practice. The gate activates only when a paid provider (anthropic/google) is configured. model_override tier aliases {haiku,sonnet,opus} don't reroute to anthropic pricing on a non-anthropic stack yet → $0 (tracked #2410).
+- **Forecast reflects the CONFIGURED runtime model (#1304).** `resolve_provider_model()` reads env; the operator's ollama-default stack → every forecast `$0.0000` (free local) → the confirm modal never fires in practice. The gate activates only when a paid provider is configured. Tier aliases {haiku,sonnet,opus} forecast at the ENV provider's own pricing (post-#2410): the worker treats a tier purely as an effort signal, so ollama-$0 is by-design; paid stacks (anthropic/openai) price correctly.
 
 ## Decisions pointer
 
@@ -57,6 +59,7 @@ updated_by: lead @ #2409
 
 ## Changelog
 
+- v11 2026-07-02 #2410 — tier-alias forecast pricing fixed: bare {haiku,sonnet,opus} defers to resolve_provider_model() (worker read proved tier=effort-only, worker.py:1782); openai-stack silent $0/low bug closed; ollama $0 now principled. +32/-5 source, +145 tests (8 fns, operator-run pending). Gotcha updated; open threads → #2408 only. Walker it.3; dev-backend/sonnet.
 - v10 2026-07-02 #2409 — calendar path gated: optional `project` prop threaded page→CalendarView→NewTaskModal mount (+15/-1 source, new 2-test costgate vitest driving the per-day "+" trigger). Open-threads trimmed to #2408/#2410. Walker it.2; dev-frontend/sonnet; suite 495/48 ×15 exit-0.
 - v9 2026-06-25 #2694 — KNOWN-GAP-1 RESOLVED + premise CORRECTED. Workstream committed+pushed `e127053` (+ intense-review fix set). Operator caught a new session still READING the global `lead_project_id.txt` in zb-bind. Repo-wide grep found the REAL reader: the session-less **Telegram poller daemon** (`api/scripts/telegram_poller.py` #2565, env-first→global-fallback, re-resolved each batch) — NOT seo-ranking (unregistered + cosmetic `project=?`). So the global is KEPT by design (poller channel). **Invariant LOCKED:** sessions WRITE/overwrite the global, never READ; only session-less daemons read. Fixes: zb-bind + CLAUDE.md reframed (write-only/never-read); seo-ranking.ps1 in-session read migrated per-session (`.sh` twin + smoke fixture legitimately session-less/env-override); AGENTS.md flagged for Codex regen. .claude edits ii-applied + parse-clean.
 - v8 2026-06-24 #2680 — skills per-session binding (Phase B): bin/lead-project-id.ps1 CLI (per-session resolve, UUID guard, fail-loud); 13 zb-* skill refs migrated off the global to the CLI; mutating skills abort on non-zero -> closes the wrong-project-write hole. Verified CLI + grep 0 reader-instructions. +15/-15 + CLI, ii-applied, not committed. Binding workstream (Phase 1/A/A.2/B) COMPLETE; residual = KNOWN-GAP-1 (session-less seo hooks).
