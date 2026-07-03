@@ -61,6 +61,7 @@ function agent(over: Partial<AgentSummary> = {}): AgentSummary {
     domain: "dev",
     valid: true,
     validation_errors: [],
+    tool_chips: [],
     ...over,
   };
 }

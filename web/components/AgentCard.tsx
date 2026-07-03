@@ -6,7 +6,7 @@
 import Link from "next/link";
 
 import type { AgentSummary } from "@/lib/api";
-import { ModelTierBadge, DomainChip } from "./AgentBadges";
+import { ModelTierBadge, DomainChip, RiskBadge, ToolChipsRow } from "./AgentBadges";
 
 function firstError(agent: AgentSummary): string | null {
   const err = agent.validation_errors.find((e) => e.severity === "error");
@@ -38,12 +38,18 @@ export function AgentCard({ agent }: { agent: AgentSummary }) {
         <span className="min-w-0 truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
           {agent.name}
         </span>
-        <ModelTierBadge model={agent.model} />
+        <div className="flex shrink-0 items-center gap-1">
+          <RiskBadge chips={agent.tool_chips} />
+          <ModelTierBadge model={agent.model} />
+        </div>
       </header>
 
       <p className="line-clamp-1 text-xs text-zinc-600 dark:text-zinc-400">
         {agent.description}
       </p>
+
+      {/* Kanban #1021 AC3 — per-tool risk chips, capped with "+N more". */}
+      <ToolChipsRow chips={agent.tool_chips} />
 
       <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
         <DomainChip domain={agent.domain} />

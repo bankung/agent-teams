@@ -20,7 +20,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
-import type { AgentSummary, AgentValidationError } from "@/lib/api";
+import type { AgentSummary, AgentValidationError, ToolChip } from "@/lib/api";
 
 // next/link → plain <a> so the cards render without a Next.js router context
 // (matches the convention in CalendarView / Board tests).
@@ -54,6 +54,7 @@ function agent(over: Partial<AgentSummary> = {}): AgentSummary {
     domain: "dev",
     valid: true,
     validation_errors: [],
+    tool_chips: [],
     ...over,
   };
 }
@@ -205,5 +206,115 @@ describe("AgentGallery — invalid marking", () => {
     // First error text surfaced inline (file:line — message).
     expect(broken.textContent).toContain("broken.md:3");
     expect(broken.textContent).toContain("bad model enum 'opux'");
+  });
+});
+
+// Kanban #1021 — tool-scope risk chips on the gallery card.
+function toolChip(name: string, risk_class: ToolChip["risk_class"]): ToolChip {
+  return { name, risk_class };
+}
+
+describe("AgentGallery — tool-scope risk chips (AC3/AC4/AC5)", () => {
+  it("renders chips in frontmatter order, caps at 4, and shows a +N more overflow", () => {
+    const chips: ToolChip[] = [
+      toolChip("Read", "read-only"),
+      toolChip("Grep", "read-only"),
+      toolChip("Glob", "read-only"),
+      toolChip("Edit", "write-edit"),
+      toolChip("Write", "write-edit"),
+      toolChip("Bash", "shell-or-destructive"),
+    ];
+    render(
+      <AgentGallery agents={[agent({ name: "dev-frontend", tool_chips: chips })]} />,
+    );
+    const row = document.querySelector('[data-agent-name="dev-frontend"] [data-agent-tool-chips]')!;
+    const shownChips = Array.from(row.querySelectorAll("[data-tool-chip]")).map(
+      (el) => el.textContent,
+    );
+    // Capped at 4 (first 4 in frontmatter order), overflow = remaining 2.
+    expect(shownChips).toEqual(["Read", "Grep", "Glob", "Edit"]);
+    const overflow = row.querySelector("[data-tool-chip-overflow]");
+    expect(overflow).not.toBeNull();
+    expect(overflow?.textContent).toBe("+2 more");
+    // Overflow title lists the remaining tool names.
+    expect(overflow?.getAttribute("title")).toBe("Write, Bash");
+  });
+
+  it("does not show a +N more affordance when chips fit within the cap", () => {
+    const chips: ToolChip[] = [
+      toolChip("Read", "read-only"),
+      toolChip("Grep", "read-only"),
+    ];
+    render(
+      <AgentGallery agents={[agent({ name: "dev-frontend", tool_chips: chips })]} />,
+    );
+    const row = document.querySelector('[data-agent-name="dev-frontend"] [data-agent-tool-chips]')!;
+    expect(row.querySelectorAll("[data-tool-chip]").length).toBe(2);
+    expect(row.querySelector("[data-tool-chip-overflow]")).toBeNull();
+  });
+
+  it("card risk badge reflects the HIGHEST-risk chip in a mixed set", () => {
+    const chips: ToolChip[] = [
+      toolChip("Read", "read-only"),
+      toolChip("WebFetch", "external"),
+      toolChip("Edit", "write-edit"),
+    ];
+    render(
+      <AgentGallery agents={[agent({ name: "dev-frontend", tool_chips: chips })]} />,
+    );
+    const card = document.querySelector('[data-agent-name="dev-frontend"]')!;
+    const badge = card.querySelector("[data-agent-risk-badge]");
+    expect(badge).not.toBeNull();
+    // write-edit outranks read-only and external in the mixed set.
+    expect(badge?.getAttribute("data-agent-risk-badge")).toBe("write-edit");
+  });
+
+  it("card risk badge is shell-or-destructive for an All-tools agent", () => {
+    const chips: ToolChip[] = [toolChip("All tools", "shell-or-destructive")];
+    render(
+      <AgentGallery agents={[agent({ name: "dev-frontend", tool_chips: chips })]} />,
+    );
+    const card = document.querySelector('[data-agent-name="dev-frontend"]')!;
+    const badge = card.querySelector("[data-agent-risk-badge]");
+    expect(badge).not.toBeNull();
+    expect(badge?.getAttribute("data-agent-risk-badge")).toBe(
+      "shell-or-destructive",
+    );
+  });
+
+  it("omits the risk badge and chip row when tool_chips is empty", () => {
+    render(
+      <AgentGallery agents={[agent({ name: "dev-frontend", tool_chips: [] })]} />,
+    );
+    const card = document.querySelector('[data-agent-name="dev-frontend"]')!;
+    expect(card.querySelector("[data-agent-risk-badge]")).toBeNull();
+    expect(card.querySelector("[data-agent-tool-chips]")).toBeNull();
+  });
+
+  it("each chip carries a title tooltip with the tool name and risk explanation", () => {
+    const chips: ToolChip[] = [toolChip("Bash", "shell-or-destructive")];
+    render(
+      <AgentGallery agents={[agent({ name: "dev-frontend", tool_chips: chips })]} />,
+    );
+    const chipEl = document.querySelector(
+      '[data-agent-name="dev-frontend"] [data-tool-chip]',
+    )!;
+    const title = chipEl.getAttribute("title") ?? "";
+    expect(title).toContain("Bash");
+    expect(title).toContain("runs an arbitrary shell command");
+    expect(title).toContain("Shell or destructive");
+  });
+
+  it("falls back to a generic tooltip line for an unknown tool name", () => {
+    const chips: ToolChip[] = [toolChip("SomeFutureMcpTool", "external")];
+    render(
+      <AgentGallery agents={[agent({ name: "dev-frontend", tool_chips: chips })]} />,
+    );
+    const chipEl = document.querySelector(
+      '[data-agent-name="dev-frontend"] [data-tool-chip]',
+    )!;
+    const title = chipEl.getAttribute("title") ?? "";
+    expect(title).toContain("SomeFutureMcpTool");
+    expect(title).toContain("a tool granted to this agent");
   });
 });

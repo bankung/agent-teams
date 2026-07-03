@@ -112,6 +112,20 @@ class AgentValidationResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class ToolChip(BaseModel):
+    """One tool-scope risk chip (Kanban #1021).
+
+    ``risk_class`` is one of the five classes documented in
+    ``services/tool_risk.py`` (``read-only`` / ``write-edit`` /
+    ``shell-or-destructive`` / ``external`` / ``always-safe``) — not
+    constrained to a ``Literal`` here so an unrecognized future class from
+    that module still serializes rather than 500ing the endpoint.
+    """
+
+    name: str
+    risk_class: str
+
+
 class AgentSummary(BaseModel):
     """One row in ``GET /api/agents`` (contract §1).
 
@@ -125,6 +139,12 @@ class AgentSummary(BaseModel):
       * ``tools_summary`` / ``tool_count`` — ``"All tools"`` + ``None`` when the
         ``tools`` key is absent or the literal ``"All tools"``; otherwise
         ``"N tools"`` + ``N`` for an explicit list.
+      * ``tool_chips`` — Kanban #1021. One ``{name, risk_class}`` entry per
+        parsed tool, FRONTMATTER ORDER preserved (no sorting); a single
+        pseudo-chip (``name="All tools"``, ``risk_class="shell-or-destructive"``)
+        when the ``tools`` key is absent or the ``"All tools"`` literal. See
+        ``services/tool_risk.py`` for the classification table. Additive —
+        does not replace ``tools_summary`` / ``tool_count``.
       * ``hook_count`` — number of hook matcher entries across all top-level
         event keys in ``hooks:`` (0 when absent). See the service for the exact
         counting rule.
@@ -141,6 +161,7 @@ class AgentSummary(BaseModel):
     model: ModelTierLiteral | None
     tools_summary: str
     tool_count: int | None
+    tool_chips: list[ToolChip]
     hook_count: int
     source_file: str
     domain: str

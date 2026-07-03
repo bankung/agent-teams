@@ -10,9 +10,33 @@
 
 import Link from "next/link";
 
-import type { AgentDetail as AgentDetailType } from "@/lib/api";
+import type {
+  AgentDetail as AgentDetailType,
+  ToolChip,
+  ToolChipRiskClass,
+} from "@/lib/api";
 import { formatRelative } from "@/lib/time";
-import { ModelTierBadge, DomainChip } from "./AgentBadges";
+import {
+  ModelTierBadge,
+  DomainChip,
+  RiskBadge,
+  RISK_ORDER,
+  RISK_META,
+  toolTooltip,
+} from "./AgentBadges";
+
+// groupByRisk — buckets chips by risk_class, returns only classes present, in
+// RISK_ORDER (low→high) so the "safe" groups read first and the highest-risk
+// group anchors the bottom.
+function groupByRisk(chips: ToolChip[]): [ToolChipRiskClass, ToolChip[]][] {
+  const buckets = new Map<ToolChipRiskClass, ToolChip[]>();
+  for (const c of chips) {
+    const list = buckets.get(c.risk_class);
+    if (list) list.push(c);
+    else buckets.set(c.risk_class, [c]);
+  }
+  return RISK_ORDER.filter((r) => buckets.has(r)).map((r) => [r, buckets.get(r)!]);
+}
 
 function SeverityChip({ severity }: { severity: "error" | "warning" }) {
   const cls =
@@ -45,6 +69,7 @@ export function AgentDetail({ agent }: { agent: AgentDetailType }) {
           <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
             {agent.name}
           </h1>
+          <RiskBadge chips={agent.tool_chips} />
           <ModelTierBadge model={agent.model} />
           <DomainChip domain={agent.domain} />
           {invalid ? (
@@ -94,6 +119,44 @@ export function AgentDetail({ agent }: { agent: AgentDetailType }) {
           {agent.full_description}
         </p>
       </section>
+
+      {/* Kanban #1021 AC6 — tools grouped by risk class, one section per class
+          present, in RISK_ORDER (low→high) with a 1-line explanation. */}
+      {agent.tool_chips.length > 0 ? (
+        <section data-agent-tool-groups className="flex flex-col gap-3">
+          <h2 className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+            Tool scope
+          </h2>
+          {groupByRisk(agent.tool_chips).map(([risk, chips]) => (
+            <div
+              key={risk}
+              data-tool-group
+              data-tool-group-risk={risk}
+              className="flex flex-col gap-1.5 rounded border border-zinc-200 bg-zinc-50/60 p-2.5 dark:border-zinc-800 dark:bg-zinc-950/40"
+            >
+              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                <span className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">
+                  {RISK_META[risk].label}
+                </span>
+                <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                  {RISK_META[risk].why}
+                </span>
+              </div>
+              <ul className="flex flex-wrap gap-1">
+                {chips.map((c) => (
+                  <li
+                    key={c.name}
+                    title={toolTooltip(c)}
+                    className="inline-flex items-center rounded bg-white px-1.5 py-0.5 font-mono text-[11px] text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+                  >
+                    {c.name}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </section>
+      ) : null}
 
       {/* Validation diagnostics — rendered only when present. */}
       {agent.validation_errors.length > 0 ? (

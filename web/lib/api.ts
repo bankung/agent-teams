@@ -2729,11 +2729,31 @@ export type AgentValidationError = {
   severity: "error" | "warning";
 };
 
+// ToolChipRiskClass — Kanban #1021. Per-tool risk classification surfaced as a
+// gallery/detail chip. Severity order (low→high) lives alongside the color
+// map in components/AgentBadges.tsx (RISK_ORDER) — the single source of truth
+// the FE derives both the chip color and the card's overall risk badge from.
+export type ToolChipRiskClass =
+  | "always-safe"
+  | "read-only"
+  | "external"
+  | "write-edit"
+  | "shell-or-destructive";
+
+// ToolChip — one entry in AgentSummary.tool_chips (frontmatter tool order).
+// "All tools" arrives as a single chip with that literal name and
+// risk_class="shell-or-destructive".
+export type ToolChip = {
+  name: string;
+  risk_class: ToolChipRiskClass;
+};
+
 // AgentSummary — one row in GET /api/agents.
 //   tools_summary: human label — "All tools" | "N tools".
 //   tool_count:    null when the agent grants "All tools" (no explicit list).
 //   source_file:   basename only (path-stripped on the wire).
 //   valid:         false when validation_errors carries any severity='error'.
+//   tool_chips:    Kanban #1021 — per-tool risk chips, frontmatter order.
 export type AgentSummary = {
   name: string;
   description: string;
@@ -2745,6 +2765,7 @@ export type AgentSummary = {
   domain: AgentDomain;
   valid: boolean;
   validation_errors: AgentValidationError[];
+  tool_chips: ToolChip[];
 };
 
 // AgentSpawn — one row in AgentDetail.spawns. A task this agent was spawned
