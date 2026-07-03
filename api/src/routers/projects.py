@@ -43,6 +43,7 @@ from src.constants import (  # TaskStatus.CANCELLED + TaskType.AUDIT used by sta
 from src.db import get_active_project_or_404, get_or_404, get_session
 from src.middleware.rate_limit import _projects_post_limit, limiter
 from src.models.project import Project
+from src.models.projects_audit import ProjectsAudit
 from src.models.session import Session as SessionModel
 from src.models.session import SessionRun
 from src.models.task import Task
@@ -58,6 +59,7 @@ from src.schemas.project import (
     PauseUnpauseResponse,
     ProjectCreate,
     ProjectGrantConsent,
+    ProjectAuditAction,
     ProjectRead,
     ProjectStatsActualInteractiveCost,
     ProjectStatsCostUsage,
@@ -66,6 +68,7 @@ from src.schemas.project import (
     ProjectStatsRunModeBreakdown,
     ProjectUpdate,
     ProgressStatsResponse,
+    ProjectsAuditEntry,
     ReviveProjectRequest,
     ReviveProjectResponse,
     UnpauseProjectRequest,
@@ -709,6 +712,7 @@ async def get_project_agent_overrides(
 async def patch_project_agent_overrides(
     project_id: int,
     payload: AgentOverridesPatch,
+    x_actor: str | None = Header(default=None, alias="X-Actor"),
     session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
 ) -> AgentOverridesRead:
@@ -731,6 +735,14 @@ async def patch_project_agent_overrides(
     Both JSONB blobs are read-modify-written in ONE commit; other agents'
     entries and other `config` keys (`standards`, `enabled_roles`, ...) are
     never dropped.
+
+    Kanban #2768: a per-agent delta of what ACTUALLY changed (comparing old
+    vs new value for enabled/tier/notes, not merely "field was present in the
+    request") is captured into a `projects_audit` row (action='agent_config')
+    in the SAME commit as the config write. `X-Actor` mirrors the kill/pause
+    endpoints' stamp convention (default 'operator', truncated 200 chars). A
+    PATCH that changes nothing effective (values already matched, or every
+    entry was itself a no-op) writes NO audit row.
     """
     project = await get_active_project_or_404(
         session, project_id, detail=f"Project id={project_id} not found"
@@ -763,13 +775,25 @@ async def patch_project_agent_overrides(
     config: dict[str, Any] = dict(project.config or {})
     settings: dict[str, dict[str, Any]] = dict(config.get("agent_settings") or {})
 
+    # #2768: per-agent change delta — {"<agent>": {"<field>": {"from": X, "to": Y}}}.
+    # Built by comparing the value BEFORE this item's mutation to the value
+    # AFTER, so a field that's "present in the request" but equal to the
+    # current value (e.g. re-sending enabled=true when already true) is
+    # correctly excluded — the delta reflects EFFECTIVE change, not request
+    # shape. Spawn-precedence logic (#777 tier map) is untouched; this block
+    # only observes reads/writes already happening above.
+    changes: dict[str, dict[str, dict[str, Any]]] = {}
     for item in payload.agents:
         # exclude_unset distinguishes "field omitted" from "field explicitly
         # null" per entry — the wire contract's true-partial-upsert semantics
         # (mirrors the file's existing PATCH exclude_unset discipline).
         fields_set = item.model_dump(exclude_unset=True)
+        field_changes: dict[str, dict[str, Any]] = {}
 
         if "model_override" in fields_set:
+            old_tier = tiers.get(item.name)
+            if item.model_override != old_tier:
+                field_changes["tier"] = {"from": old_tier, "to": item.model_override}
             if item.model_override is None:
                 tiers.pop(item.name, None)
             else:
@@ -778,19 +802,74 @@ async def patch_project_agent_overrides(
         if "enabled" in fields_set or "notes" in fields_set:
             entry = dict(settings.get(item.name) or {})
             if "enabled" in fields_set:
+                old_enabled = entry.get("enabled", True)
+                if item.enabled != old_enabled:
+                    field_changes["enabled"] = {"from": old_enabled, "to": item.enabled}
                 entry["enabled"] = item.enabled
             if "notes" in fields_set:
+                old_notes = entry.get("notes")
+                if item.notes != old_notes:
+                    field_changes["notes"] = {"from": old_notes, "to": item.notes}
                 entry["notes"] = item.notes
             settings[item.name] = entry
+
+        if field_changes:
+            changes[item.name] = field_changes
 
     config["agent_settings"] = settings
     project.agent_overrides = tiers
     project.config = config
     project.updated_at = func.now()
 
+    if changes:
+        actor = (x_actor or "operator").strip()[:200] or "operator"
+        session.add(
+            ProjectsAudit(
+                project_id=project_id,
+                actor=actor,
+                action="agent_config",
+                reason=None,
+                drain_summary={"changes": changes},
+            )
+        )
+
     await session.commit()
     await session.refresh(project)
     return _assemble_agent_overrides(project)
+
+
+@router.get("/{project_id}/audit-log", response_model=list[ProjectsAuditEntry])
+async def get_project_audit_log(
+    project_id: int,
+    limit: int = Query(default=50, ge=1, le=200),
+    action: ProjectAuditAction | None = Query(default=None),
+    session: AsyncSession = Depends(get_session),
+) -> list[Any]:
+    """Read the `projects_audit` ledger for one project (Kanban #2768).
+
+    Covers every action in `PROJECT_AUDIT_ACTIONS` (kill/revive/pause/unpause/
+    pause_override/agent_config) — this is a generic read over the whole
+    table, not agent_config-specific. Rows ordered `created_at DESC` (newest
+    first); the existing `ix_projects_audit_project_created` index
+    (project_id, created_at DESC) serves this query directly.
+
+    `action` is validated at the Pydantic boundary via the same
+    `ProjectAuditAction` Literal the row-write endpoints use — an unknown
+    value 422s before this handler runs. `limit` defaults 50, capped at 200.
+    """
+    await get_active_project_or_404(
+        session, project_id, detail=f"Project id={project_id} not found"
+    )
+    stmt = (
+        select(ProjectsAudit)
+        .where(ProjectsAudit.project_id == project_id)
+        .order_by(ProjectsAudit.created_at.desc())
+        .limit(limit)
+    )
+    if action is not None:
+        stmt = stmt.where(ProjectsAudit.action == action)
+    rows = (await session.execute(stmt)).scalars().all()
+    return list(rows)
 
 
 @router.get(

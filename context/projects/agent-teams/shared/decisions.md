@@ -18,6 +18,17 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-07-03 — agent_overrides audit trail: REUSE projects_audit (6th action `agent_config`) — Kanban #2768
+**Scope:** backend / schema
+
+**Decision:** Config-edit auditing for `PATCH /api/projects/{id}/agent-overrides` REUSES `projects_audit` instead of a new/lighter store: migration `0075_audit_agent_config` widens `ck_projects_audit_action_valid` to 6 actions; the per-agent delta (`{"changes": {agent: {field: {from, to}}}}`, effective old-vs-new over enabled/tier/notes) rides the existing `drain_summary` JSONB (generic payload column despite the kill-flavored name); actor via the existing `X-Actor` header convention (default 'operator', 200-char cap); the audit INSERT shares the config write's commit (atomic); a no-op PATCH writes NO row. New read path `GET /api/projects/{id}/audit-log` (limit≤200, optional `?action=` Literal-validated, `created_at DESC` on the existing index) — the first generic projects_audit reader. **Why reuse:** the row shape fit 1:1 (actor/action/JSONB/index), keeps all project-level audit events in ONE queryable ledger, and costs a single CHECK-swap migration; a dedicated table would duplicate all four of those for zero added capability.
+
+**Implications:**
+- Lockstep triple: `PROJECT_AUDIT_ACTIONS` tuple == CHECK == `ProjectAuditAction` Literal (module-bottom RuntimeError guard covers drift).
+- `downgrade()` restores the 5-action CHECK → fails if `agent_config` rows exist (0051-style caveat; operator cleans first). Round-trip was proven live BEFORE the first row existed (order is load-bearing).
+- #777 spawn precedence untouched (audit = pure observer; dev-reviewer verified byte-untouched). 12-test module `test_agent_overrides_audit.py` → operator pytest batch.
+- `/audit-log` deliberately has NO `X-Project-Id` header dep (path-scoped read, same bucket as `GET /{project_id}` — reviewer-judged consistent, not a gap).
+
 ## 2026-07-03 — MCP server phase 2: get_task / update_task / complete_task (AC-gated close) — Kanban #2518
 **Scope:** mcp adapter
 

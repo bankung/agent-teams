@@ -1230,7 +1230,7 @@ class ProjectGrantConsent(BaseModel):
 # ---------------------------------------------------------------------------
 
 ProjectAuditAction = Literal[
-    "kill", "revive", "pause", "unpause", "pause_override"
+    "kill", "revive", "pause", "unpause", "pause_override", "agent_config"
 ]
 
 
@@ -1461,9 +1461,10 @@ class ProjectsAuditEntry(BaseModel):
 # so the equality check is tautological (`set(ProjectTeam.ALL) == set(ProjectTeam.ALL)`
 # can never fail). There is no longer a second hand-maintained list to drift from.
 
-# Sanity (Kanban #1209 + #1211): ProjectAuditAction Literal stays in lockstep
-# with models.projects_audit.PROJECT_AUDIT_ACTIONS (which mirrors the DB CHECK
-# in migration 0039 (kill/revive) + 0040 (pause/unpause/pause_override)).
+# Sanity (Kanban #1209 + #1211 + #2768): ProjectAuditAction Literal stays in
+# lockstep with models.projects_audit.PROJECT_AUDIT_ACTIONS (which mirrors the
+# DB CHECK in migration 0039 (kill/revive) + 0040 (pause/unpause/pause_override)
+# + 0075 (agent_config)).
 if set(ProjectAuditAction.__args__) != set(PROJECT_AUDIT_ACTIONS):  # type: ignore[attr-defined]
     raise RuntimeError(
         f"ProjectAuditAction Literal {ProjectAuditAction.__args__!r} "  # type: ignore[attr-defined]
