@@ -14,6 +14,7 @@ from src.models.task import Task, TaskHistory
 from src.models.task_comment import TaskComment
 from src.models.task_gate import TaskGate
 from src.models.task_template import TaskTemplate
+from src.models.telegram_chat_state import TelegramChatState
 from src.models.tool_call import ToolCall
 from src.models.transaction import Transaction
 from src.models.usage_event import UsageEvent
@@ -37,6 +38,7 @@ __all__ = [
     "TaskGate",
     "TaskHistory",
     "TaskTemplate",
+    "TelegramChatState",
     "ToolCall",
     "Transaction",
     "UsageEvent",

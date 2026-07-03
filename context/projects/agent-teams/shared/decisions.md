@@ -18,6 +18,19 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-07-03 — Walker ms50 batch: agent cost preview + tool-risk chips + Telegram Phase 1 — Kanban #1020 / #1021 / #2778
+**Scope:** backend + frontend + telegram
+
+**Decisions (per task):**
+- **#1020** `GET /api/agents/{name}/cost-estimate`: spawn-ELEMENT rollup (lateral unnest over `subagent_models`, `@>` probe served by the #2352 GIN index — EXPLAIN-verified), **task-level cost attribution** heuristic (a multi-agent task's full `estimated_cost_usd` attributes to each listed agent; documented in the route docstring; usage_events.agent_name exists but is session-scoped → v2 candidate). Thresholds green<10 / yellow<30 / red vs `budget_monthly_usd` (#951), override via `config.agent_cost_thresholds` with **per-key fail-safe coercion** (malformed values → that key's default; was an uncaught 500 pre-review). FE: traffic-light badge + $/mo in AgentOverridesPanel + red-toggle ModalShell confirm (cancel = zero state mutation). Gotcha (unrun-agent-tests class): this host's `LANGGRAPH_LLM_PROVIDER=ollama` prices $0 → cost tests must monkeypatch a paid provider.
+- **#1021** single-source tool-risk classifier `services/tool_risk.py`: 5 classes, `mcp__/MCP_` prefix → external, **fail-closed unknown → shell-or-destructive**, `All tools` → one pseudo-chip; `SendMessage` deliberately shell-or-destructive (can resume another agent into action). `tool_chips` additive on gallery summary+detail at the single producer (`agent_validation._summarize_one_file`). FE severity ranking = `RISK_ORDER` in AgentBadges.tsx, cross-referenced header notes with the BE module (drift guard).
+- **#2778** Telegram command surface Phase 1 LIVE (design #2720 D1/D2/D5/D6): `POST /api/telegram/command` owns parse/authz/dispatch/dedup (poller stays dumb — forward raw text + relay reply only); `telegram_chat_state` (migration **0076**, applied + round-trip proven) = per-chat sticky project + `last_update_id` watermark dedup (shortcut: single-producer assumption, FOR-UPDATE upgrade path noted); read verbs `/project /projects /tasks /task /gates` + deny-by-default; reviewer caught `/tasks` missing the canonical CANCELLED + is_active exclusions → fixed + live-proven (cancelled #870 absent from the real reply). Gate-callback path byte-equivalent (regression-proven — the live HITL channel was untouched). Phases 2/3 = #2779/#2780 (FK-chained, auto-flagged).
+
+**Implications:**
+- Probe rows `lead-verify-2778` + `lead-independent-probe` remain in `telegram_chat_state` (harmless; operator psql cleanup optional — raw DML is human-only).
+- Batch pytest modules (operator single run, incl. yesterday's still-unrun batch): test_agent_cost_estimate, test_agent_tool_chips, test_agent_gallery, test_agent_overrides_audit, test_telegram_command, test_telegram_poller_command_forward (+ prior: test_cost_forecast, test_task_outputs, test_tasks_task_type_filter, test_project_agent_overrides).
+- Host det15 ×15 ran for both FE tasks (15/15 exit-0 each); vitest suite now 551 tests / 52 files.
+
 ## 2026-07-03 — agent_overrides audit trail: REUSE projects_audit (6th action `agent_config`) — Kanban #2768
 **Scope:** backend / schema
 

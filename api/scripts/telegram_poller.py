@@ -48,6 +48,19 @@ On an allowed callback:
     3. answerCallbackQuery to ack the tap (clears the button's spinner). A
        resolve 409 (already-answered) is handled gracefully: ack with an
        "already handled" toast, do NOT retry.
+
+Plain-text command forwarding (Kanban #2778, Phase 1 of
+telegram-command-surface-2720.md, D1 — poller stays DUMB):
+On an allowed plain TEXT message (not a callback):
+    1. POST <api>/api/telegram/command
+         body {chat_id: <chat_id>, update_id: <update_id>, text: <raw text>}
+       NO parsing / authz / dispatch happens here — the api endpoint owns
+       ALL of that (verb matching, the per-chat sticky /project, update_id
+       dedup). This process forwards the raw bytes and nothing else.
+    2. sendMessage the response's `reply_text` back to the same chat,
+       verbatim (the poller does not interpret it).
+    Non-text messages (sticker/photo/etc.) are ignored, unchanged from the
+    pre-#2778 behavior.
 """
 
 from __future__ import annotations
@@ -218,6 +231,64 @@ def _from_id_of(update: dict[str, Any]) -> Any:
     return None
 
 
+def send_message(
+    client: httpx.Client,
+    *,
+    token: str,
+    chat_id: int | str,
+    text: str,
+) -> None:
+    """Send a plain sendMessage to `chat_id`. Best-effort — mirrors
+    answer_callback's never-raise posture (a failed relay only means the
+    operator doesn't see the reply; it must not crash the poll loop).
+    Kanban #2778 (Telegram command surface Phase 1)."""
+    url = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
+    payload: dict[str, Any] = {"chat_id": str(chat_id), "text": text[:4096]}
+    try:
+        client.post(url, json=payload)
+    except httpx.RequestError as exc:
+        # Never log URL (carries bot token) — mirror every other adapter call.
+        logger.warning("send_message: request_error err=%s", type(exc).__name__)
+
+
+def forward_command_to_api(
+    client: httpx.Client,
+    *,
+    api_base: str,
+    chat_id: int | str,
+    update_id: int,
+    text: str,
+) -> dict[str, Any]:
+    """POST the raw message text to `/api/telegram/command`. D1: the poller
+    does NOT parse/interpret `text` itself — it forwards verbatim and relays
+    whatever `reply_text` comes back. Returns a small status dict; never
+    raises (network/4xx/5xx all land as status='error' with a generic reply
+    so the operator gets SOME response rather than silence).
+    """
+    url = f"{api_base.rstrip('/')}/api/telegram/command"
+    body = {"chat_id": str(chat_id), "update_id": update_id, "text": text}
+    try:
+        resp = client.post(url, json=body, timeout=10.0)
+    except httpx.RequestError as exc:
+        logger.warning("forward_command_to_api: request_error err=%s", type(exc).__name__)
+        return {"status": "error", "reply_text": "(command failed: network error)"}
+    if resp.status_code != 200:
+        logger.warning("forward_command_to_api: http=%d", resp.status_code)
+        logger.debug(
+            "forward_command_to_api: http=%d body=%.200s", resp.status_code, resp.text or ""
+        )
+        return {"status": "error", "reply_text": "(command failed; check the API logs)"}
+    try:
+        parsed = resp.json()
+    except ValueError:
+        logger.warning("forward_command_to_api: json decode error")
+        return {"status": "error", "reply_text": "(command failed: bad response)"}
+    reply_text = parsed.get("reply_text")
+    if not isinstance(reply_text, str) or not reply_text:
+        reply_text = "(no reply)"
+    return {"status": "ok", "reply_text": reply_text}
+
+
 def process_update(
     client: httpx.Client,
     update: dict[str, Any],
@@ -248,8 +319,45 @@ def process_update(
 
     cq = update.get("callback_query")
     if not isinstance(cq, dict):
-        # An allowed plain message (not a button tap) — nothing to resolve.
-        return {"action": "ignored_non_callback", "transient_error": False}
+        # An allowed plain message (not a button tap). Kanban #2778: forward
+        # plain TEXT to POST /api/telegram/command and relay the reply. D1 —
+        # the poller does NOT parse the text itself; it forwards raw and
+        # relays whatever reply_text comes back. Non-text messages (sticker,
+        # photo, etc. — update["message"]["text"] absent) keep the pre-#2778
+        # behavior: ignored, nothing forwarded.
+        msg = update.get("message")
+        text = msg.get("text") if isinstance(msg, dict) else None
+        if not isinstance(text, str) or not text.strip():
+            return {"action": "ignored_non_callback", "transient_error": False}
+
+        update_id = update.get("update_id")
+        if not isinstance(update_id, int):
+            # No update_id to key the API-side dedup watermark on — skip
+            # forwarding rather than send a malformed dedup key.
+            return {"action": "ignored_non_callback", "transient_error": False}
+
+        result = forward_command_to_api(
+            client,
+            api_base=api_base,
+            chat_id=operator_chat_id,
+            update_id=update_id,
+            text=text,
+        )
+        send_message(client, token=token, chat_id=operator_chat_id, text=result["reply_text"])
+        # A forward/relay failure (network, non-200, bad JSON) is NOT treated
+        # as transient_error=True here: unlike a gate resolve, a lost command
+        # reply has no durable state to protect — the operator can simply
+        # retype the command. Retrying would also re-POST with the SAME
+        # update_id, which the endpoint's own dedup watermark would then
+        # reject as a duplicate once the first attempt's mutation (if any)
+        # actually landed, silently swallowing a real retry. Advancing the
+        # offset here keeps the poll loop's existing at-most-once-per-update
+        # semantics for this action, matching ignored_* / no_project.
+        return {
+            "action": "command_forwarded",
+            "command_status": result["status"],
+            "transient_error": False,
+        }
 
     callback_query_id = cq.get("id")
     decoded = decode_callback_data(cq.get("data"))

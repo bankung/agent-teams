@@ -52,6 +52,7 @@ from src.routers import task_templates as task_templates_router
 from src.routers import task_outputs as task_outputs_router
 from src.routers import tasks as tasks_router
 from src.routers import teams as teams_router
+from src.routers import telegram_command as telegram_command_router
 from src.routers import tool_calls as tool_calls_router
 from src.routers import tools_email as tools_email_router
 from src.routers import tools_calendar as tools_calendar_router
@@ -386,6 +387,9 @@ def create_app() -> FastAPI:
     # (POST /api/task-gates/{gate_id}/resolve), unified pending-gate read
     # (GET /api/operator-gates/pending). Sub-resource of tasks + a unified read.
     app.include_router(task_gates_router.router, prefix="/api")
+    # Kanban #2778 — Telegram command surface Phase 1: POST /api/telegram/command
+    # (dumb-poller forward target; D1 ALL parse/authz/dispatch/dedup lives here).
+    app.include_router(telegram_command_router.router, prefix="/api")
     app.include_router(sessions_router.router, prefix="/api")
     app.include_router(sessions_router.runs_router, prefix="/api")
     app.include_router(scaffold_router.router, prefix="/api")
