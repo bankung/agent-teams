@@ -165,6 +165,16 @@ auto-compaction (it fires at clean boundaries) + the §6 re-verify after it, and
 proactively `/compact` **at a task boundary** (never mid-task). Mirror of operator memory
 `feedback_walker_continuous_no_per_task_ask`.
 
+**Drain-end + interject hygiene (2026-07-02 incident, #2783).** After a long drain prefer
+**close + new session** over `/compact`: a drain-end compact runs against the max-size context
+(~450k tokens) and has wedged the desktop client once (post-compact continuation never ran — the
+session sat dead until app restart; decisions.md 2026-07-03). Never TYPE `/compact` while the
+walker is running — it queues and auto-fires the moment the turn ends, i.e. exactly against that
+max-size context. To talk to a RUNNING walker use **ESC-interrupt** (operator-stop, §4a) — plain
+typed messages just queue until the turn ends. For a board expected to run >3-4h, prefer `max:N`
+(e.g. `max:5`): the turn ends + reports every N tasks, giving safe checkpoints where queued input
+flushes and compaction is cheap.
+
 ## Why this exists
 
 Encodes the operator's by-hand "pick the next task + start it" step as a disciplined, hands-off

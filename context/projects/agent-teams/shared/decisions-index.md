@@ -1,6 +1,6 @@
 ---
 purpose: bootstrap hot-read INDEX for decisions.md (1 line per decision)
-updated: 2026-07-02
+updated: 2026-07-03
 covers: active decisions.md 2026-05-20 onward; older in decisions-archive-2026-05.md
 ---
 
@@ -19,6 +19,7 @@ covers: active decisions.md 2026-05-20 onward; older in decisions-archive-2026-0
 > **[CRIT]** = anti-re-litigation decision (do-not-revisit without reopening the entry). Pull its
 > body before touching that area.
 
+- 2026-07-03 — #2783 walker long-run incident root-caused: drain healthy (one 5h53m turn, 12 commits, stop report delivered 15:49); the real wedge = claude-desktop v2.1.197 post-manual-compact continuation never ran (queued /compact auto-fired at turn end against preTokens=457k); per-agent timing audit clean (max 31.5 min; the 12:45 "13-at-once" = a parallel review battery, by design); zb-walker §7 drain-end hygiene added (new-session over /compact · never queue /compact mid-drain · ESC to interject · max:N for >3-4h boards)
 - 2026-07-02 — ms54 perf cluster #2722–#2726 (#2699 audit fix set): milestones lifted to Board prop (N+1 gone); Board callbacks ref-stabilized + BoardDndCanvas memo'd (residual→#2782); SSE provider StrictMode footgun (clear() deleted, spy-test); ?task_type= server filter + LIVE audit path converged (named fn was dead code); buildTasksQs dedup + one-effect ref-sync (render-time ref writes = ERROR-tier, lint-proven). Host-side ×15 = the determinism gate now. from ms54
 - 2026-07-02 — #2558 Artifacts view (v0.8.0 #7): GET /api/projects/{id}/outputs on the locked #1305 guards (int-only discovery→collection boundary, ASCII-digit dir probe, cap-2000-keep-largest) + /p/[name]/artifacts page + ViewSwitcher 5th entry; download reuses per-task route via apiOrigin(). BE self-review caught Unicode-digit collision + wrong-end truncation pre-landing. Host ×15 = authoritative determinism gate (in-container loops contention-prone). 42 BE tests → operator pytest. from ms50
 - 2026-07-02 — #2391 approval-policy editor hardened (#2390 review): caps 200-char/20-cond/50-rule double-enforced; unsaved-draft inline guard; TS preview regex-aligned to the hook (_shared.ps1:252, fail-closed) with url/content-predicate preview structurally 0 + disclaimer; 7/8 SHOULD-FIX fixed, text_contains_all/any UI deferred (engine test-locked); editRule-switch discard flagged as follow-up candidate. vitest 517/49 ×15 + Lead re-run green. from ms24

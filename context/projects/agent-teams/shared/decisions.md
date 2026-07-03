@@ -18,6 +18,18 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-07-03 — Walker long-run incident (2026-07-02): post-manual-compact client wedge; the drain itself was healthy — Kanban #2783
+**Scope:** shared / process / walker
+
+**Decision:** Root-caused the operator-reported "walker hung ~6 h with 17 subagents". The drain was healthy: ONE continuous turn 09:56→15:49 local (5 h 53 m, 12 commits at a steady 9–63-min cadence), stop report delivered 15:49:35 (transcript L2586). The real wedge was the client: a `/compact` typed mid-drain sat queued, auto-fired 3 s after turn end against the max-size context (compact_boundary: trigger=manual, preTokens=457,703, durationMs=148,297), and claude-desktop v2.1.197 never generated the post-compact continuation — zero transcript events 15:52 → next-day 09:13, input during the wedge never even reached the queue file. Operator killed the app in the evening. No data loss (commits / board / rail all intact). Prevention shipped same-day: zb-walker SKILL.md §7 "Drain-end + interject hygiene" (close+new-session over `/compact` after a long drain · never type `/compact` while the walker runs · ESC-interrupt to talk to a running walker · `max:N` for boards expected >3–4 h).
+
+**Reasoning (per-agent timing audit):** all 29 Jul-2 subagents audited from their transcripts' first/last timestamps — longest ran 31.5 min (#2723 Board SSE); the "13 replied at once" burst 12:45–12:49 was a 10-angle parallel review battery + 3 verify agents spawned together 12:44–12:46 (each 0.3–3.3 min) = parallel-by-design, not stuck-then-flushed; no dead-air window >25 min all day (largest, 13:16→13:40, holds the ×15 host determinism battery + the #2558 commit). Only real in-drain stall: #2722 dev-frontend backgrounded its determinism loop (~10–15 min lost, recovered by Lead takeover in-run; the foreground-only brief mandate held for the rest of the drain).
+
+**Implications:**
+- Long-turn UX: during a walker turn, plain typed messages queue until turn end (claude-desktop) — ESC-interrupt is the supported interject path (walker stop-condition §4a). The agents panel keeps finished agents listed, so a day-long drain reads as "N agents open" even when ≤2 are actually running.
+- Drain-end: prefer close+new-session; a drain-end `/compact` runs against the ~450k-token ceiling context — the exact wedge path. Skill §7 now says so; skill-file edits load on the next Claude Code restart.
+- Client action (operator, #2783 AC4): update the desktop app; if the post-compact wedge reproduces on the current version, report upstream with the compact_boundary evidence above.
+
 ## 2026-07-02 — ms54 perf cluster landed: #2722–#2726 (the #2699 FE-audit fix set)
 **Scope:** frontend (+ one BE filter param)
 **Decision (one entry for the 5-task cluster; per-task detail lives in each task's rail + commits `30701b8`/`d3bd281`/`5e1bc94`/`f1ebb5b`):**
