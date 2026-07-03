@@ -2843,6 +2843,41 @@ export async function patchAgentOverrides(
 }
 
 // ============================================================================
+// Kanban #1020 — per-agent cost-preview estimate (frontend half). Platform-
+// level route (NO X-Project-Id header, unlike the overrides endpoints above)
+// — project_id travels in the query string only, per the router's own
+// docstring. The estimate is still spawn-history specific to THIS project's
+// usage of the agent; the scoping is query-param-based, not header-based.
+//
+// Unlike the Decimal-as-string convention used elsewhere (cost_usage,
+// estimated_cost_usd, etc.), this endpoint's numeric fields are plain JSON
+// numbers per the pinned contract — no parseUsd() needed.
+//
+// avg_cost_per_spawn / projected_monthly_usd are null when there's no spawn
+// history to estimate from (spawn_count_last_30d === 0); render a neutral
+// "no history" state rather than a fabricated $0 (see AgentOverridesPanel's
+// AgentCostBadge).
+// ============================================================================
+export type AgentCostTrafficLight = "green" | "yellow" | "red";
+
+export type AgentCostEstimate = {
+  avg_cost_per_spawn: number | null;
+  spawn_count_last_30d: number;
+  projected_monthly_usd: number | null;
+  vs_project_budget_pct: number | null;
+  traffic_light: AgentCostTrafficLight;
+};
+
+export async function getAgentCostEstimate(
+  name: string,
+  projectId: number,
+): Promise<AgentCostEstimate> {
+  return jsonFetch<AgentCostEstimate>(
+    `/api/agents/${encodeURIComponent(name)}/cost-estimate?project_id=${projectId}&horizon=monthly`,
+  );
+}
+
+// ============================================================================
 // Kanban #2481 — gated agent WRITE endpoints (create + edit). Platform-level
 // (NO X-Project-Id; mirrors the gallery reads). Both write paths are guarded
 // server-side by the operator-proof header (X-Operator-Token = the operator's

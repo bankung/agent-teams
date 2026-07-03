@@ -164,6 +164,31 @@ class AgentSpawn(BaseModel):
     at: str | None
 
 
+TrafficLightLiteral = Literal["green", "yellow", "red"]
+
+
+class AgentCostEstimate(BaseModel):
+    """Response for ``GET /api/agents/{name}/cost-estimate`` (Kanban #1020).
+
+    Estimated-basis (v1): built on ``tasks.estimated_cost_usd`` (the #944
+    done-flip heuristic captured at task close), NOT ``usage_events`` actuals
+    — see the router module docstring for why. All numeric fields are plain
+    ``float`` (rounded to 4dp), not the Decimal-as-string convention some
+    other endpoints use (#1688) — this is a fresh v1 surface with no existing
+    FE contract to match, so we keep it simple for the consumer.
+
+    ``avg_cost_per_spawn`` / ``projected_monthly_usd`` / ``vs_project_budget_pct``
+    are ``None`` when there is no costed history / no budget configured,
+    respectively (never a bare 0 standing in for "unknown").
+    """
+
+    avg_cost_per_spawn: float | None
+    spawn_count_last_30d: int
+    projected_monthly_usd: float | None
+    vs_project_budget_pct: float | None
+    traffic_light: TrafficLightLiteral
+
+
 class AgentDetail(AgentSummary):
     """Response for ``GET /api/agents/{name}`` (contract §2).
 
