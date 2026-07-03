@@ -53,6 +53,12 @@ nothing in the always-HALT tier.
 
 **Spike subset (AC2):** `list_projects`, `list_tasks`, `create_task` (per the task AC).
 
+> **Phase 2 SHIPPED (#2518, 2026-07-03):** `get_task` + `update_task` + `complete_task` live in
+> `mcp/server.py` — 6 tools total, all thin httpx shims. `update_task` client-side-refuses
+> `process_status=5` (points to `complete_task`), so this surface has exactly ONE path to DONE.
+> `resolve_project(name)` was folded into every tool's `project` arg (name → id inline) rather
+> than shipped as a separate tool. The EXCLUDED tier above remains excluded.
+
 ## 2. Auth / session model
 
 - **Spike (stdio, single operator, localhost):** no auth — the server runs locally and calls
@@ -130,3 +136,10 @@ MCP client demonstrably carries the full behavioral contract (unproven today →
 - Error mapping: FastAPI 4xx/422 → MCP tool-error shape (surface the `detail` string).
 - Whether to expose `complete_task` in v1 (it encodes the AC-discipline close) or defer it until
   the read+create spike proves the shim end-to-end.
+  **RESOLVED (#2518, 2026-07-03): exposed.** Contract: effective AC = caller-supplied verdict
+  array else the stored array; ANY pending/failed item → tool error naming the items, ZERO api
+  writes; else ONE combined PATCH (AC verdicts when supplied + `process_status=5` +
+  `status_change_reason`) per the T2/#2541 convention; null/empty AC flips with an explanatory
+  note. Client-side refusal is a friendly pre-check — the server's #2765 resolved-final gate
+  remains the real boundary. Verified end-to-end via FastMCP in-memory Client against the live
+  api (negative: no partial write; positive: ps=5 persisted; evidence in #2518's rail).

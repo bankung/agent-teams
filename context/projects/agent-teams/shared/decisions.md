@@ -18,6 +18,16 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-07-03 — MCP server phase 2: get_task / update_task / complete_task (AC-gated close) — Kanban #2518
+**Scope:** mcp adapter
+
+**Decision:** `mcp/server.py` grows from 3 → 6 tools, all thin httpx shims over `/api/*` (no DB/ORM, no new endpoints). `complete_task` resolves the #806 §7 open question as EXPOSED, with the AC-verify-then-flip contract (refuse + zero writes on any pending/failed item; ONE combined PATCH otherwise — T2/#2541). `update_task` client-side-refuses `process_status=5` so the MCP surface has exactly one path to DONE; the server's #2765 gate stays the real boundary. Destructive/email/operator-proof tiers remain unexposed (6-tool list verified). Full contract + resolution recorded in `mcp-adapter-design.md` §1/§7; usage in `mcp/README.md`.
+
+**Implications:**
+- No pytest module: `fastmcp`-less api image + zero mcp test precedent (phase-1 `verify.py` is the pattern) — evidence = scripted FastMCP in-memory round-trip against the live api (negative: refusal with no partial write; positive: ps=5 persisted; `GET /api/tasks/{id}` re-read). A future pytest home = `mcp/tests/` with its own deps, or add fastmcp to api deps — undecided, revisit if mcp grows.
+- Verification throwaway tasks #2785–#2788 (`[scratch-2518-verify]` prefix) left DONE on the board — archive-sweep fodder, harmless.
+- Harness gotcha reconfirmed: `GET /api/tasks` is windowed at `id ASC` — fresh high-id rows never appear in list-based counts; use GET-by-id (mirrors `reference_tasks_api_post_needs_project_id`).
+
 ## 2026-07-03 — Walker long-run incident (2026-07-02): post-manual-compact client wedge; the drain itself was healthy — Kanban #2783
 **Scope:** shared / process / walker
 
