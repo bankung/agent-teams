@@ -3137,6 +3137,238 @@ async def fire_now(
     return child
 
 
+async def _assert_project_not_killed_or_paused(
+    session: AsyncSession, project_id: int
+) -> None:
+    """Kill/pause gate for the run-now action (#2780 Phase 3) — its SOLE caller.
+
+    `halt_task` intentionally does NOT call this: a cooperative stop-signal
+    must remain usable on a paused/killed project (you must be able to halt
+    in-flight work in a project you just paused/killed) — see `halt_task`.
+
+    Mirrors the exact predicate `create_task` inlines (this file, ~:1535) —
+    an ACTIVE project that is killed -> 423 Locked (surfaces killed_at +
+    killed_reason); paused -> 423 Locked (surfaces paused_at + paused_reason).
+    A soft-deleted / missing project falls through (no row) — the downstream
+    `get_or_404` on the task already 404s a task whose project vanished, and
+    a run-now/halt targets an EXISTING task so the project row is present in
+    practice. Kill takes precedence over pause (the projects mutex guarantees
+    at most one is true, but check kill first for the rare race window).
+
+    NOTE: run-now does NOT expose the create_task pause-override hatch
+    (`allow_during_pause`) — a paused project should not have work driven into
+    it via a one-shot Telegram/REST run trigger; the operator unpauses first.
+    """
+    proj_row = (
+        await session.execute(
+            select(
+                Project.is_killed,
+                Project.killed_at,
+                Project.killed_reason,
+                Project.is_paused,
+                Project.paused_at,
+                Project.paused_reason,
+            ).where(
+                Project.id == project_id,
+                Project.status == RecordStatus.ACTIVE,
+            )
+        )
+    ).first()
+    if proj_row is None:
+        return
+    if proj_row.is_killed:
+        raise HTTPException(
+            status_code=423,
+            detail={
+                "message": (
+                    f"Project {project_id} is killed. "
+                    f"Action blocked. See killed_reason field for details."
+                ),
+                "killed_at": (
+                    proj_row.killed_at.isoformat() if proj_row.killed_at else None
+                ),
+                "killed_reason": proj_row.killed_reason,
+            },
+        )
+    if proj_row.is_paused:
+        raise HTTPException(
+            status_code=423,
+            detail={
+                "message": (
+                    f"Project {project_id} is paused. "
+                    "Action blocked; unpause the project first. "
+                    "See paused_reason field for context."
+                ),
+                "paused_at": (
+                    proj_row.paused_at.isoformat() if proj_row.paused_at else None
+                ),
+                "paused_reason": proj_row.paused_reason,
+            },
+        )
+
+
+@router.post(
+    "/{task_id}/run-now",
+    response_model=TaskRead,
+    status_code=http_status.HTTP_200_OK,
+)
+async def run_task_now(
+    task_id: int,
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+) -> Task:
+    """Kanban #2780 (Phase 3 gap A): make task X the Mode-A engine's next pick.
+
+    NOT a hard executor — the API cannot spawn a Claude Code session. This is
+    the COOPERATIVE inverse of a halt: it puts the task into the exact state
+    the picker (`get_next_autorun` -> `next_task_stmt`, this file ~:660)
+    selects on, so the running Mode-A walker surfaces + runs it on its next
+    `/next-autorun` poll. Derived from the picker's ACTUAL selection predicate,
+    not guessed:
+
+      picker requires: process_status=TODO(1) AND
+        run_mode IN (auto_pickup, auto_headless) AND halt_reason IS NULL AND
+        (scheduled_at IS NULL OR scheduled_at <= now) [+ blocker/gate/budget].
+
+    So run-now sets: run_mode='auto_pickup' (NOT auto_headless — headless needs
+    project consent; auto_pickup is the safe "surface to the walker" mode),
+    process_status=TODO(1), halt_reason=NULL, scheduled_at=NULL (a future-
+    scheduled task fires NOW). The blocker / open-gate / budget / kill / pause
+    gates are deliberately NOT bypassed — a run-now cannot force work past a
+    live blocker or a killed/paused project; it only clears the manual/halt/
+    schedule brakes this action owns.
+
+    Refuse (clear 4xx) when the task cannot sensibly be "run next":
+      - 404 if not found / soft-deleted.
+      - 409 if DONE(5) / CANCELLED(6) — terminal, nothing to run.
+      - 409 if already IN_PROGRESS(2) — it IS running; run-now is a no-op error
+        (a cooperative signal can't "re-pick" a task the worker already holds).
+      - 423 if the project is killed / paused (shared gate).
+
+    Idempotent: a second call on a task already at (TODO, auto_pickup,
+    halt_reason=NULL, scheduled_at=NULL) is a harmless no-op that re-returns
+    the row (no redundant write / audit row — the equality-guarded setattr
+    loop skips unchanged fields, mirroring update_task's #120 no-op skip).
+    """
+    task = await get_or_404(
+        session, Task, detail=f"Task id={task_id} not found", id=task_id
+    )
+    if task.status == RecordStatus.DELETED:
+        raise HTTPException(status_code=404, detail=f"Task id={task_id} not found")
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)  # #695
+
+    # Terminal / already-running refusals (clear 409, not a silent state stomp).
+    if task.process_status in (TaskStatus.DONE, TaskStatus.CANCELLED):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Task {task_id} is {'DONE' if task.process_status == TaskStatus.DONE else 'CANCELLED'} "
+                f"(process_status={task.process_status}); nothing to run."
+            ),
+        )
+    if task.process_status == TaskStatus.IN_PROGRESS:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task {task_id} is already running (process_status=2).",
+        )
+
+    await _assert_project_not_killed_or_paused(session, task.project_id)
+
+    # Set the picker-selectable state. Equality-guarded so an already-primed
+    # task writes nothing (idempotent no-op; no audit-row noise — #120 parity).
+    changed = False
+    for field, value in (
+        ("run_mode", TaskRunMode.AUTO_PICKUP),
+        ("process_status", TaskStatus.TODO),
+        ("halt_reason", None),
+        ("scheduled_at", None),
+    ):
+        if getattr(task, field) != value:
+            setattr(task, field, value)
+            changed = True
+    if changed:
+        task.updated_at = func.now()
+        await session.commit()
+        await session.refresh(task)
+    return task
+
+
+@router.post(
+    "/{task_id}/halt",
+    response_model=TaskRead,
+    status_code=http_status.HTTP_200_OK,
+)
+async def halt_task(
+    task_id: int,
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+) -> Task:
+    """Kanban #2780 (Phase 3 gap B): cooperatively halt a RUNNING task.
+
+    COOPERATIVE, not a hard kill — an API call cannot terminate a live Claude
+    Code / worker session. It sets the state the executor observes at its next
+    boundary: process_status=8 (HALTED_PENDING_USER) + halt_reason='operator_halt'.
+    The Mode-A walker re-checks `/next-autorun` (whose TODO-only filter, ~:670,
+    structurally excludes ps=8) and a Mode-B worker polls process_status, so
+    the running session winds down at its next checkpoint rather than being
+    force-killed mid-write.
+
+    Intentionally EXEMPT from the kill/pause gate (a deliberate asymmetry with
+    run-now, NOT an oversight): a cooperative stop-signal must never be blocked
+    by the very switch it is subordinate to — you must be able to halt in-flight
+    work in a project you just paused/killed. So this does NOT call
+    `_assert_project_not_killed_or_paused`.
+
+    `halted_at` is auto-stamped by the same `_STATUS_TIMESTAMP_FIELDS` block
+    the PATCH path uses — but this endpoint writes the row directly (not via
+    update_task), so it stamps `halted_at` inline with the same "only when
+    currently NULL" rule (#1839: persists, no re-stamp on re-halt).
+
+    Refuse (clear 4xx) when the task is not actually running:
+      - 404 if not found / soft-deleted.
+      - 409 if process_status != IN_PROGRESS(2) — you can only halt a running
+        task. A TODO/DONE/HALTED task is not running; halting it is nonsensical
+        (an already-halted ps=8 task is caught here too -> 409, since ps != 2).
+
+    Idempotency note: because 'running' is a single-state predicate (ps=2), a
+    successful halt flips the task OUT of the haltable state, so a SECOND halt
+    naturally 409s ("not running") rather than double-writing — the refuse
+    path IS the idempotency guard here. (Contrast run-now, whose target state
+    is re-entrant.) The Telegram layer additionally rides update_id dedup so a
+    REDELIVERED /halt update never even reaches this endpoint twice.
+
+    'operator_halt' is a NEW halt_reason string joining the existing free-form
+    set (question / decision / hitl_timeout / budget_exceeded:* — halt_reason
+    is nullable TEXT with no CHECK / enum, #785, so this needs no migration).
+    """
+    task = await get_or_404(
+        session, Task, detail=f"Task id={task_id} not found", id=task_id
+    )
+    if task.status == RecordStatus.DELETED:
+        raise HTTPException(status_code=404, detail=f"Task id={task_id} not found")
+    assert_task_belongs_to_session(task_id, task.project_id, session_project_id)  # #695
+
+    if task.process_status != TaskStatus.IN_PROGRESS:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Task {task_id} is not running (process_status={task.process_status}); "
+                "only an in-progress (2) task can be halted."
+            ),
+        )
+
+    task.process_status = TaskStatus.HALTED_PENDING_USER
+    task.halt_reason = "operator_halt"
+    # Stamp halted_at only if currently NULL (mirrors the PATCH-path
+    # _STATUS_TIMESTAMP_FIELDS rule — #1839: persists, no re-stamp).
+    if task.halted_at is None:
+        task.halted_at = func.now()
+    task.updated_at = func.now()
+    await session.commit()
+    await session.refresh(task)
+    return task
+
+
 def _extract_option_ids(question_payload: dict | None) -> list[str]:
     """Extract the list of valid option IDs from a question_payload.
 

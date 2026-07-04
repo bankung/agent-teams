@@ -66,8 +66,14 @@ to one dict and not the other.
 Phase 1 verb catalog (D6): `/project`, `/projects`, `/tasks`, `/task <id>`,
 `/gates` (class='read').
 Phase 2 verb catalog (D6): `/new <text>`, `/approve <gate>`, `/deny <gate>`,
-`/hold <id>` (class='safe_mutation'). `/run <id>` and halt-running-task are
-Phase 3 gaps (dedicated new endpoints), NOT built here.
+`/hold <id>` (class='safe_mutation').
+Phase 3 verb catalog (Kanban #2780): `/run <id>` (run-a-specific-id-now) and
+`/halt <id>` (cooperatively halt a running task), both class='safe_mutation',
+each dispatching to a DEDICATED new router function (`run_task_now` /
+`halt_task` in routers/tasks.py) as an in-process call — the two D6 "gap"
+endpoints. run-now PRIMES a task into the picker-selectable state (it does not
+spawn a session); halt sets process_status=8 the executor observes at its next
+boundary (COOPERATIVE, not a hard kill).
 """
 
 from __future__ import annotations
@@ -87,7 +93,7 @@ from src.models.task import Task
 from src.models.task_gate import TaskGate
 from src.models.telegram_chat_state import TelegramChatState
 from src.routers.task_gates import resolve_gate
-from src.routers.tasks import create_task, update_task
+from src.routers.tasks import create_task, halt_task, run_task_now, update_task
 from src.schemas.task import TaskCreate, TaskUpdate
 from src.schemas.task_gate import GateResolveRequest
 from src.schemas.telegram_command import TelegramCommandRequest, TelegramCommandResponse
@@ -108,7 +114,9 @@ router = APIRouter(tags=["telegram-command"])
 # dispatcher dict below (order = display order).
 _PHASE1_VERBS: list[str] = ["/project <name>", "/projects", "/tasks", "/task <id>", "/gates"]
 _PHASE2_VERBS: list[str] = ["/new <text>", "/approve <gate id>", "/deny <gate id>", "/hold <id> <reason>"]
-_ALL_VERBS: list[str] = _PHASE1_VERBS + _PHASE2_VERBS
+# Phase 3 (#2780): the two gap verbs — run-a-specific-id-now + cooperative halt.
+_PHASE3_VERBS: list[str] = ["/run <id>", "/halt <id>"]
+_ALL_VERBS: list[str] = _PHASE1_VERBS + _PHASE2_VERBS + _PHASE3_VERBS
 
 _UNKNOWN_COMMAND_REPLY = (
     "Unknown command. Available:\n" + "\n".join(_ALL_VERBS)
@@ -414,6 +422,68 @@ async def _verb_hold(session: AsyncSession, state: TelegramChatState, args: str)
     return f"/hold -> #{task.id} held (TODO, reason: {reason})"
 
 
+# ---------------------------------------------------------------------------
+# Phase 3 (Kanban #2780) — the two GAP verbs. `/run` and `/halt` each call the
+# NEW dedicated router function (`run_task_now` / `halt_task`) as a direct
+# in-process async call (D5) — the SAME state-transition / kill-pause gate /
+# 4xx-refuse / idempotency logic the REST route runs, zero duplication. Neither
+# new endpoint is `@limiter`-decorated (unlike resolve_gate), so no
+# `_build_stub_request()` is needed here — the functions are plain async and
+# take (task_id, session_project_id, session) directly. Any `HTTPException`
+# they raise (404/409/423) is caught by `telegram_command` and rendered as a
+# reply string (D6 "never 500").
+# ---------------------------------------------------------------------------
+
+
+async def _verb_run(session: AsyncSession, state: TelegramChatState, args: str) -> str:
+    """`/run <id>` — make the task the Mode-A engine's next pick (Phase 3 gap A).
+
+    Calls `run_task_now` (the exact function `POST /api/tasks/{id}/run-now`
+    calls): sets run_mode='auto_pickup' + process_status=TODO + clears
+    halt_reason/scheduled_at, honoring the kill/pause/blocker/gate gates.
+    Idempotent (re-priming an already-primed task is a no-op). Cooperative —
+    the running walker picks it up on its next /next-autorun poll; this does
+    NOT spawn a session synchronously.
+    """
+    if state.project_id is None:
+        return _NO_STICKY_PROJECT_REPLY
+    raw = args.strip()
+    if not raw.isdigit():
+        return "Usage: /run <id>"
+    task_id = int(raw)
+    task = await run_task_now(
+        task_id, session_project_id=state.project_id, session=session
+    )
+    return (
+        f"/run -> #{task.id} queued to run next "
+        f"(ps={task.process_status}, run_mode={task.run_mode})"
+    )
+
+
+async def _verb_halt(session: AsyncSession, state: TelegramChatState, args: str) -> str:
+    """`/halt <id>` — cooperatively halt a RUNNING task (Phase 3 gap B).
+
+    Calls `halt_task` (the exact function `POST /api/tasks/{id}/halt` calls):
+    flips a ps=2 task to process_status=8 (HALTED_PENDING_USER) +
+    halt_reason='operator_halt'. COOPERATIVE — sets the state the executor
+    observes at its next boundary, NOT a hard kill. Refuses (readable reply)
+    when the task is not running (ps != 2).
+    """
+    if state.project_id is None:
+        return _NO_STICKY_PROJECT_REPLY
+    raw = args.strip()
+    if not raw.isdigit():
+        return "Usage: /halt <id>"
+    task_id = int(raw)
+    task = await halt_task(
+        task_id, session_project_id=state.project_id, session=session
+    )
+    return (
+        f"/halt -> #{task.id} halt signalled (ps={task.process_status}, "
+        f"reason={task.halt_reason}); the runner stops at its next checkpoint."
+    )
+
+
 def _build_stub_request() -> Request:
     """Minimal-but-REAL `starlette.requests.Request` for calling `resolve_gate`
     in-process (D5 — direct function call, not HTTP-to-self).
@@ -454,6 +524,8 @@ _DISPATCH: dict[str, VerbHandler] = {
     "/approve": _verb_approve,
     "/deny": _verb_deny,
     "/hold": _verb_hold,
+    "/run": _verb_run,
+    "/halt": _verb_halt,
 }
 
 # D3 — per-verb auth class. Every key in _DISPATCH MUST have an entry here;
@@ -471,6 +543,12 @@ _VERB_CLASS: dict[str, str] = {
     "/approve": "safe_mutation",
     "/deny": "safe_mutation",
     "/hold": "safe_mutation",
+    # Phase 3 (#2780): both are safe_mutation — run-now only PRIMES a task for
+    # the walker (it does not itself execute anything), and halt is a
+    # COOPERATIVE stop-signal (ps->8), not a destructive delete/mass-op. Both
+    # run under the chat-id lock per D3, riding update_id dedup for redelivery.
+    "/run": "safe_mutation",
+    "/halt": "safe_mutation",
 }
 _DESTRUCTIVE_CLASS = "destructive"  # no verb carries this yet; documented for the future CONFIRM-turn extension
 

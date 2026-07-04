@@ -17,6 +17,10 @@ First-pass contract smokes for `POST /api/telegram/command`
     manual — D4 create != execute), /approve /deny (gate resolve via the
     live provenance=telegram precedent), /hold (soft TODO+reason, never
     BLOCKED), and idempotency for the new mutation verbs.
+  - Phase 3 (#2780): /run <id> (prime a task into the picker-selectable state
+    via the new run_task_now endpoint) and /halt <id> (cooperative ps=2->8
+    halt via the new halt_task endpoint), plus their refuse/bad-id/dedup
+    paths — the two D6 "gap" verbs.
 
 DO NOT RUN IN-SESSION — the block-pytest hook denies it; the operator runs
 these in a plain terminal. The comprehensive edge/regression matrix (e.g. the
@@ -704,3 +708,144 @@ def test_every_dispatch_verb_has_a_recognized_auth_class() -> None:
 
     for verb, cls in _VERB_CLASS.items():
         assert cls in ("read", "safe_mutation", "destructive"), f"{verb} has unrecognized class {cls!r}"
+
+
+# ---------------------------------------------------------------------------
+# (11) Phase 3 (#2780) — /run <id>: prime a task into the picker-selectable
+# state via the new run_task_now endpoint (in-process). Cooperative — it does
+# NOT spawn a session; the walker picks the task up on its next /next-autorun.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_verb_primes_task_to_auto_pickup(client, scaffold_cleanup) -> None:
+    """POSITIVE: /run <id> flips a manual/TODO task to run_mode='auto_pickup'
+    (verified via GET, not the reply). NEGATIVE: run_mode asserted exactly
+    'auto_pickup' and process_status STILL 1/TODO — /run primes the picker, it
+    does not itself move the task to in_progress."""
+    pid, pname = await _make_fresh_project(client, scaffold_cleanup, "tg-run")
+    tid = await _make_work_task(client, pid, title="Run-me task")
+    chat_id = f"chat-{uuid.uuid4().hex[:8]}"
+    await _command(client, chat_id, f"/project {pname}")
+
+    body = await _command(client, chat_id, f"/run {tid}")
+    assert body["dispatched"] is True
+    assert f"#{tid}" in body["reply_text"], body["reply_text"]
+
+    get_resp = await client.get(f"/api/tasks/{tid}", headers={"X-Project-Id": str(pid)})
+    assert get_resp.status_code == 200, get_resp.text
+    task = get_resp.json()
+    assert task["run_mode"] == "auto_pickup", task
+    assert task["process_status"] == 1, task  # NEGATIVE: primed, not moved to 2
+
+
+@pytest.mark.asyncio
+async def test_run_verb_on_done_task_surfaces_readable_409(client, scaffold_cleanup) -> None:
+    """NEGATIVE (never a 500): /run on a DONE task surfaces the endpoint's 409
+    as a readable reply — the command endpoint itself still returns 200."""
+    pid, pname = await _make_fresh_project(client, scaffold_cleanup, "tg-run-done")
+    tid = await _make_work_task(client, pid, title="Done task")
+    await client.patch(
+        f"/api/tasks/{tid}", headers={"X-Project-Id": str(pid)}, json={"process_status": 5}
+    )
+    chat_id = f"chat-{uuid.uuid4().hex[:8]}"
+    await _command(client, chat_id, f"/project {pname}")
+
+    body = await _command(client, chat_id, f"/run {tid}")
+    assert body["dispatched"] is True  # the verb matched; the CALL failed, not the dispatch
+    assert "409" in body["reply_text"], body["reply_text"]
+
+
+@pytest.mark.asyncio
+async def test_run_verb_bad_id_is_usage_error(client, scaffold_cleanup) -> None:
+    """NEGATIVE: /run with a non-numeric id -> a clean usage reply, never a 500."""
+    pid, pname = await _make_fresh_project(client, scaffold_cleanup, "tg-run-badid")
+    chat_id = f"chat-{uuid.uuid4().hex[:8]}"
+    await _command(client, chat_id, f"/project {pname}")
+
+    body = await _command(client, chat_id, "/run notanumber")
+    assert body["dispatched"] is True
+    assert "usage" in body["reply_text"].lower(), body["reply_text"]
+
+
+@pytest.mark.asyncio
+async def test_run_verb_without_sticky_project_asks_for_project(client) -> None:
+    """NEGATIVE: /run on a chat with no sticky project asks for /project first
+    (same D2 AC2 guard the other verbs enforce)."""
+    chat_id = f"chat-{uuid.uuid4().hex[:8]}"
+    body = await _command(client, chat_id, "/run 1")
+    assert body["dispatched"] is True
+    assert "/project" in body["reply_text"], body["reply_text"]
+
+
+# ---------------------------------------------------------------------------
+# (12) Phase 3 (#2780) — /halt <id>: cooperative ps=2->8 halt via the new
+# halt_task endpoint (in-process). NOT a hard kill — sets the state the
+# executor observes at its next boundary.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_halt_verb_flips_running_task_to_ps8(client, scaffold_cleanup) -> None:
+    """POSITIVE: /halt <id> on a ps=2 task flips it to ps=8 + halt_reason=
+    'operator_halt' (verified via GET). NEGATIVE: process_status asserted == 8
+    and halt_reason == 'operator_halt' exactly — the cooperative-halt state."""
+    pid, pname = await _make_fresh_project(client, scaffold_cleanup, "tg-halt")
+    tid = await _make_work_task(client, pid, title="Halt-me task")
+    await client.patch(
+        f"/api/tasks/{tid}", headers={"X-Project-Id": str(pid)}, json={"process_status": 2}
+    )
+    chat_id = f"chat-{uuid.uuid4().hex[:8]}"
+    await _command(client, chat_id, f"/project {pname}")
+
+    body = await _command(client, chat_id, f"/halt {tid}")
+    assert body["dispatched"] is True
+    assert f"#{tid}" in body["reply_text"], body["reply_text"]
+
+    get_resp = await client.get(f"/api/tasks/{tid}", headers={"X-Project-Id": str(pid)})
+    task = get_resp.json()
+    assert task["process_status"] == 8, task
+    assert task["halt_reason"] == "operator_halt", task
+
+
+@pytest.mark.asyncio
+async def test_halt_verb_on_non_running_task_surfaces_readable_409(client, scaffold_cleanup) -> None:
+    """NEGATIVE (never a 500): /halt on a NOT-running (ps=1/TODO) task surfaces
+    the endpoint's 409 as a readable reply."""
+    pid, pname = await _make_fresh_project(client, scaffold_cleanup, "tg-halt-notrunning")
+    tid = await _make_work_task(client, pid, title="Not-running task")
+    chat_id = f"chat-{uuid.uuid4().hex[:8]}"
+    await _command(client, chat_id, f"/project {pname}")
+
+    body = await _command(client, chat_id, f"/halt {tid}")
+    assert body["dispatched"] is True
+    assert "409" in body["reply_text"], body["reply_text"]
+    assert "not running" in body["reply_text"].lower(), body["reply_text"]
+
+
+@pytest.mark.asyncio
+async def test_halt_verb_redelivered_update_id_fires_once(client, scaffold_cleanup) -> None:
+    """POSITIVE: a redelivered /halt (SAME update_id) fires ONCE. NEGATIVE:
+    the replay returns the dedup 'duplicate' reply — NOT the endpoint's 409
+    'not running' — which structurally proves the replay never reached
+    halt_task at all (the watermark short-circuits before dispatch), i.e.
+    single-effect at the Telegram layer on top of the endpoint's own
+    idempotency."""
+    pid, pname = await _make_fresh_project(client, scaffold_cleanup, "tg-halt-dedup")
+    tid = await _make_work_task(client, pid, title="Halt-dedup task")
+    await client.patch(
+        f"/api/tasks/{tid}", headers={"X-Project-Id": str(pid)}, json={"process_status": 2}
+    )
+    chat_id = f"chat-{uuid.uuid4().hex[:8]}"
+    await _command(client, chat_id, f"/project {pname}")
+    uid = _next_update_id()
+
+    first = await _command(client, chat_id, f"/halt {tid}", update_id=uid)
+    assert first["dispatched"] is True
+    assert "operator_halt" in first["reply_text"], first["reply_text"]
+
+    second = await _command(client, chat_id, f"/halt {tid}", update_id=uid)
+    assert second["dispatched"] is False, "a replayed update_id must NOT re-dispatch"
+    assert "duplicate" in second["reply_text"].lower(), second["reply_text"]
+    # NEGATIVE: it is the DEDUP reply, not a 409 — the replay never hit halt_task.
+    assert "409" not in second["reply_text"], second["reply_text"]
