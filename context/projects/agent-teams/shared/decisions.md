@@ -18,6 +18,19 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-07-04 — project-auditor gains a 4th metric: `task_stall_rate` (liveness) — Kanban #2744
+**Scope:** shared (GOV2 governance — the read-only `project-auditor` agent)
+
+**Decision:** Deepened the on-demand `project-auditor` past its 3 baseline metrics (budget burn, failure rate, drift stub) with a 4th, `task_stall_rate` — a **liveness** dimension: `stale_inflight / total_inflight` where in-flight = `process_status IN (2 IN_PROGRESS, 3 REVIEW)` and stale = `updated_at` older than 48h before `audit_at`. Emitted in the report `metrics{}` + `raw_evidence{}`, folded into the existing breach count → continue/review/pause recommendation. Defaults `stall_rate_threshold_pct=50 / stall_threshold_hours=48 / stall_min_sample=2` (per-project override via `health_thresholds`). The auditor's entire logic is prompt-resident (no server compute endpoint), so this shipped as a `.claude/agents/project-auditor.md` edit (operator `ii`) with **no `api/` change** — the metric is computable from data `GET /api/tasks?process_status=2 + =3` already returns. Commit `81899af`.
+
+**Reasoning:** BLOCKED (4) is **excluded** — a blocked task legitimately waits on its `blocked_by` FK; including it fired the metric at ~100% off project 1's healthy #2770-2776 chain (the decisive design signal, caught by probing live data *before* writing). Rate-shape (not absolute count) + `min_sample=2` for parity with the other metrics and to suppress single-task noise. Uses the exact `?process_status` filter, not the `?limit=200` window (capped to oldest rows).
+
+**Implications:**
+- **Operational gotcha (verified live this task):** agent prompt **bodies cache at session start** — a clean spawn / `/zb-audit` in the SAME session still runs the pre-edit prompt (only skill *descriptions* hot-reload). The metric auto-activates for the default flow only after a session **restart**. Verified this session by resuming the auditor with the metric def in the brief (file edit itself git-diff-verified). Sharpens the operator-memory `agents-load-at-start` note (not just NEW files — existing prompt bodies too).
+- Verified on a real project-1 audit: `task_stall_rate=0.667` (2/3 stale: #2155 ~20d, #2505 ~12d; #2744 fresh) → recommendation flipped `continue`→`review`; Lead independent recompute exact match.
+- **Out-of-scope findings the audit surfaced (follow-up candidates, NOT actioned this task):** (1) `estimated_cost_usd="0.0000"` on all 52 sampled DONE tasks → `budget_burn_rate` is structurally meaningless project-wide; (2) all 111 CANCELLED tasks have `completed_at=null` → `task_failure_rate` is **blind to the cancelled lane** (0/45 understates true failure); (3) `subagent_models` often empty on walker tasks despite prose naming agents → undermines per-agent cost rollups.
+- `drift_placeholder` renumbered #3→#4 in the prompt; GOV5 (#1213) still owns the real drift metric. `zb-audit` skill doc updated 3→4 metrics.
+
 ## 2026-07-04 — Telegram command surface Phases 2+3 complete: safe-mutation verbs + run/halt gap endpoints — Kanban #2779 / #2780
 **Scope:** backend + telegram
 

@@ -1,6 +1,6 @@
 ---
 purpose: bootstrap hot-read INDEX for decisions.md (1 line per decision)
-updated: 2026-07-03
+updated: 2026-07-04
 covers: active decisions.md 2026-05-20 onward; older in decisions-archive-2026-05.md
 ---
 
@@ -19,6 +19,7 @@ covers: active decisions.md 2026-05-20 onward; older in decisions-archive-2026-0
 > **[CRIT]** = anti-re-litigation decision (do-not-revisit without reopening the entry). Pull its
 > body before touching that area.
 
+- 2026-07-04 — project-auditor 4th metric #2744: `task_stall_rate` (liveness) = stale_inflight/total_inflight, in-flight=ps IN(2,3) [BLOCKED excluded — else false-positive on healthy blocked_by chains], stale=updated_at>48h; folds into breach→continue/review/pause; defaults 50% / 48h / min_sample=2; prompt-resident metric (no api change), `.claude/agents/project-auditor.md` edit via ii, commit 81899af; **GOTCHA agent prompt BODIES cache at session-start → an in-session edit needs a restart** (verified live by resuming the auditor with the def); audit surfaced 3 out-of-scope data-quality findings (cost="0.0000" degenerate, CANCELLED completed_at=null blinds failure-rate, subagent_models often empty) → follow-up candidates
 - 2026-07-04 — Telegram Phases 2+3 done #2779/#2780: safe-mutation verbs /new(create=MANUAL,create!=execute)+/approve+/deny(resolve_gate provenance=telegram)+/hold(status_change_reason→TODO) on _VERB_CLASS auth framework (deny-by-default fail-closed; endpoint unauthenticated=inherits localhost posture, docstring de-over-claimed); Phase 3 gap endpoints POST /tasks/{id}/run-now (prime to next_task_stmt-selectable, auto_pickup not headless, doesn't touch blockers) + /halt (cooperative ps2→8 operator_halt, intentionally kill/pause-EXEMPT); no migration; both dev-security-reviewer CLEAN + Lead live-curl; MCP = future sibling
 - 2026-07-03 — walker ms50 batch #1020/#1021/#2778: cost-estimate endpoint (spawn-element rollup on GIN, task-level attribution, per-key threshold fail-safe) + FE badge/red-confirm; tool-risk classifier (fail-closed, All-tools pseudo-chip, SendMessage=shell-tier) + gallery chips/badge/grouped-detail; Telegram Phase 1 LIVE (0076 chat-state sticky+watermark, poller-dumb, read verbs, /tasks predicate reviewer-fixed to canonical pending; gate path byte-equivalent); probe rows left for operator cleanup
 - 2026-07-03 — #2768 agent_overrides audit trail: REUSE projects_audit — migration 0075 widens CHECK (+agent_config), delta rides drain_summary JSONB, X-Actor convention, atomic same-commit insert, no-op=no-row; NEW GET /{id}/audit-log (first projects_audit reader, no header dep by design); downgrade-fails-if-rows caveat; round-trip proven pre-first-row
