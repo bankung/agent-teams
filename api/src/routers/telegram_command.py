@@ -1,5 +1,5 @@
-"""HTTP route for the Telegram command surface — Kanban #2778 (Phase 1 of
-`telegram-command-surface-2720.md`).
+"""HTTP route for the Telegram command surface — Kanban #2778/#2779 (Phase 1 +
+Phase 2 of `telegram-command-surface-2720.md`).
 
   POST /api/telegram/command
 
@@ -20,12 +20,54 @@ stored watermark is a no-op (no re-dispatch) — checked BEFORE dispatch.
 
 D5 (no new abstraction): each verb handler calls the EXISTING service/ORM
 layer directly (the same query a REST handler would run) — no verb-layer
-indirection, no MCP server.
+indirection, no MCP server. Phase 2 sharpens this for the safe_mutation verbs:
+`/new`, `/approve`, `/deny`, and `/hold` call the EXISTING ROUTER FUNCTIONS
+(`create_task`, `resolve_gate`, `update_task`) directly as in-process async
+calls — not HTTP-to-self — so there is exactly ONE code path (validation,
+row-locks, transactional writes, error mapping) shared with the REST surface.
+Any `HTTPException` they raise is caught and rendered as a reply string (D6's
+"never 500" requirement) rather than re-raised.
+
+D3 (auth-per-verb — operator-proof mapping): the poller's chat-id lock
+(`telegram_poller.process_update`: `from_id != operator_chat_id` ->
+`ignored_foreign`, never forwarded) is the operator-identity boundary for
+Telegram-originated traffic — a request that came THROUGH the poller has had
+its sender proven to be the operator. The endpoint itself carries no authn of
+its own (a direct localhost caller can POST any `chat_id`); it inherits the
+platform's existing no-authn-on-localhost posture (same as `PATCH /api/tasks`
+or the gate-resolve route a local caller can already hit directly). If this
+endpoint is ever exposed off localhost, gate it with a shared secret BEFORE
+that exposure (Phase-4 auth bucket). Verbs are additionally classified by
+mutation risk (`_VERB_CLASS`):
+  - 'read'          — Phase 1 verbs. No state mutation.
+  - 'safe_mutation' — Phase 2 verbs (`/new /approve /deny /hold`). Execute
+                       immediately under the chat-id lock — the lock is
+                       treated as operator-equivalent for this whitelist
+                       (mirrors the live `provenance=telegram` precedent
+                       already accepted as operator proof by
+                       `POST /api/task-gates/{id}/resolve`, gate #17/#2718).
+  - 'destructive'   — NONE ship this phase. The dispatcher's deny-by-default
+                       fallthrough IS the extension point: an unclassified
+                       verb (including any future destructive one added to
+                       `_DISPATCH` without a matching `_VERB_CLASS` entry)
+                       is refused with a "needs confirm" placeholder rather
+                       than executed — see the class-check in
+                       `telegram_command` (below `_DISPATCH`/`_VERB_CLASS`)
+                       + `_DESTRUCTIVE_CONFIRM_STUB_REPLY`. A real destructive
+                       verb will need a second `CONFIRM <token>` turn; no
+                       token storage is built now (YAGNI — nothing consumes
+                       it yet), only the deny path.
+Deny-by-default (verb classification): a verb string that is not a key in
+`_DISPATCH` is unknown regardless of class (existing Phase 1 behavior); a verb
+that IS in `_DISPATCH` but has no `_VERB_CLASS` entry is a bug-guard (denied
+defensively, never executed) — this can only happen if a future verb is added
+to one dict and not the other.
 
 Phase 1 verb catalog (D6): `/project`, `/projects`, `/tasks`, `/task <id>`,
-`/gates`. Deny-by-default: unmatched text -> a polite "unknown command" reply
-listing the available verbs, and NOTHING is dispatched. Phase 2/3 verbs
-(`/new /approve /deny /hold /run`, halt) are NOT built here.
+`/gates` (class='read').
+Phase 2 verb catalog (D6): `/new <text>`, `/approve <gate>`, `/deny <gate>`,
+`/hold <id>` (class='safe_mutation'). `/run <id>` and halt-running-task are
+Phase 3 gaps (dedicated new endpoints), NOT built here.
 """
 
 from __future__ import annotations
@@ -33,18 +75,29 @@ from __future__ import annotations
 import logging
 from typing import Awaitable, Callable
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.constants import RecordStatus, TaskStatus
+from src.constants import RecordStatus, TaskInteractionKind, TaskRunMode, TaskStatus
 from src.db import get_session
 from src.middleware.rate_limit import limiter
 from src.models.project import Project
 from src.models.task import Task
 from src.models.task_gate import TaskGate
 from src.models.telegram_chat_state import TelegramChatState
+from src.routers.task_gates import resolve_gate
+from src.routers.tasks import create_task, update_task
+from src.schemas.task import TaskCreate, TaskUpdate
+from src.schemas.task_gate import GateResolveRequest
 from src.schemas.telegram_command import TelegramCommandRequest, TelegramCommandResponse
+from src.services.ai_task_parser import (
+    AiCallFailed,
+    AiCallTimeout,
+    AiUnparseable,
+    MissingApiKey as AiMissingApiKey,
+    parse_task_text,
+)
 
 logger = logging.getLogger("api.telegram_command")
 
@@ -54,11 +107,21 @@ router = APIRouter(tags=["telegram-command"])
 # so an operator always sees what IS available. Keep in lockstep with the
 # dispatcher dict below (order = display order).
 _PHASE1_VERBS: list[str] = ["/project <name>", "/projects", "/tasks", "/task <id>", "/gates"]
+_PHASE2_VERBS: list[str] = ["/new <text>", "/approve <gate id>", "/deny <gate id>", "/hold <id> <reason>"]
+_ALL_VERBS: list[str] = _PHASE1_VERBS + _PHASE2_VERBS
 
 _UNKNOWN_COMMAND_REPLY = (
-    "Unknown command. Available:\n" + "\n".join(_PHASE1_VERBS)
+    "Unknown command. Available:\n" + "\n".join(_ALL_VERBS)
 )
 _NO_STICKY_PROJECT_REPLY = "No project set for this chat. Run /project <name> first."
+# D3 destructive-verb stub reply — no destructive verb is registered in
+# _DISPATCH this phase, so this string is currently unreachable in practice;
+# kept as the documented extension point (see module docstring) rather than
+# building unused CONFIRM-token storage (YAGNI).
+_DESTRUCTIVE_CONFIRM_STUB_REPLY = (
+    "This action is destructive and requires confirmation "
+    "(not yet available in this phase)."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +267,182 @@ async def _verb_gates(session: AsyncSession, state: TelegramChatState, args: str
     return "Pending gates:\n" + "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Phase 2 (Kanban #2779) — safe_mutation verbs. Each dispatches to the
+# EXISTING router function as a direct in-process async call (D5) — the
+# SAME validation / row-locks / transactional writes / error mapping the REST
+# route uses, zero duplication. `HTTPException`s raised by the callee are
+# caught in `telegram_command` (the dispatch try/except below, near the
+# bottom of this module) and rendered as a reply string — a handler itself
+# does not need its own try/except for that.
+# ---------------------------------------------------------------------------
+
+
+async def _verb_new(session: AsyncSession, state: TelegramChatState, args: str) -> str:
+    """`/new <text>` — AI-parse then create, landing the task **manual /
+    TODO** (D4 create != execute — AC1). Two existing endpoints chained:
+
+      1. `parse_task_text` (the service backing `POST /api/tasks/ai-parse`,
+         itself read-only — see its docstring) extracts a `ProposedTask`
+         (title/description/task_type/priority/assigned_role/blocked_by).
+         `ProposedTask` carries NO `run_mode` field at all (checked:
+         schemas/ai_task.py) — the LLM never gets a vote on execution mode.
+      2. The proposal is folded into a `TaskCreate` body with
+         `run_mode=TaskRunMode.MANUAL` and `interaction_kind=WORK` set
+         EXPLICITLY here (belt-and-suspenders — `TaskCreate.run_mode`
+         already schema-defaults to MANUAL, so a caller that omitted the
+         field would land manual anyway; setting it explicitly documents the
+         guarantee at this call site and survives a future schema-default
+         change). `create_task` (the exact function `POST /api/tasks`
+         calls) does the actual INSERT — same kill/pause/budget gates, same
+         IntegrityError translation, same everything.
+
+    A freshly-created task therefore lands `process_status=TODO(1)` (the
+    TaskCreate default) AND `run_mode='manual'` — invisible to the
+    auto_pickup/auto_headless worker queues (routers/tasks.py:671,834 filter
+    `run_mode IN (auto_pickup, auto_headless)`), so an untrusted inbound
+    Telegram message can never silently drive autonomous work.
+    """
+    if state.project_id is None:
+        return _NO_STICKY_PROJECT_REPLY
+    text = args.strip()
+    if not text:
+        return "Usage: /new <text>"
+
+    try:
+        proposed = await parse_task_text(text=text, project_id=state.project_id)
+    except AiMissingApiKey as exc:
+        return f"/new failed: AI provider not configured ({exc})"
+    except AiCallTimeout:
+        return "/new failed: AI provider timeout"
+    except AiUnparseable as exc:
+        return f"/new failed: could not parse into a task ({exc})"
+    except AiCallFailed as exc:
+        return f"/new failed: AI provider error ({exc})"
+
+    create_payload = TaskCreate(
+        project_id=state.project_id,
+        title=proposed.title,
+        description=proposed.description,
+        task_type=proposed.task_type,
+        priority=proposed.priority,
+        assigned_role=proposed.assigned_role,
+        blocked_by=proposed.blocked_by,
+        interaction_kind=TaskInteractionKind.WORK,
+        run_mode=TaskRunMode.MANUAL,  # AC1/D4 — explicit, not just relying on the schema default
+    )
+    task = await create_task(create_payload, session_project_id=state.project_id, session=session)
+    return f"/new -> created #{task.id} (TODO, run_mode={task.run_mode})"
+
+
+async def _verb_approve(session: AsyncSession, state: TelegramChatState, args: str) -> str:
+    """`/approve <gate id>` — resolve a gate with answer='approve' (D6)."""
+    return await _resolve_gate_verb(session, state, args, answer="approve")
+
+
+async def _verb_deny(session: AsyncSession, state: TelegramChatState, args: str) -> str:
+    """`/deny <gate id>` — resolve a gate with answer='deny' (D6)."""
+    return await _resolve_gate_verb(session, state, args, answer="deny")
+
+
+async def _resolve_gate_verb(
+    session: AsyncSession, state: TelegramChatState, args: str, *, answer: str
+) -> str:
+    """Shared body for `/approve` and `/deny` — both call the EXISTING
+    `resolve_gate` router function (the one `POST
+    /api/task-gates/{id}/resolve` calls) with `provenance='telegram'`. This
+    is the EXACT precedent already live for gate #17/#2718 — the resolve
+    endpoint already accepts telegram-provenance as operator proof; nothing
+    new is invented here, just a second caller of the same function.
+    `answered_by` carries the chat_id for the audit trail.
+    """
+    if state.project_id is None:
+        return _NO_STICKY_PROJECT_REPLY
+    raw = args.strip()
+    if not raw.isdigit():
+        return f"Usage: /{answer} <gate id>"
+    gate_id = int(raw)
+    resolve_payload = GateResolveRequest(
+        answer=answer, provenance="telegram", answered_by=state.chat_id
+    )
+    resolved = await resolve_gate(
+        _build_stub_request(),
+        gate_id=gate_id,
+        payload=resolve_payload,
+        session_project_id=state.project_id,
+        session=session,
+    )
+    return f"/{answer} -> gate#{resolved.gate_id} resolved (task#{resolved.task_id} ps={resolved.process_status})"
+
+
+async def _verb_hold(session: AsyncSession, state: TelegramChatState, args: str) -> str:
+    """`/hold <id> <reason>` — soft hold: task STAYS `process_status=TODO(1)`
+    with `status_change_reason` set to the note (VERIFIED convention, not
+    invented — `.claude/skills/zb-task-update/SKILL.md` step 3: "If the user
+    means 'on hold / waiting', keep it TODO (1) and record why in
+    status_change_reason — do not use status 4 for a soft hold." BLOCKED(4)
+    is reserved exclusively for the `blocked_by` FK path). Calls the EXISTING
+    `update_task` router function (the one `PATCH /api/tasks/{id}` calls) —
+    same optimistic-lock / operator-proof-gate / IntegrityError-translation
+    path. The operator-proof gate (`check_operator_proof`) only fires when
+    an AC item's `verified_by` is set to a reserved literal (routers/
+    tasks.py `_patch_sets_operator_only_verified_by`) — this PATCH touches
+    only `status_change_reason`, so `x_operator_token=None` never trips it.
+    """
+    if state.project_id is None:
+        return _NO_STICKY_PROJECT_REPLY
+    raw = args.strip()
+    if not raw:
+        return "Usage: /hold <id> <reason>"
+    parts = raw.split(maxsplit=1)
+    task_id_raw = parts[0]
+    reason = parts[1].strip() if len(parts) > 1 else ""
+    if not task_id_raw.isdigit():
+        return "Usage: /hold <id> <reason>"
+    if not reason:
+        return "Usage: /hold <id> <reason> (a reason is required)"
+    task_id = int(task_id_raw)
+    update_payload = TaskUpdate(status_change_reason=reason)
+    task = await update_task(
+        task_id,
+        update_payload,
+        session_project_id=state.project_id,
+        session=session,
+        if_unmodified_since=None,
+        x_operator_token=None,
+    )
+    return f"/hold -> #{task.id} held (TODO, reason: {reason})"
+
+
+def _build_stub_request() -> Request:
+    """Minimal-but-REAL `starlette.requests.Request` for calling `resolve_gate`
+    in-process (D5 — direct function call, not HTTP-to-self).
+
+    `resolve_gate` is `@limiter.limit`-decorated on its REST route; slowapi's
+    `async_wrapper` does `isinstance(request, Request)` on the decorated
+    function's first positional arg BEFORE the function body ever runs (found
+    live: a bare stand-in class raised "parameter `request` must be an
+    instance of starlette.requests.Request" — the body itself never touches
+    `request`, but the decorator wrapper does). A minimal ASGI `http` scope
+    satisfies the isinstance check and gives slowapi's key_func (which reads
+    `request.client.host`) something sane to key the (separate, REST-only)
+    rate limit on — this in-process call is invoked from the ALREADY
+    rate-limited `telegram_command` route, so double-limiting the SAME
+    request is not a concern here.
+    """
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/api/task-gates/stub/resolve",
+        "headers": [],
+        "client": ("127.0.0.1", 0),
+        "server": ("telegram-command", 0),
+        "scheme": "http",
+        "query_string": b"",
+    }
+    return Request(scope)
+
+
 # Verb -> handler. A dict, not a class hierarchy (D5 — no new abstraction).
 _DISPATCH: dict[str, VerbHandler] = {
     "/project": _verb_project,
@@ -211,7 +450,29 @@ _DISPATCH: dict[str, VerbHandler] = {
     "/tasks": _verb_tasks,
     "/task": _verb_task,
     "/gates": _verb_gates,
+    "/new": _verb_new,
+    "/approve": _verb_approve,
+    "/deny": _verb_deny,
+    "/hold": _verb_hold,
 }
+
+# D3 — per-verb auth class. Every key in _DISPATCH MUST have an entry here;
+# `_class_for_verb` denies (never executes) a dispatched verb missing one, so
+# a future verb added to _DISPATCH-without-a-class-entry fails CLOSED, not
+# open. 'destructive' has NO members yet (Phase 2 ships none) — see the
+# module docstring for the CONFIRM-turn extension point.
+_VERB_CLASS: dict[str, str] = {
+    "/project": "safe_mutation",  # writes chat_state.project_id, but that's the D2 targeting mechanism itself
+    "/projects": "read",
+    "/tasks": "read",
+    "/task": "read",
+    "/gates": "read",
+    "/new": "safe_mutation",
+    "/approve": "safe_mutation",
+    "/deny": "safe_mutation",
+    "/hold": "safe_mutation",
+}
+_DESTRUCTIVE_CLASS = "destructive"  # no verb carries this yet; documented for the future CONFIRM-turn extension
 
 
 def _split_verb(text: str) -> tuple[str, str]:
@@ -283,13 +544,51 @@ async def telegram_command(
     handler = _DISPATCH.get(verb)
 
     if handler is None:
+        # Deny-by-default: verb not in _DISPATCH at all.
         reply_text = _UNKNOWN_COMMAND_REPLY
         dispatched = False
         matched_verb = None
     else:
-        reply_text = await handler(session, state, args)
-        dispatched = True
-        matched_verb = verb
+        verb_class = _VERB_CLASS.get(verb)
+        if verb_class == _DESTRUCTIVE_CLASS:
+            # D3 — no destructive verb ships this phase, but if one is ever
+            # added to _DISPATCH it does NOT single-shot execute here.
+            reply_text = _DESTRUCTIVE_CONFIRM_STUB_REPLY
+            dispatched = False
+            matched_verb = verb
+        elif verb_class not in ("read", "safe_mutation"):
+            # Bug-guard (D3 fail-closed): a verb registered in _DISPATCH with
+            # NO _VERB_CLASS entry (or an unrecognized one) is denied rather
+            # than executed. Should be unreachable in normal operation — every
+            # _DISPATCH key has a _VERB_CLASS entry, checked by
+            # test_every_dispatch_verb_has_a_recognized_auth_class.
+            logger.warning("telegram_command: verb=%s has no recognized auth class; denying", verb)
+            reply_text = _UNKNOWN_COMMAND_REPLY
+            dispatched = False
+            matched_verb = None
+        else:
+            # 'read' and 'safe_mutation' both execute under the chat-id lock
+            # (D3 — the lock IS operator-equivalent for this whitelist).
+            try:
+                reply_text = await handler(session, state, args)
+            except HTTPException as exc:
+                # D6 "never 500": any REST-route error (404/400/403/409/422/
+                # 423/429) from the reused create_task/resolve_gate/update_task
+                # call surfaces as a readable reply instead of propagating.
+                # The callee's own guard clauses all raise BEFORE any ORM
+                # mutation on this session (verified per-callee at review
+                # time), so a defensive rollback here is a no-op in practice
+                # and cheap insurance against ever depending on that invariant
+                # implicitly.
+                await session.rollback()
+                # Re-attach state to the fresh transaction (rollback expires
+                # it); refresh so the watermark write below applies to a live
+                # row, not a stale detached instance.
+                state = await _get_or_create_chat_state(session, payload.chat_id)
+                detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+                reply_text = f"{verb} failed ({exc.status_code}): {detail}"
+            dispatched = True
+            matched_verb = verb
 
     # Advance the watermark regardless of match (an unknown command is still
     # a processed update — must not be redelivered forever) and persist any

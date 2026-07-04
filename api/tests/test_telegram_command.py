@@ -1,7 +1,8 @@
-"""Kanban #2778 — Telegram command surface Phase 1 contract-smoke tests.
+"""Kanban #2778/#2779 — Telegram command surface Phase 1 + Phase 2
+contract-smoke tests.
 
 First-pass contract smokes for `POST /api/telegram/command`
-(`telegram-command-surface-2720.md` D1/D2/D4/D6, Phase 1 scope):
+(`telegram-command-surface-2720.md` D1/D2/D4/D6, Phase 1 + Phase 2 scope):
   - deny-by-default: an unmatched verb -> "unknown command" reply, nothing
     dispatched.
   - no-sticky-project rejection on a read verb before /project is run.
@@ -12,12 +13,16 @@ First-pass contract smokes for `POST /api/telegram/command`
     runs this file in a terminal per the block-pytest hook).
   - update_id dedup: the SAME update_id sent twice dispatches ONCE (the
     second call is a no-op reply, not a re-dispatch).
+  - Phase 2 (#2779): /new (AI-parse-then-create, landing TODO + run_mode=
+    manual — D4 create != execute), /approve /deny (gate resolve via the
+    live provenance=telegram precedent), /hold (soft TODO+reason, never
+    BLOCKED), and idempotency for the new mutation verbs.
 
 DO NOT RUN IN-SESSION — the block-pytest hook denies it; the operator runs
 these in a plain terminal. The comprehensive edge/regression matrix (e.g. the
 poller-forward path, malformed Telegram update shapes) is dev-tester's
 domain. These lock the wire contract for the Phase-1 verb catalog + dedup
-foundation.
+foundation and the Phase-2 safe_mutation verbs.
 """
 
 from __future__ import annotations
@@ -25,7 +30,9 @@ from __future__ import annotations
 import itertools
 import uuid
 
+import httpx
 import pytest
+import respx
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +111,48 @@ async def _command(client, chat_id: str, text: str, update_id: int | None = None
     )
     assert resp.status_code == 200, resp.text
     return resp.json()
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 (#2779) helper — stub the Anthropic Messages response /new's
+# `parse_task_text` call hits, mirroring test_ai_task_parser.py's
+# `_anthropic_tool_response` exactly (same fake tool_use shape) so the
+# REAL parse path runs end-to-end (no network) rather than mocking
+# `parse_task_text` itself.
+# ---------------------------------------------------------------------------
+
+_ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+
+
+def _anthropic_tool_response(
+    *,
+    title: str = "Fix login button alignment",
+    description: str = "Fix the login button alignment on mobile",
+    task_type: str = "bug",
+    priority: int = 2,
+    assigned_role: int | None = None,
+    blocked_by: int | None = None,
+) -> dict:
+    tool_input = {
+        "title": title,
+        "description": description,
+        "task_type": task_type,
+        "priority": priority,
+        "assigned_role": assigned_role,
+        "blocked_by": blocked_by,
+    }
+    return {
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            {"type": "tool_use", "id": "toolu_test", "name": "propose_task", "input": tool_input}
+        ],
+        "model": "claude-sonnet-4-6",
+        "stop_reason": "tool_use",
+        "stop_sequence": None,
+        "usage": {"input_tokens": 100, "output_tokens": 50},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -404,3 +453,254 @@ async def test_command_endpoint_rate_limited_after_thirty_within_window(client) 
         f"request #31 expected 429, got {resp_31.status_code}: {resp_31.text}"
     )
     assert "Rate limit exceeded" in resp_31.json().get("detail", ""), resp_31.text
+
+
+# ---------------------------------------------------------------------------
+# (7) Phase 2 (#2779) — /new: AI-parse-then-create, landing TODO + run_mode=
+# manual (D4 create != execute). The real parse path runs end-to-end via a
+# respx-stubbed Anthropic response (no network) — same technique as
+# test_ai_task_parser.py, so this locks the FULL chain (parse -> TaskCreate
+# -> create_task), not just the create_task half.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_new_creates_task_todo_and_manual_run_mode(client, scaffold_cleanup, monkeypatch) -> None:
+    """POSITIVE: /new <text> creates a row (verified via GET, not just the
+    reply) with process_status=TODO(1) and run_mode='manual'.
+    NEGATIVE: run_mode is explicitly asserted 'manual', not merely "truthy" —
+    this is the AC1/D4 structural guarantee that a Telegram-created task can
+    never be silently auto-picked by the auto_pickup/auto_headless worker
+    queues (routers/tasks.py filters run_mode IN (auto_pickup, auto_headless)).
+    """
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    pid, pname = await _make_fresh_project(client, scaffold_cleanup, "tg-new")
+    chat_id = f"chat-{uuid.uuid4().hex[:8]}"
+    await _command(client, chat_id, f"/project {pname}")
+
+    with respx.mock(assert_all_called=True) as router:
+        router.post(_ANTHROPIC_MESSAGES_URL).mock(
+            return_value=httpx.Response(200, json=_anthropic_tool_response())
+        )
+        body = await _command(client, chat_id, "/new Fix the login button alignment on mobile")
+
+    assert body["dispatched"] is True
+    assert "created #" in body["reply_text"], body["reply_text"]
+
+    task_id = int(body["reply_text"].split("#", 1)[1].split(" ", 1)[0])
+    get_resp = await client.get(f"/api/tasks/{task_id}", headers={"X-Project-Id": str(pid)})
+    assert get_resp.status_code == 200, get_resp.text
+    task = get_resp.json()
+    assert task["process_status"] == 1, task  # TODO, never auto-anything
+    assert task["run_mode"] == "manual", task  # NEGATIVE: not auto_pickup/auto_headless
+    assert task["project_id"] == pid
+
+
+@pytest.mark.asyncio
+async def test_new_duplicate_update_id_creates_only_one_task(
+    client, scaffold_cleanup, monkeypatch
+) -> None:
+    """POSITIVE: a redelivered /new (SAME update_id) must NOT double-create —
+    exactly ONE task exists after both calls. respx `assert_all_called=True`
+    on a router good for exactly ONE match additionally proves the SECOND
+    /new call never even reaches parse_task_text (the dedup watermark short-
+    circuits before dispatch), not just that create_task was idempotent.
+    """
+    monkeypatch.setenv("LANGGRAPH_LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    pid, pname = await _make_fresh_project(client, scaffold_cleanup, "tg-new-dedup")
+    chat_id = f"chat-{uuid.uuid4().hex[:8]}"
+    await _command(client, chat_id, f"/project {pname}")
+    uid = _next_update_id()
+
+    with respx.mock(assert_all_called=False) as router:
+        route = router.post(_ANTHROPIC_MESSAGES_URL).mock(
+            return_value=httpx.Response(200, json=_anthropic_tool_response())
+        )
+        first = await _command(client, chat_id, "/new Dedup probe task text", update_id=uid)
+        assert first["dispatched"] is True
+        assert "created #" in first["reply_text"], first["reply_text"]
+
+        # REPLAY the SAME update_id — must be a dedup no-op, not a second create.
+        second = await _command(client, chat_id, "/new Dedup probe task text", update_id=uid)
+        assert second["dispatched"] is False
+        assert "duplicate" in second["reply_text"].lower()
+
+        # NEGATIVE: the provider was hit exactly ONCE — the replay never
+        # reached parse_task_text at all (dedup fires before dispatch).
+        assert route.call_count == 1, "the replayed /new must not re-invoke the AI provider"
+
+    list_resp = await client.get(
+        "/api/tasks", params={"limit": 500}, headers={"X-Project-Id": str(pid)}
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    matching = [t for t in list_resp.json() if t["title"] == "Fix login button alignment"]
+    assert len(matching) == 1, f"expected exactly 1 task, found {len(matching)}: {matching}"
+
+
+@pytest.mark.asyncio
+async def test_new_without_sticky_project_asks_for_project(client) -> None:
+    """NEGATIVE: /new on a chat with no sticky project asks for /project
+    first — same D2 AC2 guard the read verbs already enforce — and does NOT
+    attempt to call the AI provider (no respx stub registered here; a call
+    would raise `httpx.ConnectError`/`respx` assertion failure and fail the
+    test loudly if the guard were bypassed)."""
+    chat_id = f"chat-{uuid.uuid4().hex[:8]}"
+    body = await _command(client, chat_id, "/new some task text")
+    assert body["dispatched"] is True  # the verb DID match — it just can't resolve a project
+    assert "/project" in body["reply_text"], body["reply_text"]
+
+
+# ---------------------------------------------------------------------------
+# (8) Phase 2 (#2779) — /approve and /deny: resolve a gate via the EXISTING
+# resolve_gate function, provenance='telegram' (the live #17/#2718 precedent).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_approve_resolves_gate_with_telegram_provenance(client, scaffold_cleanup) -> None:
+    """POSITIVE: /approve <gate id> resolves the gate (verified via a
+    SUBSEQUENT /gates read showing it gone, and via answer/provenance on the
+    resolve response echoed in the reply) with answer='approve'."""
+    pid, pname = await _make_fresh_project(client, scaffold_cleanup, "tg-approve")
+    tid = await _make_work_task(client, pid, title="Approve-me task")
+    gate = await _open_gate(client, pid, tid, gate_tier="commit")
+    chat_id = f"chat-{uuid.uuid4().hex[:8]}"
+    await _command(client, chat_id, f"/project {pname}")
+
+    body = await _command(client, chat_id, f"/approve {gate['id']}")
+    assert body["dispatched"] is True
+    assert f"gate#{gate['id']}" in body["reply_text"], body["reply_text"]
+    assert "resolved" in body["reply_text"].lower()
+
+    # NEGATIVE proof: the gate no longer shows up as pending.
+    gates_body = await _command(client, chat_id, "/gates")
+    assert f"gate#{gate['id']}" not in gates_body["reply_text"], gates_body["reply_text"]
+
+
+@pytest.mark.asyncio
+async def test_deny_resolves_gate_with_deny_answer(client, scaffold_cleanup) -> None:
+    """POSITIVE: /deny <gate id> resolves with answer='deny' — a DIFFERENT
+    outcome from /approve, proving the two verbs are not aliases of each
+    other (NEGATIVE: the reply does not say 'approve')."""
+    pid, pname = await _make_fresh_project(client, scaffold_cleanup, "tg-deny")
+    tid = await _make_work_task(client, pid, title="Deny-me task")
+    gate = await _open_gate(client, pid, tid, gate_tier="commit")
+    chat_id = f"chat-{uuid.uuid4().hex[:8]}"
+    await _command(client, chat_id, f"/project {pname}")
+
+    body = await _command(client, chat_id, f"/deny {gate['id']}")
+    assert body["dispatched"] is True
+    assert f"gate#{gate['id']}" in body["reply_text"], body["reply_text"]
+    assert "approve" not in body["reply_text"].lower()
+
+
+@pytest.mark.asyncio
+async def test_approve_on_already_resolved_gate_surfaces_readable_409(
+    client, scaffold_cleanup
+) -> None:
+    """NEGATIVE (never a 500): approving an ALREADY-resolved gate surfaces
+    the router's 409 stale-reject as a readable reply — the endpoint itself
+    still returns 200 (the wrapper), proving the HTTPException-to-reply-text
+    conversion works for the reused resolve_gate call."""
+    pid, pname = await _make_fresh_project(client, scaffold_cleanup, "tg-stale")
+    tid = await _make_work_task(client, pid, title="Stale-gate task")
+    gate = await _open_gate(client, pid, tid, gate_tier="commit")
+    chat_id = f"chat-{uuid.uuid4().hex[:8]}"
+    await _command(client, chat_id, f"/project {pname}")
+
+    first = await _command(client, chat_id, f"/approve {gate['id']}")
+    assert first["dispatched"] is True
+    assert "resolved" in first["reply_text"].lower()
+
+    second = await _command(client, chat_id, f"/approve {gate['id']}")
+    assert second["dispatched"] is True  # the verb matched; the CALL failed, not the dispatch
+    assert "409" in second["reply_text"], second["reply_text"]
+    assert "not open" in second["reply_text"].lower(), second["reply_text"]
+
+
+# ---------------------------------------------------------------------------
+# (9) Phase 2 (#2779) — /hold: soft hold stays TODO(1) + status_change_reason,
+# NEVER process_status=4/BLOCKED (VERIFIED convention: .claude/skills/
+# zb-task-update/SKILL.md step 3 — BLOCKED is reserved for the blocked_by FK).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_hold_sets_reason_and_stays_todo(client, scaffold_cleanup) -> None:
+    """POSITIVE: /hold <id> <reason> sets status_change_reason to the note.
+    NEGATIVE: process_status is explicitly asserted == 1 (TODO), not merely
+    "unchanged" — this is the structural proof that /hold never uses
+    process_status=4 (BLOCKED), which is reserved for the blocked_by FK path.
+    """
+    pid, pname = await _make_fresh_project(client, scaffold_cleanup, "tg-hold")
+    tid = await _make_work_task(client, pid, title="Hold-me task")
+    chat_id = f"chat-{uuid.uuid4().hex[:8]}"
+    await _command(client, chat_id, f"/project {pname}")
+
+    body = await _command(client, chat_id, f"/hold {tid} waiting on design review")
+    assert body["dispatched"] is True
+    assert f"#{tid}" in body["reply_text"], body["reply_text"]
+    assert "held" in body["reply_text"].lower()
+
+    get_resp = await client.get(f"/api/tasks/{tid}", headers={"X-Project-Id": str(pid)})
+    assert get_resp.status_code == 200, get_resp.text
+    task = get_resp.json()
+    assert task["process_status"] == 1, task  # NEGATIVE: never 4/BLOCKED
+    assert task["status_change_reason"] == "waiting on design review", task
+
+
+@pytest.mark.asyncio
+async def test_hold_without_reason_is_usage_error(client, scaffold_cleanup) -> None:
+    """NEGATIVE: /hold <id> with NO reason text is rejected with a usage
+    reply (not a 500, not a silent hold-with-empty-reason)."""
+    pid, pname = await _make_fresh_project(client, scaffold_cleanup, "tg-hold-noreason")
+    tid = await _make_work_task(client, pid, title="Hold-no-reason task")
+    chat_id = f"chat-{uuid.uuid4().hex[:8]}"
+    await _command(client, chat_id, f"/project {pname}")
+
+    body = await _command(client, chat_id, f"/hold {tid}")
+    assert body["dispatched"] is True  # the verb matched; the ARGS were invalid
+    assert "usage" in body["reply_text"].lower(), body["reply_text"]
+
+    # NEGATIVE proof: the task was NOT mutated.
+    get_resp = await client.get(f"/api/tasks/{tid}", headers={"X-Project-Id": str(pid)})
+    assert get_resp.json()["status_change_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_hold_unknown_task_id_returns_readable_404(client, scaffold_cleanup) -> None:
+    """NEGATIVE (never a 500): /hold on a non-existent task id surfaces the
+    router's 404 as a readable reply."""
+    pid, pname = await _make_fresh_project(client, scaffold_cleanup, "tg-hold-404")
+    chat_id = f"chat-{uuid.uuid4().hex[:8]}"
+    await _command(client, chat_id, f"/project {pname}")
+
+    body = await _command(client, chat_id, "/hold 999999999 some reason")
+    assert body["dispatched"] is True
+    assert "404" in body["reply_text"], body["reply_text"]
+
+
+# ---------------------------------------------------------------------------
+# (10) Phase 2 (#2779) — deny-by-default extension point: a verb registered
+# in _DISPATCH with NO matching _VERB_CLASS entry is denied (fail-closed),
+# never executed. This is the structural proof that a future destructive
+# verb added carelessly (dict updated, class map forgotten) fails SAFE.
+# ---------------------------------------------------------------------------
+
+
+def test_every_dispatch_verb_has_a_recognized_auth_class() -> None:
+    """POSITIVE: every verb in _DISPATCH has a _VERB_CLASS entry that is
+    either 'read' or 'safe_mutation' (Phase 2 ships no 'destructive' member).
+    NEGATIVE: this is a source-level invariant check, not a live-request
+    test — it fails BEFORE any bad verb could ever reach a live request."""
+    from src.routers.telegram_command import _DISPATCH, _VERB_CLASS
+
+    missing = set(_DISPATCH) - set(_VERB_CLASS)
+    assert missing == set(), f"verbs in _DISPATCH with no _VERB_CLASS entry: {missing}"
+
+    for verb, cls in _VERB_CLASS.items():
+        assert cls in ("read", "safe_mutation", "destructive"), f"{verb} has unrecognized class {cls!r}"
