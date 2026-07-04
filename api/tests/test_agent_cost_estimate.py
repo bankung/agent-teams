@@ -29,6 +29,7 @@ Every assertion pairs a POSITIVE check with the NEGATIVE lock it is guarding.
 
 from __future__ import annotations
 
+import math
 import uuid
 
 import pytest
@@ -337,8 +338,9 @@ async def test_tiny_budget_forces_red(client, scaffold_cleanup, monkeypatch):
     _force_paid_provider(monkeypatch)
     agent = "dev-backend"
 
-    # First pass with NO budget to learn the real projected_monthly_usd this
-    # fixture produces (server-computed; we don't hard-code the dollar figure).
+    # First pass with NO budget to learn the real projected_monthly_usd a
+    # SINGLE such task produces (server-computed; we don't hard-code the
+    # dollar figure) — call it P.
     probe_project = await _make_project(client, scaffold_cleanup, "cost-red-probe")
     await _create_done_task(
         client, probe_project["id"], "probe spawn",
@@ -352,18 +354,29 @@ async def test_tiny_budget_forces_red(client, scaffold_cleanup, monkeypatch):
     projected = probe_resp.json()["projected_monthly_usd"]
     assert projected is not None and projected > 0
 
-    # Now a REAL project whose budget is 1/1000th of that observed projection —
-    # guarantees vs_project_budget_pct >> 30.
-    tiny_budget = round(projected / 1000, 2) or 0.01
+    # `budget_monthly_usd` is NUMERIC(10,2) — "0.01" IS the smallest positive
+    # value the column can hold, so red must be forced by RAISING the spend
+    # (seeding K tasks), not by shrinking the budget further (there is no
+    # smaller-than-the-floor to shrink to).
+    tiny_budget = "0.01"
+    # K identical done-tasks (same agent/model/description -> each costs
+    # exactly `projected`, i.e. P) so K*P is comfortably past 30% of the 0.01
+    # floor with margin. Target: K*P / 0.01 * 100 >= 35%.
+    spawn_count_k = max(2, math.ceil(0.0035 / projected))
+    # Sanity-guard: a future env/model-pricing change that makes P tiny would
+    # otherwise inflate K into seeding hundreds of tasks — fail loudly instead.
+    assert spawn_count_k <= 25, f"fixture cost {projected} unexpectedly tiny"
+
     red_project = await _make_project(
         client, scaffold_cleanup, "cost-red-actual",
-        budget_monthly_usd=str(tiny_budget),
+        budget_monthly_usd=tiny_budget,
     )
-    await _create_done_task(
-        client, red_project["id"], "red spawn",
-        [{"agent": agent, "model": "opus", "at": "2026-07-01T00:00:00Z"}],
-        description=_LONG_DESCRIPTION,
-    )
+    for i in range(spawn_count_k):
+        await _create_done_task(
+            client, red_project["id"], f"red spawn {i}",
+            [{"agent": agent, "model": "opus", "at": "2026-07-01T00:00:00Z"}],
+            description=_LONG_DESCRIPTION,
+        )
     resp = await client.get(
         f"/api/agents/{agent}/cost-estimate?project_id={red_project['id']}"
     )
@@ -371,8 +384,12 @@ async def test_tiny_budget_forces_red(client, scaffold_cleanup, monkeypatch):
     body = resp.json()
 
     # POSITIVE: pct is far past the 30% default yellow ceiling -> red.
+    assert body["vs_project_budget_pct"] is not None
     assert body["vs_project_budget_pct"] > 30
     assert body["traffic_light"] == "red"
+    # Bonus lock: K identical tasks -> K elements counted (element-count
+    # semantics from dev-reviewer #1020 fix 2 — one element per task here).
+    assert body["spawn_count_last_30d"] == spawn_count_k
     # NEGATIVE lock: must not be misreported as green.
     assert body["traffic_light"] != "green"
 
