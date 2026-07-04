@@ -112,7 +112,10 @@ async def _verb_projects(session: AsyncSession, state: TelegramChatState, args: 
         await session.execute(
             select(Project.id, Project.name, Project.team)
             .where(Project.status == RecordStatus.ACTIVE)
-            .order_by(Project.name.asc())
+            # Recent-first (id is monotonic, no created_at needed): a chat
+            # quick-list capped at 50 with no pagination is more useful
+            # showing newest projects than alphabetical (Kanban #2793).
+            .order_by(Project.id.desc())
             .limit(50)
         )
     ).all()
