@@ -22,6 +22,7 @@ foundation.
 
 from __future__ import annotations
 
+import itertools
 import uuid
 
 import pytest
@@ -71,12 +72,29 @@ async def _open_gate(client, project_id: int, task_id: int, *, gate_tier: str = 
     return resp.json()
 
 
+_UPDATE_ID_COUNTER = itertools.count(1)
+
+
 def _next_update_id() -> int:
-    """A fresh, monotonically-irrelevant-across-tests update_id. Each test's
-    chat_id is also unique (uuid-suffixed), so update_id collisions across
-    tests are impossible regardless — this just avoids the literal `1`
-    everywhere for readability."""
-    return uuid.uuid4().int % 1_000_000_000
+    """Strictly-increasing update_id, one module-level counter shared by every
+    test. This MUST be monotonic, not random: the dedup gate (AC4) blocks any
+    update_id <= the chat's stored watermark, so a test that issues MULTIPLE
+    _command() calls on the SAME chat_id relies on each subsequent default
+    draw being HIGHER than the one before it — a random draw would have a
+    coin-flip chance of drawing lower and getting silently dedup-blocked
+    (exactly the non-determinism the operator's pytest run hit: 3 failures
+    from `uuid.uuid4().int % ...`, root-caused as a broken monotonic contract,
+    NOT a production bug — see decisions.md / Kanban #2778).
+
+    Sharing ONE counter across ALL tests (rather than per-chat) is safe and
+    intentional: every test uses its own uuid-suffixed chat_id, so two tests
+    can never compare update_ids against the same watermark — only a single
+    test's OWN sequence of calls on its OWN chat_id ever needs relative
+    ordering, and `itertools.count` guarantees that within any one test's
+    call sequence, regardless of what other tests already consumed from the
+    shared counter.
+    """
+    return next(_UPDATE_ID_COUNTER)
 
 
 async def _command(client, chat_id: str, text: str, update_id: int | None = None) -> dict:
@@ -335,6 +353,12 @@ async def test_higher_update_id_after_dedup_still_dispatches(client) -> None:
     normally — the watermark does not wedge the chat shut."""
     chat_id = f"chat-{uuid.uuid4().hex[:8]}"
     uid = _next_update_id()
+    # Both update_ids here are EXPLICIT (uid, uid + 1) — no default draw from
+    # the shared counter is involved in this test's own assertions. A LATER
+    # test's default _next_update_id() draw may coincidentally reuse the
+    # integer `uid + 1`, but that is harmless: every test uses its own
+    # uuid-suffixed chat_id, so the dedup watermark it collides against
+    # belongs to a DIFFERENT chat_id row and never interacts with this one.
 
     first = await _command(client, chat_id, "/projects", update_id=uid)
     assert first["dispatched"] is True

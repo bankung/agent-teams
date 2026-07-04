@@ -988,6 +988,15 @@ async def create_project(
         # an explicit null from the client opts out (no modal). Mirror effort_mode
         # passthrough exactly.
         "cost_forecast_threshold_usd": payload.cost_forecast_threshold_usd,
+        # Kanban #951 — per-project budget caps. Plain nullable NUMERIC(10,2),
+        # default None = unlimited; PATCH already passed these through via its
+        # generic model_dump(exclude_unset=True) path, but POST silently
+        # dropped them (schema declared + validated, handler never wrote them
+        # to `data` — Kanban #1020 fix-round finding). Mirror effort_mode /
+        # cost_forecast_threshold_usd passthrough exactly.
+        "budget_daily_usd": payload.budget_daily_usd,
+        "budget_monthly_usd": payload.budget_monthly_usd,
+        "budget_total_usd": payload.budget_total_usd,
     }
     if payload.agent_overrides is not None:
         data["agent_overrides"] = payload.agent_overrides
