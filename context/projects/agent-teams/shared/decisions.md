@@ -18,6 +18,20 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-07-04 — Telegram command surface Phases 2+3 complete: safe-mutation verbs + run/halt gap endpoints — Kanban #2779 / #2780
+**Scope:** backend + telegram
+
+**Decision:** Completed the #2720 Telegram command surface. **Phase 2 (#2779)** added the safe-mutation verbs on the Phase-1 dispatcher: `/new` (in-process `create_task`, forced `run_mode=MANUAL` so create≠execute per D4 — ai-parse is read-only and has no run_mode field, so the LLM never votes on execution), `/approve`+`/deny` (in-process `resolve_gate`, `provenance=telegram` — the live gate-17/#2718 operator-proof precedent), `/hold` (in-process `update_task`, `status_change_reason` only → stays TODO(1), the correct HOLD semantics vs BLOCKED-by-FK). All on a `_VERB_CLASS` auth framework: read/safe_mutation execute under the poller's chat-id lock (the operator-identity boundary — the endpoint itself is unauthenticated, inheriting the platform localhost/no-authn posture, NOT a new privilege; docstring tightened to not over-claim operator-proof for direct callers), destructive→CONFIRM stub (none ship; deny-by-default fail-closed extension point). **Phase 3 (#2780)** built the two D6 gap endpoints (grep-confirmed no existing run/halt route): `POST /api/tasks/{id}/run-now` primes a task to the picker-selectable state **derived from `next_task_stmt`'s actual predicate** (run_mode=auto_pickup + TODO + clear halt_reason/scheduled_at; auto_pickup NOT auto_headless so no consent needed; never touches blocked_by/gates so it can't force past a blocker), and `POST /api/tasks/{id}/halt` cooperatively signals a running (ps=2) task to ps=8 HALTED_PENDING_USER + halt_reason='operator_halt' (the walker's TODO-only picker structurally excludes ps=8). Both wired to `/run`/`/halt` verbs.
+
+**Reasoning:** D5 reuse — every verb calls the EXISTING router function in-process (one validation/transaction/error-map path shared with REST), no verb-layer abstraction, no HTTP-to-self. run-now uses auto_pickup (surfaces to the Mode-A walker) over auto_headless (needs project consent) as the safe default. Halt is COOPERATIVE (an API cannot hard-kill a live Claude Code/worker session — it sets a state the executor observes at its next boundary).
+
+**Implications:**
+- **Halt is intentionally EXEMPT from the kill/pause gate** (deliberate asymmetry with run-now, documented both docstrings after the security WARN): a stop-signal must never be blocked by the switch it's subordinate to — you must be able to halt in-flight work in a project you just paused/killed. run-now DOES respect kill/pause/consent (423).
+- New `halt_reason` value `'operator_halt'` — free-form TEXT column (no CHECK, #785) so **no migration**.
+- Idempotency at both layers: endpoints (run-now equality-guarded re-prime = no-op; halt's ps=2 precondition IS the guard, 2nd halt 409s) + the Telegram path rides the Phase-1 update_id watermark (redelivered /run|/halt → dedup reply, never reaches the endpoint).
+- Both phases: dev-security-reviewer pass on the authz/endpoint path (AC-mandated) = CLEAN; Lead independent live-curl per the wiring-change rule. Test modules (test_telegram_command.py +, test_tasks_run_now_halt.py new) → drain-end operator pytest. Design doc #2720 D6 gaps RESOLVED; api-contracts note the two new routes.
+- MCP server remains the documented future sibling (reuses these endpoints + D3 auth), not built.
+
 ## 2026-07-03 — Walker ms50 batch: agent cost preview + tool-risk chips + Telegram Phase 1 — Kanban #1020 / #1021 / #2778
 **Scope:** backend + frontend + telegram
 
