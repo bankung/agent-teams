@@ -365,3 +365,42 @@ async def test_higher_update_id_after_dedup_still_dispatches(client) -> None:
 
     higher = await _command(client, chat_id, "/projects", update_id=uid + 1)
     assert higher["dispatched"] is True, "a strictly-higher update_id must dispatch normally"
+
+
+# ---------------------------------------------------------------------------
+# (6) Rate limit — @limiter.limit("30/minute") (dev-reviewer WARN, security round)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_command_endpoint_rate_limited_after_thirty_within_window(client) -> None:
+    """30 POSTs in a fresh window succeed -> 31st returns 429.
+
+    Mirrors test_scaffold_rate_limit.py's shape (Kanban #1124) for this
+    endpoint's own @limiter.limit("30/minute") decorator. Uses a single
+    chat_id with strictly-increasing update_ids (via _next_update_id) so every
+    request is a genuine NEW dispatch, not a dedup no-op — the rate limiter
+    must fire on request VOLUME regardless of dedup outcome, since it runs at
+    the decorator layer BEFORE the handler body (and therefore before the
+    dedup check) ever executes.
+    """
+    chat_id = f"chat-ratelimit-{uuid.uuid4().hex[:8]}"
+
+    for i in range(30):
+        resp = await client.post(
+            "/api/telegram/command",
+            json={"chat_id": chat_id, "update_id": _next_update_id(), "text": "/projects"},
+        )
+        assert resp.status_code == 200, (
+            f"request #{i + 1} expected 200, got {resp.status_code}: {resp.text}"
+        )
+
+    # 31st request in the same window -> 429 from the slowapi handler.
+    resp_31 = await client.post(
+        "/api/telegram/command",
+        json={"chat_id": chat_id, "update_id": _next_update_id(), "text": "/projects"},
+    )
+    assert resp_31.status_code == 429, (
+        f"request #31 expected 429, got {resp_31.status_code}: {resp_31.text}"
+    )
+    assert "Rate limit exceeded" in resp_31.json().get("detail", ""), resp_31.text

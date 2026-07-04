@@ -34,11 +34,18 @@ RiskClass = str  # one of the five literals documented above
 # future frontmatter could — classifying them now means a new file doesn't
 # silently fall through to a judgment call later.
 #
-# Deliberately NOT the same set as `agent_metadata.KNOWN_TOOLS` (the
-# validator's "is this name familiar, warn if not" list) — that list tracks
-# WHICH names are recognized; this one tracks HOW RISKY a name is. A tool can
-# be in one, both, or neither without it being a bug; do not try to unify the
-# two into a single source without re-checking both call sites' semantics.
+# NOT the same set as `agent_metadata.KNOWN_TOOLS` (the validator's "is this
+# name familiar, warn if not" list) — that list tracks WHICH names are
+# recognized; this one tracks HOW RISKY a name is, and the two purposes are
+# not required to produce identical sets. The one invariant that DOES hold
+# (Kanban #1021, dev-reviewer lockstep fix): every key here MUST already be
+# in KNOWN_TOOLS — a name the risk classifier confidently classifies should
+# never also trip the validator's "unrecognized tool" WARNING. That subset
+# relationship is a ONE-WAY containment (TOOL_RISK_TABLE keys ⊆ KNOWN_TOOLS,
+# not equality — KNOWN_TOOLS may carry names this table has no opinion on
+# yet), enforced by
+# `test_agent_tool_chips.test_risk_table_names_are_known_tools`, not a prod
+# import between the two modules (keeps the schema/service layering clean).
 TOOL_RISK_TABLE: dict[str, RiskClass] = {
     # --- read-only: inspection, no mutation, no external side effect -------
     "Read": "read-only",

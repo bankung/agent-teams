@@ -55,6 +55,16 @@ ALL_TOOLS_LITERAL = "All tools"
 # Tool universe used across the real agent files (Read, Grep, Glob, Bash,
 # Write, Edit, WebFetch, WebSearch as of 2026-06-12). A tool name NOT in this
 # set is a WARNING, never an error — the tool universe drifts (contract §2).
+#
+# Kanban #1021 (dev-reviewer lockstep fix): extended to a SUPERSET of every
+# key in ``services.tool_risk.TOOL_RISK_TABLE`` — that module classifies a
+# wider tool vocabulary (PowerShell, TodoWrite, Skill, SendMessage,
+# AskUserQuestion, TaskStop) than this set originally covered, and a name the
+# risk classifier already knows should never trip this validator's
+# "unrecognized tool" WARNING. Enforced by
+# ``test_agent_tool_chips.test_risk_table_names_are_known_tools`` (no prod
+# import between the two modules — the test is the lockstep guard, not a
+# runtime dependency).
 KNOWN_TOOLS: frozenset[str] = frozenset(
     {
         "Read",
@@ -68,6 +78,12 @@ KNOWN_TOOLS: frozenset[str] = frozenset(
         "NotebookEdit",
         "Agent",
         "Task",
+        "PowerShell",
+        "TodoWrite",
+        "Skill",
+        "SendMessage",
+        "AskUserQuestion",
+        "TaskStop",
     }
 )
 

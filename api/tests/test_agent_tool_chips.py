@@ -20,7 +20,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.services.tool_risk import build_tool_chips, classify_tool
+from src.schemas.agent_metadata import KNOWN_TOOLS
+from src.services.tool_risk import TOOL_RISK_TABLE, build_tool_chips, classify_tool
 
 # =============================================================================
 # 1. Unit — classify_tool: one case per class
@@ -71,6 +72,29 @@ def test_classify_unknown_tool_fails_closed():
     # NEGATIVE lock: it must NOT silently resolve to always-safe or read-only
     # (the two classes that would under-report risk).
     assert classify_tool("TotallyMadeUpTool") not in ("always-safe", "read-only")
+
+
+# =============================================================================
+# 1b. Lockstep guard — TOOL_RISK_TABLE names must all be KNOWN_TOOLS
+# (Kanban #1021 dev-reviewer fix: the two vocabularies had diverged — a name
+# the risk classifier confidently classifies must never ALSO trip the #1016
+# validator's "unrecognized tool" WARNING. No prod import between the two
+# modules; this test is the lockstep guard.)
+# =============================================================================
+
+
+def test_risk_table_names_are_known_tools():
+    missing = set(TOOL_RISK_TABLE) - KNOWN_TOOLS
+    # POSITIVE + NEGATIVE in one: every TOOL_RISK_TABLE key is a KNOWN_TOOLS
+    # member (empty diff). A non-empty diff names exactly which tool(s)
+    # would spuriously WARN in the #1016 validator despite the risk
+    # classifier already knowing them.
+    assert missing == set(), (
+        f"TOOL_RISK_TABLE names missing from KNOWN_TOOLS: {sorted(missing)} — "
+        f"add them to agent_metadata.KNOWN_TOOLS or the #1016 validator will "
+        f"spuriously WARN 'unrecognized tool' for a name tool_risk.py already "
+        f"classifies confidently."
+    )
 
 
 # =============================================================================

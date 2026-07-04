@@ -33,12 +33,13 @@ from __future__ import annotations
 import logging
 from typing import Awaitable, Callable
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.constants import RecordStatus, TaskStatus
 from src.db import get_session
+from src.middleware.rate_limit import limiter
 from src.models.project import Project
 from src.models.task import Task
 from src.models.task_gate import TaskGate
@@ -225,7 +226,9 @@ def _split_verb(text: str) -> tuple[str, str]:
 
 
 @router.post("/telegram/command", response_model=TelegramCommandResponse)
+@limiter.limit("30/minute")
 async def telegram_command(
+    request: Request,  # required by slowapi key_func — not used in handler body
     payload: TelegramCommandRequest,
     session: AsyncSession = Depends(get_session),
 ) -> TelegramCommandResponse:
