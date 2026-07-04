@@ -1,8 +1,8 @@
 ---
 name: zb-audit
 description: >-
-  Run an on-demand health audit of a project — spawn the read-only project-auditor for the 3 baseline
-  metrics (budget burn, task failure rate, drift) + a continue/review/pause call, and show the recent
+  Run an on-demand health audit of a project — spawn the read-only project-auditor for the 4
+  metrics (budget burn, task failure rate, task stall, drift) + a continue/review/pause call, and show the recent
   audit-rollup trend. Use for a quick "how healthy is this project?" check.
 argument-hint: "[project name or id]   (defaults to the bound project)"
 allowed-tools:
@@ -25,7 +25,7 @@ If a name is given, resolve via `GET /api/projects/by-name/<name>`; if an id, us
 
 ## Step 2 — run the audit (spawn the read-only agent)
 Spawn the **project-auditor** subagent for the target project. It produces a structured report:
-the 3 baseline metrics (budget burn rate, task failure rate, drift placeholder) + a
+the 4 metrics (budget burn rate, task failure rate, task stall rate, drift placeholder) + a
 **continue / review / pause** recommendation. It is read-only — it proposes, never mutates.
 
 ## Step 3 — pull the trend (cross-project rollup; NO X-Project-Id)
