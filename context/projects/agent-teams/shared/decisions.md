@@ -18,6 +18,24 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-07-05 — #1019: restart-session UX for newly-added agents (agents-dir watcher → SSE banner)
+**Scope:** backend + frontend
+
+**Research finding (AC#1):** Claude Code does NOT hot-reload `.claude/agents/*.md` (agent prompt BODIES) or hook wiring mid-session — both bind at SESSION START. Confirmed this session: #2744's new project-auditor metric didn't emit from a same-session spawn (had to resume the auditor with the metric def), and #2769's hook wiring fires on real spawns only after a restart. So the AC's "if hot-reload supported → trigger it" branch is N/A; shipped the FALLBACK UX.
+
+**Decision:** A polling watcher on `.claude/agents/` broadcasts an SSE signal → the web UI shows a dismissible "restart your Claude Code session to activate it" banner.
+
+**Implementation:**
+- BE `services/agents_watcher.py` — an async POLLING task (4s, `APP_AGENTS_WATCH_SECONDS` override), **NOT inotify/watchdog** (Windows-host + Docker bind-mount inotify is unreliable; Karpathy: stdlib-only, no new dep). Signature = frozenset of `(name, st_mtime_ns, st_size)` over non-underscore `*.md`. Baseline on first scan (no spurious startup banner); on change → `broker.broadcast({"table":"agents","op":"changed","ts":...})`. Wired into `main.lifespan` (start/stop alongside the row_changed broker); honors `APP_SSE_DISABLE`.
+- Reuses the EXISTING SSE (`row_changed_listener` broker + `events.py` stream, **unchanged**) — added a public `broker.broadcast()` (global fan-out, no per-project filter) + factored `_put_or_drop` (behavior-preserving refactor of `_dispatch`).
+- FE `WildcardSSEContext` dispatches `data.table === "agents"` → new `onAgentsChange`; `components/AgentsChangedBanner.tsx` (glassmorphism `.glass-surface`, dismissible, "How to restart" expander, `role=status`/`aria-live=polite`) mounted app-wide inside `WildcardSSEProvider`.
+
+**Verification:** BE live-proven — restart api → "baseline established — 40 agent file(s)"; `os.utime` on an agent file (in-container) → **"change detected — broadcast sent" within the 4s poll (< AC's 5s)**. 11 BE tests (broadcast→listener queue; signature add/remove/touch/exclude). FE tsc/eslint clean, vitest 10/10 (banner appears on agents event, NOT on tasks/projects, dismiss hides, re-appears). web image rebuilt (no bind mount) + live 200.
+
+**Implications:**
+- **Session-start binding is now a first-class, UX-surfaced product constraint** — the SAME caching class behind the #2744 (metric) and #2769 (hook wiring) activation caveats; all resolve on a session restart.
+- No migration; no api-contracts change (reuses the SSE `row_changed` envelope, distinguished by `table:"agents"`).
+
 ## 2026-07-05 — Runtime enforcement of the two per-project spawn gates (hook + server authority) — Kanban #2769
 **Scope:** backend + hooks (platform governance)
 

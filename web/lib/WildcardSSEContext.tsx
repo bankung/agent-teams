@@ -40,6 +40,11 @@ function apiBaseUrl(): string {
 type Subscriber = {
   onTaskChange?: (ev: RowChangedEvent) => void;
   onProjectChange?: (ev: RowChangedEvent) => void;
+  // #1019 — "agents" table: backend broadcasts { table: "agents", op: "changed" }
+  // when .claude/agents/ changes on disk. No row id/project scoping (it's a
+  // filesystem signal, not a DB row) — consumers just need the "something
+  // changed" tick, not a payload shape.
+  onAgentsChange?: (ev: RowChangedEvent) => void;
 };
 
 type ContextValue = {
@@ -110,6 +115,7 @@ export function WildcardSSEProvider({
         for (const sub of subscribersRef.current) {
           if (ev.table === "tasks") sub.onTaskChange?.(ev);
           else if (ev.table === "projects") sub.onProjectChange?.(ev);
+          else if (ev.table === "agents") sub.onAgentsChange?.(ev);
         }
       }
     };
@@ -182,24 +188,34 @@ export function WildcardSSEProvider({
 //
 // Returns the same { connectionState, lastEventAt } shape as useRowChangedEvents
 // so callers can switch with zero signature changes.
+//
+// onAgentsChange is added here (NOT on UseRowChangedEventsArgs itself) because
+// it is wildcard-only — useRowChangedEvents (the projectId-scoped hook used by
+// Board.tsx) never dispatches an "agents" table event; adding it to the
+// shared args type would leak a no-op prop onto that surface (#1019).
 export function useWildcardRowChanged(
-  args: Omit<UseRowChangedEventsArgs, "projectId" | "debounceMs">,
+  args: Omit<UseRowChangedEventsArgs, "projectId" | "debounceMs"> & {
+    onAgentsChange?: (ev: RowChangedEvent) => void;
+  },
 ): UseRowChangedEventsResult {
   const ctx = useContext(WildcardSSEContext);
 
   // Stable refs so subscribe() callback never changes identity.
   const onTaskChangeRef = useRef(args.onTaskChange);
   const onProjectChangeRef = useRef(args.onProjectChange);
+  const onAgentsChangeRef = useRef(args.onAgentsChange);
   useEffect(() => {
     onTaskChangeRef.current = args.onTaskChange;
     onProjectChangeRef.current = args.onProjectChange;
-  }, [args.onTaskChange, args.onProjectChange]);
+    onAgentsChangeRef.current = args.onAgentsChange;
+  }, [args.onTaskChange, args.onProjectChange, args.onAgentsChange]);
 
   useEffect(() => {
     if (!ctx) return;
     const unsub = ctx.subscribe({
       onTaskChange: (ev) => onTaskChangeRef.current?.(ev),
       onProjectChange: (ev) => onProjectChangeRef.current?.(ev),
+      onAgentsChange: (ev) => onAgentsChangeRef.current?.(ev),
     });
     return unsub;
   }, [ctx]);

@@ -61,6 +61,7 @@ from src.routers import transactions as transactions_router
 from src.routers import usage as usage_router
 from src.routers import usage_events as usage_events_router
 from src.routers import user_actions as user_actions_router
+from src.services.agents_watcher import start_agents_watcher, stop_agents_watcher
 from src.services.row_changed_listener import start_listener, stop_listener
 from src.settings import get_settings
 
@@ -184,6 +185,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # #782 — boot SSE broker before scheduler
     await start_listener()
+    # #1019 — agents-dir change watcher, same enable/disable gate as the SSE
+    # broker (APP_SSE_DISABLE); polls .claude/agents/*.md and broadcasts over
+    # the SAME broker rather than a second stream.
+    await start_agents_watcher()
 
     disabled = os.environ.get("APP_SCHEDULER_DISABLE", "false").lower() == "true"
     if disabled:
@@ -192,6 +197,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
             yield
         finally:
+            await stop_agents_watcher()
             await stop_listener()
         return
 
@@ -324,6 +330,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception:
             logger.exception("recurrence scheduler shutdown failed")
         _scheduler = None
+        # Kanban #1019 — stop the agents-dir watcher BEFORE releasing the
+        # broker connection it broadcasts through.
+        await stop_agents_watcher()
         # Kanban #782 — release the SSE broker connection on shutdown.
         await stop_listener()
 

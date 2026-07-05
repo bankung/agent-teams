@@ -4,6 +4,10 @@ payloads to per-client asyncio queues (Kanban #782).
 Wiring:
     main.lifespan → start_listener(app) on enter, stop_listener(app) on exit.
     routers/events.py → broker.add_listener(project_id) / remove_listener.
+    services/agents_watcher.py → broker.broadcast({"table": "agents", ...})
+        (Kanban #1019) — a non-DB, platform-level signal fanned to EVERY
+        listener (no project filter), reusing this same broker/SSE stream
+        rather than a second one.
 
 Cross-project leak guard lives in `_dispatch`:
 - A queue with `project_id=None` receives EVERY event (wildcard, used by
@@ -114,7 +118,30 @@ class RowChangedBroker:
             (q, pid) for (q, pid) in self._listeners if q is not queue
         }
 
+    def broadcast(self, payload: dict) -> None:
+        """Fan `payload` out to EVERY current listener queue, no filter.
+
+        Unlike `_dispatch` (which applies the tasks/projects per-project
+        filter), this delivers to wildcard AND project-filtered listeners
+        alike — for platform-level events with no project scope of their own
+        (e.g. `{"table": "agents", ...}` from the agents-dir watcher, Kanban
+        #1019). `payload` is already a dict (no NOTIFY JSON to parse).
+        """
+        for queue, _listener_filter in list(self._listeners):
+            self._put_or_drop(queue, payload)
+
     # ---------------- internal -------------------------------------------
+
+    def _put_or_drop(self, queue: asyncio.Queue[dict], payload: dict) -> None:
+        """Shared fan-out primitive: non-blocking put, drop-with-warning on full."""
+        try:
+            queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            # Slow client — drop the event rather than block the broker.
+            logger.warning(
+                "row_changed: queue full for a listener; dropping event (table=%s)",
+                payload.get("table"),
+            )
 
     def _dispatch(
         self,
@@ -154,14 +181,7 @@ class RowChangedBroker:
                 else:
                     continue
             # Wildcard listener (filter=None) falls through — always delivers.
-            try:
-                queue.put_nowait(payload)
-            except asyncio.QueueFull:
-                # Slow client — drop the event rather than block the broker.
-                logger.warning(
-                    "row_changed: queue full for listener (filter=%s); dropping event",
-                    listener_filter,
-                )
+            self._put_or_drop(queue, payload)
 
 
 # Module-level singleton — created lazily by start_listener(); imported by
