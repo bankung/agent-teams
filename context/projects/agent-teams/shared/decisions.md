@@ -18,6 +18,23 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-07-05 — Runtime enforcement of the two per-project spawn gates (hook + server authority) — Kanban #2769
+**Scope:** backend + hooks (platform governance)
+
+**Decision:** The two per-project spawn gates that were **Lead-discipline-only** are now **runtime-enforced**: `config.enabled_roles: int[]` (#7 role-code whitelist) and `config.agent_settings[name].enabled` (#1018 per-agent toggle). **Mechanism (AC#0): a PreToolUse `Agent`-gate hook delegating to a server-authority endpoint.** New hook `.claude/hooks/block-spawn-disabled-role-agent.ps1` (wired on the `Agent` matcher alongside `block-spawn-on-killed-project.ps1`) reads `subagent_type`, resolves the per-session project, and calls the new read-only endpoint `GET /api/projects/{id}/spawn-check?agent=<name>` → `{allowed, reason, role_code, agent}`. The endpoint applies both gates (agent-gate first, then role-gate; first deny wins) using `AGENT_ROLE_CODE` — a new dict in `api/src/constants.py` mapping the ~24 role-coded agents → `TaskRole` codes (cross-cutting utilities intentionally unmapped → not role-gated).
+
+**Reasoning:**
+- **Hook, not langgraph** (AC#0): langgraph enforces neither gate (grep-confirmed) and is text-only (no `Agent`-tool spawns). The Claude Code Lead + Mode-A walker spawn through the `Agent` tool, so a PreToolUse hook is the correct + sole interception point. Mirrors the existing killed-project spawn hook.
+- **Server authority, not a PowerShell map**: there is NO complete agent→role-code map anywhere (many agents have no `TaskRole` code). Keeping the map + gate logic server-side (next to `TaskRole`) makes it single-source + unit-testable and stops it drifting into PowerShell; the hook stays a thin forwarder.
+- **Fail-open** (hook, on any infra error): a discipline gate, not the security-critical kill gate — bricking Lead on hook misbehavior is worse than allowing a spawn the endpoint + documented Lead-discipline still backstop.
+
+**Implications:**
+- **Backfill-safe (AC#2):** absent `config`/`enabled_roles`/`agent_settings` → allow all; unmapped agents (`role_code` None) pass the role gate. Verified live (throwaway project 715: endpoint 4 decision paths correct — agent-deny, role-deny, allow, unmapped-passes; hook 6-case end-to-end — both gates → `exit 2` + deny JSON, allow/skip → `exit 0`).
+- **Session-start binding caveat:** like agent prompt bodies, `settings.json` hook wiring binds at session start — the newly-wired hook fires on REAL spawns only after a session **restart**. The hook script + endpoint were proven live THIS session by direct invocation. [same caveat class as #2744]
+- **dev-security-reviewer: CLEAN** (no blocker). Bypass + injection dismissed (`is False` strict identity check; anchored `AGENT_NAME_RE` fullmatch; `EscapeDataString`; hardcoded host = no SSRF). One non-blocking WARN (a MALFORMED/legacy `config` row could 500 the endpoint — write-side Pydantic validators already prevent that shape via the normal API; degrades to fail-open, not a bypass) + a map-drift NIT → deferred to **#2807** (LOW: `isinstance` guards + an `AGENT_ROLE_CODE ⊆ .claude/agents/` drift test).
+- **Coverage (AC#3):** `api/tests/test_spawn_check.py` (8 cases) — CI-run. `SpawnCheckResponse` schema added.
+- The langgraph engine path remains ungated (out of scope — it doesn't `Agent`-spawn).
+
 ## 2026-07-04 — project-auditor gains a 4th metric: `task_stall_rate` (liveness) — Kanban #2744
 **Scope:** shared (GOV2 governance — the read-only `project-auditor` agent)
 

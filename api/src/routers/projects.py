@@ -34,6 +34,7 @@ from sqlalchemy.sql import func
 from sqlalchemy.sql.elements import ClauseElement
 
 from src.constants import (  # TaskStatus.CANCELLED + TaskType.AUDIT used by stats
+    AGENT_ROLE_CODE,
     ProjectTeam,
     RecordStatus,
     TaskRunMode,
@@ -71,8 +72,10 @@ from src.schemas.project import (
     ProjectsAuditEntry,
     ReviveProjectRequest,
     ReviveProjectResponse,
+    SpawnCheckResponse,
     UnpauseProjectRequest,
 )
+from src.schemas.agent_metadata import AGENT_NAME_RE
 from src.services.agent_validation import default_agents_dir, list_agents
 from src.services.budget_gate import reconcile_budget
 from src.services.kill_switch import kill_project, revive_project
@@ -870,6 +873,86 @@ async def get_project_audit_log(
         stmt = stmt.where(ProjectsAudit.action == action)
     rows = (await session.execute(stmt)).scalars().all()
     return list(rows)
+
+
+# ---------------------------------------------------------------------------
+# Kanban #2769 — GET /api/projects/{id}/spawn-check (read-only spawn-gate
+# authority). Backend counterpart to a Lead-side PreToolUse hook (built
+# separately) that decides allow/deny for an `Agent` tool spawn BEFORE it
+# fires. Evaluates the two existing per-project spawn gates that were
+# previously Lead-discipline-only, now runtime-enforced here:
+#   - config.enabled_roles (#7)   — int[] whitelist of TaskRole codes.
+#   - config.agent_settings (#1018) — per-agent {"enabled": bool} toggle.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{project_id}/spawn-check", response_model=SpawnCheckResponse)
+async def get_project_spawn_check(
+    project_id: int,
+    agent: str = Query(...),
+    session: AsyncSession = Depends(get_session),
+) -> SpawnCheckResponse:
+    """Decide allow/deny for an Agent-tool spawn of `agent` on this project.
+
+    404 on missing/soft-deleted project (active-only, mirrors every sibling
+    read in this router). 422 on a malformed `agent` value (same
+    `AGENT_NAME_RE` traversal guard as `/api/agents/{name}` — blocks
+    path-traversal-shaped input before it reaches config lookups).
+
+    Gate order (FIRST deny wins):
+      a. AGENT gate (#1018) — `config.agent_settings[agent].enabled is False`
+         denies regardless of role. Only an EXPLICIT `false` denies; absent /
+         `None` / `true` all pass (backfill-safe default = enabled).
+      b. ROLE gate (#7) — `config.enabled_roles` is a non-null whitelist AND
+         `agent` maps to a known `TaskRole` code AND that code is NOT in the
+         whitelist. `config.enabled_roles is None` (absent) = unrestricted;
+         an unmapped agent (no TaskRole code — cross-cutting utility, see
+         `AGENT_ROLE_CODE` in constants.py) always passes this gate.
+      c. else allowed — reason "allowed".
+
+    Backfill-safe by construction: `project.config` may be `None`, `{}`, or
+    missing either subkey entirely — every read uses `.get(..., default)` so
+    a project with zero config touches allows every agent.
+    """
+    if not AGENT_NAME_RE.fullmatch(agent):
+        raise HTTPException(status_code=422, detail=f"Malformed agent name {agent!r}")
+
+    project = await get_active_project_or_404(
+        session, project_id, detail=f"Project id={project_id} not found"
+    )
+
+    config: dict[str, Any] = project.config or {}
+    enabled_roles: list[int] | None = config.get("enabled_roles")
+    agent_settings: dict[str, Any] = config.get("agent_settings") or {}
+    role_code: int | None = AGENT_ROLE_CODE.get(agent)
+
+    if agent_settings.get(agent, {}).get("enabled") is False:
+        return SpawnCheckResponse(
+            allowed=False,
+            reason=(
+                f"agent {agent!r} is disabled for this project "
+                "(agent_settings.enabled=false)"
+            ),
+            role_code=role_code,
+            agent=agent,
+        )
+
+    if (
+        enabled_roles is not None
+        and role_code is not None
+        and role_code not in enabled_roles
+    ):
+        return SpawnCheckResponse(
+            allowed=False,
+            reason=(
+                f"role {role_code} ({agent}) not in project enabled_roles "
+                f"{sorted(enabled_roles)}"
+            ),
+            role_code=role_code,
+            agent=agent,
+        )
+
+    return SpawnCheckResponse(allowed=True, reason="allowed", role_code=role_code, agent=agent)
 
 
 @router.get(

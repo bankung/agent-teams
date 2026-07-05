@@ -274,6 +274,50 @@ class TaskRole:
     )
 
 
+# Agent name -> TaskRole code (Kanban #2769 — spawn-gate authority endpoint).
+# Maps every ROLE-CODED specialist agent to the code it spawns under. Consumed
+# by GET /api/projects/{id}/spawn-check (routers/projects.py) to evaluate the
+# `config.enabled_roles` per-project whitelist (#7) against an Agent-tool
+# spawn attempt. Every value uses a `TaskRole.*` constant (never a raw int) so
+# a future renumbering in TaskRole propagates here automatically.
+#
+# Each key was verified 2026-07-05 to have a matching `.claude/agents/<name>.md`
+# file — none were dropped.
+#
+# INTENTIONALLY UNMAPPED (cross-cutting utilities with no role code — NOT
+# role-gated; absent from this dict so `AGENT_ROLE_CODE.get(name)` returns
+# None and the role gate in spawn-check passes them through unconditionally):
+#   general-researcher, dev-documentor, dev-analyst, general, claude, Explore,
+#   Plan, project-auditor, secretary*, netops-*, content-writer, content-editor,
+#   content-hook-doctor, content-veracity-checker.
+AGENT_ROLE_CODE: dict[str, int] = {
+    "dev-frontend": TaskRole.FRONTEND,
+    "dev-sr-frontend": TaskRole.FRONTEND,
+    "dev-backend": TaskRole.BACKEND,
+    "dev-sr-backend": TaskRole.BACKEND,
+    "dev-devops": TaskRole.DEVOPS,
+    "dev-tester": TaskRole.QA,
+    "dev-reviewer": TaskRole.REVIEWER,
+    "dev-spec-reviewer": TaskRole.REVIEWER,
+    "dev-security-reviewer": TaskRole.SECURITY_REVIEWER,
+    "novel-writer": TaskRole.NOVEL_WRITER,
+    "novel-editor": TaskRole.NOVEL_EDITOR,
+    "thai-proofreader": TaskRole.NOVEL_PROOFREADER,
+    "seo-strategist": TaskRole.SEO_STRATEGIST,
+    "technical-seo-specialist": TaskRole.TECHNICAL_SEO_SPECIALIST,
+    "content-seo-optimizer": TaskRole.CONTENT_SEO_OPTIMIZER,
+    "seo-reporting-analyst": TaskRole.SEO_REPORTING_ANALYST,
+    "sem-campaign-lead": TaskRole.SEM_CAMPAIGN_LEAD,
+    "google-ads-specialist": TaskRole.GOOGLE_ADS_SPECIALIST,
+    "meta-ads-specialist": TaskRole.META_ADS_SPECIALIST,
+    "platform-ads-coordinator": TaskRole.PLATFORM_ADS_COORDINATOR,
+    "bi-analyst": TaskRole.BI_ANALYST,
+    "sql-optimizer": TaskRole.SQL_OPTIMIZER,
+    "dashboard-designer": TaskRole.DASHBOARD_DESIGNER,
+    "analytics-platform-integrator": TaskRole.ANALYTICS_PLATFORM_INTEGRATOR,
+}
+
+
 class TaskHistoryOperation:
     """tasks_history.operation — CHAR(1) CHECK IN ('U','D')."""
 

@@ -1212,6 +1212,35 @@ class AgentOverridesPatch(BaseModel):
     agents: list[AgentOverridePatchItem] = Field(..., min_length=1, max_length=200)
 
 
+# ---------------------------------------------------------------------------
+# Kanban #2769 — GET /api/projects/{id}/spawn-check response.
+# ---------------------------------------------------------------------------
+
+
+class SpawnCheckResponse(BaseModel):
+    """Response for GET /api/projects/{id}/spawn-check.
+
+    Read-only spawn-gate authority verdict for a would-be `Agent`-tool spawn
+    of `agent` on this project — evaluates `config.agent_settings` (#1018,
+    per-agent enable/disable) then `config.enabled_roles` (#7, TaskRole
+    whitelist), first deny wins. See `routers/projects.py::get_project_spawn_check`
+    for the full gate-order docstring.
+
+    `role_code` is the `TaskRole.*` code `agent` maps to via
+    `constants.AGENT_ROLE_CODE`, or `None` for an unmapped cross-cutting
+    utility agent (never role-gated). `agent` echoes the validated query
+    param back for a self-contained response (no need to correlate against
+    the request).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    allowed: bool
+    reason: str
+    role_code: int | None
+    agent: str
+
+
 class ProjectGrantConsent(BaseModel):
     """Request body for POST /api/projects/{id}/grant-consent.
 
