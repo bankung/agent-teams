@@ -7,6 +7,7 @@ description: >
   structured diagnosis. Covers a mixed estate (Fortinet firewall + MikroTik +
   Ubiquiti) through the single Zabbix source. Never writes config, never
   acknowledges/closes problems, never mutates Zabbix. Proposes manual fixes only.
+model: sonnet
 tools: [Read, Grep, Glob, Bash, WebFetch]
 ---
 

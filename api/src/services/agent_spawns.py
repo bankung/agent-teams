@@ -97,3 +97,81 @@ async def fetch_agent_spawns(
         }
         for row in result
     ]
+
+
+# ===========================================================================
+# Kanban #1020 — per-agent, per-project cost-estimate rollup.
+#
+# Same ``@>`` containment pre-filter as ``_SPAWNS_SQL`` above (same GIN index,
+# ``ix_tasks_subagent_models_gin``) but scoped to ONE project and a 30-day
+# completed_at window, and aggregated rather than listed row-by-row. This is a
+# COUNT + SUM over `tasks.estimated_cost_usd` (the #944 done-flip heuristic
+# estimate) — see the router for why this is estimated-basis, not
+# usage_events-basis, in v1.
+#
+# dev-reviewer #1020 fix 2: a naive ``COUNT(*) FROM tasks`` undercounts —
+# ``subagent_models`` can list the SAME agent twice on one task (routine
+# accumulation across two spawns within the task's lifetime), and
+# ``spawn_count_last_30d`` must count SPAWNS (elements), not tasks. Cost
+# attribution stays task-level: mirroring ``_SPAWNS_SQL``'s LATERAL unnest for
+# the per-element COUNT, but a task's ``estimated_cost_usd`` is summed ONCE
+# per distinct task (not once per element) via the ``task_costs`` CTE below —
+# otherwise a task listing the agent twice would double-count its own cost.
+# This means a multi-agent task's full cost attributes to EACH agent it
+# lists (v1 heuristic; see the router docstring).
+# ===========================================================================
+
+_COST_ROLLUP_SQL = text(
+    """
+    WITH matching_elems AS (
+        SELECT t.id AS task_id
+        FROM tasks AS t
+        CROSS JOIN LATERAL jsonb_array_elements(t.subagent_models) AS elem
+        WHERE t.status = 1
+          AND t.project_id = :project_id
+          AND t.subagent_models @> :containment
+          AND t.completed_at >= now() - interval '30 days'
+          AND elem ->> 'agent' = :name
+    ),
+    task_costs AS (
+        SELECT DISTINCT t.id, t.estimated_cost_usd
+        FROM tasks AS t
+        WHERE t.id IN (SELECT task_id FROM matching_elems)
+    )
+    SELECT
+        (SELECT COUNT(*) FROM matching_elems)  AS spawn_count,
+        (SELECT SUM(estimated_cost_usd) FROM task_costs) AS total_cost
+    """
+).bindparams(bindparam("containment", type_=JSONB))
+
+
+async def fetch_agent_cost_rollup(
+    session: AsyncSession, name: str, project_id: int
+) -> tuple[int, object | None]:
+    """Return ``(spawn_count_last_30d, total_cost_usd)`` for one agent.
+
+    Scoped to completed (``completed_at`` set), non-soft-deleted tasks of
+    ``project_id`` whose ``subagent_models`` contains an element with
+    ``agent == name``, within the last 30 days.
+
+    ``spawn_count_last_30d`` is a per-ELEMENT count (``matching_elems``) — a
+    task that lists this agent twice in ``subagent_models`` contributes 2, not
+    1. ``total_cost_usd`` is a per-TASK sum (``task_costs`` — deduplicated by
+    task id via ``DISTINCT``/the ``IN`` membership test) so that same
+    twice-listed task contributes its ``estimated_cost_usd`` ONCE, not twice.
+    ``SUM()`` skips NULLs (SQL-standard behavior), so a project with zero
+    costed matching tasks yields ``total_cost_usd is None`` while
+    ``spawn_count`` still reflects every matching element (costed or not).
+    Returns ``(0, None)`` when no task matches at all.
+
+    The router derives ``avg_cost_per_spawn = total_cost_usd / spawn_count``
+    and ``projected_monthly_usd = total_cost_usd`` directly (self-consistent:
+    ``avg * count == total`` by construction — see fix 2 in the router's
+    cost-estimate endpoint).
+    """
+    result = await session.execute(
+        _COST_ROLLUP_SQL,
+        {"project_id": project_id, "containment": [{"agent": name}], "name": name},
+    )
+    row = result.one()
+    return (row.spawn_count, row.total_cost)

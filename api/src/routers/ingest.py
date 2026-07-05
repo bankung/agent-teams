@@ -186,20 +186,25 @@ async def _load_secret(session: AsyncSession) -> tuple[ProjectCredential, str]:
     return cred, secret
 
 
-async def _audit_use(
-    session: AsyncSession, credential_id: int, *, ok: bool, reason: str | None
+async def _audit_credential_use(
+    session: AsyncSession,
+    credential_id: int,
+    *,
+    source: str,
+    ok: bool,
+    reason: str | None,
 ) -> None:
     """Append a CredentialAccessLog row recording the verification outcome.
 
-    ``ok=True`` writes ``accessed_by='system:email_ingest'`` + bumps the
-    counter on the credential. ``ok=False`` writes
-    ``accessed_by='system:email_ingest (denied=<reason>)'`` and skips the
-    counter bump — denial audit row stands on its own.
+    ``ok=True``  → ``accessed_by='<source>'`` + bumps counter; caller's
+                   commit (at task-create) flushes the row — no commit here.
+    ``ok=False`` → ``accessed_by='<source> (denied=<reason>)'`` + commits
+                   immediately so the denial audit row survives the raised 401.
     """
     if ok:
-        accessed_by = "system:email_ingest"
+        accessed_by = source
     else:
-        accessed_by = f"system:email_ingest (denied={reason or 'unknown'})"
+        accessed_by = f"{source} (denied={reason or 'unknown'})"
     session.add(
         CredentialAccessLog(
             credential_id=credential_id,
@@ -212,7 +217,8 @@ async def _audit_use(
         if cred is not None:
             cred.access_count = cred.access_count + 1
             cred.last_accessed_at = datetime.now(timezone.utc)
-    await session.commit()
+    else:
+        await session.commit()
 
 
 def _build_description(
@@ -297,12 +303,12 @@ async def ingest_email(
         expected = secret.encode("utf-8")
         sig_ok = hmac.compare_digest(provided, expected)
     except (UnicodeEncodeError, UnicodeDecodeError):
-        await _audit_use(session, cred.id, ok=False, reason="secret_encoding_error")
+        await _audit_credential_use(session, cred.id, source="system:email_ingest", ok=False, reason="secret_encoding_error")
         raise HTTPException(status_code=401, detail=_DETAIL_BAD_SIGNATURE)
     if not sig_ok:
-        await _audit_use(session, cred.id, ok=False, reason="signature_mismatch")
+        await _audit_credential_use(session, cred.id, source="system:email_ingest", ok=False, reason="signature_mismatch")
         raise HTTPException(status_code=401, detail=_DETAIL_BAD_SIGNATURE)
-    await _audit_use(session, cred.id, ok=True, reason=None)
+    await _audit_credential_use(session, cred.id, source="system:email_ingest", ok=True, reason=None)
 
     # ----- 2. Resolve target project --------------------------------------
     default_name = _env_str(_DEFAULT_PROJECT_ENV, _DEFAULT_PROJECT_FALLBACK)
@@ -485,32 +491,7 @@ async def _load_webhook_secret(
     return cred, secret
 
 
-async def _audit_webhook_use(
-    session: AsyncSession, credential_id: int, *, ok: bool, reason: str | None
-) -> None:
-    """Append a CredentialAccessLog row for a webhook verification outcome.
-
-    ``ok=True``  → ``accessed_by='system:webhook_ingest'`` + bumps counter.
-    ``ok=False`` → ``accessed_by='system:webhook_ingest (denied=<reason>)'``
-                  + no counter bump (denial audit row stands on its own).
-    """
-    if ok:
-        accessed_by = "system:webhook_ingest"
-    else:
-        accessed_by = f"system:webhook_ingest (denied={reason or 'unknown'})"
-    session.add(
-        CredentialAccessLog(
-            credential_id=credential_id,
-            accessed_by=accessed_by,
-            action="use",
-        )
-    )
-    if ok:
-        cred = await session.get(ProjectCredential, credential_id)
-        if cred is not None:
-            cred.access_count = cred.access_count + 1
-            cred.last_accessed_at = datetime.now(timezone.utc)
-    await session.commit()
+_AUDIT_SOURCE_WEBHOOK = "system:webhook_ingest"
 
 
 async def _resolve_webhook_project(
@@ -620,20 +601,20 @@ async def ingest_webhook(
         expected = secret.encode("utf-8")
         sig_ok = hmac.compare_digest(provided, expected)
     except (UnicodeEncodeError, UnicodeDecodeError):
-        await _audit_webhook_use(
-            session, cred.id, ok=False, reason="secret_encoding_error",
+        await _audit_credential_use(
+            session, cred.id, source=_AUDIT_SOURCE_WEBHOOK, ok=False, reason="secret_encoding_error",
         )
         raise HTTPException(
             status_code=401, detail=_DETAIL_WEBHOOK_BAD_SIGNATURE,
         )
     if not sig_ok:
-        await _audit_webhook_use(
-            session, cred.id, ok=False, reason="signature_mismatch",
+        await _audit_credential_use(
+            session, cred.id, source=_AUDIT_SOURCE_WEBHOOK, ok=False, reason="signature_mismatch",
         )
         raise HTTPException(
             status_code=401, detail=_DETAIL_WEBHOOK_BAD_SIGNATURE,
         )
-    await _audit_webhook_use(session, cred.id, ok=True, reason=None)
+    await _audit_credential_use(session, cred.id, source=_AUDIT_SOURCE_WEBHOOK, ok=True, reason=None)
 
     # ----- 4. Look up template (or default-fallback) ----------------------
     template = get_webhook_template(tag)

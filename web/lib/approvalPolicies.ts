@@ -209,6 +209,41 @@ export const FIELD_DEFINITIONS: Array<{
 
 const FIELD_BY_VALUE = new Map(FIELD_DEFINITIONS.map((f) => [f.value, f]));
 
+// #2390 H1 — bound editor-authored growth of the approval_policies JSONB blob.
+// Caps are enforced both as HTML maxLength (soft, user-visible) and here
+// (hard, draftErrors-surfaced) so a paste/programmatic set can't bypass the
+// input attribute.
+export const NAME_MAX_LENGTH = 200;
+export const LABEL_MAX_LENGTH = 200;
+export const DEFAULT_ANSWER_MAX_LENGTH = 200;
+export const MAX_CONDITIONS_PER_RULE = 20;
+export const MAX_RULES = 50; // sane ceiling; UI surfaces this via the "New" button state
+
+// #2390 M2 — fields the .ps1 gate evaluates as regex ([regex]::IsMatch), not
+// substring. Must stay in sync with target_url_pattern/content_predicate
+// handling in _shared.ps1 Test-PolicyRule.
+const REGEX_FIELDS: ReadonlySet<ConditionField> = new Set([
+  "target_url_pattern",
+  "content_predicate",
+]);
+
+export function isRegexField(field: ConditionField): boolean {
+  return REGEX_FIELDS.has(field);
+}
+
+// Mirrors the .ps1 gate's fail-closed-on-invalid-pattern behavior (try
+// [regex]::IsMatch { } catch { return $false }) — an invalid pattern is a
+// UI-surfaced error here rather than a silent false in the evaluator.
+export function regexPatternError(pattern: string): string | null {
+  if (pattern.trim().length === 0) return null;
+  try {
+    new RegExp(pattern);
+    return null;
+  } catch {
+    return "Invalid regex pattern.";
+  }
+}
+
 export function newPolicyId(prefix = "policy"): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return `${prefix}-${crypto.randomUUID()}`;
@@ -346,6 +381,10 @@ export function conditionError(condition: PolicyCondition): string | null {
   if (needsNumber(condition.field, condition.op) && Number.isNaN(Number(condition.value))) {
     return "Enter a numeric value.";
   }
+  if (isRegexField(condition.field)) {
+    const regexError = regexPatternError(condition.value);
+    if (regexError) return regexError;
+  }
   return null;
 }
 
@@ -357,13 +396,25 @@ function needsNumber(field: ConditionField, op: ConditionOperator): boolean {
 export function draftErrors(draft: ApprovalPolicyDraft): string[] {
   const errors: string[] = [];
   if (draft.name.trim().length === 0) errors.push("Name is required.");
+  if (draft.name.length > NAME_MAX_LENGTH) {
+    errors.push(`Name must be ${NAME_MAX_LENGTH} characters or fewer.`);
+  }
   if (draft.conditions.length === 0) errors.push("At least one condition is required.");
+  if (draft.conditions.length > MAX_CONDITIONS_PER_RULE) {
+    errors.push(`A rule can have at most ${MAX_CONDITIONS_PER_RULE} conditions.`);
+  }
   draft.conditions.forEach((condition, index) => {
     const error = conditionError(condition);
     if (error) errors.push(`Condition ${index + 1}: ${error}`);
   });
   if (draft.action === "require_attention" && draft.label.trim().length === 0) {
     errors.push("Route-to-user label is required.");
+  }
+  if (draft.label.length > LABEL_MAX_LENGTH) {
+    errors.push(`Route label must be ${LABEL_MAX_LENGTH} characters or fewer.`);
+  }
+  if (draft.defaultAnswer.length > DEFAULT_ANSWER_MAX_LENGTH) {
+    errors.push(`Default answer must be ${DEFAULT_ANSWER_MAX_LENGTH} characters or fewer.`);
   }
   return errors;
 }
@@ -601,6 +652,19 @@ function matchPredicate(key: string, value: unknown, task: TaskRead, now: Date):
       return task.task_kind !== textValue;
     case "assigned_role":
       return task.assigned_role === numberValue;
+    // #2390 M2 — target_url_pattern / content_predicate are evaluated by the
+    // .ps1 gate (_shared.ps1 Test-PolicyRule) against a live tool call's URL
+    // / serialized tool_input via [regex]::IsMatch, using regex semantics
+    // (see conditionError's regexPatternError, which now validates these
+    // fields as regex at input time to match). Neither a URL nor a
+    // tool_input exists on a completed TaskRead — there is no task-level
+    // surrogate to preview against — so these always report no hits here.
+    // The H3 disclaimer on the preview card tells the user why. Structural
+    // gap (feature: a tool-call activity log to preview against), not a
+    // pattern-syntax bug — same reasoning as text_contains_all/any (AC5).
+    case "target_url_pattern":
+    case "content_predicate":
+      return false;
     default:
       return false;
   }

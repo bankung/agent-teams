@@ -300,7 +300,8 @@ async def test_list_endpoint_shape(client, _patch_agents_dir):
     sample = next(r for r in body if r["name"] == "alpha-agent")
     assert set(sample) == {
         "name", "description", "model", "tools_summary", "tool_count",
-        "hook_count", "source_file", "domain", "valid", "validation_errors",
+        "tool_chips", "hook_count", "source_file", "domain", "valid",
+        "validation_errors",
     }
     # source_file is a basename only — never an absolute path.
     assert "/" not in sample["source_file"] and "\\" not in sample["source_file"]

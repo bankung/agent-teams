@@ -130,6 +130,6 @@ Universal anti-patterns in root CLAUDE.md and [.claude/docs/lessons.md](.claude/
 
 - **Research-first:** non-trivial Data Analytics tasks open with a researcher spawn (Haiku) before the specialist. "Non-trivial" signals: unfamiliar industry-benchmark requirement, new BI platform, new db engine, regulatory change (PDPA / GDPR).
 - **Firecrawl-first for external fetch:** bi-analyst + dashboard-designer default to the `firecrawl` skill for vendor doc + industry benchmark fetching. WebFetch is fallback only.
-- **AC at task creation:** every Kanban task carries `acceptance_criteria` in the same POST call.
+- **AC discipline** → see CLAUDE.md + `/zb-task-create` (do not restate here).
 - **Schema-first discipline:** sql-optimizer + analytics-platform-integrator both refuse to proceed without schema visibility. "Show me the schema or stop" prevents 80% of analytics-team waste.
 - **Decision-first discipline:** bi-analyst + dashboard-designer both refuse to proceed without a clearly stated decision-link for the work. "What will the operator do with this?" prevents vanity-metric drift.

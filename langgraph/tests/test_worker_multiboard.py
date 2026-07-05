@@ -95,12 +95,16 @@ def test_eligibility_consent_null() -> None:
     assert multiboard.is_eligible(_proj(auto_run_consent_at=None)) is False
 
 
-def test_eligibility_tools_disabled() -> None:
-    assert multiboard.is_eligible(_proj(tools_config={"tools_enabled": False})) is False
+def test_eligibility_tools_disabled_still_eligible() -> None:
+    # #2707: tools_enabled no longer gates eligibility — it's the permission-gate
+    # capability switch (see test_permission_gate reject-when-disabled coverage).
+    assert multiboard.is_eligible(_proj(tools_config={"tools_enabled": False})) is True
 
 
-def test_eligibility_no_tools_config() -> None:
-    assert multiboard.is_eligible(_proj(tools_config=None)) is False
+def test_eligibility_no_tools_config_still_eligible() -> None:
+    # #2707: tools_enabled no longer gates eligibility — it's the permission-gate
+    # capability switch (see test_permission_gate reject-when-disabled coverage).
+    assert multiboard.is_eligible(_proj(tools_config=None)) is True
 
 
 def test_eligibility_inactive() -> None:
@@ -168,7 +172,7 @@ async def test_multiboard_tick_picks_second_project(
 
     poll_once_calls: list[dict] = []
 
-    async def fake_poll_once(client, graph_module, cfg, headers):
+    async def fake_poll_once(client, graph_module, cfg, headers, session_id_override=None):
         poll_once_calls.append({"pid": headers.get("X-Project-Id")})
 
     monkeypatch.setattr(worker, "_fetch_all_projects", fake_fetch_all)
@@ -333,7 +337,7 @@ async def test_multiboard_session_failure_no_crash(
 
     poll_once_calls: list[dict] = []
 
-    async def fake_poll_once(client, graph_module, cfg, headers):
+    async def fake_poll_once(client, graph_module, cfg, headers, session_id_override=None):
         # Capture the LANGGRAPH_SESSION_ID env at invocation time.
         import os
         poll_once_calls.append({
@@ -471,7 +475,20 @@ async def test_multiboard_poll_injects_project_id_into_state(
             "intermediate_results": {},
         }
 
-    graph_stub = SimpleNamespace(ainvoke=fake_ainvoke)
+    # #2664 — aget_state(created_at=None) => has_checkpoint False => the
+    # fresh-pickup clear in _poll_once is SKIPPED (this test asserts the
+    # initial_state project_id, not the clear); checkpointer stub for completeness.
+    async def _aget_state(config):
+        return SimpleNamespace(created_at=None)
+
+    async def _adelete_thread(thread_id):
+        return None
+
+    graph_stub = SimpleNamespace(
+        ainvoke=fake_ainvoke,
+        aget_state=_aget_state,
+        checkpointer=SimpleNamespace(adelete_thread=_adelete_thread),
+    )
     graph_module = SimpleNamespace(graph=graph_stub)
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -650,7 +667,7 @@ async def test_multiboard_starvation_unanswered_question_board_a_does_not_block_
 
     poll_once_calls: list[str] = []
 
-    async def fake_poll_once(client, graph_module, cfg, headers):
+    async def fake_poll_once(client, graph_module, cfg, headers, session_id_override=None):
         poll_once_calls.append(headers.get("X-Project-Id"))
 
     cancel_after = 1

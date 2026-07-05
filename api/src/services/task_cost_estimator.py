@@ -232,13 +232,33 @@ def estimate_task_cost(task: Any, runs: list[Any] | None = None) -> dict[str, An
 # ---------------------------------------------------------------------------
 
 
+# Kanban #2410: tasks.model_override is a Literal TIER ALIAS enum (see
+# ModelTierLiteral in schemas/task.py — 'haiku'/'sonnet'/'opus', 422 on any
+# other value at the API boundary). It carries none of the 'claude'/'gpt'/
+# 'gemini' substrings the provider-inference branch below looks for, so it
+# must never reach that branch: STEP 1 (worker.py:1758-1854 _resolve_auto_effort
+# + llm.py:315 resolve_model, both read only) confirmed the worker NEVER forces
+# a provider from the tier — 'opus' is exclusively a REASONING-EFFORT signal
+# (-> effort='high') layered on whichever provider/model the container's env
+# vars (LANGGRAPH_LLM_PROVIDER + ANTHROPIC_MODEL/OPENAI_MODEL/OLLAMA_MODEL/
+# GOOGLE_MODEL) already select — resolve_model() takes no task-derived args at
+# any of its 3 call sites. So a tier alias must forecast at the SAME env-
+# resolved provider/model the worker would actually spawn under, i.e. defer to
+# resolve_provider_model() exactly like the no-override path.
+_TIER_ALIASES = frozenset({"haiku", "sonnet", "opus"})
+
+
 def resolve_forecast_model(task: Any) -> tuple[str, str]:
     """Resolve (provider, model) for a PRE-run forecast.
 
-    `task.model_override` (TEXT, nullable) wins when set: the provider is
-    inferred from the string ('claude'->anthropic, 'gpt'->openai,
-    'gemini'->google), falling back to the env provider for anything else (e.g.
-    a bare tier name like 'opus'). When `model_override` is unset, defer to
+    `task.model_override` (TEXT, nullable) wins when set, EXCEPT a bare tier
+    alias ('haiku'/'sonnet'/'opus') defers entirely to `resolve_provider_model()`
+    (env-driven) — the worker only reads a tier alias as an effort-level signal,
+    never as a provider selector (Kanban #2410; see module comment above). A
+    non-tier override string (a full model name, e.g. 'claude-opus-4-8' or
+    'gpt-4o') keeps the existing substring inference ('claude'->anthropic,
+    'gpt'->openai, 'gemini'->google), falling back to the env provider for
+    anything else. When `model_override` is unset, defer to
     `resolve_provider_model()` (env-driven, same source the #944 done-flip
     estimator uses).
 
@@ -248,8 +268,10 @@ def resolve_forecast_model(task: Any) -> tuple[str, str]:
     """
     override = (getattr(task, "model_override", None) or "").strip()
     if override:
-        env_provider, _env_model = resolve_provider_model()
         m = override.lower()
+        if m in _TIER_ALIASES:
+            return resolve_provider_model()
+        env_provider, _env_model = resolve_provider_model()
         if "claude" in m:
             provider = "anthropic"
         elif "gpt" in m:

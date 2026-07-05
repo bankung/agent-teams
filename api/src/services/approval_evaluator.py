@@ -151,7 +151,6 @@ def _match_predicate(
     predicate_value: Any,
     question_text: str,
     options: list[str],
-    amount: float | None,
     task_context: dict[str, Any] | None,
 ) -> bool:
     """Evaluate a single match predicate. Unknown key fails the rule.
@@ -160,7 +159,10 @@ def _match_predicate(
     authored rules (a typo on case shouldn't silently miss). The amount
     predicates fail closed when the question has no parseable amount —
     consistent with "rule didn't match" rather than "rule matched against
-    None".
+    None". Amount is parsed lazily (only when an amount_usd_lt/gt predicate
+    is actually evaluated) rather than upfront by the caller — cheap either
+    way, but avoids the regex scan entirely for the common no-amount-
+    predicate group.
     """
     q_lower = question_text.lower()
     if predicate_key == "text_contains":
@@ -180,10 +182,12 @@ def _match_predicate(
             isinstance(s, str) and s.lower() in q_lower for s in predicate_value
         )
     if predicate_key == "amount_usd_lt":
+        amount = _extract_amount_usd(question_text)
         if amount is None or not isinstance(predicate_value, (int, float)):
             return False
         return amount < float(predicate_value)
     if predicate_key == "amount_usd_gt":
+        amount = _extract_amount_usd(question_text)
         if amount is None or not isinstance(predicate_value, (int, float)):
             return False
         return amount > float(predicate_value)
@@ -250,9 +254,8 @@ def _match_group(
     question_text = str(question_payload.get("question") or "")
     raw_options = question_payload.get("options")
     options = list(raw_options) if isinstance(raw_options, list) else []
-    amount = _extract_amount_usd(question_text)
     for key, value in match_dict.items():
-        if not _match_predicate(key, value, question_text, options, amount, task_context):
+        if not _match_predicate(key, value, question_text, options, task_context):
             return False
     return True
 

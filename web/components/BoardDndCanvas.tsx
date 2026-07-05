@@ -21,7 +21,7 @@ import {
   type DragEndEvent,
 } from "@dnd-kit/core";
 import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 
 import type { TaskRead } from "@/lib/api";
 import { TaskStatus, type TaskStatusValue } from "@/lib/constants";
@@ -54,6 +54,9 @@ type Props = {
   projectId?: number;
   // #2412 — non-terminal task ids; TaskCard gates the blocked chip against this set.
   blockingTaskIds?: Set<number>;
+  // Kanban #2703 — run-type toggle plumbing; forwarded to TaskCard.
+  onPatch?: (updated: TaskRead) => void;
+  onError?: (message: string) => void;
 };
 
 // #2122 N1 — derive the column-key→process_status map from the columns prop
@@ -68,7 +71,21 @@ export function buildColumnPs(columns: Column[]): Record<string, TaskStatusValue
   return map;
 }
 
-export function BoardDndCanvas({
+// #2699 F2+F4 — memo'd so a Board re-render that leaves every prop below
+// referentially/value-stable (e.g. a toast, a dialog, an SSE-driven
+// lastEventAt bump with no task-data change) skips this subtree entirely
+// instead of re-rendering with no drag in progress. Default shallow-compare
+// is correct for that case: every prop here is either a primitive or a
+// Board-side useMemo/useCallback that only changes identity when its own
+// inputs genuinely change (audited in the #2699 report).
+// Residual (tracked separately, out of this fix's scope): `tasks`/`grouped`
+// still get NEW array/Map identities on every genuine SSE-driven
+// setTasks(initialTasks) — even one carrying value-identical rows — since
+// Board's visibleTasks/grouped useMemo chain has no value-equality guard
+// upstream of `tasks` state. This memo does not (and isn't meant to) skip
+// that case; it only removes the callback-identity churn that used to
+// defeat any future memo regardless of whether `tasks` itself changed.
+function BoardDndCanvasImpl({
   columns,
   tasks,
   grouped,
@@ -83,6 +100,8 @@ export function BoardDndCanvas({
   onSameLaneReorder,
   projectId,
   blockingTaskIds,
+  onPatch,
+  onError,
 }: Props) {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -156,6 +175,8 @@ export function BoardDndCanvas({
               highlightedTaskId={highlightedTaskId}
               projectId={projectId}
               blockingTaskIds={blockingTaskIds}
+              onPatch={onPatch}
+              onError={onError}
             />
           );
         })}
@@ -163,3 +184,8 @@ export function BoardDndCanvas({
     </DndContext>
   );
 }
+
+// Exported under the original name so Board.tsx's next/dynamic import
+// (`.then((m) => m.BoardDndCanvas)`) and every existing test's next/dynamic
+// mock resolve unchanged.
+export const BoardDndCanvas = memo(BoardDndCanvasImpl);

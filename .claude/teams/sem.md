@@ -119,5 +119,5 @@ Universal anti-patterns in root CLAUDE.md and [.claude/docs/lessons.md](.claude/
 
 - **Research-first:** non-trivial SEM tasks open with a researcher spawn (Haiku) before the specialist. "Non-trivial" signals: new platform the team hasn't worked before, platform-policy update reference, new ad format, comparison decision (bidding strategy, attribution model).
 - **Firecrawl-first for external fetch:** sem-campaign-lead + all three platform specialists default to the `firecrawl` skill for ad-library / competitor / landing-page / SERP fetching. WebFetch is fallback only.
-- **AC at task creation:** every Kanban task carries `acceptance_criteria` in the same POST call.
+- **AC discipline** → see CLAUDE.md + `/zb-task-create` (do not restate here).
 - **Modular scaling:** if a single platform under platform-ads-coordinator grows large, recommend splitting out to a dedicated agent (e.g., linkedin-ads-specialist) in standards insights.

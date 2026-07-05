@@ -1,7 +1,6 @@
-"""Kanban #1217 / #1218 — digest template renderer unit tests.
+"""Kanban #1217 — digest template renderer unit tests.
 
 Covers render_subject, render_text, render_html (no DB needed — pure renderers).
-Kanban #1218 adds render_push_title + render_push_body tests.
 fetch_open_audit_flags is integration-tested via the digest router smoke test.
 """
 
@@ -11,8 +10,6 @@ import pytest
 
 from src.services.digest_template import (
     render_html,
-    render_push_body,
-    render_push_title,
     render_subject,
     render_text,
 )
@@ -118,79 +115,3 @@ def test_render_html_no_external_resources() -> None:
     assert "@import" not in html
 
 
-# ---------------------------------------------------------------------------
-# Kanban #1218 — render_push_title
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("count,expected", [
-    (0, "Agent-Teams digest - all clear"),
-    (1, "Agent-Teams digest - 1 flag"),
-    (5, "Agent-Teams digest - 5 flags"),
-])
-def test_render_push_title(count, expected) -> None:
-    assert render_push_title(count, "2026-05-22") == expected
-
-
-def test_render_push_title_is_short() -> None:
-    """Title should fit comfortably in a mobile notification (≤ 80 chars)."""
-    title = render_push_title(99, "2026-05-22")
-    assert len(title) <= 80
-
-
-def test_render_push_title_is_ascii_safe() -> None:
-    """Push title flows into ntfy X-Title HTTP header — must be pure ASCII (Kanban #1218)."""
-    for flag_count in (0, 1, 5, 10):
-        title = render_push_title(flag_count, "2026-05-22")
-        # Raises UnicodeEncodeError if any non-ASCII byte is present.
-        title.encode("ascii")
-
-
-# ---------------------------------------------------------------------------
-# Kanban #1218 — render_push_body
-# ---------------------------------------------------------------------------
-
-
-def _sample_flags(project_names: list[str]) -> list[dict]:
-    """Build minimal flag dicts for render_push_body testing."""
-    return [
-        {"id": i, "project": name, "title": f"flag-{i}", "streak": 1, "severity": "high", "verdict": "review"}
-        for i, name in enumerate(project_names)
-    ]
-
-
-def test_render_push_body_no_flags() -> None:
-    body = render_push_body([])
-    assert body == "All clear — no open flags."
-
-
-def test_render_push_body_single_project() -> None:
-    flags = _sample_flags(["proj-alpha"])
-    body = render_push_body(flags)
-    assert "proj-alpha (1)" in body
-    assert "Open flags:" in body
-
-
-def test_render_push_body_multiple_projects_shown() -> None:
-    flags = _sample_flags(["proj-a", "proj-a", "proj-b", "proj-c"])
-    body = render_push_body(flags, top_n=3)
-    assert "proj-a (2)" in body
-    assert "proj-b (1)" in body
-    assert "proj-c (1)" in body
-    assert "more" not in body  # exactly top_n projects, no overflow
-
-
-def test_render_push_body_overflow() -> None:
-    flags = _sample_flags(["p1", "p2", "p3", "p4", "p5"])
-    body = render_push_body(flags, top_n=3)
-    assert "p1 (1)" in body
-    assert "p2 (1)" in body
-    assert "p3 (1)" in body
-    # p4 and p5 are in the overflow suffix
-    assert "+2 more projects" in body
-
-
-def test_render_push_body_overflow_singular() -> None:
-    flags = _sample_flags(["p1", "p2", "p3", "p4"])
-    body = render_push_body(flags, top_n=3)
-    assert "+1 more project." in body

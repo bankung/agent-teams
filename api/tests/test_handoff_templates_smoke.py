@@ -21,6 +21,7 @@ is dev-tester's domain.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 
@@ -347,6 +348,30 @@ async def test_handoff_no_chain_loop(client, scaffold_cleanup) -> None:
     # Positive: the child exists and lacks a template pointer (this is the
     # state the guard establishes — necessary precondition for the negative).
     assert child["handoff_template_id"] is None, child
+
+    # Resolve the child's acceptance_criteria (copied from the template's
+    # ac_outline=["Done"], stored as status='pending') BEFORE the DONE-flip
+    # below — the #2765 (E1) server-side gate rejects process_status=5 while
+    # any AC item is still 'pending' or 'failed'. This precondition is
+    # incidental to what this test actually exercises (the chain-loop guard,
+    # asserted at the bottom); it must be satisfied so the DONE-flip itself
+    # doesn't 422 before the loop guard even gets exercised.
+    resp = await client.patch(
+        f"/api/tasks/{child_id}",
+        headers=headers,
+        json={
+            "acceptance_criteria": [
+                {
+                    "text": "Done",
+                    "status": "passed",
+                    "verified_by": "test_handoff_no_chain_loop",
+                    "verified_at": datetime.now(timezone.utc).isoformat(),
+                    "notes": "resolved by test fixture prior to DONE-flip (Kanban #2765 gate)",
+                }
+            ]
+        },
+    )
+    assert resp.status_code == 200, resp.text
 
     # PATCH the child to DONE — should NOT spawn a grandchild.
     resp = await client.patch(

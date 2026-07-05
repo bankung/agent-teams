@@ -55,6 +55,16 @@ ALL_TOOLS_LITERAL = "All tools"
 # Tool universe used across the real agent files (Read, Grep, Glob, Bash,
 # Write, Edit, WebFetch, WebSearch as of 2026-06-12). A tool name NOT in this
 # set is a WARNING, never an error — the tool universe drifts (contract §2).
+#
+# Kanban #1021 (dev-reviewer lockstep fix): extended to a SUPERSET of every
+# key in ``services.tool_risk.TOOL_RISK_TABLE`` — that module classifies a
+# wider tool vocabulary (PowerShell, TodoWrite, Skill, SendMessage,
+# AskUserQuestion, TaskStop) than this set originally covered, and a name the
+# risk classifier already knows should never trip this validator's
+# "unrecognized tool" WARNING. Enforced by
+# ``test_agent_tool_chips.test_risk_table_names_are_known_tools`` (no prod
+# import between the two modules — the test is the lockstep guard, not a
+# runtime dependency).
 KNOWN_TOOLS: frozenset[str] = frozenset(
     {
         "Read",
@@ -68,6 +78,12 @@ KNOWN_TOOLS: frozenset[str] = frozenset(
         "NotebookEdit",
         "Agent",
         "Task",
+        "PowerShell",
+        "TodoWrite",
+        "Skill",
+        "SendMessage",
+        "AskUserQuestion",
+        "TaskStop",
     }
 )
 
@@ -112,6 +128,20 @@ class AgentValidationResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class ToolChip(BaseModel):
+    """One tool-scope risk chip (Kanban #1021).
+
+    ``risk_class`` is one of the five classes documented in
+    ``services/tool_risk.py`` (``read-only`` / ``write-edit`` /
+    ``shell-or-destructive`` / ``external`` / ``always-safe``) — not
+    constrained to a ``Literal`` here so an unrecognized future class from
+    that module still serializes rather than 500ing the endpoint.
+    """
+
+    name: str
+    risk_class: str
+
+
 class AgentSummary(BaseModel):
     """One row in ``GET /api/agents`` (contract §1).
 
@@ -125,6 +155,12 @@ class AgentSummary(BaseModel):
       * ``tools_summary`` / ``tool_count`` — ``"All tools"`` + ``None`` when the
         ``tools`` key is absent or the literal ``"All tools"``; otherwise
         ``"N tools"`` + ``N`` for an explicit list.
+      * ``tool_chips`` — Kanban #1021. One ``{name, risk_class}`` entry per
+        parsed tool, FRONTMATTER ORDER preserved (no sorting); a single
+        pseudo-chip (``name="All tools"``, ``risk_class="shell-or-destructive"``)
+        when the ``tools`` key is absent or the ``"All tools"`` literal. See
+        ``services/tool_risk.py`` for the classification table. Additive —
+        does not replace ``tools_summary`` / ``tool_count``.
       * ``hook_count`` — number of hook matcher entries across all top-level
         event keys in ``hooks:`` (0 when absent). See the service for the exact
         counting rule.
@@ -141,6 +177,7 @@ class AgentSummary(BaseModel):
     model: ModelTierLiteral | None
     tools_summary: str
     tool_count: int | None
+    tool_chips: list[ToolChip]
     hook_count: int
     source_file: str
     domain: str
@@ -162,6 +199,31 @@ class AgentSpawn(BaseModel):
     project_name: str
     model: str | None
     at: str | None
+
+
+TrafficLightLiteral = Literal["green", "yellow", "red"]
+
+
+class AgentCostEstimate(BaseModel):
+    """Response for ``GET /api/agents/{name}/cost-estimate`` (Kanban #1020).
+
+    Estimated-basis (v1): built on ``tasks.estimated_cost_usd`` (the #944
+    done-flip heuristic captured at task close), NOT ``usage_events`` actuals
+    — see the router module docstring for why. All numeric fields are plain
+    ``float`` (rounded to 4dp), not the Decimal-as-string convention some
+    other endpoints use (#1688) — this is a fresh v1 surface with no existing
+    FE contract to match, so we keep it simple for the consumer.
+
+    ``avg_cost_per_spawn`` / ``projected_monthly_usd`` / ``vs_project_budget_pct``
+    are ``None`` when there is no costed history / no budget configured,
+    respectively (never a bare 0 standing in for "unknown").
+    """
+
+    avg_cost_per_spawn: float | None
+    spawn_count_last_30d: int
+    projected_monthly_usd: float | None
+    vs_project_budget_pct: float | None
+    traffic_light: TrafficLightLiteral
 
 
 class AgentDetail(AgentSummary):

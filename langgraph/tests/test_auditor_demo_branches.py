@@ -41,9 +41,12 @@ from state import AgentState
 # ---------------------------------------------------------------------------
 
 
-def test_auditor_retry_demo_first_invocation_returns_transient_error() -> None:
+def test_auditor_retry_demo_first_invocation_returns_transient_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """First-pass (audit_retry_count=0) returns halt_reason='transient_error'
     with empty final_result so the auditor's LLM classifies as AUTO_RESOLVE."""
+    monkeypatch.setenv("HITL_DEMO_ENABLED", "1")
     state: AgentState = {
         "task_id": 1001,
         "brief": "AUDITOR retry demo — simulate a recoverable transient error",
@@ -57,9 +60,12 @@ def test_auditor_retry_demo_first_invocation_returns_transient_error() -> None:
     assert len(result["messages"]) == 1
 
 
-def test_auditor_retry_demo_second_invocation_returns_clean() -> None:
+def test_auditor_retry_demo_second_invocation_returns_clean(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Retry (audit_retry_count=1) returns final_result='resolved on retry'
     + halt_reason=None so the auditor's LLM classifies as PASS."""
+    monkeypatch.setenv("HITL_DEMO_ENABLED", "1")
     state: AgentState = {
         "task_id": 1001,
         "brief": "AUDITOR retry demo — simulate a recoverable transient error",
@@ -72,10 +78,13 @@ def test_auditor_retry_demo_second_invocation_returns_clean() -> None:
     assert len(result["messages"]) == 1
 
 
-def test_auditor_retry_demo_retry_count_missing_treated_as_zero() -> None:
+def test_auditor_retry_demo_retry_count_missing_treated_as_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Defensive: a state dict that didn't carry audit_retry_count (e.g.
     first-ever invocation before the auditor stamped one) behaves like
     retry_count=0 — emits transient_error."""
+    monkeypatch.setenv("HITL_DEMO_ENABLED", "1")
     state: AgentState = {
         "task_id": 1001,
         "brief": "AUDITOR retry demo — first ever pass",
@@ -92,10 +101,13 @@ def test_auditor_retry_demo_retry_count_missing_treated_as_zero() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_auditor_escalate_demo_first_invocation_returns_ambiguous() -> None:
+def test_auditor_escalate_demo_first_invocation_returns_ambiguous(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Escalate demo on first pass (audit_retry_count=0) emits
     halt_reason='ambiguous' + a final_result that primes the auditor LLM
     toward an ESCALATE verdict."""
+    monkeypatch.setenv("HITL_DEMO_ENABLED", "1")
     state: AgentState = {
         "task_id": 1002,
         "brief": "AUDITOR escalate demo — operator-decision needed",
@@ -108,11 +120,14 @@ def test_auditor_escalate_demo_first_invocation_returns_ambiguous() -> None:
     assert len(result["messages"]) == 1
 
 
-def test_auditor_escalate_demo_retry_returns_clean() -> None:
+def test_auditor_escalate_demo_retry_returns_clean(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """After the operator picks retry_with_X, the auditor increments
     audit_retry_count + clears halt_reason → general_node re-fires with
     retry_count>=1 → demo emits clean final_result + halt_reason=None
     so the second-pass auditor PASSes."""
+    monkeypatch.setenv("HITL_DEMO_ENABLED", "1")
     state: AgentState = {
         "task_id": 1002,
         "brief": "AUDITOR escalate demo — operator-decision needed",

@@ -167,8 +167,24 @@ def _body(req: httpx.Request) -> dict[str, Any]:
 
 def _make_graph_module(ainvoke_impl) -> SimpleNamespace:
     """Stand-in for the imported `graph` module — exposes `.graph` whose
-    `ainvoke` is `ainvoke_impl` (a coroutine function)."""
-    stub_graph = SimpleNamespace(ainvoke=ainvoke_impl)
+    `ainvoke` is `ainvoke_impl` (a coroutine function).
+
+    #2664 — also stubs `aget_state` (the fresh-pickup clear in _poll_once calls
+    has_checkpoint -> compiled.aget_state). created_at=None => has_checkpoint
+    False => the clear is SKIPPED, so these no-checkpoint tests keep their exact
+    prior behavior. `checkpointer.adelete_thread` is a no-op stub for any test
+    that does reach the clear."""
+    async def _aget_state(config):
+        return SimpleNamespace(created_at=None)
+
+    async def _adelete_thread(thread_id):
+        return None
+
+    stub_graph = SimpleNamespace(
+        ainvoke=ainvoke_impl,
+        aget_state=_aget_state,
+        checkpointer=SimpleNamespace(adelete_thread=_adelete_thread),
+    )
     return SimpleNamespace(graph=stub_graph)
 
 

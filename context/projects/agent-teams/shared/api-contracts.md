@@ -486,7 +486,8 @@ In addition to the standard field-update semantics, the following **action-only 
   "next_task": TaskRead | null,
   "resume_tasks": [TaskRead],
   "pending_questions": [TaskRead],
-  "blocked_count": int
+  "blocked_count": int,
+  "gate_resume_tasks": [TaskRead]
 }
 ```
 
@@ -494,6 +495,7 @@ In addition to the standard field-update semantics, the following **action-only 
 - `resume_tasks` — tasks with `halt_reason IS NOT NULL` whose blocker is DONE (ready to re-run with resume_context).
 - `pending_questions` — active `interaction_kind IN ('question','decision')` tasks not yet DONE.
 - `blocked_count` — count of TODO/IN_PROGRESS tasks whose blocker is still active (not DONE).
+- `gate_resume_tasks` *(#2566)* — tasks whose async-HITL `task_gates` are ALL answered (`resolve_gate` flipped `process_status` 8→TODO, `halt_reason IS NULL`): **resume from `resume_context`, do NOT start fresh.** Predicate: ps=TODO + `run_mode` auto + blocker terminal/absent + scheduled-ok + `EXISTS(answered gate) AND NOT EXISTS(open gate)`. **Disjoint from `next_task`** — `next_task` excludes any task with an open/answered gate, so the two lanes partition the auto-TODO lane (an open-gate task is ps=8, in neither). Ordered like `next_task`. Consumed by runner #2531.
 
 No side effects.
 
@@ -553,5 +555,40 @@ Complementary to (not replacing) `langgraph/tools/permission_gate` (tier-based, 
 **Detail 200:** all of the above + `{raw_frontmatter: str (verbatim), full_description: str, spawns: [{task_id, project_id, project_name, model: str|null, at: str|null}]}` — spawns = cross-project scan of `tasks.subagent_models` JSONB (`@>` pre-filter + `jsonb_array_elements` LATERAL, parametrized `text()`, soft-deleted excluded, newest-first w/ `at`→updated_at COALESCE fallback, cap 20). `at` can be null on legacy rows — FE must guard. 404: unknown name, regex-violating name (`AGENT_NAME_RE.fullmatch` gate before any FS/DB access), and RESERVED names.
 
 **Route-order invariant:** FastAPI matches in REGISTRATION ORDER — the validation router's static `/agents/validate` registers before this router's `/{name}` in `main.py` (load-bearing); `RESERVED_AGENT_NAMES = {"validate"}` backstops it (reserved name → validator ERROR diagnostic + gallery-detail 404).
+
+### GET/PATCH /api/projects/{id}/agent-overrides (Kanban #1018, 2026-07-01)
+
+**Purpose:** per-project agent enable/disable + notes, **additive** alongside the #777 `agent_overrides` model-tier map (that column's shape / validators / spawn-precedence at `task.py:248` are UNTOUCHED). Enabled/notes live in a NEW `config.agent_settings` subkey (`{"<agent>": {"enabled": bool, "notes": str|null}}`); no migration (parity with the `enabled_roles` config-subkey precedent). Consumed by the project-settings "Agents" surface (#1018 FE), which overlays this onto the full roster from `GET /api/agents`.
+
+**Headers:** `X-Project-Id` required on both. Gate order: 400 missing header → 404 unknown/soft-deleted project → 400 header/path mismatch.
+
+**GET 200:** `{"agents": [{"name", "enabled", "model_override": haiku|sonnet|opus|null, "notes": str|null}], "lead_overrides": {}}` — sorted by name; an agent with NO override at all (absent from BOTH `agent_overrides` and `config.agent_settings`) is ABSENT from the array (FE defaults it to enabled). `lead_overrides` is a reserved key, always `{}` (#1024 scope).
+
+**PATCH 200:** body `{"agents": [{"name" REQUIRED, "enabled"?, "model_override"?, "notes"?}]}` (1..200 items) — per-agent partial UPSERT: each field independently omittable (omitted = leave unchanged); `model_override: null` clears the #777 tier; `enabled`/`notes` write to `config.agent_settings`. Both JSONB blobs read-modify-written in ONE commit (other agents' entries + other `config` keys preserved). Returns the same assembled shape (post-write). **422:** unknown agent name (validated against the live `.claude/agents` scan behind `GET /api/agents` — no hardcoded list), bad `model_override` enum, or bad body shape. Live-verified 2026-07-01 (happy round-trip + `config.standards` preservation + 4 negatives).
+
+### Async-HITL gates (`task_gates`) — Kanban #2564 (applied 2026-06-24, migration `0072_task_gates`)
+
+The async-HITL gate foundation (`design/async-hitl-gates.md` §4 + §7) — the "stuck"/HITL path of the Mode-A continuous runner. A gate is a sub-event of a work-task (an async HITL ask), NOT a board task. Three endpoints; all require the `X-Project-Id` header. Coexists with the legacy `/api/tasks/{id}/decide` flow — `blocked_by` semantics unchanged.
+
+**POST `/api/tasks/{task_id}/gates`** — open a gate (201 → `GateRead`).
+- Body: `{kind: 'question'|'decision', gate_tier: 'key'|'commit'|'decision'|'hitl'|'external', question_payload?: object}` (`question_payload` capped ~8KB serialized).
+- Effect (one txn): INSERT gate (status='open', server-allocated `seq`=MAX(seq)+1 per task; `(task_id,seq)` UNIQUE) + halt the work-task: `process_status=8` (HALTED_PENDING_USER) + `operator_gate=<gate_tier>` (`halted_at` auto-stamps).
+- Returns `{id, task_id, seq, kind, question_payload, status, answer, gate_tier, answered_by, answered_via, created_at, answered_at}`.
+- Errors: 404 task not found · 400 X-Project-Id mismatch · 422 bad body.
+
+**POST `/api/task-gates/{gate_id}/resolve`** — resolve a gate by its id (200 → `GateResolveResponse`).
+- Gate-id-keyed; distinct from the legacy task-keyed `/decide`.
+- Body: `{answer: <any JSON, non-null, ~4KB cap>, provenance: 'web'|'telegram', answered_by?: str}`.
+- Effect (one txn): stale-reject if the gate is not 'open' (idempotent **409**) → else write answer/answered_by/answered_via/answered_at + status='answered'; fold the answer into the work-task `resume_context` (keyed under `resume_context.answered_gates[<gate_id>]` + `last_answered_gate_id`); flip the work-task `process_status` 8→1 (TODO/actionable) AND clear `operator_gate` ONLY when the task's remaining open-gate count == 0.
+- Returns `{gate_id, task_id, process_status, open_gate_count_remaining, resume_context, resolved_at}`.
+- Errors: 404 gate not found · 400 X-Project-Id mismatch · 409 gate not open · 422 bad body.
+- Concurrency: multiple open gates per task are native; out-of-order answers bind by gate_id; the task becomes actionable only when open-gate-count → 0.
+
+**GET `/api/operator-gates/pending`** — unified pending-gate read (200 → `list[PendingGateItem]`).
+- Unions (i) open `task_gates` rows (`source='task_gate'`) + (ii) legacy operator-HITL tasks (`source='legacy_operator'`: `operator_gate IS NOT NULL` OR a pending `gate='operator'` AC item — the #2127 OR-rule), with (ii) **excluding** any task that already has an open gate (dedup — a gated task appears once). One shape every caller reads (§7 "two writers, one reader").
+- Query: `?limit=` (1..500, default 200; caps the COMBINED result; legacy rows starve when open gates ≥ limit — v0.9.0 revisit).
+- Element: `{source, task_id, title, process_status, gate_tier, gate_id?, seq?, kind?, question_payload?, created_at}` — gate_id/seq/kind/question_payload NULL for legacy rows.
+
+> Task B #2565 (future): opening a gate does NOT yet notify. The Telegram notify swap (`_fire_hitl_push` seam) + the getUpdates poller is Task B. Task A is model + resolve + unified read only.
 
 <!-- No endpoints documented yet. First endpoint goes above this line. -->

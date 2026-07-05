@@ -64,6 +64,7 @@ from hitl import (
     EngineCrashError,
     HITLError,
     InvalidAnswerError,
+    clear_checkpoint,
     has_checkpoint,
     resume_graph,
     validate_answer,
@@ -94,6 +95,32 @@ _HALT_REASON_MAX = 500
 # at startup, so tests can monkeypatch without a WorkerConfig roundtrip).
 _DEFAULT_TRANSIENT_RETRIES = 2
 _DEFAULT_RETRY_BACKOFF_SEC = 5.0
+
+
+def build_brief_with_handoff(task: dict, blocker_task: dict | None) -> str:
+    """Return the task brief, optionally enriched with the blocker's output.
+
+    Kanban #2556 — explicit cross-task context handoff.  When task B is
+    blocked_by task A and A is DONE, A's status_change_reason (its final
+    answer, already sanitized at write-time) is injected via a clearly
+    delimited block so the LLM can use A's output to answer B.
+
+    Pure function — no I/O.  Sanitizes the injected content through
+    sanitize_for_agent_context (redacts SQL DDL/DML, caps 500 chars).
+    """
+    base = task.get("description") or task.get("title") or ""
+    if (
+        task.get("blocked_by") is not None
+        and blocker_task is not None
+        and blocker_task.get("process_status") == STATUS_DONE
+    ):
+        out = sanitize_for_agent_context(blocker_task.get("status_change_reason"))
+        if out:
+            base = (
+                f"{base}\n\n--- Context from prerequisite task #{blocker_task['id']} ---\n"
+                f"{out}\n---"
+            )
+    return base
 
 
 def classify_exception(exc: BaseException) -> tuple[str, str]:
@@ -752,6 +779,35 @@ async def _poll_once(
         )
         return
 
+    # 3a) Kanban #2556 — explicit cross-task context handoff.  If this task has a
+    # blocked_by dependency, fetch the blocker's final answer so build_brief_with_handoff
+    # can inject it into the brief (first-invoke only; the brief is checkpointed on
+    # first invoke so retries/resumes don't double-inject).  Tolerate fetch failure
+    # gracefully — a missing blocker answer is better than a crashed task.
+    blocker_task: dict | None = None
+    if task.get("blocked_by") is not None:
+        blocker_id = task["blocked_by"]
+        try:
+            blocker_resp = await client.get(
+                f"{cfg.api_base}/api/tasks/{blocker_id}", headers=headers
+            )
+            if blocker_resp.status_code == 200:
+                blocker_task = blocker_resp.json()
+            else:
+                logger.warning(
+                    "cross-task handoff: failed to fetch blocker task %d (HTTP %d); "
+                    "proceeding without handoff context",
+                    blocker_id,
+                    blocker_resp.status_code,
+                )
+        except Exception:
+            logger.warning(
+                "cross-task handoff: exception fetching blocker task %d; "
+                "proceeding without handoff context",
+                blocker_id,
+                exc_info=True,
+            )
+
     # L16 (Kanban #1123) — sanitize halt_reason + status_change_reason BEFORE
     # they reach any agent prompt. These fields are operator-side free-form text
     # PATCHed by the UI / scripted clients; a compromised writer could plant a
@@ -763,7 +819,7 @@ async def _poll_once(
     # description content). See content_safety.py for the L17 sibling.
     initial_state: dict[str, Any] = {
         "task_id": task_id,
-        "brief": (task.get("description") or task.get("title") or ""),
+        "brief": build_brief_with_handoff(task, blocker_task),
         "assigned_role": task.get("assigned_role"),
         "messages": [],
         "intermediate_results": {},
@@ -790,6 +846,58 @@ async def _poll_once(
         "effort": resolved_effort,
     }
     config = {"configurable": {"thread_id": f"task-{task_id}"}}
+
+    # #2664 — a fresh next_task pickup (next-autorun guarantees process_status==TODO)
+    # MUST run from clean state. If a STALE checkpoint survives from a PRIOR run of this
+    # task (re-queued to TODO via drag / reset / PATCH process_status->TODO), clear it so
+    # the run honors current DB state (assigned_role etc.) instead of resuming the old graph.
+    # Cleared ONCE here, before the retry loop — the in-pickup transient-retry resume
+    # (below, _attempt>0) still resumes THIS pickup's own checkpoint. HITL resume runs via
+    # _resume_hitl_task (a different function) and is NOT affected.
+    #
+    # intense-review M1+WARN-1+R2 — guard the clear so a checkpointer/DB error here
+    # (transient asyncpg / adelete_thread failure) cannot freeze the task in IN_PROGRESS
+    # (we're past the IN_PROGRESS flip, before the guarded ainvoke retry loop). On failure
+    # we must NOT fall through to ainvoke: the stale checkpoint is still on disk, so passing
+    # initial_state would RESUME it (the exact #2664 stale-resume bug — assigned_role / state
+    # carried over + add_messages doubling), and a permanently-broken checkpointer would
+    # silently stale-resume every pickup behind only a log line. Instead PATCH BLOCKED +
+    # return (operator-visible + retryable once the checkpointer recovers; no stale-merged
+    # run). The happy-path clear is logged at INFO (routine re-queue) for the audit trail —
+    # the FE confirm is UX-only, not a server-side gate.
+    try:
+        if await has_checkpoint(compiled, task_id):
+            logger.info(
+                "task %d: stale checkpoint found on fresh next_task pickup; clearing (re-queue path)",
+                task_id,
+            )
+            await clear_checkpoint(compiled, task_id)
+    except Exception as exc:
+        logger.warning(
+            "task %d: failed to clear stale checkpoint; blocking "
+            "(retry on re-queue once checkpointer recovers)",
+            task_id,
+            exc_info=True,
+        )
+        # Mirror the post-retry-loop graph-error BLOCKED body (L975-985): two fields,
+        # process_status + halt_reason, in the retry-loop halt-taxonomy format
+        # {kind}:{short_class}: {ClassName}: {detail} (so a ':' tokenizer reads
+        # transient / checkpointer_clear / {ExcType} / detail) and the _HALT_REASON_MAX cap.
+        _clear_halt = (
+            f"transient:checkpointer_clear: {type(exc).__name__}: "
+            f"failed to clear stale checkpoint"
+        )[:_HALT_REASON_MAX]
+        await _patch_task(
+            client,
+            cfg,
+            headers,
+            task_id,
+            {
+                "process_status": STATUS_BLOCKED,
+                "halt_reason": _clear_halt,
+            },
+        )
+        return
 
     # Kanban #2136 — structured halt taxonomy + bounded transient retry.
     # LangGraph checkpoints make re-invocation safe (idempotent per thread_id).

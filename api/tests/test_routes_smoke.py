@@ -4544,3 +4544,63 @@ async def test_patch_project_unknown_team_returns_422_not_409(client) -> None:
         )
     finally:
         await client.delete(f"/api/projects/{project_id}")
+
+
+# Regression: Kanban #2704 — run_mode filter on list endpoints
+@pytest.mark.asyncio
+async def test_list_tasks_run_mode_filter(client) -> None:
+    """`?run_mode=auto_pickup` returns only auto_pickup rows; omitting run_mode
+    returns all rows; `?run_mode=bogus` returns 422."""
+    active = await client.get("/api/projects/by-name/agent-teams")
+    project_id = active.json()["id"]
+    headers = {"X-Project-Id": str(project_id)}
+
+    manual_task = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k2704 manual", "run_mode": "manual"},
+        headers=headers,
+    )
+    assert manual_task.status_code == 201, manual_task.text
+    manual_id = manual_task.json()["id"]
+
+    auto_task = await client.post(
+        "/api/tasks",
+        json={"project_id": project_id, "title": "k2704 auto_pickup", "run_mode": "auto_pickup"},
+        headers=headers,
+    )
+    assert auto_task.status_code == 201, auto_task.text
+    auto_id = auto_task.json()["id"]
+
+    try:
+        # POSITIVE: ?run_mode=auto_pickup returns only auto_pickup rows.
+        resp = await client.get(
+            "/api/tasks?run_mode=auto_pickup&limit=500", headers=headers
+        )
+        assert resp.status_code == 200, resp.text
+        ids = {t["id"] for t in resp.json()}
+        assert auto_id in ids, f"auto_pickup task id={auto_id} must appear in ?run_mode=auto_pickup"
+        assert manual_id not in ids, (
+            f"manual task id={manual_id} must NOT appear in ?run_mode=auto_pickup"
+        )
+        for t in resp.json():
+            assert t["run_mode"] == "auto_pickup", (
+                f"unexpected run_mode={t['run_mode']!r} in filtered response"
+            )
+
+        # CONTROL: omitting run_mode returns all rows (both ids present).
+        all_resp = await client.get("/api/tasks?limit=500", headers=headers)
+        assert all_resp.status_code == 200, all_resp.text
+        all_ids = {t["id"] for t in all_resp.json()}
+        assert manual_id in all_ids, "manual task must appear when run_mode is omitted"
+        assert auto_id in all_ids, "auto_pickup task must appear when run_mode is omitted"
+
+        # NEGATIVE: bogus run_mode value → 422.
+        bad_resp = await client.get(
+            "/api/tasks?run_mode=bogus", headers=headers
+        )
+        assert bad_resp.status_code == 422, (
+            f"?run_mode=bogus expected 422, got {bad_resp.status_code}: {bad_resp.text}"
+        )
+    finally:
+        await client.delete(f"/api/tasks/{auto_id}", headers=headers)
+        await client.delete(f"/api/tasks/{manual_id}", headers=headers)

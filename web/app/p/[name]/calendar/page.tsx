@@ -104,6 +104,7 @@ export default async function ProjectCalendarPage(props: Props) {
           month0={ym.month0}
           tasks={tasks}
           milestones={milestones}
+          project={project}
         />
       </div>
     </main>

@@ -66,6 +66,7 @@ from src.schemas.agent_metadata import (
     KNOWN_TOOLS,
     MODEL_TIERS,
 )
+from src.services.tool_risk import build_tool_chips
 
 logger = logging.getLogger(__name__)
 
@@ -768,6 +769,9 @@ def _summarize_one_file(
         "model": model,
         "tools_summary": tools_summary,
         "tool_count": tool_count,
+        # Kanban #1021: risk chips derived from the SAME structured tools value
+        # AgentDetail.tools already carries — see services/tool_risk.py.
+        "tool_chips": build_tool_chips(tools_structured),
         "hook_count": hook_count,
         "source_file": basename,
         "domain": _domain_for_name(name),

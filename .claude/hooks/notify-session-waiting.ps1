@@ -1,7 +1,8 @@
 # notify-session-waiting.ps1 — Claude Code Notification hook (Kanban #1937).
 # Fires when the Claude Code session emits a Notification event (idle / waiting
 # for user input at a permission prompt). Reads the active project context from
-# _runtime/lead_project_id.txt, pulls the current IN_PROGRESS task, and POSTs a
+# the per-session _runtime/lead_project_id_<session_id>.txt (#2692), pulls the
+# current IN_PROGRESS task, and POSTs a
 # push notification via POST /api/notifications/deliver so the web_push fan-out
 # (and/or local-file fallback) reaches the operator even when the terminal is not
 # in focus.
@@ -19,36 +20,43 @@
 $ErrorActionPreference = 'SilentlyContinue'   # never throw; we exit 0 on any error
 
 # ---------------------------------------------------------------------------
-# Step 1 — Resolve the bound project id
+# Step 1 — Read the Notification event from STDIN (once) — session_id + message
 # ---------------------------------------------------------------------------
 
-try {
-    $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
-    $projectIdFile = Join-Path $repoRoot '_runtime\lead_project_id.txt'
-
-    if (-not (Test-Path $projectIdFile)) { exit 0 }
-
-    $raw = (Get-Content -Raw -Path $projectIdFile -ErrorAction Stop).Trim()
-    $projectId = 0
-    if (-not [int]::TryParse($raw, [ref]$projectId) -or $projectId -le 0) { exit 0 }
-} catch { exit 0 }
-
-# ---------------------------------------------------------------------------
-# Step 2 — Read the Notification event from STDIN
-# ---------------------------------------------------------------------------
-
+$sessionId   = $null
 $hookMessage = ''
 try {
     $stdinRaw = [Console]::In.ReadToEnd()
     if ($stdinRaw -and $stdinRaw.Length -gt 4096) { $stdinRaw = $stdinRaw.Substring(0, 4096) }
     if ($stdinRaw) {
         $hookPayload = $stdinRaw | ConvertFrom-Json -ErrorAction Stop
+        if ($hookPayload.PSObject.Properties.Name -contains 'session_id') {
+            $sessionId = [string]$hookPayload.session_id
+            # Defense-in-depth (#2692 review MINOR-1/NIT-1): only UUID-shaped session
+            # ids; \z (not $) so a trailing newline can't slip past the anchor in PS.
+            if ($sessionId -notmatch '^[a-zA-Z0-9\-]{8,64}\z') { $sessionId = $null }
+        }
         if ($hookPayload.PSObject.Properties.Name -contains 'message') {
             $hookMessage = [string]$hookPayload.message
             if ($hookMessage.Length -gt 200) { $hookMessage = $hookMessage.Substring(0, 200) }
         }
     }
 } catch { <# best-effort; proceed with empty message #> }
+
+# ---------------------------------------------------------------------------
+# Step 2 — Resolve the bound project id PER SESSION (#2692). Miss -> exit 0.
+# (No global fallback: a global value could be another concurrent session's project.)
+# ---------------------------------------------------------------------------
+
+if (-not $sessionId) { exit 0 }
+try {
+    $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
+    $projectIdFile = Join-Path $repoRoot ("_runtime\lead_project_id_$sessionId.txt")
+    if (-not (Test-Path $projectIdFile)) { exit 0 }
+    $raw = (Get-Content -Raw -Path $projectIdFile -ErrorAction Stop).Trim()
+    $projectId = 0
+    if (-not [int]::TryParse($raw, [ref]$projectId) -or $projectId -le 0) { exit 0 }
+} catch { exit 0 }
 
 # ---------------------------------------------------------------------------
 # Step 3 — resolve the IN_PROGRESS task that anchors the notification

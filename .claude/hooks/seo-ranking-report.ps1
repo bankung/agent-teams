@@ -130,13 +130,21 @@ if (Test-Path $filePath) {
     Fail-Soft -WarnMsg "report file not found post-write: $filePath"
 }
 
-# Resolve project_id (best-effort) from _runtime/lead_project_id.txt --------
+# Resolve project_id (best-effort, cosmetic audit annotation only) ----------
+# This is an in-session PostToolUse hook, so resolve THIS session's per-session
+# binding from the payload session_id (#2692 invariant: a session never reads the
+# shared global — that global is the session-less Telegram poller's channel). The
+# session-less .sh twin has no session_id and legitimately reads the global instead.
+# Stays '?' when unresolved.
 $projectId = '?'
 try {
-    $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..') -ErrorAction Stop
-    $pidFile  = Join-Path $repoRoot '_runtime\lead_project_id.txt'
-    if (Test-Path $pidFile) {
-        $projectId = (Get-Content -Raw -Path $pidFile).Trim()
+    $sid = if ($payload.PSObject.Properties.Name -contains 'session_id') { [string]$payload.session_id } else { $null }
+    if ($sid -and $sid -match '^[a-zA-Z0-9\-]{8,64}\z') {
+        $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..') -ErrorAction Stop
+        $pidFile  = Join-Path $repoRoot ("_runtime\lead_project_id_$sid.txt")
+        if (Test-Path -LiteralPath $pidFile) {
+            $projectId = (Get-Content -Raw -LiteralPath $pidFile).Trim()
+        }
     }
 } catch {
     # silent — projectId stays '?'

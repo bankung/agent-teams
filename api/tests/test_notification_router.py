@@ -684,3 +684,112 @@ async def test_deliver_event_kind_forwarded_to_push_subscription_resolver(
     assert resolver_calls == [], (
         "Resolver must NOT be called when event_kind is omitted (backwards-compat)."
     )
+
+
+# ---------------------------------------------------------------------------
+# Kanban #2657 — fallback_on_empty=False suppresses the empty-target fallback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_deliver_fallback_on_empty_false_suppresses_file_and_history_row(
+    client, scaffold_cleanup, db_session, tmp_path
+) -> None:
+    """fallback_on_empty=False + no telegram target → NO TaskHistory NOTIFY row
+    and NO fallback .txt file written (Kanban #2657, AC-a).
+
+    Calls deliver() directly (not via the HTTP endpoint) so the flag can be
+    forwarded without needing an API body field.
+    """
+    from sqlalchemy import select as sa_select
+    from src.models.task import TaskHistory
+    from src.services.notification_router import deliver, NOTIFY_OP_CODE
+
+    # Project + task with no notification_targets anywhere.
+    proj = await _create_project(client, scaffold_cleanup, working_path=str(tmp_path))
+    task = await _create_task(client, proj["id"])
+
+    # Snapshot history row count before the call.
+    before_rows = (
+        await db_session.execute(
+            sa_select(TaskHistory).where(
+                TaskHistory.task_id == task["id"],
+                TaskHistory.operation == NOTIFY_OP_CODE,
+            )
+        )
+    ).scalars().all()
+    before_count = len(before_rows)
+
+    await deliver(
+        task_id=task["id"],
+        payload={"event": "test_2657"},
+        kind="telegram",
+        session=db_session,
+        fallback_on_empty=False,
+    )
+
+    # NEGATIVE: no new NOTIFY history row written.
+    after_rows = (
+        await db_session.execute(
+            sa_select(TaskHistory).where(
+                TaskHistory.task_id == task["id"],
+                TaskHistory.operation == NOTIFY_OP_CODE,
+            )
+        )
+    ).scalars().all()
+    assert len(after_rows) == before_count, (
+        f"Expected no new NOTIFY rows, got {len(after_rows) - before_count} new row(s): "
+        f"{[r.snapshot for r in after_rows[before_count:]]}"
+    )
+
+    # NEGATIVE: no fallback file written.
+    notifications_dir = tmp_path / "notifications"
+    files = list(notifications_dir.glob(f"{task['id']}-*.txt")) if notifications_dir.exists() else []
+    assert files == [], f"Expected no fallback file, found: {files}"
+
+
+@pytest.mark.asyncio
+async def test_deliver_default_true_still_writes_fallback_when_no_targets(
+    client, scaffold_cleanup, db_session, tmp_path
+) -> None:
+    """Regression: default deliver() (fallback_on_empty omitted/True) with no
+    resolvable target STILL writes the fallback file AND a NOTIFY history row
+    (Kanban #2657, AC-b — default-True path byte-unchanged).
+    """
+    from sqlalchemy import select as sa_select
+    from src.models.task import TaskHistory
+    from src.services.notification_router import deliver, NOTIFY_OP_CODE
+
+    proj = await _create_project(client, scaffold_cleanup, working_path=str(tmp_path))
+    task = await _create_task(client, proj["id"])
+
+    result = await deliver(
+        task_id=task["id"],
+        payload={"event": "regression_2657"},
+        kind="telegram",
+        session=db_session,
+        # fallback_on_empty intentionally omitted — tests the default=True path.
+    )
+
+    # POSITIVE: attempt list has the fallback entry.
+    attempts = result["attempts"]
+    assert len(attempts) == 1
+    assert attempts[0]["target"] is None
+    assert attempts[0]["ok"] is True
+    assert "wrote_local_fallback" in attempts[0]["detail"]
+
+    # POSITIVE: NOTIFY history row was written.
+    rows = (
+        await db_session.execute(
+            sa_select(TaskHistory).where(
+                TaskHistory.task_id == task["id"],
+                TaskHistory.operation == NOTIFY_OP_CODE,
+            )
+        )
+    ).scalars().all()
+    assert len(rows) == 1, f"Expected 1 NOTIFY row, got {len(rows)}"
+    assert rows[0].snapshot["fallback_reason"] == "no_targets_configured"
+
+    # POSITIVE: fallback file exists on disk.
+    files = list((tmp_path / "notifications").glob(f"{task['id']}-*.txt"))
+    assert len(files) == 1, f"Expected 1 fallback file, found: {files}"

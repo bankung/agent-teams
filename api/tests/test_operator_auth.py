@@ -105,7 +105,11 @@ def _reset_inactive_warn():
 
 
 def test_check_proof_inactive_allows_any_token(monkeypatch, tmp_path):
-    """Key UNSET -> OPERATOR for any token (fail-open), audit row written."""
+    """Key UNSET -> OPERATOR for any token (fail-open), NO audit row written.
+
+    AC1: when the gate is INACTIVE the audit file must NOT grow — inactive
+    passes carry no signal and every task PATCH would append noise.
+    """
     monkeypatch.delenv(_KEY_ENV, raising=False)
     audit = tmp_path / "audit.jsonl"
     monkeypatch.setattr(operator_auth, "_AUDIT_PATH", audit)
@@ -113,9 +117,50 @@ def test_check_proof_inactive_allows_any_token(monkeypatch, tmp_path):
     assert check_operator_proof(None) is OperatorDecision.OPERATOR
     assert check_operator_proof("anything") is OperatorDecision.OPERATOR
 
+    # AC1 negative assertion: the file must not have been created at all.
+    assert not audit.exists(), "inactive gate must not write any audit rows"
+
+
+def test_check_proof_inactive_no_audit_row(monkeypatch, tmp_path):
+    """AC1 explicit spy: _write_audit is NOT called when the gate is INACTIVE.
+
+    Complements the file-existence check above with a direct call-count assertion
+    so any future refactor that moves the guard inside _write_audit is also caught.
+    """
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    audit = tmp_path / "audit.jsonl"
+    monkeypatch.setattr(operator_auth, "_AUDIT_PATH", audit)
+
+    calls: list = []
+    original = operator_auth._write_audit
+    monkeypatch.setattr(
+        operator_auth, "_write_audit", lambda *a, **kw: calls.append((a, kw))
+    )
+    try:
+        check_operator_proof(None)
+        check_operator_proof("any-token")
+    finally:
+        monkeypatch.setattr(operator_auth, "_write_audit", original)
+
+    assert calls == [], f"_write_audit called {len(calls)} time(s) when gate inactive"
+
+
+def test_check_proof_active_audit_written(monkeypatch, tmp_path):
+    """AC2: when the gate is ACTIVE, operator-proof decisions ARE audited.
+
+    Both an allow (valid token) and a deny (wrong token) must produce a row.
+    """
+    monkeypatch.setenv(_KEY_ENV, "s3cret-token")
+    audit = tmp_path / "audit.jsonl"
+    monkeypatch.setattr(operator_auth, "_AUDIT_PATH", audit)
+
+    check_operator_proof("s3cret-token")   # allow
+    check_operator_proof("wrong-token")    # deny
+
     rows = [json.loads(line) for line in audit.read_text().splitlines()]
-    assert len(rows) == 2
-    assert all(r["decision"] == "operator" and r["gate_active"] is False for r in rows)
+    assert len(rows) == 2, f"expected 2 audit rows for active gate, got {len(rows)}"
+    assert rows[0]["decision"] == "operator" and rows[0]["gate_active"] is True
+    assert rows[1]["decision"] == "not_operator" and rows[1]["gate_active"] is True
 
 
 def test_check_proof_active_valid_token(monkeypatch, tmp_path):
@@ -346,5 +391,142 @@ async def test_patch_active_non_ac_field_no_token_200(
         )
         assert resp.status_code == 200, resp.text
         assert resp.json()["title"] == "renamed, no AC touched"
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+# ===========================================================================
+# Kanban #2697 — sets_gated_field flag (option b audit-noise reduction)
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    "sets_gated,token,expect_rows",
+    [
+        # Active + gated field + valid token -> 1 row (allow)
+        (True, "s3cret-token", 1),
+        # Active + gated field + wrong token -> 1 row (deny)
+        (True, "wrong-token", 1),
+        # Active + NON-gated PATCH -> 0 rows regardless of token
+        (False, "s3cret-token", 0),
+        (False, None, 0),
+        # Default (no kwarg == sets_gated_field=True) -> 1 row when active
+        # tested separately below (test_check_proof_default_still_audits)
+    ],
+)
+def test_check_proof_sets_gated_field_flag(
+    monkeypatch, tmp_path, sets_gated, token, expect_rows
+):
+    """AC (Kanban #2697): sets_gated_field=False suppresses audit; True still writes.
+
+    Gate INACTIVE always skips the write (separate test below).
+    """
+    monkeypatch.setenv(_KEY_ENV, "s3cret-token")
+    audit = tmp_path / "audit.jsonl"
+    monkeypatch.setattr(operator_auth, "_AUDIT_PATH", audit)
+
+    from src.services.operator_auth import check_operator_proof as cop
+
+    cop(token, sets_gated_field=sets_gated)
+
+    if expect_rows == 0:
+        assert not audit.exists() or audit.read_text().strip() == "", (
+            f"expected 0 audit rows for sets_gated={sets_gated}, got content"
+        )
+    else:
+        rows = [json.loads(l) for l in audit.read_text().splitlines() if l.strip()]
+        assert len(rows) == expect_rows
+
+
+def test_check_proof_inactive_no_audit_regardless_of_flag(monkeypatch, tmp_path):
+    """Gate INACTIVE -> no audit row even when sets_gated_field=True (existing guard)."""
+    monkeypatch.delenv(_KEY_ENV, raising=False)
+    audit = tmp_path / "audit.jsonl"
+    monkeypatch.setattr(operator_auth, "_AUDIT_PATH", audit)
+
+    from src.services.operator_auth import check_operator_proof as cop
+
+    cop("s3cret-token", sets_gated_field=True)
+    cop(None, sets_gated_field=False)
+
+    assert not audit.exists(), "inactive gate must not write any audit rows"
+
+
+def test_check_proof_default_still_audits_when_active(monkeypatch, tmp_path):
+    """Backward-compat: calling check_operator_proof(token) with NO flag still
+    audits when active — default sets_gated_field=True preserves the
+    require_operator_proof path for non-task gated routes."""
+    monkeypatch.setenv(_KEY_ENV, "s3cret-token")
+    audit = tmp_path / "audit.jsonl"
+    monkeypatch.setattr(operator_auth, "_AUDIT_PATH", audit)
+
+    from src.services.operator_auth import check_operator_proof as cop
+
+    cop("s3cret-token")  # no kwarg — uses default True
+
+    rows = [json.loads(l) for l in audit.read_text().splitlines() if l.strip()]
+    assert len(rows) == 1
+    assert rows[0]["decision"] == "operator"
+
+
+@pytest.mark.asyncio
+async def test_patch_active_non_gated_patch_no_audit_row(
+    client, scaffold_cleanup, monkeypatch, tmp_path
+):
+    """Gate ACTIVE + PATCH with only process_status (non-gated) -> 200, NO audit row.
+
+    Proves Kanban #2697 option-b: the frequent board PATCHes that never touch
+    AC verified_by produce zero noise in the audit file.
+    """
+    monkeypatch.setenv(_KEY_ENV, "s3cret-token")
+    audit = tmp_path / "audit.jsonl"
+    monkeypatch.setattr(operator_auth, "_AUDIT_PATH", audit)
+
+    project = await _create_project(client, scaffold_cleanup)
+    pid = project["id"]
+    try:
+        task = await _create_task(client, pid)
+        resp = await client.patch(
+            f"/api/tasks/{task['id']}",
+            headers={"X-Project-Id": str(pid)},
+            json={"status_change_reason": "moving to done"},
+        )
+        assert resp.status_code == 200, resp.text
+        # No audit row written — the PATCH did not attempt a gated field.
+        assert not audit.exists() or audit.read_text().strip() == "", (
+            "non-gated PATCH must not produce audit noise"
+        )
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+@pytest.mark.asyncio
+async def test_patch_active_gated_field_no_token_audit_row_written(
+    client, scaffold_cleanup, monkeypatch, tmp_path
+):
+    """Gate ACTIVE + PATCH with verified_by='operator' no token -> 403 AND audit row.
+
+    The audit fires on the gated-field attempt even though the route 403s —
+    the write happens before the HTTPException is raised.
+    """
+    monkeypatch.setenv(_KEY_ENV, "s3cret-token")
+    audit = tmp_path / "audit.jsonl"
+    monkeypatch.setattr(operator_auth, "_AUDIT_PATH", audit)
+
+    project = await _create_project(client, scaffold_cleanup)
+    pid = project["id"]
+    try:
+        task = await _create_task(client, pid)
+        resp = await client.patch(
+            f"/api/tasks/{task['id']}",
+            headers={"X-Project-Id": str(pid)},
+            json={"acceptance_criteria": _ac("operator")},
+        )
+        assert resp.status_code == 403, resp.text
+        # Audit row IS written (sets_gated_field=True because AC had a gated value).
+        rows = [json.loads(l) for l in audit.read_text().splitlines() if l.strip()]
+        assert len(rows) == 1
+        assert rows[0]["decision"] == "not_operator"
+        assert rows[0]["gate_active"] is True
     finally:
         await client.delete(f"/api/projects/{pid}")

@@ -21,7 +21,10 @@ import shutil
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
+import anyio
+import anyio.to_thread
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi import status as http_status
 from sqlalchemy import Integer, select
@@ -31,6 +34,7 @@ from sqlalchemy.sql import func
 from sqlalchemy.sql.elements import ClauseElement
 
 from src.constants import (  # TaskStatus.CANCELLED + TaskType.AUDIT used by stats
+    AGENT_ROLE_CODE,
     ProjectTeam,
     RecordStatus,
     TaskRunMode,
@@ -40,27 +44,39 @@ from src.constants import (  # TaskStatus.CANCELLED + TaskType.AUDIT used by sta
 from src.db import get_active_project_or_404, get_or_404, get_session
 from src.middleware.rate_limit import _projects_post_limit, limiter
 from src.models.project import Project
+from src.models.projects_audit import ProjectsAudit
 from src.models.session import Session as SessionModel
 from src.models.session import SessionRun
 from src.models.task import Task
+from src.models.usage_event import UsageEvent
 from src.schemas.project import (
+    AgentModelLiteral,
+    AgentOverrideItem,
+    AgentOverridesPatch,
+    AgentOverridesRead,
     KillProjectRequest,
     KillProjectResponse,
     PauseProjectRequest,
     PauseUnpauseResponse,
     ProjectCreate,
     ProjectGrantConsent,
+    ProjectAuditAction,
     ProjectRead,
+    ProjectStatsActualInteractiveCost,
     ProjectStatsCostUsage,
     ProjectStatsEntry,
     ProjectStatsEstimatedCost,
     ProjectStatsRunModeBreakdown,
     ProjectUpdate,
     ProgressStatsResponse,
+    ProjectsAuditEntry,
     ReviveProjectRequest,
     ReviveProjectResponse,
+    SpawnCheckResponse,
     UnpauseProjectRequest,
 )
+from src.schemas.agent_metadata import AGENT_NAME_RE
+from src.services.agent_validation import default_agents_dir, list_agents
 from src.services.budget_gate import reconcile_budget
 from src.services.kill_switch import kill_project, revive_project
 from src.services.operator_auth import OperatorDecision, require_operator_proof
@@ -181,18 +197,20 @@ async def list_projects_stats(
     process_status — it tells the user how their project's work is
     distributed across execution modes, not which tasks are still alive.
 
-    Query strategy (four-query stitch): one SELECT for the project list,
+    Query strategy (five-query stitch): one SELECT for the project list,
     one SELECT against `tasks` GROUP BY (project_id, process_status, run_mode)
     with `MAX(updated_at)` aggregate, one SELECT against `session_runs`
     JOIN `sessions` GROUP BY project_id summing cost/token totals (Kanban
-    #871), and one SELECT against `tasks` GROUP BY project_id summing
+    #871), one SELECT against `tasks` GROUP BY project_id summing
     `estimated_cost_usd / estimated_input_tokens / estimated_output_tokens`
-    (G1 — non-cancelled tasks with non-null estimated_cost_usd). Soft-deleted
+    (G1 — non-cancelled tasks with non-null estimated_cost_usd), and one
+    SELECT against `usage_events` GROUP BY project_id summing real interactive
+    cost/token totals (#2735 — Mode A hook-capture ledger). Soft-deleted
     tasks (`status=0`) and soft-deleted projects excluded at SQL;
-    `session_runs` / `sessions` carry no soft-delete column (per
-    db-schema.md: NO audit trigger on those tables) so no filter is needed
-    on the cost join. Python loop stitches the buckets onto the project
-    rows. No N+1: exactly four queries regardless of project count.
+    `session_runs` / `sessions` / `usage_events` carry no soft-delete column
+    (per db-schema.md: NO audit trigger on those tables) so no filter is needed
+    on the cost joins. Python loop stitches the buckets onto the project
+    rows. No N+1: exactly five queries regardless of project count.
     """
     # Query 1 — project list in canonical order.
     projects_stmt = (
@@ -290,7 +308,36 @@ async def list_projects_stats(
         est_cost_stmt = est_cost_stmt.where(Task.project_id == project_id)
     est_cost_rows = (await session.execute(est_cost_stmt)).all()
 
-    # Stitch: per-project all-zero buckets; fold agg_rows + cost_rows + est_cost_rows
+    # Query 5 (#2735) — per-project real interactive cost aggregate from usage_events.
+    # usage_events is append-only with NO soft-delete column; the Project JOIN scopes to
+    # active projects only. Rows with project_id IS NULL drop out of the inner join
+    # (correct — unattributable events are not per-project). Direct project_id filter
+    # (no session hop needed — unlike session_runs).
+    # shortcut: SUM over usage_events GROUP BY project_id, ix_usage_events_project_id
+    # index exists (model __table_args__) — hash-agg on the index, fine at any scale;
+    # upgrade: no action needed (already indexed).
+    actual_cost_stmt = (
+        select(
+            UsageEvent.project_id,
+            func.coalesce(func.sum(UsageEvent.cost_usd), 0).label("sum_cost_usd"),
+            func.coalesce(func.sum(UsageEvent.input_tokens), 0).label(
+                "sum_input_tokens"
+            ),
+            func.coalesce(func.sum(UsageEvent.output_tokens), 0).label(
+                "sum_output_tokens"
+            ),
+        )
+        .join(Project, Project.id == UsageEvent.project_id)
+        .where(Project.status == RecordStatus.ACTIVE)
+        .group_by(UsageEvent.project_id)
+    )
+    if project_id is not None:
+        actual_cost_stmt = actual_cost_stmt.where(
+            UsageEvent.project_id == project_id
+        )
+    actual_cost_rows = (await session.execute(actual_cost_stmt)).all()
+
+    # Stitch: per-project all-zero buckets; fold agg_rows + cost_rows + est_cost_rows + actual_cost_rows
     by_id: dict[int, dict] = {
         p.id: {
             "counts": {str(code): 0 for code in TaskStatus.ALL},
@@ -307,6 +354,12 @@ async def list_projects_stats(
             },
             # G1 — zero-filled default; mirrors cost_usage "always-emit-all-keys" contract
             "estimated_cost": {
+                "total_cost_usd": Decimal("0"),
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
+            },
+            # #2735 — zero-filled default; mirrors estimated_cost "always-emit-all-keys" contract
+            "actual_interactive_cost": {
                 "total_cost_usd": Decimal("0"),
                 "total_input_tokens": 0,
                 "total_output_tokens": 0,
@@ -377,6 +430,21 @@ async def list_projects_stats(
         ec["total_input_tokens"] = int(sum_estimated_input_tokens)
         ec["total_output_tokens"] = int(sum_estimated_output_tokens)
 
+    # Fold the #2735 actual interactive cost aggregate (paranoia-tier skip mirrors est_cost fold above).
+    for (
+        project_id,
+        sum_cost_usd,
+        sum_input_tokens,
+        sum_output_tokens,
+    ) in actual_cost_rows:
+        bucket = by_id.get(project_id)
+        if bucket is None:
+            continue
+        ac = bucket["actual_interactive_cost"]
+        ac["total_cost_usd"] = sum_cost_usd
+        ac["total_input_tokens"] = int(sum_input_tokens)
+        ac["total_output_tokens"] = int(sum_output_tokens)
+
     return [
         ProjectStatsEntry(
             id=p.id,
@@ -389,6 +457,9 @@ async def list_projects_stats(
             last_activity_at=by_id[p.id]["last_activity_at"],
             cost_usage=ProjectStatsCostUsage(**by_id[p.id]["cost_usage"]),
             estimated_cost=ProjectStatsEstimatedCost(**by_id[p.id]["estimated_cost"]),
+            actual_interactive_cost=ProjectStatsActualInteractiveCost(
+                **by_id[p.id]["actual_interactive_cost"]
+            ),
         )
         for p in projects
     ]
@@ -554,6 +625,336 @@ async def get_project_progress_stats(
     )
 
 
+# ---------------------------------------------------------------------------
+# Kanban #1018 (2026-07-01) — per-project agent enable/disable + notes.
+#
+# ADDITIVE alongside #777 `agent_overrides` (tier map) — that column's shape,
+# validators, and spawn-precedence convention (task.py:248 comment) are
+# UNTOUCHED by this feature. See the schema module docstring above
+# `AgentOverrideItem` for the full design.
+# ---------------------------------------------------------------------------
+
+
+def _assemble_agent_overrides(project: Project) -> AgentOverridesRead:
+    """Union `agent_overrides` (tier) + `config.agent_settings` (enabled/notes).
+
+    Pure function of the two JSONB blobs already on the ORM instance — no I/O.
+    Sorted by name asc. An agent absent from BOTH sources never enters the
+    union (per contract: "no override at all = absent from the array").
+
+    Kanban #1018 M2 (code review): `agent_overrides` (the #777 tier map) is
+    value-tolerant storage — NO DB CHECK on its values, and the write-path
+    Literal gate can tighten/drift over time (legacy rows, hand edits, direct
+    migrations). A tier string outside the CURRENT `AgentModelLiteral` enum
+    would otherwise raise a Pydantic ValidationError when constructing
+    `AgentOverrideItem` below — a 500 on a READ endpoint. Normalize any
+    out-of-enum value to None here, mirroring this file's existing
+    "value-tolerant on read, strict on write" convention (see
+    `ProjectRead.tools_config` / `ProjectRead.approval_policies`). The WRITE
+    path (`AgentOverridePatchItem.model_override: AgentModelLiteral | None`)
+    is untouched — still strict, 422 on a bad tier at the boundary.
+    """
+    tiers: dict[str, str] = project.agent_overrides or {}
+    settings: dict[str, Any] = (project.config or {}).get("agent_settings") or {}
+    valid_tiers = set(AgentModelLiteral.__args__)  # {"haiku", "sonnet", "opus"}
+
+    names = sorted(set(tiers) | set(settings))
+    agents = []
+    for name in names:
+        entry = settings.get(name) or {}
+        raw_tier = tiers.get(name)
+        agents.append(
+            AgentOverrideItem(
+                name=name,
+                enabled=entry.get("enabled", True),
+                model_override=raw_tier if raw_tier in valid_tiers else None,
+                notes=entry.get("notes"),
+            )
+        )
+    return AgentOverridesRead(agents=agents, lead_overrides={})
+
+
+@router.get("/{project_id}/agent-overrides", response_model=AgentOverridesRead)
+async def get_project_agent_overrides(
+    project_id: int,
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+) -> AgentOverridesRead:
+    """Unified per-agent override view: enable/disable + notes + model tier (Kanban #1018).
+
+    Gate order mirrors the sibling `/progress-stats` / `/pl` endpoints:
+    400 missing X-Project-Id header -> 404 unknown/soft-deleted project ->
+    400 header/path project_id mismatch.
+
+    Assembled by unioning agent names present in `agent_overrides` (the #777
+    tier map, untouched) and `config.agent_settings` (enabled/notes, this
+    feature's new subkey). An agent with no override at all is simply absent
+    from `agents` — the FE overlays this onto the full gallery list from
+    GET /api/agents. `lead_overrides` is a reserved key (Kanban #1024 scope),
+    always `{}` here.
+    """
+    # 404 first (unknown/soft-deleted project is invisible regardless of header
+    # match) — mirrors get_or_404's ordering; the project must exist before we
+    # can even ask whether it matches the session header.
+    project = await get_active_project_or_404(
+        session, project_id, detail=f"Project id={project_id} not found"
+    )
+    # 400 cross-project mismatch — parity with /progress-stats.
+    if project_id != session_project_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"X-Project-Id header {session_project_id} does not match "
+                f"path project_id {project_id}"
+            ),
+        )
+    return _assemble_agent_overrides(project)
+
+
+@router.patch("/{project_id}/agent-overrides", response_model=AgentOverridesRead)
+async def patch_project_agent_overrides(
+    project_id: int,
+    payload: AgentOverridesPatch,
+    x_actor: str | None = Header(default=None, alias="X-Actor"),
+    session_project_id: int = Depends(require_project_id_header),
+    session: AsyncSession = Depends(get_session),
+) -> AgentOverridesRead:
+    """Per-agent UPSERT (merge, not whole-dict replace) of enable/notes/tier (Kanban #1018).
+
+    Same gate order as the GET sibling. For each entry: `name` MUST be a real
+    installed agent — validated by calling the SAME `list_agents()` service
+    that backs GET /api/agents (no re-implementation / no hardcoded name
+    list); an unknown name -> 422 naming the offending value.
+    `model_override`'s enum is enforced by `AgentModelLiteral` at the Pydantic
+    boundary (422 before this handler runs).
+
+    Apply semantics per entry (true partial upsert):
+      - model_override present & non-null -> set agent_overrides[name]
+      - model_override present & null     -> clear agent_overrides[name]
+      - model_override omitted            -> leave agent_overrides[name] unchanged
+      - enabled / notes present           -> set config.agent_settings[name].{field}
+      - enabled / notes omitted           -> leave that field unchanged
+
+    Both JSONB blobs are read-modify-written in ONE commit; other agents'
+    entries and other `config` keys (`standards`, `enabled_roles`, ...) are
+    never dropped.
+
+    Kanban #2768: a per-agent delta of what ACTUALLY changed (comparing old
+    vs new value for enabled/tier/notes, not merely "field was present in the
+    request") is captured into a `projects_audit` row (action='agent_config')
+    in the SAME commit as the config write. `X-Actor` mirrors the kill/pause
+    endpoints' stamp convention (default 'operator', truncated 200 chars). A
+    PATCH that changes nothing effective (values already matched, or every
+    entry was itself a no-op) writes NO audit row.
+    """
+    project = await get_active_project_or_404(
+        session, project_id, detail=f"Project id={project_id} not found"
+    )
+    if project_id != session_project_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"X-Project-Id header {session_project_id} does not match "
+                f"path project_id {project_id}"
+            ),
+        )
+
+    # Validate every name against the SAME scan that backs GET /api/agents —
+    # reused, not re-implemented (per task brief). One filesystem scan for the
+    # whole batch (not per-entry) since list_agents() is a full-directory read.
+    agents_dir = default_agents_dir(Path(get_settings().repo_root))
+    known_rows = await anyio.to_thread.run_sync(lambda: list_agents(agents_dir))
+    known_names = {row["name"] for row in known_rows}
+    for item in payload.agents:
+        if item.name not in known_names:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown agent {item.name!r}; not found in the agent gallery",
+            )
+
+    # Read-modify-write BOTH blobs from the CURRENT row state (not a stale
+    # copy) so concurrent unrelated PATCHes in the same request don't collide.
+    tiers: dict[str, str] = dict(project.agent_overrides or {})
+    config: dict[str, Any] = dict(project.config or {})
+    settings: dict[str, dict[str, Any]] = dict(config.get("agent_settings") or {})
+
+    # #2768: per-agent change delta — {"<agent>": {"<field>": {"from": X, "to": Y}}}.
+    # Built by comparing the value BEFORE this item's mutation to the value
+    # AFTER, so a field that's "present in the request" but equal to the
+    # current value (e.g. re-sending enabled=true when already true) is
+    # correctly excluded — the delta reflects EFFECTIVE change, not request
+    # shape. Spawn-precedence logic (#777 tier map) is untouched; this block
+    # only observes reads/writes already happening above.
+    changes: dict[str, dict[str, dict[str, Any]]] = {}
+    for item in payload.agents:
+        # exclude_unset distinguishes "field omitted" from "field explicitly
+        # null" per entry — the wire contract's true-partial-upsert semantics
+        # (mirrors the file's existing PATCH exclude_unset discipline).
+        fields_set = item.model_dump(exclude_unset=True)
+        field_changes: dict[str, dict[str, Any]] = {}
+
+        if "model_override" in fields_set:
+            old_tier = tiers.get(item.name)
+            if item.model_override != old_tier:
+                field_changes["tier"] = {"from": old_tier, "to": item.model_override}
+            if item.model_override is None:
+                tiers.pop(item.name, None)
+            else:
+                tiers[item.name] = item.model_override
+
+        if "enabled" in fields_set or "notes" in fields_set:
+            entry = dict(settings.get(item.name) or {})
+            if "enabled" in fields_set:
+                old_enabled = entry.get("enabled", True)
+                if item.enabled != old_enabled:
+                    field_changes["enabled"] = {"from": old_enabled, "to": item.enabled}
+                entry["enabled"] = item.enabled
+            if "notes" in fields_set:
+                old_notes = entry.get("notes")
+                if item.notes != old_notes:
+                    field_changes["notes"] = {"from": old_notes, "to": item.notes}
+                entry["notes"] = item.notes
+            settings[item.name] = entry
+
+        if field_changes:
+            changes[item.name] = field_changes
+
+    config["agent_settings"] = settings
+    project.agent_overrides = tiers
+    project.config = config
+    project.updated_at = func.now()
+
+    if changes:
+        actor = (x_actor or "operator").strip()[:200] or "operator"
+        session.add(
+            ProjectsAudit(
+                project_id=project_id,
+                actor=actor,
+                action="agent_config",
+                reason=None,
+                drain_summary={"changes": changes},
+            )
+        )
+
+    await session.commit()
+    await session.refresh(project)
+    return _assemble_agent_overrides(project)
+
+
+@router.get("/{project_id}/audit-log", response_model=list[ProjectsAuditEntry])
+async def get_project_audit_log(
+    project_id: int,
+    limit: int = Query(default=50, ge=1, le=200),
+    action: ProjectAuditAction | None = Query(default=None),
+    session: AsyncSession = Depends(get_session),
+) -> list[Any]:
+    """Read the `projects_audit` ledger for one project (Kanban #2768).
+
+    Covers every action in `PROJECT_AUDIT_ACTIONS` (kill/revive/pause/unpause/
+    pause_override/agent_config) — this is a generic read over the whole
+    table, not agent_config-specific. Rows ordered `created_at DESC` (newest
+    first); the existing `ix_projects_audit_project_created` index
+    (project_id, created_at DESC) serves this query directly.
+
+    `action` is validated at the Pydantic boundary via the same
+    `ProjectAuditAction` Literal the row-write endpoints use — an unknown
+    value 422s before this handler runs. `limit` defaults 50, capped at 200.
+    """
+    await get_active_project_or_404(
+        session, project_id, detail=f"Project id={project_id} not found"
+    )
+    stmt = (
+        select(ProjectsAudit)
+        .where(ProjectsAudit.project_id == project_id)
+        .order_by(ProjectsAudit.created_at.desc())
+        .limit(limit)
+    )
+    if action is not None:
+        stmt = stmt.where(ProjectsAudit.action == action)
+    rows = (await session.execute(stmt)).scalars().all()
+    return list(rows)
+
+
+# ---------------------------------------------------------------------------
+# Kanban #2769 — GET /api/projects/{id}/spawn-check (read-only spawn-gate
+# authority). Backend counterpart to a Lead-side PreToolUse hook (built
+# separately) that decides allow/deny for an `Agent` tool spawn BEFORE it
+# fires. Evaluates the two existing per-project spawn gates that were
+# previously Lead-discipline-only, now runtime-enforced here:
+#   - config.enabled_roles (#7)   — int[] whitelist of TaskRole codes.
+#   - config.agent_settings (#1018) — per-agent {"enabled": bool} toggle.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{project_id}/spawn-check", response_model=SpawnCheckResponse)
+async def get_project_spawn_check(
+    project_id: int,
+    agent: str = Query(...),
+    session: AsyncSession = Depends(get_session),
+) -> SpawnCheckResponse:
+    """Decide allow/deny for an Agent-tool spawn of `agent` on this project.
+
+    404 on missing/soft-deleted project (active-only, mirrors every sibling
+    read in this router). 422 on a malformed `agent` value (same
+    `AGENT_NAME_RE` traversal guard as `/api/agents/{name}` — blocks
+    path-traversal-shaped input before it reaches config lookups).
+
+    Gate order (FIRST deny wins):
+      a. AGENT gate (#1018) — `config.agent_settings[agent].enabled is False`
+         denies regardless of role. Only an EXPLICIT `false` denies; absent /
+         `None` / `true` all pass (backfill-safe default = enabled).
+      b. ROLE gate (#7) — `config.enabled_roles` is a non-null whitelist AND
+         `agent` maps to a known `TaskRole` code AND that code is NOT in the
+         whitelist. `config.enabled_roles is None` (absent) = unrestricted;
+         an unmapped agent (no TaskRole code — cross-cutting utility, see
+         `AGENT_ROLE_CODE` in constants.py) always passes this gate.
+      c. else allowed — reason "allowed".
+
+    Backfill-safe by construction: `project.config` may be `None`, `{}`, or
+    missing either subkey entirely — every read uses `.get(..., default)` so
+    a project with zero config touches allows every agent.
+    """
+    if not AGENT_NAME_RE.fullmatch(agent):
+        raise HTTPException(status_code=422, detail=f"Malformed agent name {agent!r}")
+
+    project = await get_active_project_or_404(
+        session, project_id, detail=f"Project id={project_id} not found"
+    )
+
+    config: dict[str, Any] = project.config or {}
+    enabled_roles: list[int] | None = config.get("enabled_roles")
+    agent_settings: dict[str, Any] = config.get("agent_settings") or {}
+    role_code: int | None = AGENT_ROLE_CODE.get(agent)
+
+    if agent_settings.get(agent, {}).get("enabled") is False:
+        return SpawnCheckResponse(
+            allowed=False,
+            reason=(
+                f"agent {agent!r} is disabled for this project "
+                "(agent_settings.enabled=false)"
+            ),
+            role_code=role_code,
+            agent=agent,
+        )
+
+    if (
+        enabled_roles is not None
+        and role_code is not None
+        and role_code not in enabled_roles
+    ):
+        return SpawnCheckResponse(
+            allowed=False,
+            reason=(
+                f"role {role_code} ({agent}) not in project enabled_roles "
+                f"{sorted(enabled_roles)}"
+            ),
+            role_code=role_code,
+            agent=agent,
+        )
+
+    return SpawnCheckResponse(allowed=True, reason="allowed", role_code=role_code, agent=agent)
+
+
 @router.get(
     "/active",
     responses={
@@ -670,6 +1071,15 @@ async def create_project(
         # an explicit null from the client opts out (no modal). Mirror effort_mode
         # passthrough exactly.
         "cost_forecast_threshold_usd": payload.cost_forecast_threshold_usd,
+        # Kanban #951 — per-project budget caps. Plain nullable NUMERIC(10,2),
+        # default None = unlimited; PATCH already passed these through via its
+        # generic model_dump(exclude_unset=True) path, but POST silently
+        # dropped them (schema declared + validated, handler never wrote them
+        # to `data` — Kanban #1020 fix-round finding). Mirror effort_mode /
+        # cost_forecast_threshold_usd passthrough exactly.
+        "budget_daily_usd": payload.budget_daily_usd,
+        "budget_monthly_usd": payload.budget_monthly_usd,
+        "budget_total_usd": payload.budget_total_usd,
     }
     if payload.agent_overrides is not None:
         data["agent_overrides"] = payload.agent_overrides

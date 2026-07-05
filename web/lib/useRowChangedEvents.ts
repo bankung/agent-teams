@@ -5,9 +5,14 @@
 import { useEffect, useRef, useState } from "react";
 
 export type RowChangedEvent = {
-  table: "tasks" | "projects";
-  op: "insert" | "update" | "delete";
-  id: number;
+  // #1019 — "agents" is a filesystem signal (.claude/agents/ changed on disk),
+  // not a DB row: op is "changed" (not insert/update/delete) and id/project_id
+  // are absent. Routed only through WildcardSSEContext's onAgentsChange today;
+  // useRowChangedEvents (the projectId-scoped hook) has no agents callback —
+  // Board.tsx's per-project connection has no use for a filesystem-wide signal.
+  table: "tasks" | "projects" | "agents";
+  op: "insert" | "update" | "delete" | "changed";
+  id?: number;
   // project_id is omitted on `projects`-table events (per backend contract).
   project_id?: number;
   // `ts` is opaque — Postgres `now()::text`, NOT ISO-8601. Treat as a hint

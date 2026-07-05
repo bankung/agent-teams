@@ -114,16 +114,9 @@ The design: `assigned_role=NULL` signals that this task started with the `genera
 - **Forgetting escalation protocol** — when spawning `general`, include: "If during execution you discover this is squarely in [specialist]'s domain, escalate immediately."
 - **Letting `general` write to `shared/*`** — they propose; Lead applies. They write to `general/` or `_scratch/` only.
 
-## Task creation discipline (inherited from dev team)
+## Task creation discipline
 
-When Lead creates a task via `POST /api/tasks`, `acceptance_criteria` **must be in the same curl call body** — never create-then-patch-later. Before writing the curl command, draft at least 3 ACs.
-
-AC format:
-```json
-"acceptance_criteria": [
-  {"text": "...", "status": "pending", "verified_by": null, "verified_at": null, "notes": null}
-]
-```
+AC discipline → see CLAUDE.md + `/zb-task-create` (do not restate the JSON shape here). No general-team-specific AC variant.
 
 ## Reference files (load on demand)
 

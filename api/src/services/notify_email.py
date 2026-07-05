@@ -135,24 +135,28 @@ def send_email(
             error=f"SMTPAuthenticationError({exc.smtp_code})",
         )
     except smtplib.SMTPException as exc:
-        logger.warning("notify_email: smtp_error to=%s err=%r", to, exc)
+        _smtp_code = getattr(exc, "smtp_code", None)
+        logger.warning(
+            "notify_email: smtp_error to=%s err_type=%s code=%s",
+            to, type(exc).__name__, _smtp_code,
+        )
         return SendResult(
             ok=False,
             detail=f"smtp_error: {type(exc).__name__}",
-            error=repr(exc),
+            error=type(exc).__name__,
         )
     except OSError as exc:
         # Covers ConnectionRefusedError, TimeoutError, socket errors, etc.
-        logger.warning("notify_email: network_error to=%s err=%r", to, exc)
+        logger.warning("notify_email: network_error to=%s err_type=%s", to, type(exc).__name__)
         return SendResult(
             ok=False,
             detail=f"network_error: {type(exc).__name__}",
-            error=repr(exc),
+            error=type(exc).__name__,
         )
     except Exception as exc:  # noqa: BLE001 — docstring contract: MUST NOT raise
-        logger.warning("notify_email: unexpected_error to=%s err=%r", to, exc)
+        logger.warning("notify_email: unexpected_error to=%s err_type=%s", to, type(exc).__name__)
         return SendResult(
             ok=False,
             detail=f"unexpected_error: {type(exc).__name__}",
-            error=repr(exc),
+            error=type(exc).__name__,
         )

@@ -127,7 +127,7 @@ async def digest_optout(
     except BadData as exc:
         # SignatureExpired and BadSignature are both BadData subclasses.
         reason = "expired_token" if "expired" in type(exc).__name__.lower() else "invalid_token"
-        logger.warning("digest_optout: bad token reason=%s exc=%r", reason, exc)
+        logger.warning("digest_optout: bad token reason=%s err_type=%s", reason, type(exc).__name__)
         raise HTTPException(status_code=400, detail=reason) from exc
 
     project_id: int = int(data.get("pid", 0))

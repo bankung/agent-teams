@@ -1,10 +1,12 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { CSS } from "@dnd-kit/utilities";
 import { useSortable } from "@dnd-kit/sortable";
 
-import type { TaskRead } from "@/lib/api";
-import { TaskPriority, TaskRole, TaskStatus } from "@/lib/constants";
+import { patchTask, type TaskRead } from "@/lib/api";
+import { TaskKind, TaskPriority, TaskRole, TaskRunMode, TaskStatus } from "@/lib/constants";
+import { extractErrorMessage } from "@/lib/errors";
 import { parseSteps } from "@/lib/parseSteps";
 import { RunModeBadge } from "./RunModeBadge";
 import { TaskKindBadge } from "./TaskKindBadge";
@@ -27,6 +29,13 @@ type Props = {
   // is absent (terminal) or explicitly DONE/CANCELLED. Optional for backwards
   // compat (renders chip when not provided, preserving old behaviour).
   blockingTaskIds?: Set<number>;
+  // Kanban #2703 — board-level run-type toggle. Optional so consumers that
+  // don't wire them (e.g. the read-only ListView rows) simply hide the control.
+  //   onPatch: applied to the board's task state on a successful run-type flip.
+  //   onError: surfaces a revert message when the atomic PATCH fails.
+  // Both must be present (with projectId) for the toggle to render.
+  onPatch?: (updated: TaskRead) => void;
+  onError?: (message: string) => void;
 };
 
 const PRIORITY_LABEL: Record<number, string> = {
@@ -61,7 +70,7 @@ const ROLE_CLASS: Record<number, string> = {
   [TaskRole.SECURITY_REVIEWER]: "text-rose-700 bg-rose-50 dark:text-rose-300 dark:bg-rose-900/30",
 };
 
-export function TaskCard({ task, onOpenDetail, highlighted = false, projectId, blockingTaskIds }: Props) {
+export function TaskCard({ task, onOpenDetail, highlighted = false, projectId, blockingTaskIds, onPatch, onError }: Props) {
   const isAi = task.task_kind === "ai";
   const isPending = task.is_pending && task.process_status === TaskStatus.IN_PROGRESS;
   const inProgress = task.process_status === TaskStatus.IN_PROGRESS;
@@ -75,6 +84,53 @@ export function TaskCard({ task, onOpenDetail, highlighted = false, projectId, b
     transition,
     isDragging,
   } = useSortable({ id: task.id, disabled: !draggable });
+
+  // Kanban #2703 — board-level run-type toggle (human ↔ auto). Optimistic local
+  // run-type mirrors the server task_kind, reverting on a failed PATCH (matches
+  // TaskDetail.handleMilestoneChange). 'auto' = ai+auto_pickup; 'human' =
+  // human+manual — the two fields are written in ONE atomic PATCH so the server
+  // `assert_run_mode_for_kind` (human ⇒ manual) never fires mid-flip.
+  const serverRunType: "human" | "auto" = task.task_kind === TaskKind.AI ? "auto" : "human";
+  const [runType, setRunType] = useState<"human" | "auto">(serverRunType);
+  const [runTypeBusy, setRunTypeBusy] = useState(false);
+  // Sync when the row's server values change (SSE refresh / card re-use).
+  useEffect(() => {
+    setRunType(serverRunType); // eslint-disable-line react-hooks/set-state-in-effect -- optimistic-patch sync: runType is editable local state that must track the server task_kind on SSE refresh / task switch
+  }, [serverRunType]);
+
+  // AC4 — the toggle is only valid for 'work' tasks that are not terminal.
+  // (a) HITL question/decision tasks are server-coerced to human+manual.
+  // (b) DONE(5) / CANCELLED(6) run-type is immutable from the board.
+  const isTerminal =
+    task.process_status === TaskStatus.DONE ||
+    task.process_status === TaskStatus.CANCELLED;
+  const runTypeEditable =
+    task.interaction_kind === "work" &&
+    !isTerminal &&
+    onPatch !== undefined &&
+    projectId !== undefined;
+
+  const setRunTypeTo = async (next: "human" | "auto") => {
+    if (runTypeBusy || projectId === undefined || onPatch === undefined) return;
+    if (next === runType) return;
+    const prev = runType;
+    setRunType(next); // optimistic
+    setRunTypeBusy(true);
+    try {
+      const body =
+        next === "auto"
+          ? { task_kind: TaskKind.AI, run_mode: TaskRunMode.AUTO_PICKUP }
+          : { task_kind: TaskKind.HUMAN, run_mode: TaskRunMode.MANUAL };
+      const updated = await patchTask(projectId, task.id, body);
+      onPatch(updated);
+    } catch (err: unknown) {
+      setRunType(prev); // revert on error
+      const msg = extractErrorMessage(err, "Run-type change failed");
+      onError?.(`Task #${task.id}: ${msg}`);
+    } finally {
+      setRunTypeBusy(false);
+    }
+  };
 
   const cardBg = isPending
     ? "bg-yellow-50 hover:bg-yellow-100 hover:border-yellow-300 dark:bg-yellow-900/30 dark:hover:bg-yellow-900/40 dark:hover:border-yellow-700"
@@ -208,11 +264,87 @@ export function TaskCard({ task, onOpenDetail, highlighted = false, projectId, b
             {ROLE_LABEL[task.assigned_role] ?? `role${task.assigned_role}`}
           </span>
         )}
+        {/* Kanban #2703 — board run-type toggle (human ↔ auto). Hidden for HITL
+            + terminal tasks (AC4). Clicks/keys stopPropagation so they never
+            open the detail drawer or start a drag from the parent <article>. */}
+        {runTypeEditable && (
+          <RunTypeToggle
+            value={runType}
+            busy={runTypeBusy}
+            taskId={task.id}
+            onSelect={setRunTypeTo}
+          />
+        )}
       </div>
       {/* Kanban #2334 — activity strip + running/idle dot for IN_PROGRESS cards only. */}
       {inProgress && projectId !== undefined && (
         <TaskActivityStrip projectId={projectId} taskId={task.id} />
       )}
     </article>
+  );
+}
+
+// Kanban #2703 — 2-state run-type segmented control on the board card.
+// Glassmorphism (`glass-pill`), keyboard-accessible (native <button> segments),
+// `aria-label` on the group + `aria-pressed` per segment. Every interaction
+// event stops propagation so it never bubbles to the card's onClick (open
+// detail) or the dnd-kit pointer listeners (start drag) on the parent <article>.
+function RunTypeToggle({
+  value,
+  busy,
+  taskId,
+  onSelect,
+}: {
+  value: "human" | "auto";
+  busy: boolean;
+  taskId: number;
+  onSelect: (next: "human" | "auto") => void;
+}) {
+  const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
+  const segment = (kind: "human" | "auto", label: string) => {
+    const active = value === kind;
+    return (
+      <button
+        type="button"
+        role="radio"
+        aria-checked={active}
+        aria-label={kind === "auto" ? "Auto (AI auto-pickup)" : "Human (manual)"}
+        disabled={busy}
+        data-run-type-option={kind}
+        data-run-type-active={active ? "true" : undefined}
+        // Pointer-down isolation must come BEFORE the dnd PointerSensor sees it;
+        // click isolation prevents the parent <article> onClick (open detail).
+        onPointerDown={stop}
+        onMouseDown={stop}
+        onClick={(e) => {
+          stop(e);
+          onSelect(kind);
+        }}
+        className={
+          "px-1.5 py-0.5 text-[11px] font-medium transition-colors disabled:opacity-50 " +
+          (active
+            ? "bg-violet-600 text-white dark:bg-violet-600"
+            : "bg-transparent text-zinc-600 hover:bg-white/60 dark:text-zinc-300 dark:hover:bg-zinc-800/60")
+        }
+      >
+        {label}
+      </button>
+    );
+  };
+  return (
+    <span
+      role="radiogroup"
+      aria-label="Run type"
+      data-run-type-toggle
+      data-run-type-value={value}
+      data-task-id={taskId}
+      onPointerDown={stop}
+      onMouseDown={stop}
+      onClick={stop}
+      className="glass-pill inline-flex items-center overflow-hidden rounded border border-zinc-200 dark:border-zinc-700"
+    >
+      {segment("human", "Human")}
+      {segment("auto", "Auto")}
+    </span>
   );
 }

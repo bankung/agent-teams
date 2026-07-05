@@ -23,8 +23,14 @@ import httpx
 import pytest
 
 from src.services.notify_telegram import (
+    CALLBACK_DATA_MAX_BYTES,
     TELEGRAM_API_BASE,
+    TELEGRAM_CONTROL_KEY,
     TELEGRAM_ENV_TOKEN,
+    TELEGRAM_HTML_KEY,
+    decode_callback_data,
+    encode_callback_data,
+    format_telegram_html,
     send_telegram,
 )
 
@@ -221,3 +227,243 @@ async def test_send_telegram_accepts_model_dump_target(monkeypatch) -> None:
 
     assert result["ok"] is True
     assert result["telegram_msg_id"] == 42
+
+
+# ===========================================================================
+# Kanban #2565 — inline buttons (callback_data + reply_markup)
+# ===========================================================================
+
+
+def test_encode_decode_callback_data_round_trips() -> None:
+    enc = encode_callback_data(42, "approve")
+    assert enc == "g:42:approve"
+    assert decode_callback_data(enc) == {"gate_id": 42, "option": "approve"}
+
+
+def test_encode_callback_data_within_64_bytes() -> None:
+    # Even a long option id stays within Telegram's 64-byte cap (truncated).
+    enc = encode_callback_data(999999, "x" * 200)
+    assert len(enc.encode("utf-8")) <= CALLBACK_DATA_MAX_BYTES
+
+
+def test_encode_callback_data_multibyte_boundary_decodes_cleanly() -> None:
+    # Thai characters are 3 bytes each in UTF-8. A 200-char Thai option would be
+    # 600 bytes; after truncation the encoded result must decode cleanly (no
+    # UnicodeDecodeError) and round-trip through decode_callback_data correctly.
+    thai_option = "ก" * 200  # 200 × 3 bytes = 600 bytes
+    enc = encode_callback_data(1, thai_option)
+    # Must stay within the 64-byte cap.
+    assert len(enc.encode("utf-8")) <= CALLBACK_DATA_MAX_BYTES
+    # Must decode cleanly — no UnicodeDecodeError / replacement characters.
+    enc.encode("utf-8").decode("utf-8")  # raises if corrupt
+    # Must round-trip through decode_callback_data without None.
+    decoded = decode_callback_data(enc)
+    assert decoded is not None
+    assert decoded["gate_id"] == 1
+    # The decoded option is a prefix of the original (no garbled tail).
+    assert thai_option.startswith(decoded["option"])
+
+
+def test_decode_callback_data_option_may_contain_colons() -> None:
+    # Only the first two ':' delimit prefix + gate_id; the rest is the option.
+    assert decode_callback_data("g:7:opt:with:colons") == {
+        "gate_id": 7,
+        "option": "opt:with:colons",
+    }
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["x:1:y", "g:notanint:y", "g:1", "garbage", "", "g::"],
+)
+def test_decode_callback_data_rejects_non_gate_payloads(bad) -> None:
+    # POSITIVE control: a well-formed one decodes; these all return None so the
+    # poller ignores foreign / malformed callbacks instead of raising.
+    assert decode_callback_data("g:5:ok") == {"gate_id": 5, "option": "ok"}
+    assert decode_callback_data(bad) is None
+
+
+@pytest.mark.asyncio
+async def test_send_telegram_attaches_inline_keyboard_when_buttons_present(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(TELEGRAM_ENV_TOKEN, "test-token-abc")
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 7}})
+
+    payload = {
+        "title": "Gate #42 [decision] — Ship it?",
+        "body": "approve or reject",
+        TELEGRAM_CONTROL_KEY: {
+            "buttons": [
+                {"text": "Approve", "callback_data": "g:42:approve"},
+                {"text": "Reject", "callback_data": "g:42:reject"},
+            ]
+        },
+    }
+    client = _make_client(handler)
+    try:
+        result = await send_telegram(_VALID_TARGET, payload, client=client)
+    finally:
+        await client.aclose()
+
+    assert result["ok"] is True
+    body = captured["body"]
+    # POSITIVE: reply_markup carries an inline keyboard, one button per row,
+    # callback_data preserved.
+    assert "reply_markup" in body
+    kb = body["reply_markup"]["inline_keyboard"]
+    assert kb == [
+        [{"text": "Approve", "callback_data": "g:42:approve"}],
+        [{"text": "Reject", "callback_data": "g:42:reject"}],
+    ]
+    # NEGATIVE: the control block never leaks into the visible text.
+    assert TELEGRAM_CONTROL_KEY not in body["text"]
+    assert "buttons" not in body["text"]
+
+
+@pytest.mark.asyncio
+async def test_send_telegram_plain_text_path_has_no_reply_markup(monkeypatch) -> None:
+    # The plain-text path is UNCHANGED — a payload with no control block sends
+    # NO reply_markup (regression guard for the existing #1224 contract).
+    monkeypatch.setenv(TELEGRAM_ENV_TOKEN, "test-token-abc")
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    client = _make_client(handler)
+    try:
+        result = await send_telegram(
+            _VALID_TARGET, {"title": "digest", "summary": "3 open"}, client=client
+        )
+    finally:
+        await client.aclose()
+
+    assert result["ok"] is True
+    assert "reply_markup" not in captured["body"]
+    assert "title: digest" in captured["body"]["text"]
+
+
+# ===========================================================================
+# Kanban #2721 — HTML formatter + HTML send path
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# format_telegram_html — escaping + structure
+# ---------------------------------------------------------------------------
+
+
+def test_format_telegram_html_escapes_title_and_context() -> None:
+    # Injection guard: dynamic content must be escaped; no raw markup in output.
+    result = format_telegram_html(
+        status="Gate · decision",
+        title="<b>auth</b> & login",
+        context=["<script>bad</script>", "A & B"],
+    )
+    assert "&lt;b&gt;auth&lt;/b&gt;" in result
+    assert "&amp; login" in result
+    assert "&lt;script&gt;" in result
+    assert "<script>" not in result
+    assert "&amp; B" in result
+    # The bold wrapper around the escaped title must be present.
+    assert "<b>" in result and "</b>" in result
+
+
+def test_format_telegram_html_structure() -> None:
+    # Status on its own line; bold title on the next; blank line before context.
+    result = format_telegram_html(
+        status="Task done",
+        title="Deploy pipeline",
+        context=["3 tasks completed"],
+    )
+    lines = result.split("\n")
+    assert lines[0] == "Task done"
+    assert lines[1] == "<b>Deploy pipeline</b>"
+    assert lines[2] == ""  # blank separator
+    assert "3 tasks completed" in result
+
+
+def test_format_telegram_html_no_context_omits_blank_line() -> None:
+    result = format_telegram_html(status="Gate · key", title="Provision token")
+    assert result == "Gate · key\n<b>Provision token</b>"
+
+
+def test_format_telegram_html_length_cap_trims_context() -> None:
+    # A very long context line must be trimmed so the result stays <=4096 chars.
+    long_ctx = ["x" * 5000]
+    result = format_telegram_html(status="S", title="T", context=long_ctx)
+    assert len(result) <= 4096
+    assert "..." in result
+
+
+# ---------------------------------------------------------------------------
+# send_telegram HTML path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_telegram_html_path_sets_parse_mode(monkeypatch) -> None:
+    # When TELEGRAM_HTML_KEY is present, body must have parse_mode=HTML
+    # and text == the HTML string (not re-serialised).
+    monkeypatch.setenv(TELEGRAM_ENV_TOKEN, "test-token-abc")
+    captured: dict[str, Any] = {}
+
+    html_msg = "<b>Task done</b>\n\nAll good."
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 5}})
+
+    payload = {TELEGRAM_HTML_KEY: html_msg}
+    client = _make_client(handler)
+    try:
+        result = await send_telegram(_VALID_TARGET, payload, client=client)
+    finally:
+        await client.aclose()
+
+    assert result["ok"] is True
+    assert captured["body"]["parse_mode"] == "HTML"
+    assert captured["body"]["text"] == html_msg
+    assert "reply_markup" not in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_send_telegram_html_path_with_buttons_attaches_reply_markup(
+    monkeypatch,
+) -> None:
+    # HTML path + _telegram buttons -> parse_mode=HTML AND reply_markup present.
+    monkeypatch.setenv(TELEGRAM_ENV_TOKEN, "test-token-abc")
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 6}})
+
+    payload = {
+        TELEGRAM_HTML_KEY: "Gate · decision\n<b>Ship it?</b>",
+        TELEGRAM_CONTROL_KEY: {
+            "buttons": [
+                {"text": "Approve", "callback_data": "g:42:approve"},
+                {"text": "Reject", "callback_data": "g:42:reject"},
+            ]
+        },
+    }
+    client = _make_client(handler)
+    try:
+        result = await send_telegram(_VALID_TARGET, payload, client=client)
+    finally:
+        await client.aclose()
+
+    assert result["ok"] is True
+    body = captured["body"]
+    assert body["parse_mode"] == "HTML"
+    assert "reply_markup" in body
+    kb = body["reply_markup"]["inline_keyboard"]
+    assert len(kb) == 2
+    assert kb[0][0]["callback_data"] == "g:42:approve"

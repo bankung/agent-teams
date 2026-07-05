@@ -21,7 +21,7 @@ Design notes:
   listed in `auto_allow_tiers` reject when the switch is off — the test
   matrix below pins this behavior.
 - `None` tools_config (legacy / hand-edited row that pre-dates migration
-  `0027_projects_tools_config`) is treated identically to
+  `0100_projects_tools_config` / `2026_05_16_0100_projects_tools_config`) is treated identically to
   `tools_enabled=False` — over-block over under-block on misconfiguration.
 - Tiers in neither `auto_allow_tiers` nor `halt_tiers` fall through to
   `reject` (defensive default). The Pydantic `ToolsConfig` validator at
@@ -64,7 +64,11 @@ def check_permission(
     1. If `tools_config` is None or `tools_enabled` is not truthy → REJECT.
        Master kill switch. The agent gets a "tools disabled for this
        project" error back; the user enables tools via the FE config UI
-       (gated by #943) by PATCHing `tools_enabled=true`.
+       (gated by #943) by PATCHing `tools_enabled=true`. Note: as of #2707
+       this flag is decoupled from multi-board eligibility — a project may
+       be eligible for auto-run (consent granted) without tools enabled;
+       the operator-facing write path for this flag lands in #2707 Option C
+       (the #943 UI was never built).
     2. If `tool.tier.value` is in `auto_allow_tiers` → AUTO_ALLOW.
     3. Else if `tool.tier.value` is in `halt_tiers` → HALT.
     4. Else → REJECT (defensive default — covers (a) tiers in neither

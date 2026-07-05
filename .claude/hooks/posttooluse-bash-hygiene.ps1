@@ -1,8 +1,9 @@
 # PostToolUse hook for the Bash tool — hygiene-discriminant anomaly detection.
 #
 # Goal (Kanban #1463 — option E hygiene discriminant approach):
-#   Detect silent failures of harness-PS-wrapped Bash invocations and push ntfy alert so
-#   operator (and Lead) know to investigate / re-run. Reuses the ntfy channel from #1192.
+#   Detect silent failures of harness-PS-wrapped Bash invocations and send a Telegram alert so
+#   operator (and Lead) know to investigate / re-run. Uses the Telegram channel (#2757;
+#   replaces the removed ntfy channel #2756).
 #
 # Primary trigger pattern: Bitdefender ATD's "Malicious command line" block (#1462) terminates
 # the underlying powershell.exe child process, leaving Bash with:
@@ -14,7 +15,7 @@
 # Fail-open semantics — observational only:
 #   - Any error parsing payload     -> exit 0 (silent)
 #   - .env not readable / no creds  -> exit 0
-#   - ntfy POST fails               -> exit 0
+#   - Telegram POST fails           -> exit 0
 #   - Tool not Bash                 -> exit 0
 #   PostToolUse fires AFTER the tool completes, so a hook error never blocks user work.
 
@@ -107,48 +108,37 @@ foreach ($p in $avPatterns) {
 if (-not $matched) { exit 0 }
 Audit-Log "ANOMALY" "exit=$exitCode stdout_len=$($stdout.Trim().Length) cmd_first=$firstWord"
 
-# --- Read ntfy credentials from root .env (gitignored) ---
+# --- Read Telegram credentials from root .env (gitignored; #2757 — replaces ntfy #2756) ---
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 $envFile  = Join-Path $repoRoot '.env'
 if (-not (Test-Path $envFile)) { exit 0 }
 
-$ntfyBase    = ""
-$ntfyTopic   = ""
-$ntfyToken   = ""
-$pushEnabled = "true"
+$tgToken  = ""
+$tgChatId = ""
 
 foreach ($line in (Get-Content $envFile -ErrorAction SilentlyContinue)) {
-    if ($line -match '^\s*NTFY_BASE_URL\s*=\s*([^#]+?)\s*$')      { $ntfyBase    = $matches[1].Trim().Trim('"') }
-    elseif ($line -match '^\s*NTFY_TOPIC\s*=\s*([^#]+?)\s*$')      { $ntfyTopic   = $matches[1].Trim().Trim('"') }
-    elseif ($line -match '^\s*NTFY_ACCESS_TOKEN\s*=\s*([^#]+?)\s*$') { $ntfyToken = $matches[1].Trim().Trim('"') }
-    elseif ($line -match '^\s*PUSH_ENABLED\s*=\s*([^#]+?)\s*$')    { $pushEnabled = $matches[1].Trim().Trim('"') }
+    if ($line -match '^\s*TELEGRAM_BOT_TOKEN\s*=\s*([^#]+?)\s*$')           { $tgToken  = $matches[1].Trim().Trim('"') }
+    elseif ($line -match '^\s*TELEGRAM_OPERATOR_CHAT_ID\s*=\s*([^#]+?)\s*$') { $tgChatId = $matches[1].Trim().Trim('"') }
 }
 
-if ($pushEnabled -ne 'true') { exit 0 }
-if (-not $ntfyBase -or -not $ntfyTopic) { exit 0 }
+# Fail-open: no creds (same posture as the Telegram HITL poller) -> silent exit.
+if (-not $tgToken -or -not $tgChatId) { exit 0 }
 
-# --- Compose + send ntfy ---
-# ASCII-only title (X-Title HTTP header rejects non-ASCII per #1218).
+# --- Compose + send Telegram message ---
+# Telegram text is UTF-8 (no ASCII-header constraint the old ntfy X-Title had).
 $shortCmd = if ($cmd.Length -gt 250) { $cmd.Substring(0, 250) + '...' } else { $cmd }
-$title    = "Harness Bash anomaly - exit=$exitCode empty-out"
-$body     = "Bash command returned exit $exitCode with <= 20 chars of output. Likely AV-block, partial run, or silent subprocess fail.`n`nCommand (truncated to 250):`n$shortCmd"
+$text = "[Harness Bash anomaly] exit=$exitCode, <=20 chars output. Likely AV-block, partial run, or silent subprocess fail.`n`nCommand (truncated to 250):`n$shortCmd"
 
-$url = "$ntfyBase/$ntfyTopic"
-$headers = @{
-    'X-Title'    = $title
-    'X-Priority' = '4'
-    'X-Tags'     = 'warning,harness'
-}
-if ($ntfyToken -and -not $ntfyToken.StartsWith('#')) {
-    $headers['Authorization'] = "Bearer $ntfyToken"
-}
+$url = "https://api.telegram.org/bot$tgToken/sendMessage"
+$bodyObj = @{ chat_id = $tgChatId; text = $text }
 
 try {
-    Invoke-RestMethod -Uri $url -Method POST -Body $body -Headers $headers -TimeoutSec 5 -ErrorAction Stop | Out-Null
-    Audit-Log "NTFY_OK" "url=$url"
+    Invoke-RestMethod -Uri $url -Method POST -Body $bodyObj -TimeoutSec 5 -ErrorAction Stop | Out-Null
+    Audit-Log "TELEGRAM_OK" "chat=$tgChatId"
 } catch {
-    # Fail-open. If anomaly detection's notification itself fails, no recourse — but never block.
-    Audit-Log "NTFY_ERR" "$($_.Exception.Message)"
+    # Fail-open. Log only the exception TYPE — never the message/URL (the URL carries the
+    # bot token; secret-leak hardening, cf. #2667/#2659). Never block (PostToolUse).
+    Audit-Log "TELEGRAM_ERR" $_.Exception.GetType().Name
 }
 
 exit 0

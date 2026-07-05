@@ -25,6 +25,7 @@ the `router` object + helpers above the marker.
 from __future__ import annotations
 
 import datetime
+import functools
 import json
 import logging
 import os
@@ -93,7 +94,6 @@ from src.services.session_project import (
     require_project_id_header,
 )
 from src.services.operator_auth import OperatorDecision, _gate_active, require_operator_proof
-from src.services.notify_ntfy import send_push
 from src.services.tool_grants import GrantDecision, check_grant
 from src.tools.email import (
     gate,
@@ -190,7 +190,7 @@ async def _enforce_tool_grant_or_403(
 #   reply          PROOF — operator-proof required; 403 if absent.
 #   send_internal  PROOF — operator-proof required; 403 if absent.
 #   delete         PROOF — operator-proof required; 403 if absent. (trash = delete-class)
-#   external_send  ESCALATE — operator-proof + out-of-band push/ntfy confirm + HITL resume.
+#   external_send  ESCALATE — operator-proof + 202 HALT pending out-of-band confirm.
 #
 # FAIL-OPEN when unset: `require_operator_proof` returns OPERATOR for any request
 # when OPERATOR_ACTION_KEY is unset (gate INACTIVE), so this 403 is DORMANT on the
@@ -387,7 +387,7 @@ async def _write_send_audit_task(
 # ---------------------------------------------------------------------------
 #
 # send-internal is the LOWER-blast send tier: it requires an operator-proof but
-# does NOT escalate via the out-of-band ntfy confirm that external-send does. But
+# does NOT escalate via the out-of-band 202 HALT that external-send does. But
 # the route enforced NOTHING about the recipient being internal — an agent with a
 # SEND_INTERNAL proof could mail ANY external address through it, bypassing the
 # external-send confirm. This gate closes that downgrade.
@@ -491,9 +491,9 @@ _DETAIL_OPERATOR_PROOF_REQUIRED_TEMPLATE = (
 # Source-text-locked: pinned by the #1859 external-send escalation test.
 _DETAIL_EXTERNAL_SEND_CONFIRM_PENDING = (
     "operator_confirm_pending: external-send is the highest-blast tier and "
-    "escalates to an out-of-band push/ntfy confirmation. A push was emitted; "
-    "approve it (or re-issue carrying X-Operator-Token after approving) to "
-    "resume. HALT semantics mirror the HITL interrupt/resume loop."
+    "requires out-of-band operator confirmation. Re-issue carrying "
+    "X-Operator-Token after approving to resume. "
+    "HALT semantics mirror the HITL interrupt/resume loop."
 )
 
 
@@ -529,13 +529,11 @@ def _escalate_external_send_or_202(
     project_id: int,
     summary: str,
 ) -> None:
-    """Highest-blast (`external_send`) escalation: out-of-band push/ntfy confirm.
+    """Highest-blast (`external_send`) escalation: operator out-of-band confirm gate.
 
-    Reuses the EXISTING notification infra (`services.notify_ntfy.send_push`, the
-    same primitive `routers/tasks.py::_fire_hitl_push` uses) — it does NOT build a
-    new notification system. Reuses the HITL HALT/resume SEMANTICS (the request
-    HALTS with a 202 + `halt_reason`, mirroring the interrupt/resume loop) WITHOUT
-    a new DB row: the operator resumes by re-issuing the call carrying a valid
+    Reuses the HITL HALT/resume SEMANTICS (the request HALTS with a 202 +
+    `halt_reason`, mirroring the interrupt/resume loop) WITHOUT a new DB row:
+    the operator resumes by re-issuing the call carrying a valid
     `X-Operator-Token`, which makes `operator_proof is OPERATOR` true on the
     retry and lets this helper pass through. No pending-confirm table is needed
     for the single-operator MVP (see report — migration explicitly NOT taken).
@@ -543,38 +541,12 @@ def _escalate_external_send_or_202(
     Flow:
       - operator_proof IS OPERATOR  -> the operator already approved out-of-band
         (presented the token); pass through (the caller proceeds with the send).
-      - operator_proof NOT OPERATOR -> fire an ntfy push (best-effort; send_push
-        soft-fails and is itself gated by PUSH_ENABLED/NTFY_TOPIC) and raise
-        HTTP 202 with `halt_reason=operator_confirm_required`. The caller does
-        NOT proceed; the external send is HALTED pending the out-of-band tap.
+      - operator_proof NOT OPERATOR -> raise HTTP 202 with
+        `halt_reason=operator_confirm_required`. The caller does NOT proceed;
+        the external send is HALTED pending the out-of-band confirmation.
     """
     if operator_proof is OperatorDecision.OPERATOR:
         return
-
-    # Out-of-band confirm — reuse the ntfy push primitive. Best-effort: send_push
-    # never raises and self-gates on PUSH_ENABLED/NTFY_TOPIC, so an unconfigured
-    # push channel does NOT turn the HALT into a 500 — the 202 still fires.
-    base_url = os.environ.get("WEB_BASE_URL", "http://localhost:5431").rstrip("/")
-    click_url = f"{base_url}/approve/email-send"
-    try:
-        result = send_push(
-            f"External email send awaiting your confirmation ({summary[:80]}).",
-            title="Agent-Teams: confirm external email send",
-            priority=5,
-            click_url=click_url,
-            tags="warning,email,robot",
-        )
-        if not result.ok:
-            logger.warning(
-                "external_send confirm: project=%d push ok=False detail=%s",
-                project_id,
-                result.detail,
-            )
-    except Exception:  # noqa: BLE001 — push is observability; never 500 the HALT.
-        logger.exception(
-            "external_send confirm: project=%d unexpected push error; HALT still raised",
-            project_id,
-        )
 
     raise HTTPException(
         status_code=202,
@@ -654,30 +626,30 @@ async def gmail_auth_status(
 # ---------------------------------------------------------------------------
 
 
-async def _require_creds(session_project_id: int, session: AsyncSession):
-    """Fetch Gmail creds or raise 401. Local helper — keeps the trash route lean."""
-    creds = await token_store.get("gmail", session_project_id, session)
+async def _require_creds(provider: str, session_project_id: int, session: AsyncSession):
+    """Fetch <provider> creds or raise 401. Local helper — keeps the routes lean."""
+    creds = await token_store.get(provider, session_project_id, session)
     if creds is None:
         raise HTTPException(
             status_code=401,
             detail=(
-                "gmail not authenticated; start the OAuth flow at "
-                "POST /api/tools/email/auth/gmail/start"
+                f"{provider} not authenticated; start the OAuth flow at "
+                f"POST /api/tools/email/auth/{provider}/start"
             ),
         )
     return creds
 
 
-def _cap_check_or_429(session_project_id: int, units: int, action: str) -> None:
+def _cap_check_or_429(provider: str, session_project_id: int, units: int, action: str) -> None:
     """Run gate.check_and_increment; raise 429 with info on refusal.
 
     Also writes an audit row for the refusal so the JSONL trail captures
-    every blocked attempt (not just upstream-Gmail calls).
+    every blocked attempt (not just upstream calls).
     """
     ok, info = gate.check_and_increment(session_project_id, units)
     if not ok:
         gate.log_audit(
-            "gmail", session_project_id, action, units, success=False,
+            provider, session_project_id, action, units, success=False,
             error_code="daily_cap_reached",
         )
         raise HTTPException(
@@ -770,14 +742,14 @@ async def gmail_trash(
         _bulk_check_or_400(len(ids), force)
 
         # Auth check after bulk gate.
-        creds = await _require_creds(session_project_id, session)
+        creds = await _require_creds("gmail", session_project_id, session)
     else:
         # query mode: auth must come first because the list call requires creds.
-        creds = await _require_creds(session_project_id, session)
+        creds = await _require_creds("gmail", session_project_id, session)
 
         # Pay list units before we know the count — this is honest accounting.
         # dry_run still pays list units (the upstream list call happens).
-        _cap_check_or_429(session_project_id, _LIST_UNITS_PER_CALL, "list")
+        _cap_check_or_429("gmail", session_project_id, _LIST_UNITS_PER_CALL, "list")
         try:
             ids = await run_in_threadpool(
                 gmail_client.list_message_ids,
@@ -828,7 +800,7 @@ async def gmail_trash(
 
     # Layer 1 — daily-units cap for the trash workload.
     total_units = _TRASH_UNITS_PER_MESSAGE * len(ids)
-    _cap_check_or_429(session_project_id, total_units, "trash")
+    _cap_check_or_429("gmail", session_project_id, total_units, "trash")
 
     # Execute the trash loop.
     try:
@@ -926,10 +898,10 @@ async def gmail_mark(
     # Layer 3 — bulk-threshold gate (mirrors /gmail/trash). Fires after Layer-0/tier,
     # before auth/cap, so the payload-safety rail is observable without OAuth setup.
     _bulk_check_or_400(len(ids), force)
-    creds = await _require_creds(session_project_id, session)
+    creds = await _require_creds("gmail", session_project_id, session)
 
     total_units = _MODIFY_UNITS_PER_MESSAGE * len(ids)
-    _cap_check_or_429(session_project_id, total_units, "mark")
+    _cap_check_or_429("gmail", session_project_id, total_units, "mark")
 
     add_label_ids = [] if body.read else ["UNREAD"]
     remove_label_ids = ["UNREAD"] if body.read else []
@@ -990,10 +962,10 @@ async def gmail_archive(
     ids = list(body.message_ids)
     # Layer 3 — bulk-threshold gate (mirrors /gmail/trash).
     _bulk_check_or_400(len(ids), force)
-    creds = await _require_creds(session_project_id, session)
+    creds = await _require_creds("gmail", session_project_id, session)
 
     total_units = _MODIFY_UNITS_PER_MESSAGE * len(ids)
-    _cap_check_or_429(session_project_id, total_units, "archive")
+    _cap_check_or_429("gmail", session_project_id, total_units, "archive")
 
     try:
         modified, errors = await run_in_threadpool(
@@ -1049,9 +1021,9 @@ async def gmail_draft(
     # Tier gate (#1859) — `modify` is OPEN; no-op, kept in Layer-0 -> tier order.
     _enforce_operator_tier_or_403(EmailTier.MODIFY, operator_proof)
 
-    creds = await _require_creds(session_project_id, session)
+    creds = await _require_creds("gmail", session_project_id, session)
 
-    _cap_check_or_429(session_project_id, _DRAFT_UNITS_PER_CALL, "draft")
+    _cap_check_or_429("gmail", session_project_id, _DRAFT_UNITS_PER_CALL, "draft")
 
     try:
         created = await run_in_threadpool(
@@ -1131,6 +1103,55 @@ async def gmail_draft(
 _SEND_UNITS_PER_CALL = 100
 
 
+async def _execute_email_send(
+    session: AsyncSession,
+    *,
+    session_project_id: int,
+    agent_role: str | None,
+    provider: str,
+    action: str,
+    units: int,
+    tier: EmailTier,
+    approval_mode: str,
+    client_callable,          # zero-arg callable; returns the client's `sent` dict
+    audit_recipient: str,
+    audit_subject: str,
+    body: str,
+    response_cls,
+):
+    """Shared send-execution tail for the 8 email send handlers (#2682 STEP B).
+
+    The caller performs the gate chain + creds + cap, then hands the bound
+    upstream call (as a zero-arg `client_callable`) plus the audit metadata here.
+    Behavior is byte-identical to the previous inline tails.
+    """
+    try:
+        sent = await run_in_threadpool(client_callable)
+    except Exception as exc:
+        gate.log_audit(
+            provider, session_project_id, action, units,
+            success=False, error_code=type(exc).__name__,
+        )
+        logger.warning("%s %s failed: %s", provider, action, type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": f"{provider}_{action}_failed", "class": type(exc).__name__},
+        ) from exc
+
+    msg_id = sent.get("message_id")
+    gate.log_audit(provider, session_project_id, action, units, success=True)
+    _write_action_audit(
+        agent_role=agent_role, action=action, tier=tier,
+        message_ids=[msg_id] if msg_id else [], approval_mode=approval_mode,
+        result="success",
+    )
+    await _write_send_audit_task(
+        session, session_project_id=session_project_id, provider=provider,
+        action=action, recipient=audit_recipient, subject=audit_subject, body=body,
+    )
+    return response_cls(message_id=msg_id, thread_id=sent.get("thread_id"))
+
+
 @router.post("/gmail/reply", response_model=GmailSendResponse)
 async def gmail_reply(
     body: GmailReplyRequest,
@@ -1150,40 +1171,23 @@ async def gmail_reply(
     )
     _enforce_operator_tier_or_403(EmailTier.REPLY, operator_proof)
 
-    creds = await _require_creds(session_project_id, session)
-    _cap_check_or_429(session_project_id, _SEND_UNITS_PER_CALL, "reply")
+    creds = await _require_creds("gmail", session_project_id, session)
+    _cap_check_or_429("gmail", session_project_id, _SEND_UNITS_PER_CALL, "reply")
 
-    try:
-        sent = await run_in_threadpool(
+    return await _execute_email_send(
+        session, session_project_id=session_project_id, agent_role=agent_role,
+        provider="gmail", action="reply", units=_SEND_UNITS_PER_CALL,
+        tier=EmailTier.REPLY, approval_mode=_resolve_approval_mode(),
+        client_callable=functools.partial(
             gmail_client.send_reply,
             creds,
             message_id=body.message_id,
             body=body.body,
             thread_id=body.thread_id,
-        )
-    except Exception as exc:
-        gate.log_audit(
-            "gmail", session_project_id, "reply", _SEND_UNITS_PER_CALL,
-            success=False, error_code=type(exc).__name__,
-        )
-        logger.warning("gmail reply failed: %s", type(exc).__name__)
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "gmail_reply_failed", "class": type(exc).__name__},
-        ) from exc
-
-    msg_id = sent.get("message_id")
-    gate.log_audit("gmail", session_project_id, "reply", _SEND_UNITS_PER_CALL, success=True)
-    _write_action_audit(
-        agent_role=agent_role, action="reply", tier=EmailTier.REPLY,
-        message_ids=[msg_id] if msg_id else [], approval_mode=_resolve_approval_mode(),
-        result="success",
+        ),
+        audit_recipient=f"(re: {body.message_id})", audit_subject="(reply)",
+        body=body.body, response_cls=GmailSendResponse,
     )
-    await _write_send_audit_task(
-        session, session_project_id=session_project_id, provider="gmail",
-        action="reply", recipient=f"(re: {body.message_id})", subject="(reply)", body=body.body,
-    )
-    return GmailSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
 
 
 @router.post("/gmail/forward", response_model=GmailSendResponse)
@@ -1204,37 +1208,20 @@ async def gmail_forward(
     )
     _enforce_operator_tier_or_403(EmailTier.REPLY, operator_proof)
 
-    creds = await _require_creds(session_project_id, session)
-    _cap_check_or_429(session_project_id, _SEND_UNITS_PER_CALL, "forward")
+    creds = await _require_creds("gmail", session_project_id, session)
+    _cap_check_or_429("gmail", session_project_id, _SEND_UNITS_PER_CALL, "forward")
 
-    try:
-        sent = await run_in_threadpool(
+    return await _execute_email_send(
+        session, session_project_id=session_project_id, agent_role=agent_role,
+        provider="gmail", action="forward", units=_SEND_UNITS_PER_CALL,
+        tier=EmailTier.REPLY, approval_mode=_resolve_approval_mode(),
+        client_callable=functools.partial(
             gmail_client.send_forward,
             creds, message_id=body.message_id, to=body.to, body=body.body,
-        )
-    except Exception as exc:
-        gate.log_audit(
-            "gmail", session_project_id, "forward", _SEND_UNITS_PER_CALL,
-            success=False, error_code=type(exc).__name__,
-        )
-        logger.warning("gmail forward failed: %s", type(exc).__name__)
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "gmail_forward_failed", "class": type(exc).__name__},
-        ) from exc
-
-    msg_id = sent.get("message_id")
-    gate.log_audit("gmail", session_project_id, "forward", _SEND_UNITS_PER_CALL, success=True)
-    _write_action_audit(
-        agent_role=agent_role, action="forward", tier=EmailTier.REPLY,
-        message_ids=[msg_id] if msg_id else [], approval_mode=_resolve_approval_mode(),
-        result="success",
+        ),
+        audit_recipient=body.to, audit_subject="(forward)",
+        body=body.body, response_cls=GmailSendResponse,
     )
-    await _write_send_audit_task(
-        session, session_project_id=session_project_id, provider="gmail",
-        action="forward", recipient=body.to, subject="(forward)", body=body.body,
-    )
-    return GmailSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
 
 
 @router.post("/gmail/send-internal", response_model=GmailSendResponse)
@@ -1261,38 +1248,21 @@ async def gmail_send_internal(
     # rather than slipping past the external-send confirm. Dormant when unset.
     _enforce_internal_recipients_or_403(to=body.to, cc=body.cc, bcc=body.bcc)
 
-    creds = await _require_creds(session_project_id, session)
-    _cap_check_or_429(session_project_id, _SEND_UNITS_PER_CALL, "send_internal")
+    creds = await _require_creds("gmail", session_project_id, session)
+    _cap_check_or_429("gmail", session_project_id, _SEND_UNITS_PER_CALL, "send_internal")
 
-    try:
-        sent = await run_in_threadpool(
+    return await _execute_email_send(
+        session, session_project_id=session_project_id, agent_role=agent_role,
+        provider="gmail", action="send_internal", units=_SEND_UNITS_PER_CALL,
+        tier=EmailTier.SEND_INTERNAL, approval_mode=_resolve_approval_mode(),
+        client_callable=functools.partial(
             gmail_client.send_message,
             creds, to=body.to, subject=body.subject, body=body.body,
             cc=body.cc, bcc=body.bcc,
-        )
-    except Exception as exc:
-        gate.log_audit(
-            "gmail", session_project_id, "send_internal", _SEND_UNITS_PER_CALL,
-            success=False, error_code=type(exc).__name__,
-        )
-        logger.warning("gmail send_internal failed: %s", type(exc).__name__)
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "gmail_send_internal_failed", "class": type(exc).__name__},
-        ) from exc
-
-    msg_id = sent.get("message_id")
-    gate.log_audit("gmail", session_project_id, "send_internal", _SEND_UNITS_PER_CALL, success=True)
-    _write_action_audit(
-        agent_role=agent_role, action="send_internal", tier=EmailTier.SEND_INTERNAL,
-        message_ids=[msg_id] if msg_id else [], approval_mode=_resolve_approval_mode(),
-        result="success",
+        ),
+        audit_recipient=body.to, audit_subject=body.subject,
+        body=body.body, response_cls=GmailSendResponse,
     )
-    await _write_send_audit_task(
-        session, session_project_id=session_project_id, provider="gmail",
-        action="send_internal", recipient=body.to, subject=body.subject, body=body.body,
-    )
-    return GmailSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
 
 
 @router.post("/gmail/external-send", response_model=GmailSendResponse)
@@ -1306,51 +1276,34 @@ async def gmail_external_send(
     """Compose + send a NEW Gmail message, EXTERNAL recipient (`external_send` tier).
 
     Highest-blast tier: instead of a bare 403, an absent operator-proof triggers
-    `_escalate_external_send_or_202` — an out-of-band ntfy push + a 202 HALT. The
-    operator resumes by re-issuing the call carrying a valid X-Operator-Token,
-    which passes the helper through and lets the send fire. NO mail is sent on the
-    HALT path (the 202 is raised BEFORE any upstream send).
+    `_escalate_external_send_or_202` — a 202 HALT. The operator resumes by
+    re-issuing the call carrying a valid X-Operator-Token, which passes the
+    helper through and lets the send fire. NO mail is sent on the HALT path
+    (the 202 is raised BEFORE any upstream send).
     """
     await _enforce_tool_grant_or_403(
         session, session_project_id, agent_role, "gmail.external_send"
     )
-    # EXTERNAL_SEND escalation — fires ntfy + raises 202 HALT unless proven.
+    # EXTERNAL_SEND escalation — raises 202 HALT unless proven.
     _escalate_external_send_or_202(
         operator_proof, project_id=session_project_id, summary=f"to {body.to}",
     )
 
-    creds = await _require_creds(session_project_id, session)
-    _cap_check_or_429(session_project_id, _SEND_UNITS_PER_CALL, "external_send")
+    creds = await _require_creds("gmail", session_project_id, session)
+    _cap_check_or_429("gmail", session_project_id, _SEND_UNITS_PER_CALL, "external_send")
 
-    try:
-        sent = await run_in_threadpool(
+    return await _execute_email_send(
+        session, session_project_id=session_project_id, agent_role=agent_role,
+        provider="gmail", action="external_send", units=_SEND_UNITS_PER_CALL,
+        tier=EmailTier.EXTERNAL_SEND, approval_mode="operator_confirm",
+        client_callable=functools.partial(
             gmail_client.send_message,
             creds, to=body.to, subject=body.subject, body=body.body,
             cc=body.cc, bcc=body.bcc,
-        )
-    except Exception as exc:
-        gate.log_audit(
-            "gmail", session_project_id, "external_send", _SEND_UNITS_PER_CALL,
-            success=False, error_code=type(exc).__name__,
-        )
-        logger.warning("gmail external_send failed: %s", type(exc).__name__)
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "gmail_external_send_failed", "class": type(exc).__name__},
-        ) from exc
-
-    msg_id = sent.get("message_id")
-    gate.log_audit("gmail", session_project_id, "external_send", _SEND_UNITS_PER_CALL, success=True)
-    _write_action_audit(
-        agent_role=agent_role, action="external_send", tier=EmailTier.EXTERNAL_SEND,
-        message_ids=[msg_id] if msg_id else [], approval_mode="operator_confirm",
-        result="success",
+        ),
+        audit_recipient=body.to, audit_subject=body.subject,
+        body=body.body, response_cls=GmailSendResponse,
     )
-    await _write_send_audit_task(
-        session, session_project_id=session_project_id, provider="gmail",
-        action="external_send", recipient=body.to, subject=body.subject, body=body.body,
-    )
-    return GmailSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
 
 
 # ---------------------------------------------------------------------------
@@ -1394,8 +1347,8 @@ async def gmail_search(
     )
     _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
 
-    creds = await _require_creds(session_project_id, session)
-    _cap_check_or_429(session_project_id, _SEARCH_UNITS_PER_CALL, "search")
+    creds = await _require_creds("gmail", session_project_id, session)
+    _cap_check_or_429("gmail", session_project_id, _SEARCH_UNITS_PER_CALL, "search")
 
     try:
         items = await run_in_threadpool(
@@ -1442,8 +1395,8 @@ async def gmail_get(
     )
     _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
 
-    creds = await _require_creds(session_project_id, session)
-    _cap_check_or_429(session_project_id, _GET_UNITS_PER_MESSAGE, "get")
+    creds = await _require_creds("gmail", session_project_id, session)
+    _cap_check_or_429("gmail", session_project_id, _GET_UNITS_PER_MESSAGE, "get")
 
     try:
         data = await run_in_threadpool(
@@ -1502,8 +1455,8 @@ async def gmail_thread(
     )
     _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
 
-    creds = await _require_creds(session_project_id, session)
-    _cap_check_or_429(session_project_id, _THREAD_UNITS_PER_CALL, "thread")
+    creds = await _require_creds("gmail", session_project_id, session)
+    _cap_check_or_429("gmail", session_project_id, _THREAD_UNITS_PER_CALL, "thread")
 
     try:
         data = await run_in_threadpool(
@@ -1554,8 +1507,8 @@ async def gmail_labels(
     )
     _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
 
-    creds = await _require_creds(session_project_id, session)
-    _cap_check_or_429(session_project_id, _LABELS_UNITS_PER_CALL, "labels")
+    creds = await _require_creds("gmail", session_project_id, session)
+    _cap_check_or_429("gmail", session_project_id, _LABELS_UNITS_PER_CALL, "labels")
 
     try:
         items = await run_in_threadpool(gmail_client.list_labels, creds)
@@ -1604,8 +1557,8 @@ async def gmail_attachment(
     )
     _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
 
-    creds = await _require_creds(session_project_id, session)
-    _cap_check_or_429(session_project_id, _ATTACHMENT_UNITS_PER_CALL, "attachment")
+    creds = await _require_creds("gmail", session_project_id, session)
+    _cap_check_or_429("gmail", session_project_id, _ATTACHMENT_UNITS_PER_CALL, "attachment")
 
     try:
         data = await run_in_threadpool(
@@ -1747,36 +1700,6 @@ async def outlook_auth_status(
 # ---------------------------------------------------------------------------
 
 
-async def _require_outlook_creds(session_project_id: int, session: AsyncSession):
-    """Fetch Outlook creds or raise 401."""
-    creds = await token_store.get("outlook", session_project_id, session)
-    if creds is None:
-        raise HTTPException(
-            status_code=401,
-            detail=(
-                "outlook not authenticated; start the OAuth flow at "
-                "POST /api/tools/email/auth/outlook/start"
-            ),
-        )
-    return creds
-
-
-def _outlook_cap_check_or_429(session_project_id: int, units: int, action: str) -> None:
-    """Run gate.check_and_increment; raise 429 with info on refusal.
-
-    Mirrors Gmail's `_cap_check_or_429` but writes 'outlook' as the audit provider.
-    """
-    ok, info = gate.check_and_increment(session_project_id, units)
-    if not ok:
-        gate.log_audit(
-            "outlook", session_project_id, action, units, success=False,
-            error_code="daily_cap_reached",
-        )
-        raise HTTPException(
-            status_code=429,
-            detail={"error": "daily_cap_reached", **info},
-        )
-
 
 @router.post("/outlook/trash", response_model=OutlookTrashResponse)
 async def outlook_trash(
@@ -1843,14 +1766,14 @@ async def outlook_trash(
         _bulk_check_or_400(len(ids), force)
 
         # Auth check after bulk gate.
-        creds = await _require_outlook_creds(session_project_id, session)
+        creds = await _require_creds("outlook", session_project_id, session)
     else:
         # query mode: auth must come first because the list call requires creds.
-        creds = await _require_outlook_creds(session_project_id, session)
+        creds = await _require_creds("outlook", session_project_id, session)
 
         # Pay list units before we know the count — honest accounting.
         # dry_run still pays list units (the upstream list call happens).
-        _outlook_cap_check_or_429(session_project_id, _OUTLOOK_LIST_UNITS_PER_CALL, "list")
+        _cap_check_or_429("outlook", session_project_id, _OUTLOOK_LIST_UNITS_PER_CALL, "list")
         try:
             ids = await run_in_threadpool(
                 outlook_client.list_message_ids,
@@ -1900,7 +1823,7 @@ async def outlook_trash(
 
     # Layer 1 — daily-units cap for the trash workload.
     total_units = _OUTLOOK_TRASH_UNITS_PER_MESSAGE * len(ids)
-    _outlook_cap_check_or_429(session_project_id, total_units, "trash")
+    _cap_check_or_429("outlook", session_project_id, total_units, "trash")
 
     # Execute the move loop.
     # FIX-1 (#1609): outlook_client.trash_messages is sync and calls time.sleep
@@ -1947,8 +1870,8 @@ async def outlook_trash(
 # ---------------------------------------------------------------------------
 # Gate chain (byte-for-byte same ORDER as Gmail Tier-1):
 #   Layer-0 _enforce_tool_grant_or_403 → tier gate _enforce_operator_tier_or_403(MODIFY)
-#   → (_bulk_check_or_400 for mark/archive) → _require_outlook_creds
-#   → _outlook_cap_check_or_429 → execute → gate.log_audit("outlook"…)
+#   → (_bulk_check_or_400 for mark/archive) → _require_creds("outlook", …)
+#   → _cap_check_or_429("outlook", …) → execute → gate.log_audit("outlook"…)
 #   → _write_action_audit(…)
 # Both MODIFY_UNITS_PER_MESSAGE and _DRAFT_UNITS_PER_CALL are shared with Gmail
 # (provider-agnostic constants defined above the Gmail routes).
@@ -1980,10 +1903,10 @@ async def outlook_mark(
     ids = list(body.message_ids)
     # Layer 3 — bulk-threshold gate.
     _bulk_check_or_400(len(ids), force)
-    creds = await _require_outlook_creds(session_project_id, session)
+    creds = await _require_creds("outlook", session_project_id, session)
 
     total_units = _MODIFY_UNITS_PER_MESSAGE * len(ids)
-    _outlook_cap_check_or_429(session_project_id, total_units, "mark")
+    _cap_check_or_429("outlook", session_project_id, total_units, "mark")
 
     try:
         modified, errors = await run_in_threadpool(
@@ -2042,10 +1965,10 @@ async def outlook_archive(
     ids = list(body.message_ids)
     # Layer 3 — bulk-threshold gate.
     _bulk_check_or_400(len(ids), force)
-    creds = await _require_outlook_creds(session_project_id, session)
+    creds = await _require_creds("outlook", session_project_id, session)
 
     total_units = _MODIFY_UNITS_PER_MESSAGE * len(ids)
-    _outlook_cap_check_or_429(session_project_id, total_units, "archive")
+    _cap_check_or_429("outlook", session_project_id, total_units, "archive")
 
     try:
         modified, errors = await run_in_threadpool(
@@ -2101,9 +2024,9 @@ async def outlook_draft(
     # Tier gate (#1859) — `modify` is OPEN; no-op, kept in Layer-0 -> tier order.
     _enforce_operator_tier_or_403(EmailTier.MODIFY, operator_proof)
 
-    creds = await _require_outlook_creds(session_project_id, session)
+    creds = await _require_creds("outlook", session_project_id, session)
 
-    _outlook_cap_check_or_429(session_project_id, _DRAFT_UNITS_PER_CALL, "draft")
+    _cap_check_or_429("outlook", session_project_id, _DRAFT_UNITS_PER_CALL, "draft")
 
     try:
         created = await run_in_threadpool(
@@ -2166,7 +2089,7 @@ async def outlook_draft(
 #
 # READ tier — auto-approve: no operator-proof, no _write_action_audit. Gate
 # chain mirrors Gmail read routes byte-for-byte but uses the outlook provider
-# + _outlook_cap_check_or_429 + _require_outlook_creds.
+# + _cap_check_or_429("outlook", …) + _require_creds("outlook", …).
 #
 # Unit costs mirror the Gmail READ constants (provider-agnostic cost parity).
 _OUTLOOK_SEARCH_UNITS_PER_CALL = 5  # one Graph $search call.
@@ -2196,8 +2119,8 @@ async def outlook_search(
     )
     _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
 
-    creds = await _require_outlook_creds(session_project_id, session)
-    _outlook_cap_check_or_429(session_project_id, _OUTLOOK_SEARCH_UNITS_PER_CALL, "search")
+    creds = await _require_creds("outlook", session_project_id, session)
+    _cap_check_or_429("outlook", session_project_id, _OUTLOOK_SEARCH_UNITS_PER_CALL, "search")
 
     try:
         items = await run_in_threadpool(
@@ -2244,8 +2167,8 @@ async def outlook_get(
     )
     _enforce_operator_tier_or_403(EmailTier.READ, operator_proof)
 
-    creds = await _require_outlook_creds(session_project_id, session)
-    _outlook_cap_check_or_429(session_project_id, _OUTLOOK_GET_UNITS_PER_MESSAGE, "get")
+    creds = await _require_creds("outlook", session_project_id, session)
+    _cap_check_or_429("outlook", session_project_id, _OUTLOOK_GET_UNITS_PER_MESSAGE, "get")
 
     try:
         data = await run_in_threadpool(
@@ -2273,7 +2196,7 @@ async def outlook_get(
 # ---------------------------------------------------------------------------
 #
 # Mirrors the Gmail Tier-3 send block byte-for-byte in gate ORDER + audit shape;
-# uses the outlook provider + _outlook_cap_check_or_429 + _require_outlook_creds.
+# uses the outlook provider + _cap_check_or_429("outlook", …) + _require_creds("outlook", …).
 # Graph send actions (reply/forward/sendMail) return 202 with no body, so
 # message_id is typically None in the response (see OutlookSendResponse).
 #
@@ -2300,36 +2223,19 @@ async def outlook_reply(
     )
     _enforce_operator_tier_or_403(EmailTier.REPLY, operator_proof)
 
-    creds = await _require_outlook_creds(session_project_id, session)
-    _outlook_cap_check_or_429(session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "reply")
+    creds = await _require_creds("outlook", session_project_id, session)
+    _cap_check_or_429("outlook", session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "reply")
 
-    try:
-        sent = await run_in_threadpool(
+    return await _execute_email_send(
+        session, session_project_id=session_project_id, agent_role=agent_role,
+        provider="outlook", action="reply", units=_OUTLOOK_SEND_UNITS_PER_CALL,
+        tier=EmailTier.REPLY, approval_mode=_resolve_approval_mode(),
+        client_callable=functools.partial(
             outlook_client.send_reply, creds, message_id=body.message_id, body=body.body,
-        )
-    except Exception as exc:
-        gate.log_audit(
-            "outlook", session_project_id, "reply", _OUTLOOK_SEND_UNITS_PER_CALL,
-            success=False, error_code=type(exc).__name__,
-        )
-        logger.warning("outlook reply failed: %s", type(exc).__name__)
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "outlook_reply_failed", "class": type(exc).__name__},
-        ) from exc
-
-    msg_id = sent.get("message_id")
-    gate.log_audit("outlook", session_project_id, "reply", _OUTLOOK_SEND_UNITS_PER_CALL, success=True)
-    _write_action_audit(
-        agent_role=agent_role, action="reply", tier=EmailTier.REPLY,
-        message_ids=[msg_id] if msg_id else [], approval_mode=_resolve_approval_mode(),
-        result="success",
+        ),
+        audit_recipient=f"(re: {body.message_id})", audit_subject="(reply)",
+        body=body.body, response_cls=OutlookSendResponse,
     )
-    await _write_send_audit_task(
-        session, session_project_id=session_project_id, provider="outlook",
-        action="reply", recipient=f"(re: {body.message_id})", subject="(reply)", body=body.body,
-    )
-    return OutlookSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
 
 
 @router.post("/outlook/forward", response_model=OutlookSendResponse)
@@ -2350,36 +2256,19 @@ async def outlook_forward(
     )
     _enforce_operator_tier_or_403(EmailTier.REPLY, operator_proof)
 
-    creds = await _require_outlook_creds(session_project_id, session)
-    _outlook_cap_check_or_429(session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "forward")
+    creds = await _require_creds("outlook", session_project_id, session)
+    _cap_check_or_429("outlook", session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "forward")
 
-    try:
-        sent = await run_in_threadpool(
+    return await _execute_email_send(
+        session, session_project_id=session_project_id, agent_role=agent_role,
+        provider="outlook", action="forward", units=_OUTLOOK_SEND_UNITS_PER_CALL,
+        tier=EmailTier.REPLY, approval_mode=_resolve_approval_mode(),
+        client_callable=functools.partial(
             outlook_client.send_forward, creds, message_id=body.message_id, to=body.to, body=body.body,
-        )
-    except Exception as exc:
-        gate.log_audit(
-            "outlook", session_project_id, "forward", _OUTLOOK_SEND_UNITS_PER_CALL,
-            success=False, error_code=type(exc).__name__,
-        )
-        logger.warning("outlook forward failed: %s", type(exc).__name__)
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "outlook_forward_failed", "class": type(exc).__name__},
-        ) from exc
-
-    msg_id = sent.get("message_id")
-    gate.log_audit("outlook", session_project_id, "forward", _OUTLOOK_SEND_UNITS_PER_CALL, success=True)
-    _write_action_audit(
-        agent_role=agent_role, action="forward", tier=EmailTier.REPLY,
-        message_ids=[msg_id] if msg_id else [], approval_mode=_resolve_approval_mode(),
-        result="success",
+        ),
+        audit_recipient=body.to, audit_subject="(forward)",
+        body=body.body, response_cls=OutlookSendResponse,
     )
-    await _write_send_audit_task(
-        session, session_project_id=session_project_id, provider="outlook",
-        action="forward", recipient=body.to, subject="(forward)", body=body.body,
-    )
-    return OutlookSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
 
 
 @router.post("/outlook/send-internal", response_model=OutlookSendResponse)
@@ -2402,37 +2291,20 @@ async def outlook_send_internal(
     # #2100 WARN-1 — internal/external downgrade rail (mirrors Gmail send-internal).
     _enforce_internal_recipients_or_403(to=body.to, cc=body.cc, bcc=body.bcc)
 
-    creds = await _require_outlook_creds(session_project_id, session)
-    _outlook_cap_check_or_429(session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "send_internal")
+    creds = await _require_creds("outlook", session_project_id, session)
+    _cap_check_or_429("outlook", session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "send_internal")
 
-    try:
-        sent = await run_in_threadpool(
+    return await _execute_email_send(
+        session, session_project_id=session_project_id, agent_role=agent_role,
+        provider="outlook", action="send_internal", units=_OUTLOOK_SEND_UNITS_PER_CALL,
+        tier=EmailTier.SEND_INTERNAL, approval_mode=_resolve_approval_mode(),
+        client_callable=functools.partial(
             outlook_client.send_message,
             creds, to=body.to, subject=body.subject, body=body.body, cc=body.cc, bcc=body.bcc,
-        )
-    except Exception as exc:
-        gate.log_audit(
-            "outlook", session_project_id, "send_internal", _OUTLOOK_SEND_UNITS_PER_CALL,
-            success=False, error_code=type(exc).__name__,
-        )
-        logger.warning("outlook send_internal failed: %s", type(exc).__name__)
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "outlook_send_internal_failed", "class": type(exc).__name__},
-        ) from exc
-
-    msg_id = sent.get("message_id")
-    gate.log_audit("outlook", session_project_id, "send_internal", _OUTLOOK_SEND_UNITS_PER_CALL, success=True)
-    _write_action_audit(
-        agent_role=agent_role, action="send_internal", tier=EmailTier.SEND_INTERNAL,
-        message_ids=[msg_id] if msg_id else [], approval_mode=_resolve_approval_mode(),
-        result="success",
+        ),
+        audit_recipient=body.to, audit_subject=body.subject,
+        body=body.body, response_cls=OutlookSendResponse,
     )
-    await _write_send_audit_task(
-        session, session_project_id=session_project_id, provider="outlook",
-        action="send_internal", recipient=body.to, subject=body.subject, body=body.body,
-    )
-    return OutlookSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))
 
 
 @router.post("/outlook/external-send", response_model=OutlookSendResponse)
@@ -2446,9 +2318,9 @@ async def outlook_external_send(
     """Compose + send a NEW Outlook message, EXTERNAL recipient (`external_send` tier).
 
     Highest-blast tier: an absent operator-proof triggers
-    `_escalate_external_send_or_202` (out-of-band ntfy push + 202 HALT). The
-    operator resumes by re-issuing with a valid X-Operator-Token. NO mail is sent
-    on the HALT path (the 202 fires BEFORE any upstream send).
+    `_escalate_external_send_or_202` (202 HALT). The operator resumes by
+    re-issuing with a valid X-Operator-Token. NO mail is sent on the HALT
+    path (the 202 fires BEFORE any upstream send).
     """
     await _enforce_tool_grant_or_403(
         session, session_project_id, agent_role, "outlook.external_send"
@@ -2457,34 +2329,17 @@ async def outlook_external_send(
         operator_proof, project_id=session_project_id, summary=f"to {body.to}",
     )
 
-    creds = await _require_outlook_creds(session_project_id, session)
-    _outlook_cap_check_or_429(session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "external_send")
+    creds = await _require_creds("outlook", session_project_id, session)
+    _cap_check_or_429("outlook", session_project_id, _OUTLOOK_SEND_UNITS_PER_CALL, "external_send")
 
-    try:
-        sent = await run_in_threadpool(
+    return await _execute_email_send(
+        session, session_project_id=session_project_id, agent_role=agent_role,
+        provider="outlook", action="external_send", units=_OUTLOOK_SEND_UNITS_PER_CALL,
+        tier=EmailTier.EXTERNAL_SEND, approval_mode="operator_confirm",
+        client_callable=functools.partial(
             outlook_client.send_message,
             creds, to=body.to, subject=body.subject, body=body.body, cc=body.cc, bcc=body.bcc,
-        )
-    except Exception as exc:
-        gate.log_audit(
-            "outlook", session_project_id, "external_send", _OUTLOOK_SEND_UNITS_PER_CALL,
-            success=False, error_code=type(exc).__name__,
-        )
-        logger.warning("outlook external_send failed: %s", type(exc).__name__)
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "outlook_external_send_failed", "class": type(exc).__name__},
-        ) from exc
-
-    msg_id = sent.get("message_id")
-    gate.log_audit("outlook", session_project_id, "external_send", _OUTLOOK_SEND_UNITS_PER_CALL, success=True)
-    _write_action_audit(
-        agent_role=agent_role, action="external_send", tier=EmailTier.EXTERNAL_SEND,
-        message_ids=[msg_id] if msg_id else [], approval_mode="operator_confirm",
-        result="success",
+        ),
+        audit_recipient=body.to, audit_subject=body.subject,
+        body=body.body, response_cls=OutlookSendResponse,
     )
-    await _write_send_audit_task(
-        session, session_project_id=session_project_id, provider="outlook",
-        action="external_send", recipient=body.to, subject=body.subject, body=body.body,
-    )
-    return OutlookSendResponse(message_id=msg_id, thread_id=sent.get("thread_id"))

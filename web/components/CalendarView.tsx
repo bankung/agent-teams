@@ -17,7 +17,12 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 
-import { patchTask, type MilestoneRead, type TaskRead } from "@/lib/api";
+import {
+  patchTask,
+  type MilestoneRead,
+  type ProjectRead,
+  type TaskRead,
+} from "@/lib/api";
 import { TaskStatus, type TaskStatusValue } from "@/lib/constants";
 import { extractErrorMessage } from "@/lib/errors";
 import {
@@ -161,6 +166,12 @@ type Props = {
   month0: number; // 0..11
   tasks: TaskRead[];
   milestones: MilestoneRead[];
+  // #2409 — full ProjectRead so the "New task on this date" mount can carry
+  // the #1304 cost-forecast gate (project.cost_forecast_threshold_usd) the
+  // same way the Board's NewTaskDropdown does. Optional so the ~14 existing
+  // test mounts that omit it stay valid (mirrors NewTaskModal's own optional
+  // `project` prop).
+  project?: ProjectRead;
 };
 
 export function CalendarView({
@@ -170,6 +181,7 @@ export function CalendarView({
   month0,
   tasks,
   milestones,
+  project,
 }: Props) {
   const router = useRouter();
   const ym: YearMonth = useMemo(() => ({ year, month0 }), [year, month0]);
@@ -543,6 +555,7 @@ export function CalendarView({
           <NewTaskModal
             key={`new-${createForDay}`}
             projectId={projectId}
+            project={project}
             externalOpen
             onExternalClose={() => setCreateForDay(null)}
             initialDueDate={createForDay}

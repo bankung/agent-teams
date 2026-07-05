@@ -16,7 +16,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
-import type { AgentDetail as AgentDetailType } from "@/lib/api";
+import type { AgentDetail as AgentDetailType, ToolChip } from "@/lib/api";
 
 vi.mock("next/link", () => ({
   default: ({
@@ -48,6 +48,7 @@ function detail(over: Partial<AgentDetailType> = {}): AgentDetailType {
     domain: "dev",
     valid: true,
     validation_errors: [],
+    tool_chips: [],
     raw_frontmatter: "name: dev-sr-frontend\nmodel: opus\ndescription: |\n  Senior FE.",
     full_description:
       "You are a senior frontend developer in a Next.js + React + TypeScript stack.",
@@ -176,5 +177,54 @@ describe("AgentDetail — diagnostics", () => {
   it("omits the diagnostics section when there are no errors", () => {
     render(<AgentDetail agent={detail()} />);
     expect(document.querySelector("[data-agent-diagnostics]")).toBeNull();
+  });
+});
+
+// Kanban #1021 AC6 — tools grouped by risk class on the detail page.
+function toolChip(name: string, risk_class: ToolChip["risk_class"]): ToolChip {
+  return { name, risk_class };
+}
+
+describe("AgentDetail — tool scope groups (AC6)", () => {
+  it("renders one group section per risk class present, in low->high order", () => {
+    const chips: ToolChip[] = [
+      toolChip("Bash", "shell-or-destructive"),
+      toolChip("Read", "read-only"),
+      toolChip("Edit", "write-edit"),
+      toolChip("Grep", "read-only"),
+    ];
+    render(<AgentDetail agent={detail({ tool_chips: chips })} />);
+    const groups = document.querySelectorAll("[data-tool-group]");
+    // 3 distinct classes present: read-only, write-edit, shell-or-destructive.
+    expect(groups.length).toBe(3);
+    const order = Array.from(groups).map((g) =>
+      g.getAttribute("data-tool-group-risk"),
+    );
+    expect(order).toEqual(["read-only", "write-edit", "shell-or-destructive"]);
+
+    // read-only group contains both Read and Grep.
+    const readGroup = document.querySelector(
+      '[data-tool-group][data-tool-group-risk="read-only"]',
+    )!;
+    expect(readGroup.textContent).toContain("Read");
+    expect(readGroup.textContent).toContain("Grep");
+    // Each group carries a 1-line explanation.
+    expect(readGroup.textContent).toContain("cannot change files");
+  });
+
+  it("omits the tool-scope section entirely when tool_chips is empty", () => {
+    render(<AgentDetail agent={detail({ tool_chips: [] })} />);
+    expect(document.querySelector("[data-agent-tool-groups]")).toBeNull();
+  });
+
+  it("shows the detail-page risk badge driven by the highest-risk chip", () => {
+    const chips: ToolChip[] = [
+      toolChip("Read", "read-only"),
+      toolChip("WebFetch", "external"),
+    ];
+    render(<AgentDetail agent={detail({ tool_chips: chips })} />);
+    const badge = document.querySelector("[data-agent-risk-badge]");
+    expect(badge).not.toBeNull();
+    expect(badge?.getAttribute("data-agent-risk-badge")).toBe("external");
   });
 });

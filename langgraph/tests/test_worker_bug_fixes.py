@@ -61,9 +61,23 @@ def _make_client(handler) -> httpx.AsyncClient:
 
 
 def _make_graph_module(ainvoke_impl, aget_state_impl=None) -> SimpleNamespace:
-    graph = SimpleNamespace(ainvoke=ainvoke_impl)
-    if aget_state_impl is not None:
-        graph.aget_state = aget_state_impl
+    # #2664 — default aget_state(created_at=None) so the fresh-pickup clear in
+    # _poll_once (has_checkpoint -> compiled.aget_state) is SKIPPED unless a test
+    # supplies its own aget_state. checkpointer.adelete_thread is a no-op stub so
+    # any test that DOES reach the clear (e.g. h3-retry monkeypatches
+    # has_checkpoint -> True) doesn't AttributeError on compiled.checkpointer.
+    if aget_state_impl is None:
+        async def aget_state_impl(config):  # noqa: ANN001 — test stub
+            return SimpleNamespace(created_at=None)
+
+    async def _adelete_thread(thread_id):
+        return None
+
+    graph = SimpleNamespace(
+        ainvoke=ainvoke_impl,
+        aget_state=aget_state_impl,
+        checkpointer=SimpleNamespace(adelete_thread=_adelete_thread),
+    )
     return SimpleNamespace(graph=graph)
 
 

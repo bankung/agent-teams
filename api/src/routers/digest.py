@@ -35,8 +35,6 @@ from src.models.project import Project
 from src.services.digest_template import (
     fetch_open_audit_flags,
     render_html,
-    render_push_body,
-    render_push_title,
     render_subject,
     render_text,
 )
@@ -45,7 +43,6 @@ from src.services.notify_email import (
     EMAIL_ENV_USER,
     send_email,
 )
-from src.services.notify_ntfy import NTFY_ENV_ENABLED, NTFY_ENV_TOPIC, send_push
 from src.services.skill_stub_detector import run_skill_stub_detector
 from src.services.stale_doc_curator import run_stale_doc_curator
 
@@ -63,7 +60,7 @@ class DigestFireResponse(BaseModel):
 
     ok=True when SMTP accepted the message; False when disabled or failed.
     detail mirrors email SendResult.detail.
-    push_ok=True when ntfy accepted the push; push_detail mirrors push SendResult.detail.
+    push_ok: always False (push channel removed #2756); push_detail='push_disabled'.
     flag_count, recipient, subject are informational for the caller / cron log.
     email_skipped_reason: non-null when email was skipped by a gate other than
       DIGEST_EMAIL_ENABLED env (e.g. "opted_out_per_project" for Kanban #1437).
@@ -202,33 +199,8 @@ async def fire_digest(
             result.detail, recipient, flag_count,
         )
 
-    # --- Push channel (independent of email; soft-fail) ---------------------
-    push_enabled = os.environ.get(NTFY_ENV_ENABLED, "false").strip().lower() == "true"
-    push_topic = os.environ.get(NTFY_ENV_TOPIC, "").strip()
-
     push_ok: bool = False
     push_detail: str = "push_disabled"
-
-    if push_enabled and push_topic:
-        push_title = render_push_title(flag_count, today)
-        push_message = render_push_body(flags)
-        click_url = base_url.rstrip("/") + "/review"
-
-        push_result = await asyncio.to_thread(
-            send_push,
-            push_message,
-            title=push_title,
-            click_url=click_url,
-        )
-        push_ok = push_result.ok
-        push_detail = push_result.detail
-
-        if not push_result.ok:
-            logger.warning(
-                "digest fire: push send failed detail=%r flag_count=%d",
-                push_result.detail, flag_count,
-            )
-    # -----------------------------------------------------------------------
 
     return DigestFireResponse(
         ok=result.ok,

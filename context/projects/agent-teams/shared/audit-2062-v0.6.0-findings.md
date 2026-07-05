@@ -3,7 +3,7 @@
 **Date:** 2026-06-08 · **Task:** #2062 (milestone v0.6.0) · **Mode:** read-only audit, no fixes applied this round.
 **Reviewers:** dev-reviewer (quality, sonnet) + dev-security-reviewer (security, sonnet).
 **Scope:** surfaces in `origin/main..dev` NOT covered by #2045 (email/calendar/resources/langgraph) or #1005 (comments):
-CLI installer (`cli/index.js` + `cli/lib/*`), tn-* skills (`.claude/skills/tn-*`), `audit_archive.py`/`audit.py`,
+CLI installer (`cli/index.js` + `cli/lib/*`), zb-* skills (`.claude/skills/zb-*`), `audit_archive.py`/`audit.py`,
 adjust UI (`AdjustFlagForm.tsx`/`TerminateFlagModal.tsx`), Playwright e2e (`web/e2e/*`), `bin/email-audit-rotate.ps1`.
 
 > Severity column = **Lead-reconciled** (the two reviewers were internally inconsistent on F-07; Lead set it to Med — a
@@ -18,7 +18,7 @@ adjust UI (`AdjustFlagForm.tsx`/`TerminateFlagModal.tsx`), Playwright e2e (`web/
 | **#2065** | audit_archive.py + audit.py | dev-backend | F-12, F-14 (High); F-13, FIND-03, FIND-04 (Med); F-15 (Low) | HIGH |
 | **#2066** | AdjustFlagForm + TerminateFlagModal | dev-frontend | F-16 (High); F-17, F-18 (Med); F-19 (Low) | HIGH |
 | **#2067** | Playwright e2e specs | dev-tester | F-20 (High, latent); F-21, F-22, F-23, F-24 (Med); F-25, F-26 (Low) | NORMAL |
-| **#2068** | tn-* skills doc-drift | dev-devops | F-07, F-08, F-09 (Med); F-10, F-11 (Low) | NORMAL |
+| **#2068** | zb-* skills doc-drift | dev-devops | F-07, F-08, F-09 (Med); F-10, F-11 (Low) | NORMAL |
 
 ## SECURITY findings (dev-security-reviewer)
 
@@ -37,7 +37,7 @@ adjust UI (`AdjustFlagForm.tsx`/`TerminateFlagModal.tsx`), Playwright e2e (`web/
 
 **CLI installer:** F-01 (High) `cli/index.js:603` cmdReset calls `cmdUp([])` discarding flags (e.g. `--images`) → reset always source-builds. · F-02 (Med) `:633` cmdReset invoked with `"reset"` injected into argv. · F-03 (Low) `health.js:43` elapsed counter steps by interval not wall-clock. · F-04 (Low) `docker.js:45` `docker info` no timeout → can hang. · F-05 (Low) `confirm.js:15` no EOF/close handler → hangs on closed stdin. · F-06 (Low) `index.js:225` readline `terminal:false` mismatch.
 
-**tn-* skills:** F-07 (Med, *reviewer-inconsistent*) `tn-task-create:54` example `priority:3` contradicts "default normal" prose → copy creates HIGH tasks. · F-08 (Med) `tn-task-create:74` lists `200` as success but POST returns 201 only. · F-09 (Med) `tn-audit` "no X-Project-Id" + project filtering note vs cross-project endpoint reality. · F-10 (Low) `tn-tasks-next` `limit=500` vs server cap. · F-11 (Low) `tn-milestone-done` 0/0 progress when all tasks cancelled → blocks release forever.
+**zb-* skills:** F-07 (Med, *reviewer-inconsistent*) `zb-task-create:54` example `priority:3` contradicts "default normal" prose → copy creates HIGH tasks. · F-08 (Med) `zb-task-create:74` lists `200` as success but POST returns 201 only. · F-09 (Med) `zb-audit` "no X-Project-Id" + project filtering note vs cross-project endpoint reality. · F-10 (Low) `zb-tasks-next` `limit=500` vs server cap. · F-11 (Low) `zb-milestone-done` 0/0 progress when all tasks cancelled → blocks release forever.
 
 **audit module:** F-12 (High) `audit_archive.py:133-148` `total_archived` uses pre-flight count not `UPDATE.rowcount` (TOCTOU). · F-14 (High) `audit.py:77` `date.today()` (local TZ) vs UTC `timestamptz` → day-boundary mismatch; use `datetime.now(timezone.utc).date()`. · F-13 (Med) `audit_archive.py:183` self-commit vs docstring "caller commits". · F-15 (Low) magic `"verdict"` JSONB key strings.
 

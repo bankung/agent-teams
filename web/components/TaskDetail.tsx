@@ -6,7 +6,6 @@ import {
   cancelTask,
   getTaskBlocks,
   invalidateAnswer,
-  listMilestones,
   patchTask,
   submitAnswer,
   type AcceptanceCriterion,
@@ -41,6 +40,12 @@ type Props = {
   task: TaskRead;
   allTasks: TaskRead[];
   projectId: number;
+  // #2699 FE audit F1 — Board already loads the project's milestones
+  // (Board.tsx:401); TaskDetail consumes that list instead of re-fetching an
+  // identical GET on every drawer mount. Same shape as the old own-fetch: may
+  // be [] transiently if the drawer opens before Board's effect resolves —
+  // MilestoneCombobox already degrades gracefully (falls back to "#<id>").
+  milestones: MilestoneRead[];
   onClose: () => void;
   onPatch: (updated: TaskRead) => void;
   onError: (message: string) => void;
@@ -72,6 +77,7 @@ export function TaskDetail({
   task,
   allTasks,
   projectId,
+  milestones,
   onClose,
   onPatch,
   onError,
@@ -96,7 +102,6 @@ export function TaskDetail({
   }, [task.id, task.model_override]);
 
   // #1868 — milestone + due date optimistic-PATCH state (same posture as model_override)
-  const [milestones, setMilestones] = useState<MilestoneRead[]>([]);
   const [milestoneId, setMilestoneId] = useState<number | null>(
     task.milestone_id ?? null,
   );
@@ -141,31 +146,21 @@ export function TaskDetail({
     onPatch(patched);
   };
 
-  // Fetch milestones once for the picker; failure degrades to empty list.
-  useEffect(() => {
-    let cancelled = false;
-    listMilestones(projectId, { limit: 500 })
-      .then((rows) => {
-        if (!cancelled) setMilestones(rows);
-      })
-      .catch(() => {
-        if (!cancelled) setMilestones([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId]);
-
   // MED-2: stash deps in refs so the keydown listener subscribes ONCE ([] deps),
   // not on every SSE tick that re-creates the onClose arrow in Board.
   const cancelOpenRef = useRef(cancelOpen);
   const pickerOpenRef = useRef(pickerOpen);
   const submittingRef = useRef(submitting);
   const onCloseRef = useRef(onClose);
-  useEffect(() => { cancelOpenRef.current = cancelOpen; }, [cancelOpen]);
-  useEffect(() => { pickerOpenRef.current = pickerOpen; }, [pickerOpen]);
-  useEffect(() => { submittingRef.current = submitting; }, [submitting]);
-  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+  // #2726 N4/F6 — one no-deps effect (not a render-time assignment): react-hooks/refs
+  // errors on writing ref.current during render (verified via scratch host-eslint
+  // run, #2726). Runs every render, same as Board.tsx's tasksRef (Board.tsx:284-287).
+  useEffect(() => {
+    cancelOpenRef.current = cancelOpen;
+    pickerOpenRef.current = pickerOpen;
+    submittingRef.current = submitting;
+    onCloseRef.current = onClose;
+  });
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -265,6 +260,32 @@ export function TaskDetail({
       onPatch(updated);
     } catch (err: unknown) {
       const msg = extractErrorMessage(err, "Run failed");
+      onError(`Task #${task.id}: ${msg}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Kanban #2703 — bidirectional run-type (human ↔ auto) parity for the detail
+  // panel. Closes the one-way handleRun path: 'auto' writes ai+auto_pickup,
+  // 'human' writes human+manual — both fields in ONE atomic PATCH so the server
+  // HUMAN ⇒ MANUAL invariant never fires mid-flip. Optimistic + revert matches
+  // handleMilestoneChange. Reads task_kind directly (no local mirror needed —
+  // onPatch refreshes the row), guarded against re-entrancy via `submitting`.
+  const handleRunTypeChange = async (next: "human" | "auto") => {
+    if (submitting) return;
+    const current = task.task_kind === TaskKind.AI ? "auto" : "human";
+    if (next === current) return;
+    setSubmitting(true);
+    try {
+      const body =
+        next === "auto"
+          ? { task_kind: TaskKind.AI, run_mode: TaskRunMode.AUTO_PICKUP }
+          : { task_kind: TaskKind.HUMAN, run_mode: TaskRunMode.MANUAL };
+      const updated = await patchTask(projectId, task.id, body);
+      onPatch(updated);
+    } catch (err: unknown) {
+      const msg = extractErrorMessage(err, "Run-type change failed");
       onError(`Task #${task.id}: ${msg}`);
     } finally {
       setSubmitting(false);
@@ -427,6 +448,49 @@ export function TaskDetail({
                     >
                       {submitting ? "Queuing…" : "Run"}
                     </button>
+                  </div>
+                )}
+                {/* Kanban #2703 — bidirectional run-type (human ↔ auto). AC4: work
+                    tasks only (HITL question/decision are server-coerced human+
+                    manual) AND non-terminal (DONE/CANCELLED run-type is immutable). */}
+                {!isTerminal && task.interaction_kind === "work" && (
+                  <div className="mt-2" data-run-type-control>
+                    <span className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                      Run type
+                    </span>
+                    <span
+                      role="radiogroup"
+                      aria-label="Run type"
+                      data-run-type-toggle
+                      data-run-type-value={task.task_kind === TaskKind.AI ? "auto" : "human"}
+                      className="mt-1 inline-flex items-center overflow-hidden rounded border border-zinc-200 dark:border-zinc-700"
+                    >
+                      {(["human", "auto"] as const).map((kind) => {
+                        const active =
+                          (task.task_kind === TaskKind.AI ? "auto" : "human") === kind;
+                        return (
+                          <button
+                            key={kind}
+                            type="button"
+                            role="radio"
+                            aria-checked={active}
+                            aria-label={kind === "auto" ? "Auto (AI auto-pickup)" : "Human (manual)"}
+                            disabled={submitting}
+                            data-run-type-option={kind}
+                            data-run-type-active={active ? "true" : undefined}
+                            onClick={() => void handleRunTypeChange(kind)}
+                            className={
+                              "min-h-[44px] px-3 py-2 text-xs font-medium transition-colors disabled:opacity-50 sm:min-h-0 sm:px-2.5 sm:py-1 " +
+                              (active
+                                ? "bg-violet-600 text-white dark:bg-violet-600"
+                                : "bg-white text-zinc-600 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800")
+                            }
+                          >
+                            {kind === "auto" ? "Auto" : "Human"}
+                          </button>
+                        );
+                      })}
+                    </span>
                   </div>
                 )}
                 {/* #1349 — HITL nudge toggle; terminal tasks don't fire nudges so hidden there */}

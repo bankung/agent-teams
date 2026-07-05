@@ -8,7 +8,7 @@ primitive (`services/operator_auth.check_operator_proof` / `require_operator_pro
 Tier model under test (per #1852 design §5 / #1859 AC):
   read           OPEN  — no operator-proof (status/usage GET succeed even ACTIVE).
   reply/send/delete   PROOF — operator-proof required; absent + ACTIVE -> 403.
-  external_send  ESCALATE — operator-proof + out-of-band push/ntfy confirm + HALT.
+  external_send  ESCALATE — operator-proof + 202 HALT unless proven.
 
 The only mutating endpoint that exists on `/api/tools/email/*` today is `trash`
 (Gmail + Outlook). Per the design, trash is the `delete` tier — so the endpoint
@@ -145,27 +145,13 @@ def test_tier_helper_above_read_requires_proof(tier):
 # ===========================================================================
 
 
-def test_external_send_no_proof_fires_push_and_halts_202(monkeypatch):
-    """AC#2: external_send WITHOUT operator-proof -> ntfy push fired + HTTP 202 HALT.
+def test_external_send_no_proof_halts_202(monkeypatch):
+    """AC#2: external_send WITHOUT operator-proof -> HTTP 202 HALT.
 
-    POSITIVE: send_push is invoked (the out-of-band confirm really fires).
     NEGATIVE lock: a 202 (NOT 200) is raised, so the caller does NOT proceed
     with the send.
     """
     from fastapi import HTTPException
-
-    calls: list[dict] = []
-
-    def _fake_send_push(message, **kwargs):
-        calls.append({"message": message, **kwargs})
-
-        class _R:
-            ok = True
-            detail = "sent"
-
-        return _R()
-
-    monkeypatch.setattr(tools_email, "send_push", _fake_send_push)
 
     with pytest.raises(HTTPException) as exc:
         _escalate_external_send_or_202(
@@ -177,45 +163,16 @@ def test_external_send_no_proof_fires_push_and_halts_202(monkeypatch):
     assert exc.value.detail["halt_reason"] == "operator_confirm_required"
     assert "operator_confirm_pending" in exc.value.detail["message"]
 
-    # POSITIVE: the out-of-band push really fired exactly once.
-    assert len(calls) == 1
-    assert "awaiting your confirmation" in calls[0]["message"]
 
-
-def test_external_send_with_proof_passes_through_no_push(monkeypatch):
+def test_external_send_with_proof_passes_through(monkeypatch):
     """external_send WITH operator-proof -> pass through (operator approved OOB).
 
     POSITIVE: no exception (the caller proceeds with the send).
-    NEGATIVE lock: send_push is NOT called (no redundant confirm when already proven).
     """
-    calls: list = []
-    monkeypatch.setattr(tools_email, "send_push", lambda *a, **k: calls.append(1))
-
     # Must NOT raise — operator already presented the token out-of-band.
     _escalate_external_send_or_202(
         OperatorDecision.OPERATOR, project_id=_PROJ, summary="to bob@x.com"
     )
-    assert calls == [], "send_push must not fire when proof is already present"
-
-
-def test_external_send_push_failure_still_halts_202(monkeypatch):
-    """A push send failure (send_push raising) must NOT turn the HALT into a 500.
-
-    The 202 HALT still fires even when the out-of-band channel errors — push is
-    observability, the HALT is correctness.
-    """
-    from fastapi import HTTPException
-
-    def _boom(*a, **k):
-        raise RuntimeError("ntfy down")
-
-    monkeypatch.setattr(tools_email, "send_push", _boom)
-
-    with pytest.raises(HTTPException) as exc:
-        _escalate_external_send_or_202(
-            OperatorDecision.NOT_OPERATOR, project_id=_PROJ, summary="x"
-        )
-    assert exc.value.status_code == 202
 
 
 # ===========================================================================

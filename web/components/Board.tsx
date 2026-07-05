@@ -19,6 +19,7 @@ import {
   type ProjectRead,
   type ProjectStatsEntry,
   type TaskRead,
+  type UsageSessionsResponse,
 } from "@/lib/api";
 import { orderMilestonesForPicker } from "@/lib/milestoneOrder";
 
@@ -36,6 +37,7 @@ import { sortDoneLane, sortLaneTasks } from "@/lib/sortLaneTasks";
 import { useRowChangedEvents } from "@/lib/useRowChangedEvents";
 import { ConnectionStateBadge } from "@/components/ConnectionStateBadge";
 import { CostSummary } from "@/components/CostSummary";
+import { SessionCostPanel } from "@/components/SessionCostPanel";
 import { Icon } from "@/components/Icon";
 import { PnlSummaryCard } from "@/components/PnlSummaryCard";
 import { ProgressChartsPanel } from "@/components/ProgressChartsPanel";
@@ -57,6 +59,7 @@ const TaskDetail = dynamic(
 import { ToastStack, type ToastMessage } from "@/components/Toast";
 import { ViewSwitcher } from "@/components/ViewSwitcher";
 import { FINANCE_PANELS_ENABLED } from "@/lib/featureFlags";
+import { ModalShell } from "@/components/ModalShell";
 
 type Props = {
   initialTasks: TaskRead[];
@@ -72,6 +75,22 @@ type Props = {
   // Kanban #1292 — SSR-fetched burndown + velocity series for the progress
   // charts panel. Always present (the BE zero-fills every bucket).
   progressStats: ProgressStatsResponse;
+  // Kanban #2735 — SSR-fetched page 1 of per-session cost (scoped to this
+  // project). Prop-driven initial render; SessionCostPanel pages "Load more"
+  // client-side. Optional: the server page always supplies it (an empty page on
+  // a fetch error); omitting it (e.g. in tests) falls back to EMPTY_SESSIONS so
+  // the panel renders its empty state rather than crashing.
+  initialSessions?: UsageSessionsResponse;
+};
+
+// #2735 — empty-page fallback when initialSessions is omitted. Mirrors the
+// server-side .catch shape so the panel's empty-state path is identical.
+const EMPTY_SESSIONS: UsageSessionsResponse = {
+  sessions: [],
+  limit: 50,
+  offset: 0,
+  returned: 0,
+  total_cost_usd: "0.0000",
 };
 
 type Column = { statuses: TaskStatusValue[]; label: string; key: string };
@@ -252,11 +271,20 @@ export function computeDoneTotalCount(
   return undefined;
 }
 
-export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, project, projectStats, progressStats }: Props) {
+export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, project, projectStats, progressStats, initialSessions = EMPTY_SESSIONS }: Props) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [tasks, setTasks] = useState<TaskRead[]>(initialTasks);
+  // #2699 F2 — stable read-latest-tasks ref for onSameLaneReorder (keeps its
+  // useCallback deps free of `tasks`, so an unrelated SSE-driven setTasks no
+  // longer invalidates it every tick). Synced post-commit (react-hooks/refs:
+  // no ref writes during render) — mirrors AgentFormModal.tsx/ModalShell.tsx's
+  // editAgentRef/onCloseRef pattern.
+  const tasksRef = useRef(tasks);
+  useEffect(() => {
+    tasksRef.current = tasks;
+  });
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
   // #1001 follow-up (2026-05-20) — `?task=<id>` deep-link state. Set when
@@ -284,6 +312,15 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
   // require operator action. Default OFF (show all tasks); operator toggles ON
   // to see ONLY gated tasks. Session-scoped; no localStorage persistence.
   const [showOperatorGateOnly, setShowOperatorGateOnly] = useState(false);
+
+  // Kanban #2664 — confirm guard for destructive re-queue drops (AI task dragged
+  // back to TODO after it has already run). Holds the pending drop args until
+  // the user confirms; null = no dialog shown.
+  const [rerunConfirm, setRerunConfirm] = useState<{
+    taskId: number;
+    newPs: TaskStatusValue;
+    original: TaskRead;
+  } | null>(null);
 
   // #1868 v1.1 — milestone filter. "all" = no filter (default); "none" = only
   // tasks with milestone_id == null; number = only tasks pointing at that
@@ -334,11 +371,18 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
     setDonePagination({ count: DONE_PAGE, filterKey: currentFilterKey });
   }
   const visibleDoneCount = donePagination.count;
-  const setVisibleDoneCount = (updater: number | ((n: number) => number)) =>
-    setDonePagination((prev) => ({
-      count: typeof updater === "function" ? updater(prev.count) : updater,
-      filterKey: prev.filterKey,
-    }));
+  // #2699 F2 — useCallback (not a plain const) so the wrapper's identity is
+  // stable across renders. It closes only over setDonePagination (a useState
+  // setter, itself stable), so `[]` deps are correct — the inline functional
+  // updater always reads the LATEST donePagination.prev at call time.
+  const setVisibleDoneCount = useCallback(
+    (updater: number | ((n: number) => number)) =>
+      setDonePagination((prev) => ({
+        count: typeof updater === "function" ? updater(prev.count) : updater,
+        filterKey: prev.filterKey,
+      })),
+    [],
+  );
   const [doneHasMore, setDoneHasMore] = useState(initialDoneHasMore);
   const [doneLoadingMore, setDoneLoadingMore] = useState(false);
 
@@ -480,7 +524,10 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
 
   // Kanban #2111 Part 3c — callbacks passed to BoardDndCanvas (owns dnd-kit).
   // Cross-lane: optimistic setTasks + PATCH; revert on error (mirrors original onDragEnd).
-  const onCrossLaneDrop = useCallback(
+  // Kanban #2664 — destructive gate: dragging a previously-run AI task into TODO
+  // re-queues it (discards its prior run). Show a confirm dialog before any state
+  // change; only proceed on confirm.
+  const applyLaneDrop = useCallback(
     (taskId: number, newPs: TaskStatusValue, original: TaskRead) => {
       setTasks((prev) =>
         prev.map((t) =>
@@ -504,16 +551,34 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
     [project.id, pushToast],
   );
 
+  const onCrossLaneDrop = useCallback(
+    (taskId: number, newPs: TaskStatusValue, original: TaskRead) => {
+      const isDestructive =
+        newPs === TaskStatus.TODO &&
+        original.task_kind === "ai" &&
+        original.started_at !== null;
+      if (isDestructive) {
+        setRerunConfirm({ taskId, newPs, original });
+        return;
+      }
+      applyLaneDrop(taskId, newPs, original);
+    },
+    [applyLaneDrop],
+  );
+
   // Kanban #2112 — server-side DONE Load-more handler.
   // Cursor = last task in the DONE bucket sorted by sortDoneLane (updated_at DESC,
   // id DESC). We re-derive it from the current `tasks` snapshot rather than
   // relying on the `grouped` memo (which is declared below) to avoid a
   // "used before declaration" error — the result is identical since
   // sortDoneLane is a pure function.
+  // #2699 F2 — reads tasksRef.current (see onSameLaneReorder above) so this
+  // callback (passed to BoardDndCanvas as onLoadMoreDone) is also stable
+  // across an SSE-driven setTasks; otherwise it alone would defeat the memo.
   const handleLoadMoreDone = useCallback(async () => {
     if (!doneHasMore || doneLoadingMore) return;
     const sortedDone = sortDoneLane(
-      tasks.filter((t) => t.process_status === TaskStatus.DONE),
+      tasksRef.current.filter((t) => t.process_status === TaskStatus.DONE),
     );
     const lastDone = sortedDone[sortedDone.length - 1];
     if (!lastDone) return;
@@ -538,14 +603,18 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
     } finally {
       setDoneLoadingMore(false);
     }
-  }, [doneHasMore, doneLoadingMore, tasks, project.id, pushToast]);
+  }, [doneHasMore, doneLoadingMore, project.id, pushToast, setVisibleDoneCount]);
 
   // Same-lane: no optimistic mutation (dnd-kit transform handles visual; snap-back on 422). Details: shared/decisions.md 2026-05-14
+  // #2699 F2 — reads tasksRef.current (not the `tasks` state var) so this
+  // callback's identity is stable across an SSE tick's setTasks; the reorder
+  // math still reads the CURRENT tasks snapshot at call time via the ref.
   const onSameLaneReorder = useCallback(
     (taskId: number, overTaskId: number, laneIds: number[]) => {
-      const original = tasks.find((t) => t.id === taskId);
+      const currentTasks = tasksRef.current;
+      const original = currentTasks.find((t) => t.id === taskId);
       if (!original) return;
-      const overTask = tasks.find((t) => t.id === overTaskId);
+      const overTask = currentTasks.find((t) => t.id === overTaskId);
       if (!overTask) return;
       const oldIndex = laneIds.indexOf(original.id);
       const newIndex = laneIds.indexOf(overTask.id);
@@ -563,7 +632,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
           pushToast(`Task #${taskId}: ${msg}`);
         });
     },
-    [tasks, project.id, pushToast],
+    [project.id, pushToast],
   );
 
   // #1238 GOV3 — audit-task tally is computed against the unfiltered list so
@@ -804,6 +873,16 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
             />
           </div>
         </div>
+        {/* Kanban #2735 — per-session cost panel. Its OWN full-width collapsible
+            section BELOW the 3-up panels band (it's a list — too tall for the
+            band). defaultCollapsed=true + storageKey persists per-project. */}
+        <SessionCostPanel
+          data={initialSessions}
+          projectId={project.id}
+          defaultCollapsed
+          storageKey={`project.${project.id}.panels.sessions.expanded`}
+          className="mt-3 min-w-0"
+        />
         {/* #1209 GOV1 D5 — red strip above the consent banner when killed.
             (Renders nothing when is_killed=false.) */}
         <KilledBanner project={project} />
@@ -812,8 +891,8 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
         <PausedBanner project={project} />
       </header>
       {/* Wave A.1 — toolbar row: left cluster (audit + scheduled chips),
-          centre (inline headless control), right (+New).
-          Audit/scheduled moved here from nav row; headless banner condensed
+          centre (inline autonomous control), right (+New).
+          Audit/scheduled moved here from nav row; autonomous banner condensed
           from standalone full-width section. */}
       <div
         className="mb-3 flex flex-wrap items-center gap-2"
@@ -882,9 +961,9 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
             </select>
           </label>
         )}
-        {/* Inline headless control — replaces the standalone
+        {/* Inline autonomous control — replaces the standalone
             ProjectConsentBanner section. Shows consent date when granted;
-            shows a compact "Headless: off · Enable" chip when not granted
+            shows a compact "Autonomous: off · Enable" chip when not granted
             (clicking opens the same ProjectConsentGrantModal). The
             hasHeadlessTask warning is surfaced as an amber inline badge. */}
         {project.auto_run_consent_at !== null ? (
@@ -892,7 +971,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
             className="inline-flex items-center gap-1.5 rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs text-emerald-800 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300"
             data-headless-status="granted"
           >
-            Headless: on · {project.auto_run_consent_at.slice(0, 10)}
+            Autonomous: on · {project.auto_run_consent_at.slice(0, 10)}
             {hasHeadlessTask && (
               <span className="font-semibold text-amber-700 dark:text-amber-300">⚠ active</span>
             )}
@@ -902,7 +981,7 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
             className="inline-flex items-center gap-0 rounded border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"
             data-headless-status="off"
           >
-            Headless: off
+            Autonomous: off
             {hasHeadlessTask && (
               <span className="ml-1.5 text-amber-700 dark:text-amber-300">⚠</span>
             )}
@@ -938,6 +1017,8 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
           onSameLaneReorder={onSameLaneReorder}
           projectId={project.id}
           blockingTaskIds={blockingTaskIds}
+          onPatch={onPatchedTask}
+          onError={pushToast}
         />
       )}
       {/* #2371 (R1) — AuditHistorySection moved to project settings page. */}
@@ -947,12 +1028,56 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
           task={selectedTask}
           allTasks={tasks}
           projectId={project.id}
+          milestones={milestones}
           onClose={() => setSelectedTaskId(null)}
           onPatch={onPatchedTask}
           onError={pushToast}
         />
       )}
       <ToastStack messages={toasts} onDismiss={dismissToast} />
+      {/* Kanban #2664 — re-run confirm dialog. Shown only when a previously-run
+          AI task is dragged back to TODO (destructive: discards its prior run).
+          No optimistic move until the user confirms. */}
+      <ModalShell
+        open={rerunConfirm !== null}
+        onClose={() => setRerunConfirm(null)}
+        labelledBy="rerun-confirm-title"
+        maxWidth="sm"
+        backdropProps={{ "data-rerun-confirm-backdrop": true }}
+      >
+        <h2
+          id="rerun-confirm-title"
+          className="text-sm font-semibold uppercase tracking-wide text-zinc-900 dark:text-zinc-100"
+        >
+          Re-run #{rerunConfirm?.taskId}
+        </h2>
+        <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
+          Discards its previous run and starts over. Continue?
+        </p>
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setRerunConfirm(null)}
+            className="rounded border border-zinc-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-700 hover:border-zinc-300 hover:text-zinc-900 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+            data-rerun-confirm-cancel
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (!rerunConfirm) return;
+              const { taskId, newPs, original } = rerunConfirm;
+              setRerunConfirm(null);
+              applyLaneDrop(taskId, newPs, original);
+            }}
+            className="rounded border border-amber-600 bg-amber-600 px-3 py-2 text-xs font-medium uppercase tracking-wide text-white hover:bg-amber-700 min-h-[44px] sm:min-h-0 sm:px-2 sm:py-1 dark:border-amber-500 dark:bg-amber-500 dark:hover:bg-amber-600"
+            data-rerun-confirm-ok
+          >
+            Re-run
+          </button>
+        </div>
+      </ModalShell>
       {/* #1582 — board phase of the first-visit product tour. Renders null
           unless the dashboard phase handed off (localStorage baton); then runs
           the board + task-drawer steps and finalizes the tour. projectName gates

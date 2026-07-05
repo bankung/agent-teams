@@ -1,5 +1,7 @@
 # Remote access
 
+> **Status note (2026-07-01, #2756):** The `bin/tailscale-status.*` and `bin/remote-url.*` helper scripts were **deleted** in #2756 and are no longer present in the repo. The ntfy push integration was also removed. The manual Tailscale steps below (sections 1–5) remain accurate; only the convenience scripts are gone. Push notifications are now delivered via Telegram (`TELEGRAM_BOT_TOKEN` / `TELEGRAM_OPERATOR_CHAT_ID`) — see the Email digest section for non-push alternatives.
+
 How to reach a self-hosted agent-teams instance from outside the home network — phone on cellular, laptop at a coffee shop, a second workstation — without opening any inbound ports on the home router.
 
 The recommended path is **Tailscale**: a zero-config WireGuard mesh with a free tier that covers personal use. Alternatives are listed at the end for users who can't or don't want to use Tailscale.
@@ -176,45 +178,31 @@ The VPS exposes `<vps>:5431` and forwards traffic back over SSH. Add `autossh` f
 
 ## Optional helper scripts
 
-The repo ships two small wrappers under `bin/`:
-
-- `bin/tailscale-status.{ps1,sh}` — wraps `tailscale status` with a friendly header. Exits non-zero if Tailscale isn't installed or the daemon isn't running.
-- `bin/remote-url.{ps1,sh}` — prints the `http://<this-machine>.<tailnet>.ts.net:<port>` URL for the host, using the local Tailscale state. Useful for quickly copying the URL to a phone.
-
-Both scripts are pure shell (PowerShell on Windows, bash elsewhere) and assume `tailscale` is on `PATH`.
+> **Removed in #2756.** `bin/tailscale-status.{ps1,sh}` and `bin/remote-url.{ps1,sh}` no longer exist in the repo. Run `tailscale status` and `tailscale ip -4` directly from your terminal for the same information.
 
 ## Push notifications
 
-Daily task summaries and HITL alerts can be pushed to your phone via ntfy.sh — a free public notification broker. No account, no app subscriptions, minimal setup.
+> **ntfy removed in #2756.** The ntfy.sh push integration no longer exists. Push is now delivered via **Telegram** (the `notify_telegram.py` adapter, #2757).
 
-### iOS / Android setup
+### Telegram setup
 
-1. **Install the ntfy app:**
-   - **iOS:** [App Store](https://apps.apple.com/app/ntfy/id1625396347) — search "ntfy".
-   - **Android:** [Play Store](https://play.google.com/store/apps/details?id=io.heckel.ntfy) — search "ntfy".
-
-2. **Subscribe to your topic in the app:**
-   - Open the app → **Add subscription**.
-   - Enter the topic name you configured in `NTFY_TOPIC` in `.env` (e.g., `agent-teams-abc123`).
-   - Choose whether to allow notifications (recommended: yes).
-   - Tap **Save**.
-
-3. **Test from your laptop:**
+1. Create a bot via BotFather in Telegram (`/newbot`) and copy the bot token.
+2. Send your new bot a message (so it has a chat to reply to), then fetch your chat ID:
    ```bash
-   curl -d "hello world" https://ntfy.sh/your-topic-name
-   # (Replace with your actual topic.)
+   curl "https://api.telegram.org/bot<TOKEN>/getUpdates"
+   # Look for "chat":{"id":<number>} in the response.
    ```
-   The message should appear in the app within seconds.
+3. Add to root `.env`:
+   ```
+   TELEGRAM_BOT_TOKEN=<token>
+   TELEGRAM_OPERATOR_CHAT_ID=<chat_id>
+   ```
+4. Recreate the api container:
+   ```bash
+   docker compose up -d api
+   ```
 
-### Topic naming
-
-ntfy topics are **world-readable and world-writable by default**. If you use the free public `https://ntfy.sh` service, anyone who knows your topic name can see (or send fake) notifications. Mitigation:
-
-- **Use an obscure topic name** (e.g., `agent-teams-a7k9j2x1q8`) rather than `agent-teams` or `my-tasks`. A random 8+ character suffix makes brute-force discovery impractical.
-- **Self-host ntfy** (optional) — Run `docker run -p 8080:8080 binwiederhier/ntfy serve` on your server, point `NTFY_BASE_URL=http://<host>:8080` in `.env`, and add your own auth. Follow-up: Kanban #1218.
-- **Private instance** — On self-hosted, restrict topic creation to authenticated users only (ntfy server config).
-
-For most personal setups, the obscure-name approach is sufficient.
+The Telegram poller (`api/scripts/telegram_poller.py`) runs as a background process. It picks up operator replies to HITL cards and forwards them to the `/api/tasks/{id}/decide` endpoint. Only messages from the configured `TELEGRAM_OPERATOR_CHAT_ID` are accepted.
 
 ## Email digest
 

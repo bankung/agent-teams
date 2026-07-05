@@ -726,6 +726,18 @@ class Task(Base):
             postgresql_using="gin",
             postgresql_ops={"acceptance_criteria": "jsonb_path_ops"},
         ),
+        # Kanban #2352: GIN index for the agent-gallery spawn-history query's
+        # `@>` containment pre-filter (fetch_agent_spawns in
+        # services/agent_spawns.py). jsonb_path_ops opclass — indexes @> only,
+        # matching the query's exclusive use of containment. Mirror of
+        # migration 0074's index (keeps ORM autogenerate in lockstep with the
+        # live DDL).
+        Index(
+            "ix_tasks_subagent_models_gin",
+            "subagent_models",
+            postgresql_using="gin",
+            postgresql_ops={"subagent_models": "jsonb_path_ops"},
+        ),
         # Kanban #2505: next-autorun hot path — WHERE project_id=? AND
         # process_status=1 AND status=1 AND run_mode IN ('auto','auto_headless').
         # Partial predicate keeps the index sparse (~175 active-TODO rows today).

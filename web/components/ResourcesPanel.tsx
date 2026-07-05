@@ -46,6 +46,11 @@ type Props = {
 };
 
 const FLASH_MS = 1500;
+// PERF-1 (#1315 deferred review) — mirrors the BE's list_resources default
+// (api/src/routers/resources.py:406, `limit: int = Query(default=50, ...)`).
+// A returned page shorter than this signals "no more rows" (Board.tsx's
+// DONE-lane load-more uses the same shorter-than-limit heuristic).
+const PAGE_SIZE = 50;
 
 export function ResourcesPanel({ projectId, defaultCollapsed = true }: Props) {
   const storageKey = `resources-panel:${projectId}`;
@@ -63,6 +68,10 @@ export function ResourcesPanel({ projectId, defaultCollapsed = true }: Props) {
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // PERF-1 — true once a fetched page came back at exactly PAGE_SIZE (i.e.
+  // there may be more rows beyond what's loaded).
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const [kindFilter, setKindFilter] = useState<KindFilter>("all");
   const [sortKey, setSortKey] = useState<SortKey>("uploaded");
@@ -87,10 +96,11 @@ export function ResourcesPanel({ projectId, defaultCollapsed = true }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const rows = await listResources(projectId);
+      const rows = await listResources(projectId, { limit: PAGE_SIZE });
       if (!cancelledRef.current) {
         setResources(rows);
         setLoaded(true);
+        setHasMore(rows.length === PAGE_SIZE);
       }
     } catch (err: unknown) {
       if (!cancelledRef.current)
@@ -99,6 +109,38 @@ export function ResourcesPanel({ projectId, defaultCollapsed = true }: Props) {
       if (!cancelledRef.current) setLoading(false);
     }
   }, [projectId]);
+
+  // PERF-1 (#1315 deferred review) — GET /api/projects/{id}/resources takes
+  // ?limit&offset (api/src/routers/resources.py:401-439, default 50 / max
+  // 500), so this wires a real "Load more" rather than a documented-cap
+  // comment. Offset = current unfiltered row count (mirrors Board.tsx's
+  // handleLoadMoreDone: append + dedupe by id + hasMore from page length).
+  // Unfiltered on purpose — kindFilter/sortKey are client-side views over the
+  // full loaded list, matching how `refresh()` above already fetches
+  // unfiltered.
+  const handleLoadMore = useCallback(async () => {
+    if (!hasMore || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await listResources(projectId, {
+        limit: PAGE_SIZE,
+        offset: resources.length,
+      });
+      if (!cancelledRef.current) {
+        setResources((prev) => {
+          const existingIds = new Set(prev.map((r) => r.id));
+          const novel = page.filter((r) => !existingIds.has(r.id));
+          return [...prev, ...novel];
+        });
+        setHasMore(page.length === PAGE_SIZE);
+      }
+    } catch (err: unknown) {
+      if (!cancelledRef.current)
+        setError(extractErrorMessage(err, "Could not load more resources"));
+    } finally {
+      if (!cancelledRef.current) setLoadingMore(false);
+    }
+  }, [hasMore, loadingMore, projectId, resources.length]);
 
   // Lazy fetch: only when expanded AND not yet loaded. Avoids a fetch while
   // the panel sits collapsed at the bottom of every board.
@@ -301,18 +343,37 @@ export function ResourcesPanel({ projectId, defaultCollapsed = true }: Props) {
               )}
             </div>
           ) : (
-            <ul className="flex flex-col divide-y divide-zinc-100 dark:divide-zinc-800">
-              {visible.map((r) => (
-                <ResourceRow
-                  key={r.id}
-                  resource={r}
-                  flash={flashId === r.id}
-                  deleting={deletingId === r.id}
-                  onPreview={() => setPreviewResource(r)}
-                  onDelete={() => onDelete(r)}
-                />
-              ))}
-            </ul>
+            <>
+              <ul className="flex flex-col divide-y divide-zinc-100 dark:divide-zinc-800">
+                {visible.map((r) => (
+                  <ResourceRow
+                    key={r.id}
+                    resource={r}
+                    flash={flashId === r.id}
+                    deleting={deletingId === r.id}
+                    onPreview={() => setPreviewResource(r)}
+                    onDelete={() => onDelete(r)}
+                  />
+                ))}
+              </ul>
+              {/* PERF-1 — offset pagination is over the unfiltered list (mirrors
+                  `refresh`/`handleLoadMore` above), so only offer it on the "all"
+                  view; a kind-filtered view is a client-side slice of what's
+                  already loaded and "more" there wouldn't fetch what's visible. */}
+              {hasMore && kindFilter === "all" && (
+                <div className="mt-2 flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => void handleLoadMore()}
+                    disabled={loadingMore}
+                    className="rounded border border-zinc-200 bg-white px-3 py-1.5 text-[11px] font-medium text-zinc-600 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                    data-resources-load-more
+                  >
+                    {loadingMore ? "Loading…" : "Load more"}
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
@@ -335,6 +396,28 @@ export function ResourcesPanel({ projectId, defaultCollapsed = true }: Props) {
 
 function rowName(r: Resource): string {
   return r.label ?? r.filename ?? r.url ?? `Resource #${r.id}`;
+}
+
+// TYPE-1 (#1315 deferred review) — the detected-format -> canonical-mime map
+// mirrors api/src/services/resource_verify.py's format keys ("csv" | "tsv" |
+// "json" | "xlsx" | "pdf" | "unknown") crossed with Python stdlib
+// mimetypes.guess_type() output for each extension (verified: text/csv,
+// text/tab-separated-values, application/json, application/pdf; xlsx has no
+// stdlib mimetype so it's intentionally absent — its mime chip is never
+// redundant). A mime chip is redundant when it's just that canonical value
+// restated (case-insensitive; a `; charset=...` suffix is ignored).
+const FORMAT_CANONICAL_MIME: Partial<Record<string, string>> = {
+  csv: "text/csv",
+  tsv: "text/tab-separated-values",
+  json: "application/json",
+  pdf: "application/pdf",
+};
+
+function isRedundantMime(mime: string, formatDetected: unknown): boolean {
+  if (typeof formatDetected !== "string") return false;
+  const canonical = FORMAT_CANONICAL_MIME[formatDetected];
+  if (!canonical) return false;
+  return mime.split(";")[0].trim().toLowerCase() === canonical;
 }
 
 function FilterChip({
@@ -384,7 +467,7 @@ function ResourceRow({
   const safeHref = (u: string | null | undefined) =>
     u && /^https?:\/\//i.test(u) ? u : "#";
 
-  // Inline tag chips: size (file) / mime / row_count (CSV).
+  // Inline tag chips: size (file) / format / row_count (CSV) / mime.
   const chips: Array<{ key: string; text: string }> = [];
   if (!isLink && resource.size_bytes != null)
     chips.push({ key: "size", text: formatBytes(resource.size_bytes) });
@@ -392,8 +475,19 @@ function ResourceRow({
     chips.push({ key: "fmt", text: tags.format_detected });
   if (!isLink && typeof tags.row_count === "number")
     chips.push({ key: "rows", text: `${tags.row_count} rows` });
-  if (!isLink && resource.content_type)
-    chips.push({ key: "mime", text: resource.content_type });
+  // TYPE-1 (#1315 deferred review) — prefer content_type_resolved from tags
+  // (the verify-and-tag pipeline's own resolved value, resource_verify.py:419)
+  // over the top-level column; both hold the same value for rows created
+  // after that tag was added, but tags is authoritative for older rows saved
+  // before it existed. Then suppress the chip entirely when it's just the
+  // detected format's canonical mime restated (e.g. format "csv" + mime
+  // "text/csv") — the format chip already said this.
+  const mime =
+    (typeof tags.content_type_resolved === "string"
+      ? tags.content_type_resolved
+      : null) ?? resource.content_type;
+  if (!isLink && mime && !isRedundantMime(mime, tags.format_detected))
+    chips.push({ key: "mime", text: mime });
   if (isLink && typeof tags.url_host === "string")
     chips.push({ key: "host", text: tags.url_host });
 

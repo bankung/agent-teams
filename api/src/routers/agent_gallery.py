@@ -4,7 +4,7 @@ Mounted at ``/api/agents``. Platform-level resource (like ``/api/agents/validate
 in ``routers/agent_validation.py``) — NO ``X-Project-Id`` header. The agent
 files belong to the agent-teams platform, not to any one bound project.
 
-Endpoints (both GET-only):
+Endpoints (all GET-only):
 
   GET /api/agents
     Flat array of agent summaries, sorted by name. Built on the #1016 validator
@@ -19,6 +19,16 @@ Endpoints (both GET-only):
     then resolved by matching the SCANNED listing (client input is NEVER joined
     onto a filesystem path). Unknown name → 404.
 
+  GET /api/agents/{name}/cost-estimate?project_id=<int>&horizon=monthly
+    Kanban #1020. Per-agent, per-PROJECT cost rollup — unlike the two routes
+    above, this one takes ``project_id`` because cost / budget are inherently
+    project-scoped (an agent's spend on project A says nothing about its spend
+    on project B). ``name`` is validated the same way as the detail route
+    (regex gate, then scanned-listing lookup — 404 on either failure);
+    ``project_id`` 404s if the project row doesn't exist. Estimated-basis (see
+    the schema + service docstrings): built on ``tasks.estimated_cost_usd``
+    (the #944 done-flip heuristic), not live ``usage_events`` actuals.
+
 The filesystem scan is synchronous; it is dispatched to the anyio thread pool so
 the event loop is not blocked by directory I/O over the bind mount (same
 discipline as ``routers/agent_validation.py`` / ``routers/task_outputs.py``).
@@ -28,21 +38,23 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Literal
 
 import anyio
 import anyio.to_thread
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi import Path as PathParam
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db import get_session
+from src.db import get_active_project_or_404, get_session
 from src.schemas.agent_metadata import (
     AGENT_NAME_RE,
+    AgentCostEstimate,
     AgentDetail,
     AgentSummary,
     AgentWrite,
 )
-from src.services.agent_spawns import fetch_agent_spawns
+from src.services.agent_spawns import fetch_agent_cost_rollup, fetch_agent_spawns
 from src.services.agent_validation import (
     AgentPathError,
     assemble_agent_file,
@@ -108,6 +120,138 @@ async def get_agent_detail_endpoint(
     # `summary` already carries raw_frontmatter + full_description (computed in
     # the service); attach the spawn history and let AgentDetail serialize.
     return {**summary, "spawns": spawns}
+
+
+# Default green/yellow ceilings (percent of project.budget_monthly_usd) when
+# the project's config carries no override. See `_resolve_thresholds` below.
+_DEFAULT_GREEN_MAX_PCT = 10
+_DEFAULT_YELLOW_MAX_PCT = 30
+
+
+def _resolve_thresholds(config: dict[str, object]) -> tuple[float, float]:
+    """Read ``config.agent_cost_thresholds`` off a project, or fall back.
+
+    Shape: ``{"green_max_pct": <num>, "yellow_max_pct": <num>}``. Either key
+    (or the whole object) may be absent — each falls back to its own default
+    independently, mirroring the ``config.get("agent_settings")`` /
+    ``config.get("digest_email_enabled")`` read-a-nested-key convention used
+    elsewhere in this router family (``routers/projects.py``,
+    ``routers/digest.py``). A malformed override is an operator-authored
+    config mistake, not user input, and this is a read-only rollup (nothing
+    is persisted from a bad value) — so a value that is present but NOT
+    coercible to float (a string, ``null``, a nested object, ...) falls back
+    to that key's own default rather than 500ing the endpoint (dev-reviewer
+    #1020 fix 1: bare ``float()`` on an untrusted JSONB value crashed on
+    ``"abc"`` / ``None`` / ``{...}``).
+    """
+    overrides = config.get("agent_cost_thresholds")
+    if not isinstance(overrides, dict):
+        return (_DEFAULT_GREEN_MAX_PCT, _DEFAULT_YELLOW_MAX_PCT)
+    try:
+        green = float(overrides.get("green_max_pct", _DEFAULT_GREEN_MAX_PCT))
+    except (TypeError, ValueError):
+        green = _DEFAULT_GREEN_MAX_PCT
+    try:
+        yellow = float(overrides.get("yellow_max_pct", _DEFAULT_YELLOW_MAX_PCT))
+    except (TypeError, ValueError):
+        yellow = _DEFAULT_YELLOW_MAX_PCT
+    return (green, yellow)
+
+
+def _traffic_light(pct: float | None, green_max: float, yellow_max: float) -> str:
+    """green when ``pct`` is unknown or below the green ceiling; red at/after
+    the yellow ceiling; yellow in between."""
+    if pct is None or pct < green_max:
+        return "green"
+    if pct < yellow_max:
+        return "yellow"
+    return "red"
+
+
+@router.get("/{name}/cost-estimate", response_model=AgentCostEstimate)
+async def get_agent_cost_estimate_endpoint(
+    name: str = PathParam(...),
+    project_id: int = Query(...),
+    horizon: Literal["monthly"] = Query("monthly"),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, object]:
+    """Per-agent, per-project cost rollup + a traffic-light budget signal.
+
+    404 when ``name`` fails the agent-name regex or isn't a known agent file
+    (same two-step gate as the detail route); 404 when ``project_id`` doesn't
+    resolve to a project. ``horizon`` is a placeholder for a future
+    weekly/quarterly variant (only ``"monthly"`` is implemented — any other
+    value 422s via the Literal before this body ever runs).
+
+    Estimated-basis (Kanban #944's ``tasks.estimated_cost_usd``, captured on
+    task done-flip) — NOT ``usage_events`` actuals. ``usage_events`` DOES carry
+    a populated ``agent_name`` column (see ``routers/usage.py``'s per-session
+    breakdown), but that surface aggregates per SESSION, not per rolling
+    30-day project window, so wiring it here would be a second, divergent
+    cost model rather than a drop-in swap — left as a v2 candidate, not forced
+    into v1.
+
+    Cost attribution is TASK-level, not element-level (dev-reviewer #1020 fix
+    2): ``spawn_count_last_30d`` counts every ``subagent_models`` element
+    naming this agent (a task can list the same agent twice — routine
+    accumulation — and that counts as 2 spawns), but a task's
+    ``estimated_cost_usd`` is summed into the total exactly ONCE regardless of
+    how many elements on that task name the agent. A multi-agent task's FULL
+    cost attributes to EACH agent it lists — this is a v1 heuristic (the task
+    doesn't record a per-agent cost split), not a precise per-spawn cost.
+    ``avg_cost_per_spawn`` and ``projected_monthly_usd`` are derived
+    SELF-CONSISTENTLY from the same total: ``projected_monthly_usd`` IS the
+    total cost, and ``avg_cost_per_spawn = projected_monthly_usd /
+    spawn_count_last_30d`` — so ``avg * count == projected`` always holds by
+    construction (never two independently-rounded numbers that drift apart).
+    """
+    if not AGENT_NAME_RE.fullmatch(name):
+        raise HTTPException(status_code=404, detail=f"Unknown agent {name!r}")
+
+    repo_root = Path(get_settings().repo_root)
+    agents_dir = default_agents_dir(repo_root)
+    summary = await anyio.to_thread.run_sync(
+        lambda: get_agent_summary(agents_dir, name)
+    )
+    if summary is None:
+        raise HTTPException(status_code=404, detail=f"Unknown agent {name!r}")
+
+    # get_active_project_or_404 (not the raw get_or_404) — blocks a soft-deleted
+    # project (status != ACTIVE) from resolving as if it were live (dev-reviewer
+    # #1020 fix 3). Same 404 detail shape as before, kept explicit here (not the
+    # helper's own default) so the wire response text is unchanged.
+    project = await get_active_project_or_404(
+        session, project_id, detail=f"project {project_id} not found"
+    )
+
+    spawn_count, total_cost = await fetch_agent_cost_rollup(session, name, project_id)
+    # `total_cost` is None when no matching task carries a non-null
+    # estimated_cost_usd (never when spawn_count is merely 0 vs >0 — SUM()
+    # over an empty/all-NULL set is NULL either way). projected_monthly_usd
+    # IS the total; avg_cost_per_spawn is DERIVED from that same rounded total
+    # (not independently rounded) so avg * count == projected always holds.
+    projected = round(float(total_cost), 4) if total_cost is not None else None
+    avg_cost_f = (
+        round(projected / spawn_count, 4)
+        if projected is not None and spawn_count > 0
+        else None
+    )
+
+    budget = project.budget_monthly_usd
+    vs_budget_pct: float | None = None
+    if projected is not None and budget is not None and budget > 0:
+        vs_budget_pct = round(projected / float(budget) * 100, 4)
+
+    green_max, yellow_max = _resolve_thresholds(project.config or {})
+
+    return {
+        "avg_cost_per_spawn": avg_cost_f,
+        "spawn_count_last_30d": spawn_count,
+        "projected_monthly_usd": projected,
+        "vs_project_budget_pct": vs_budget_pct,
+        # None pct -> green
+        "traffic_light": _traffic_light(vs_budget_pct, green_max, yellow_max),
+    }
 
 
 # ===========================================================================

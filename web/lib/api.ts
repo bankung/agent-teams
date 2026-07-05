@@ -354,6 +354,27 @@ function buildPath(base: string, qs: URLSearchParams): string {
   return qs.toString() ? `${base}?${qs}` : base;
 }
 
+// #2726 N4 — shared param-serialization for listTasks/listAllTasks (previously
+// duplicated inline in each). `limit`/`offset` are NOT included here: listTasks
+// takes limit from opts (optional, caller-controlled) while listAllTasks always
+// forwards its own paging limit/offset instead of opts.limit — kept as the two
+// call sites' own qs.set() calls so this helper's output is identical either way.
+function buildTasksQs(opts: Omit<ListTasksOpts, "limit">): URLSearchParams {
+  const qs = new URLSearchParams();
+  if (opts.pending) qs.set("pending", "true");
+  if (opts.process_status !== undefined)
+    qs.set("process_status", String(opts.process_status));
+  if (opts.top_level_only) qs.set("top_level_only", "true");
+  else if (opts.parent_task_id !== undefined)
+    qs.set("parent_task_id", String(opts.parent_task_id));
+  if (opts.milestone_id !== undefined)
+    qs.set("milestone_id", String(opts.milestone_id));
+  if (opts.due_from !== undefined) qs.set("due_from", opts.due_from);
+  if (opts.due_to !== undefined) qs.set("due_to", opts.due_to);
+  if (opts.task_type !== undefined) qs.set("task_type", opts.task_type);
+  return qs;
+}
+
 // applyActor — stamp X-Actor header when actor is a non-empty string.
 function applyActor(
   headers: Record<string, string>,
@@ -407,6 +428,16 @@ export type ProjectStatsCostUsage = {
   session_run_count: number;
 };
 
+// #2735 — real interactive (Mode A) cost from the usage_events hook-capture
+// ledger. Same Decimal-as-string serialization as estimated_cost / cost_usage
+// — parse total_cost_usd via parseUsd() before arithmetic. Optional: absent on
+// API versions that predate the slice → CostSummary degrades gracefully.
+export type ProjectStatsActualInteractiveCost = {
+  total_cost_usd: string;
+  total_input_tokens: number;
+  total_output_tokens: number;
+};
+
 // G1 — heuristic estimate from task-level estimated_cost_usd roll-up.
 // total_cost_usd is a Decimal STRING (same Pydantic serialization as
 // cost_usage.total_cost_usd — #871). Parse via parseUsd() before arithmetic.
@@ -427,7 +458,14 @@ export type ProjectStatsEntry = {
   last_activity_at: string | null;
   cost_usage: ProjectStatsCostUsage;
   // G1 — heuristic task-estimate roll-up; optional until BE slice lands.
+  // STILL consumed by the P&L components (PnlSummaryCard / PnlDashboardSection)
+  // — do NOT remove even though CostSummary's Mode A card now reads
+  // actual_interactive_cost instead (#2735).
   estimated_cost?: ProjectStatsEstimatedCost;
+  // #2735 — real interactive (Mode A) cost from the usage_events ledger.
+  // The CostSummary "Mode A · Actual (interactive)" card sums this. Optional:
+  // absent on older API versions → that card hides (graceful degradation).
+  actual_interactive_cost?: ProjectStatsActualInteractiveCost;
 };
 
 export async function getProjectsStats(opts?: {
@@ -556,6 +594,28 @@ export async function grantConsent(
   });
 }
 
+// #2732 — tools posture write path for the autonomous-execution onboarding flow.
+// Deliberately separate from ProjectUpdateBody (which narrows tools_config out by design).
+export type ProjectToolsConfig = {
+  tools_enabled: boolean;
+  auto_allow_tiers: string[];
+  halt_tiers: string[];
+  http_hosts?: string[];
+};
+export async function setProjectToolsConfig(
+  projectId: number,
+  toolsConfig: ProjectToolsConfig,
+  operatorToken?: string,
+): Promise<ProjectRead> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  applyOperatorToken(headers, operatorToken);
+  return jsonFetch<ProjectRead>(`/api/projects/${projectId}`, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({ tools_config: toolsConfig }),
+  });
+}
+
 // killProject / reviveProject — Kanban #1209 GOV1 hard kill switch (D5).
 // Shared response shape (`KillReviveResponse`): success, project_id, action,
 // is_killed, killed_at, killed_reason, drain_summary (operator-readable counts),
@@ -677,21 +737,15 @@ export async function unpauseProject(
 }
 
 // listProjectAuditTasks — convenience wrapper for the Audit History section
-// on the project detail page. The BE /api/tasks endpoint has no `task_type`
-// query param (single source of truth for that filter today is client-side),
-// so we fetch every task for the project (cap=500 matches the Board page's
-// initial-load cap) and filter to task_type='audit'. Sorted by completed_at
-// DESC so the freshest verdict is first; tasks without a completed_at fall
-// to the bottom (typically not-yet-DONE audit rows).
-//
-// If the volume ever grows past the 500-row cap, swap to a paginated fetch
-// or land a BE `task_type` filter param — both are forward-compat.
+// on the project detail page. Server-filters via ?task_type=audit (Kanban
+// #2699 F5 — replaces the old fetch-500-then-client-filter shortcut). Sorted
+// by completed_at DESC so the freshest verdict is first; tasks without a
+// completed_at fall to the bottom (typically not-yet-DONE audit rows).
 export async function listProjectAuditTasks(
   projectId: number,
   limit = 500,
 ): Promise<TaskRead[]> {
-  const all = await listTasks(projectId, { limit });
-  const audits = all.filter((t) => t.task_type === "audit");
+  const audits = await listTasks(projectId, { limit, task_type: "audit" });
   audits.sort((a, b) => {
     const aDone = a.completed_at ?? "";
     const bDone = b.completed_at ?? "";
@@ -716,23 +770,15 @@ type ListTasksOpts = {
   // tasks. Either may be sent independently (open-ended range).
   due_from?: string;
   due_to?: string;
+  // Kanban #2699 F5 — server-side task_type filter (e.g. 'audit').
+  task_type?: TaskTypeValue;
 };
 
 export async function listTasks(
   projectId: number,
   opts: ListTasksOpts = {},
 ): Promise<TaskRead[]> {
-  const qs = new URLSearchParams();
-  if (opts.pending) qs.set("pending", "true");
-  if (opts.process_status !== undefined)
-    qs.set("process_status", String(opts.process_status));
-  if (opts.top_level_only) qs.set("top_level_only", "true");
-  else if (opts.parent_task_id !== undefined)
-    qs.set("parent_task_id", String(opts.parent_task_id));
-  if (opts.milestone_id !== undefined)
-    qs.set("milestone_id", String(opts.milestone_id));
-  if (opts.due_from !== undefined) qs.set("due_from", opts.due_from);
-  if (opts.due_to !== undefined) qs.set("due_to", opts.due_to);
+  const qs = buildTasksQs(opts);
   if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
   const path = buildPath("/api/tasks", qs);
   return jsonFetch<TaskRead[]>(path, {
@@ -747,6 +793,10 @@ export async function listTasks(
 // Only the opts fields that are safe to combine with offset are forwarded
 // (pending / process_status / top_level_only / parent_task_id / milestone_id /
 // due_from / due_to). `opts.limit` is intentionally ignored — the caller wants ALL rows.
+// shortcut: sequential paging (one round-trip per 500-row page, awaited in a
+// loop) — fine up to a few thousand rows; ceiling is request-count fan-out on
+// very large projects. Upgrade: BE returns a total-count header so the FE can
+// fire all pages in parallel (Promise.all) instead of walking one at a time.
 const _PAGE = 500;
 export async function listAllTasks(
   projectId: number,
@@ -755,17 +805,7 @@ export async function listAllTasks(
   const all: TaskRead[] = [];
   let offset = 0;
   while (true) {
-    const qs = new URLSearchParams();
-    if (opts.pending) qs.set("pending", "true");
-    if (opts.process_status !== undefined)
-      qs.set("process_status", String(opts.process_status));
-    if (opts.top_level_only) qs.set("top_level_only", "true");
-    else if (opts.parent_task_id !== undefined)
-      qs.set("parent_task_id", String(opts.parent_task_id));
-    if (opts.milestone_id !== undefined)
-      qs.set("milestone_id", String(opts.milestone_id));
-    if (opts.due_from !== undefined) qs.set("due_from", opts.due_from);
-    if (opts.due_to !== undefined) qs.set("due_to", opts.due_to);
+    const qs = buildTasksQs(opts);
     qs.set("limit", String(_PAGE));
     qs.set("offset", String(offset));
     const page = await jsonFetch<TaskRead[]>(buildPath("/api/tasks", qs), {
@@ -987,8 +1027,11 @@ export async function parseTaskText(
 // halt_reason added 2026-05-20 by Kanban #1001 — Halt quick-action sets ps=4 + halt_reason in one PATCH.
 //   PATCH semantics (per #785): key-absent = unchanged; explicit `null` = clear/unhalt; non-empty string = halt.
 // Kanban #2181 — description + acceptance_criteria inline editing from task drawer.
+// Kanban #2703 — task_kind is PATCH-able (BE TaskUpdate accepts it); the board
+// run-type toggle sends task_kind + run_mode together in one atomic PATCH so the
+// server HUMAN ⇒ MANUAL invariant (assert_run_mode_for_kind) never fires mid-flip.
 export type TaskPatch = Partial<
-  Pick<TaskRead, "process_status" | "priority" | "title" | "blocked_by" | "sort_order" | "run_mode" | "description" | "acceptance_criteria">
+  Pick<TaskRead, "process_status" | "priority" | "title" | "blocked_by" | "sort_order" | "run_mode" | "task_kind" | "description" | "acceptance_criteria">
 > & {
   new_answer?: string | null;
   new_answer_by?: string | null;
@@ -1461,45 +1504,16 @@ export const push = {
 
 // listAuditFlags — cross-project aggregation for the GOV4 /review page.
 //
-// Implementation: the existing /api/tasks endpoint is single-project-scoped
-// (gates on X-Project-Id per Kanban #695). To aggregate across N projects
-// we (1) list active projects, (2) per project fetch open question tasks
-// in parallel, (3) client-side filter on `question_payload.is_audit_flag`.
-//
-// Why client-side filter: there is no BE filter for JSONB-path predicates
-// on the tasks endpoint today. The volume is small (≤10s of question tasks
-// per project) so a single round-trip per project + a in-memory predicate
-// is acceptable for v1. If this grows, add a BE filter param + revisit.
-//
-// `pending=true` returns process_status != 5 (TODO/IN_PROGRESS/REVIEW/BLOCKED);
-// `include_cancelled` defaults to false so CANCELLED (ps=6) is also out.
-// GOV3 flag tasks are created with process_status=BLOCKED (4); operator-resolved
-// flags transition to DONE (5) which the pending filter naturally drops.
+// GET /api/audit/flags returns exactly the flag set the /review page needs
+// in ONE SQL query (Kanban #2700). The BE filters:
+//   - interaction_kind == 'question'
+//   - question_payload->>'is_audit_flag' == 'true'
+//   - process_status != DONE (5)  and != CANCELLED (6)  (pending semantics)
+//   - task.status == ACTIVE, project.status == ACTIVE
+// Parity with the old per-project fan-out: same flag set, no per-project
+// partial-failure mode (a JSONB row that lacks the key is simply excluded).
 export async function listAuditFlags(): Promise<AuditFlagWithProject[]> {
-  const projects = await listProjects({ status: 1 });
-  // Per-project parallel fetch. Errors on individual projects degrade to
-  // an empty list for that project rather than failing the whole page —
-  // a single project's API outage shouldn't blank the /review surface for
-  // the other N-1 projects.
-  const perProject = await Promise.all(
-    projects.map(async (project) => {
-      try {
-        const tasks = await listTasks(project.id, {
-          pending: true,
-          limit: 500,
-        });
-        const flags = tasks.filter(
-          (t) =>
-            t.interaction_kind === "question" &&
-            t.question_payload?.is_audit_flag === true,
-        );
-        return flags.map((flag) => ({ flag, project }));
-      } catch {
-        return [];
-      }
-    }),
-  );
-  return perProject.flat();
+  return jsonFetch<AuditFlagWithProject[]>(`/api/audit/flags`);
 }
 
 // ============================================================================
@@ -2499,6 +2513,65 @@ export async function getMonthlyUsage(opts?: {
 }
 
 // ============================================================================
+// Kanban #2728 / #2735 — GET /api/usage/sessions (per-session cost aggregate)
+// ============================================================================
+
+// UsageSessionAgentRow — per-(agent, model) spend within one session.
+// agent_name === null is the Lead/main turn; a non-null name is a subagent.
+// cost_usd is a 4-dp decimal string (same Decimal-as-string convention).
+export type UsageSessionAgentRow = {
+  agent_name: string | null;
+  model: string;
+  cost_usd: string; // e.g. "1.2345"
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+  event_count: number;
+};
+
+// UsageSessionRow — one session_ext_id aggregate, with a per-agent breakdown.
+// The BE sorts agents Lead-first then cost desc; preserve that order on render.
+export type UsageSessionRow = {
+  session_ext_id: string;
+  total_cost_usd: string; // 4-dp decimal string; sum across this session's agents
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_hit_ratio: number; // float in [0,1]; render as a percentage
+  event_count: number; // usage_events ledger rows (NOT transcript turns — #2728)
+  first_occurred_at: string; // ISO 8601
+  last_occurred_at: string; // ISO 8601
+  agents: UsageSessionAgentRow[];
+};
+
+// UsageSessionsResponse — response for GET /api/usage/sessions.
+// Sessions most-recent first (by last_occurred_at). `returned` === sessions.length;
+// when returned === the requested limit, more pages may exist (drives Load more).
+export type UsageSessionsResponse = {
+  sessions: UsageSessionRow[];
+  limit: number;
+  offset: number;
+  returned: number;
+  total_cost_usd: string; // 4-dp decimal string; sum across returned sessions
+};
+
+// listUsageSessions — GET /api/usage/sessions?project_id=P&limit=N&offset=O.
+// No X-Project-Id header — operator-level endpoint (mirrors getMonthlyUsage).
+export async function listUsageSessions(opts?: {
+  projectId?: number;
+  limit?: number;
+  offset?: number;
+}): Promise<UsageSessionsResponse> {
+  const qs = new URLSearchParams();
+  if (opts?.projectId != null) qs.set("project_id", String(opts.projectId));
+  if (opts?.limit != null) qs.set("limit", String(opts.limit));
+  if (opts?.offset != null) qs.set("offset", String(opts.offset));
+  return jsonFetch<UsageSessionsResponse>(buildPath("/api/usage/sessions", qs));
+}
+
+// ============================================================================
 // Kanban #1305 — Task output files (listing + raw bytes).
 // ============================================================================
 
@@ -2543,6 +2616,61 @@ export async function fetchTaskOutputBytes(
     throw new HttpError(response.status, body.detail, message);
   }
   return response.blob();
+}
+
+// ============================================================================
+// Kanban #2558 — cross-task aggregate output listing (Artifacts page).
+// ============================================================================
+
+// ProjectOutputItem — mirror of api/src/schemas/task_outputs.py:ProjectOutputItem.
+// `role` is the agent-slug string derived from the output folder name (e.g.
+// "dev-frontend") — a DIFFERENT vocabulary from TaskRoleValue (the numeric
+// assigned_role enum on TaskRead); do not conflate the two. `task_title` is
+// null when the owning task_id has no live DB row (files can outlive their
+// task — never-deleted vs never-existed both surface as null). `download_url`
+// is a path relative to the API origin (NOT the web origin) — resolve it via
+// apiOrigin() below, mirroring how fetchTaskOutputBytes builds its URL.
+export type ProjectOutputItem = {
+  filename: string;
+  task_id: number;
+  task_title: string | null;
+  role: string | null;
+  mtime: string; // ISO 8601 UTC
+  size: number;
+  mime: string;
+  kind: string;
+  download_url: string;
+};
+
+export type ProjectOutputsResponse = {
+  items: ProjectOutputItem[];
+  total: number;
+};
+
+// apiOrigin — resolves the same base URL jsonFetch/fetchTaskOutputBytes use
+// (NEXT_PUBLIC_API_URL in the browser), for building an absolute href from a
+// BE-relative path (e.g. download_url) OUTSIDE of a fetch() call — anchors
+// (<a href>) navigate against the WEB origin by default, so a bare relative
+// download_url would 404 against the Next.js app instead of the API.
+export function apiOrigin(): string {
+  return apiBaseUrl();
+}
+
+export type ListProjectOutputsOpts = { limit?: number; offset?: number };
+
+// listProjectOutputs — GET /api/projects/{id}/outputs?limit=&offset=. Sorted
+// mtime DESC (BE-side); `total` is the full pre-slice count for pagination.
+export async function listProjectOutputs(
+  projectId: number,
+  opts: ListProjectOutputsOpts = {},
+): Promise<ProjectOutputsResponse> {
+  const qs = new URLSearchParams();
+  if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
+  if (opts.offset !== undefined) qs.set("offset", String(opts.offset));
+  const path = buildPath(`/api/projects/${projectId}/outputs`, qs);
+  return jsonFetch<ProjectOutputsResponse>(path, {
+    headers: { "X-Project-Id": String(projectId) },
+  });
 }
 
 // deleteResource — DELETE /api/resources/{id}. Operator-gated; soft-delete +
@@ -2601,11 +2729,31 @@ export type AgentValidationError = {
   severity: "error" | "warning";
 };
 
+// ToolChipRiskClass — Kanban #1021. Per-tool risk classification surfaced as a
+// gallery/detail chip. Severity order (low→high) lives alongside the color
+// map in components/AgentBadges.tsx (RISK_ORDER) — the single source of truth
+// the FE derives both the chip color and the card's overall risk badge from.
+export type ToolChipRiskClass =
+  | "always-safe"
+  | "read-only"
+  | "external"
+  | "write-edit"
+  | "shell-or-destructive";
+
+// ToolChip — one entry in AgentSummary.tool_chips (frontmatter tool order).
+// "All tools" arrives as a single chip with that literal name and
+// risk_class="shell-or-destructive".
+export type ToolChip = {
+  name: string;
+  risk_class: ToolChipRiskClass;
+};
+
 // AgentSummary — one row in GET /api/agents.
 //   tools_summary: human label — "All tools" | "N tools".
 //   tool_count:    null when the agent grants "All tools" (no explicit list).
 //   source_file:   basename only (path-stripped on the wire).
 //   valid:         false when validation_errors carries any severity='error'.
+//   tool_chips:    Kanban #1021 — per-tool risk chips, frontmatter order.
 export type AgentSummary = {
   name: string;
   description: string;
@@ -2617,6 +2765,7 @@ export type AgentSummary = {
   domain: AgentDomain;
   valid: boolean;
   validation_errors: AgentValidationError[];
+  tool_chips: ToolChip[];
 };
 
 // AgentSpawn — one row in AgentDetail.spawns. A task this agent was spawned
@@ -2656,6 +2805,97 @@ export async function getAgents(): Promise<AgentSummary[]> {
 // the detail page discriminates on .status === 404 → notFound().
 export async function getAgentDetail(name: string): Promise<AgentDetail> {
   return jsonFetch<AgentDetail>(`/api/agents/${encodeURIComponent(name)}`);
+}
+
+// ============================================================================
+// Kanban #1018 — per-project agent overrides (enable/disable + model tier +
+// notes). X-Project-Id scoped, unlike the roster reads above. Only agents WITH
+// an override appear in the response array; any roster agent absent from it is
+// implicitly enabled with no tier override (the FE merges roster + overrides —
+// see AgentOverridesPanel).
+export type AgentOverride = {
+  name: string;
+  enabled: boolean;
+  model_override: AgentModelTier | null;
+  notes: string | null;
+};
+
+// lead_overrides is reserved for #1024 (not read/written here — v1 scope is
+// per-agent only).
+export type AgentOverridesResponse = {
+  agents: AgentOverride[];
+  lead_overrides: Record<string, unknown>;
+};
+
+// Partial per-agent upsert body — `name` is the only required field; any
+// omitted field is left unchanged server-side. `model_override: null` clears
+// the tier back to "Default".
+export type AgentOverridePatch = {
+  name: string;
+  enabled?: boolean;
+  model_override?: AgentModelTier | null;
+  notes?: string | null;
+};
+
+export async function getAgentOverrides(
+  projectId: number,
+): Promise<AgentOverridesResponse> {
+  return jsonFetch<AgentOverridesResponse>(
+    `/api/projects/${projectId}/agent-overrides`,
+    { headers: { "X-Project-Id": String(projectId) } },
+  );
+}
+
+export async function patchAgentOverrides(
+  projectId: number,
+  agents: AgentOverridePatch[],
+): Promise<AgentOverridesResponse> {
+  return jsonFetch<AgentOverridesResponse>(
+    `/api/projects/${projectId}/agent-overrides`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Project-Id": String(projectId),
+      },
+      body: JSON.stringify({ agents }),
+    },
+  );
+}
+
+// ============================================================================
+// Kanban #1020 — per-agent cost-preview estimate (frontend half). Platform-
+// level route (NO X-Project-Id header, unlike the overrides endpoints above)
+// — project_id travels in the query string only, per the router's own
+// docstring. The estimate is still spawn-history specific to THIS project's
+// usage of the agent; the scoping is query-param-based, not header-based.
+//
+// Unlike the Decimal-as-string convention used elsewhere (cost_usage,
+// estimated_cost_usd, etc.), this endpoint's numeric fields are plain JSON
+// numbers per the pinned contract — no parseUsd() needed.
+//
+// avg_cost_per_spawn / projected_monthly_usd are null when there's no spawn
+// history to estimate from (spawn_count_last_30d === 0); render a neutral
+// "no history" state rather than a fabricated $0 (see AgentOverridesPanel's
+// AgentCostBadge).
+// ============================================================================
+export type AgentCostTrafficLight = "green" | "yellow" | "red";
+
+export type AgentCostEstimate = {
+  avg_cost_per_spawn: number | null;
+  spawn_count_last_30d: number;
+  projected_monthly_usd: number | null;
+  vs_project_budget_pct: number | null;
+  traffic_light: AgentCostTrafficLight;
+};
+
+export async function getAgentCostEstimate(
+  name: string,
+  projectId: number,
+): Promise<AgentCostEstimate> {
+  return jsonFetch<AgentCostEstimate>(
+    `/api/agents/${encodeURIComponent(name)}/cost-estimate?project_id=${projectId}&horizon=monthly`,
+  );
 }
 
 // ============================================================================

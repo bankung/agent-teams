@@ -251,14 +251,17 @@ class ToolsConfig(BaseModel):
     `langgraph/tools/permission_gate.check_permission()` BEFORE invoking any
     registered tool. The locked default ships "permissive read, halt on
     everything else" plus `tools_enabled=false` as a master kill switch — see
-    migration `0027_projects_tools_config` for the full rationale.
+    migration `2026_05_16_0100_projects_tools_config` for the full rationale.
 
     Field semantics (locked design #949 — see
     `_scratch/standards-proposal-permission-tiers.md`):
 
     - `tools_enabled` — master kill switch. False → gate returns `reject` for
       EVERY tool regardless of tier (including reads). Only the user (FE
-      config UI, gated by #943) can flip true.
+      config UI, gated by #943) can flip true. As of #2707 this flag is
+      decoupled from multi-board eligibility (consent-granted projects are
+      now eligible even with tools disabled); the operator write path for
+      this flag lands in #2707 Option C (the #943 UI was never built).
     - `auto_allow_tiers` — tiers whose tool calls auto-execute without human
       review. The ship default ships `["read"]` only.
     - `halt_tiers` — tiers whose tool calls halt the agent for human review
@@ -986,6 +989,25 @@ class ProjectStatsCostUsage(BaseModel):
     session_run_count: int = 0
 
 
+class ProjectStatsActualInteractiveCost(BaseModel):
+    """Per-project REAL interactive cost/token aggregate from `usage_events` (#2735).
+
+    Sums `cost_usd` / `input_tokens` / `output_tokens` over every `usage_events`
+    row for this project (the interactive Claude-Code hook-capture ledger, "Mode A").
+    Distinct from `estimated_cost` (the per-task heuristic forecast from
+    `tasks.estimated_cost_usd`, kept for budgeting/P&L) and from `cost_usage`
+    (headless `session_runs` metering, "Mode B").
+
+    All three keys ALWAYS emitted (zero-filled) — mirrors the cost_usage/estimated_cost
+    no-coalescing contract. `total_cost_usd` serializes as a JSON string by Pydantic v2
+    default, mirroring ProjectStatsEstimatedCost.total_cost_usd exactly.
+    """
+
+    total_cost_usd: Decimal = Decimal("0")
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+
+
 class ProjectStatsEntry(BaseModel):
     """Single project's stats row in the batched stats response (Kanban #769).
 
@@ -1012,6 +1034,11 @@ class ProjectStatsEntry(BaseModel):
     `cost_usage` — surfaces DONE-flip estimates for projects whose
     `session_runs` token columns are not yet populated.
 
+    `actual_interactive_cost` (#2735): real interactive cost/token aggregates from
+    `usage_events` (Mode A hook-capture ledger). Always emitted (zero-filled when
+    the project has no usage_events). Distinct from `estimated_cost` (heuristic
+    forecast) and `cost_usage` (Mode B headless metering).
+
     Soft-deleted tasks (`status=0`) excluded from BOTH `counts` /
     `run_mode_breakdown` AND `last_activity_at`. Cancelled tasks
     (`process_status=6`, Kanban #854) excluded ONLY from
@@ -1029,6 +1056,8 @@ class ProjectStatsEntry(BaseModel):
     cost_usage: ProjectStatsCostUsage
     # G1: heuristic per-task estimate aggregate (always emitted, zero-filled)
     estimated_cost: ProjectStatsEstimatedCost
+    # #2735: real interactive cost from usage_events (always emitted, zero-filled)
+    actual_interactive_cost: ProjectStatsActualInteractiveCost
 
 
 # ---------------------------------------------------------------------------
@@ -1094,6 +1123,124 @@ class ProgressStatsResponse(BaseModel):
         )
 
 
+# ---------------------------------------------------------------------------
+# Kanban #1018 (2026-07-01) — per-project agent enable/disable + notes.
+#
+# ADDITIVE to the #777 agent_overrides tier-map — that JSONB column keeps its
+# exact shape/validators/spawn-precedence untouched (see api/src/models/task.py:248
+# comment for the precedence convention this must not disturb). The new
+# enabled/notes state lives in a NEW subkey of `projects.config`:
+#
+#     config.agent_settings: {"<agent-name>": {"enabled": bool, "notes": str|null}}
+#
+# Absent agent OR absent subkey = enabled (backfill default) — mirrors the
+# `enabled_roles` "key-absent = unrestricted" convention above. No migration:
+# `config` is already JSONB with a documented subkey precedent
+# (`enabled_roles`, `tool_grants`).
+#
+# GET/PATCH /api/projects/{id}/agent-overrides assemble a UNIFIED view by
+# unioning agent names present in `agent_overrides` (tier) and
+# `config.agent_settings` (enabled/notes) — see routers/projects.py.
+# ---------------------------------------------------------------------------
+
+
+class AgentOverrideItem(BaseModel):
+    """One row of the assembled GET/PATCH `agent-overrides` response.
+
+    `name` is always present (the union key). `model_override` mirrors
+    `AgentModelLiteral | None` (from `agent_overrides`, the #777 tier map —
+    untouched by this feature). `enabled` defaults `true` when the agent has
+    no `config.agent_settings` entry (backfill default). `notes` is free text,
+    `None` when unset.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    enabled: bool = True
+    model_override: AgentModelLiteral | None = None
+    notes: str | None = None
+
+
+class AgentOverridesRead(BaseModel):
+    """Response for GET/PATCH /api/projects/{id}/agent-overrides.
+
+    `agents` — sorted-by-name array; an agent with NO override at all (absent
+    from both `agent_overrides` and `config.agent_settings`) is simply ABSENT
+    from this array (the FE overlays it onto the full gallery list from
+    GET /api/agents at 'enabled' default).
+
+    `lead_overrides` — reserved key, always `{}` for now. Implementing it is
+    Kanban #1024 scope — deliberately NOT built here.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    agents: list[AgentOverrideItem]
+    lead_overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentOverridePatchItem(BaseModel):
+    """One upsert entry in the PATCH /api/projects/{id}/agent-overrides body.
+
+    `name` is REQUIRED — every other field is OPTIONAL and independently
+    omittable for true partial-upsert semantics (see router for the exact
+    per-field apply rules): omitted = leave unchanged; `model_override`
+    present-and-null = clear the #777 tier override; `enabled`/`notes`
+    present = set in `config.agent_settings`.
+
+    Name-existence (must be a real installed agent) and `model_override`
+    enum validation happen in the ROUTER, not here — the router reuses the
+    same `list_agents()` service that backs `GET /api/agents` (no
+    re-implementation / no hardcoded name list), so this schema only pins
+    the wire SHAPE.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., min_length=1, max_length=64)
+    enabled: bool | None = None
+    model_override: AgentModelLiteral | None = None
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class AgentOverridesPatch(BaseModel):
+    """Request body for PATCH /api/projects/{id}/agent-overrides."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agents: list[AgentOverridePatchItem] = Field(..., min_length=1, max_length=200)
+
+
+# ---------------------------------------------------------------------------
+# Kanban #2769 — GET /api/projects/{id}/spawn-check response.
+# ---------------------------------------------------------------------------
+
+
+class SpawnCheckResponse(BaseModel):
+    """Response for GET /api/projects/{id}/spawn-check.
+
+    Read-only spawn-gate authority verdict for a would-be `Agent`-tool spawn
+    of `agent` on this project — evaluates `config.agent_settings` (#1018,
+    per-agent enable/disable) then `config.enabled_roles` (#7, TaskRole
+    whitelist), first deny wins. See `routers/projects.py::get_project_spawn_check`
+    for the full gate-order docstring.
+
+    `role_code` is the `TaskRole.*` code `agent` maps to via
+    `constants.AGENT_ROLE_CODE`, or `None` for an unmapped cross-cutting
+    utility agent (never role-gated). `agent` echoes the validated query
+    param back for a self-contained response (no need to correlate against
+    the request).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    allowed: bool
+    reason: str
+    role_code: int | None
+    agent: str
+
+
 class ProjectGrantConsent(BaseModel):
     """Request body for POST /api/projects/{id}/grant-consent.
 
@@ -1112,7 +1259,7 @@ class ProjectGrantConsent(BaseModel):
 # ---------------------------------------------------------------------------
 
 ProjectAuditAction = Literal[
-    "kill", "revive", "pause", "unpause", "pause_override"
+    "kill", "revive", "pause", "unpause", "pause_override", "agent_config"
 ]
 
 
@@ -1343,9 +1490,10 @@ class ProjectsAuditEntry(BaseModel):
 # so the equality check is tautological (`set(ProjectTeam.ALL) == set(ProjectTeam.ALL)`
 # can never fail). There is no longer a second hand-maintained list to drift from.
 
-# Sanity (Kanban #1209 + #1211): ProjectAuditAction Literal stays in lockstep
-# with models.projects_audit.PROJECT_AUDIT_ACTIONS (which mirrors the DB CHECK
-# in migration 0039 (kill/revive) + 0040 (pause/unpause/pause_override)).
+# Sanity (Kanban #1209 + #1211 + #2768): ProjectAuditAction Literal stays in
+# lockstep with models.projects_audit.PROJECT_AUDIT_ACTIONS (which mirrors the
+# DB CHECK in migration 0039 (kill/revive) + 0040 (pause/unpause/pause_override)
+# + 0075 (agent_config)).
 if set(ProjectAuditAction.__args__) != set(PROJECT_AUDIT_ACTIONS):  # type: ignore[attr-defined]
     raise RuntimeError(
         f"ProjectAuditAction Literal {ProjectAuditAction.__args__!r} "  # type: ignore[attr-defined]

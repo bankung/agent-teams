@@ -38,7 +38,6 @@ from src.routers import milestones as milestones_router
 from src.routers import notifications as notifications_router
 from src.routers import decisions as decisions_router
 from src.routers import push as push_router
-from src.routers import push_ntfy as push_ntfy_router
 from src.routers import templates as templates_router
 from src.routers import pl as pl_router
 from src.routers.pl import pnl_router
@@ -48,10 +47,12 @@ from src.routers import scaffold as scaffold_router
 from src.routers import sessions as sessions_router
 from src.routers import shared_search as shared_search_router
 from src.routers import settings as settings_router
+from src.routers import task_gates as task_gates_router
 from src.routers import task_templates as task_templates_router
 from src.routers import task_outputs as task_outputs_router
 from src.routers import tasks as tasks_router
 from src.routers import teams as teams_router
+from src.routers import telegram_command as telegram_command_router
 from src.routers import tool_calls as tool_calls_router
 from src.routers import tools_email as tools_email_router
 from src.routers import tools_calendar as tools_calendar_router
@@ -60,6 +61,7 @@ from src.routers import transactions as transactions_router
 from src.routers import usage as usage_router
 from src.routers import usage_events as usage_events_router
 from src.routers import user_actions as user_actions_router
+from src.services.agents_watcher import start_agents_watcher, stop_agents_watcher
 from src.services.row_changed_listener import start_listener, stop_listener
 from src.settings import get_settings
 
@@ -71,6 +73,13 @@ if not _src_logger.handlers:
     _h = logging.StreamHandler(sys.stdout)
     _h.setFormatter(logging.Formatter(_LOG_FORMAT))
     _src_logger.addHandler(_h)
+# #2667 defense-in-depth — the 'src' handler above is on a separate logger
+# tree from 'httpx', so httpx INFO request logs (which print token-bearing
+# URLs) are NOT emitted by the api today (#2565 smoke: no /bot URL in api
+# log). This suppresses them explicitly in case uvicorn or a future config
+# adds a root INFO handler that would otherwise catch the httpx tree.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +185,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # #782 — boot SSE broker before scheduler
     await start_listener()
+    # #1019 — agents-dir change watcher, same enable/disable gate as the SSE
+    # broker (APP_SSE_DISABLE); polls .claude/agents/*.md and broadcasts over
+    # the SAME broker rather than a second stream.
+    await start_agents_watcher()
 
     disabled = os.environ.get("APP_SCHEDULER_DISABLE", "false").lower() == "true"
     if disabled:
@@ -184,6 +197,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
             yield
         finally:
+            await stop_agents_watcher()
             await stop_listener()
         return
 
@@ -316,6 +330,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception:
             logger.exception("recurrence scheduler shutdown failed")
         _scheduler = None
+        # Kanban #1019 — stop the agents-dir watcher BEFORE releasing the
+        # broker connection it broadcasts through.
+        await stop_agents_watcher()
         # Kanban #782 — release the SSE broker connection on shutdown.
         await stop_listener()
 
@@ -374,6 +391,14 @@ def create_app() -> FastAPI:
 
     app.include_router(projects_router.router, prefix="/api")
     app.include_router(tasks_router.router, prefix="/api")
+    # Kanban #2564 — async-HITL gates (task_gates): open a gate
+    # (POST /api/tasks/{id}/gates), resolve a gate
+    # (POST /api/task-gates/{gate_id}/resolve), unified pending-gate read
+    # (GET /api/operator-gates/pending). Sub-resource of tasks + a unified read.
+    app.include_router(task_gates_router.router, prefix="/api")
+    # Kanban #2778 — Telegram command surface Phase 1: POST /api/telegram/command
+    # (dumb-poller forward target; D1 ALL parse/authz/dispatch/dedup lives here).
+    app.include_router(telegram_command_router.router, prefix="/api")
     app.include_router(sessions_router.router, prefix="/api")
     app.include_router(sessions_router.runs_router, prefix="/api")
     app.include_router(scaffold_router.router, prefix="/api")
@@ -384,6 +409,8 @@ def create_app() -> FastAPI:
     app.include_router(tool_calls_router.router, prefix="/api")
     # Kanban #1305 — task-output listing + file serving (sub-resource of tasks).
     app.include_router(task_outputs_router.router, prefix="/api")
+    # Kanban #2558 — cross-task aggregate output listing (project-scoped).
+    app.include_router(task_outputs_router.router_project, prefix="/api")
     # Kanban #1082 — auditor cross-project daily-rollup aggregation.
     app.include_router(audit_router.router, prefix="/api")
     # Kanban #953 — per-project financial separation (transactions ledger + P&L).
@@ -420,8 +447,6 @@ def create_app() -> FastAPI:
     app.include_router(shared_search_router.router, prefix="/api")
     # Kanban #955.A — Web Push subscription CRUD (browser PushManager endpoints).
     app.include_router(push_router.router, prefix="/api")
-    # Kanban #1192 — ntfy push-notification fire endpoint (POST /api/push/fire).
-    app.include_router(push_ntfy_router.router, prefix="/api")
     # Kanban #1326 (M3) — credentials vault (per-project, Fernet-encrypted).
     app.include_router(credentials_router.router, prefix="/api")
     # Kanban #1327 (M4a) — email-to-task ingest webhook.

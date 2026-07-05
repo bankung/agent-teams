@@ -39,9 +39,9 @@
 5. **Push:** `git push origin main && git push origin vX.Y.0`
 6. **Update milestones (Kanban):** flip the just-released version milestone →
    `released` (ONLY when its child tasks are all DONE/CANCELLED — use
-   `/tn-milestone-done`), then set the NEXT version milestone (+ any newly-focused
+   `/zb-milestone-done`), then set the NEXT version milestone (+ any newly-focused
    milestones, e.g. `secretary` / `aa-followups`) → `active`. Via
-   `PATCH /api/milestones/{id}` `{"milestone_status": "..."}` or `/tn-milestones`.
+   `PATCH /api/milestones/{id}` `{"milestone_status": "..."}` or `/zb-milestones`.
    *(Added #2056 — this step was missing, so the v0.5.1 milestone stayed `active`
    after release until flipped manually 2026-06-08. Deliberately NOT a git/CI hook:
    git hooks are local-only + can't map a push → which milestone id; the CI

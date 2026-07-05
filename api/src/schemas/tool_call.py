@@ -116,7 +116,7 @@ class ToolCallCreate(BaseModel):
 class LeadActivityCreate(BaseModel):
     """POST body for a Lead report-back checkpoint (#2320).
 
-    Producer: the Lead via the `tn-report` skill. Shares the
+    Producer: the Lead via the `zb-report` skill. Shares the
     `POST /api/tasks/{task_id}/tool-calls` URL with `ToolCallCreate`; the
     router dispatches by the `source` discriminator (body `source:'lead'` →
     this shape). One row per call = one activity-rail checkpoint.

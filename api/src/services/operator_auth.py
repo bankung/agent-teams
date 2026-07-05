@@ -87,18 +87,39 @@ class OperatorDecision(str, Enum):
     NOT_OPERATOR = "not_operator"
 
 
-def _gate_active() -> bool:
+def _read_key() -> str:
+    """Read `OPERATOR_ACTION_KEY` live from os.environ (stripped).
+
+    Single source of truth for the "read the key" step. Called once per
+    `check_operator_proof` invocation and the result threaded down to
+    `_gate_active` / `_evaluate`, so a single request only reads os.environ
+    once. Still a live read (not cached at import time) so a test can toggle
+    it via monkeypatch and the operator can activate it by editing `.env` +
+    recreating the api container.
+    """
+    return os.environ.get(_OPERATOR_KEY_ENV, "").strip()
+
+
+def _gate_active(key: str | None = None) -> bool:
     """True when `OPERATOR_ACTION_KEY` is set to a non-empty value.
 
-    Empty / unset -> gate INACTIVE (fail-open). Read live from os.environ so a
-    test can toggle it via monkeypatch and the operator can activate it by
-    editing `.env` + recreating the api container.
+    `key`: the pre-read key from `_read_key()`, threaded down by
+    `check_operator_proof` so it doesn't re-read os.environ. Defaults to
+    None, which triggers a fresh `_read_key()` call — preserves the standalone
+    no-arg call contract for callers outside this module (e.g.
+    `routers/tools_email.py::_resolve_approval_mode`) that have no pre-read
+    key in scope.
     """
-    return bool(os.environ.get(_OPERATOR_KEY_ENV, "").strip())
+    if key is None:
+        key = _read_key()
+    return bool(key)
 
 
-def _evaluate(token_header: str | None) -> OperatorDecision:
+def _evaluate(token_header: str | None, key: str) -> OperatorDecision:
     """Pure verdict: is this request backed by a valid operator proof?
+
+    `key`: the pre-read key from `_read_key()` (threaded down by
+    `check_operator_proof`, not re-read here).
 
     INACTIVE (key unset/empty) -> OPERATOR for any token (fail-open), with a
     one-time WARN. ACTIVE -> constant-time compare; OPERATOR iff the token
@@ -106,7 +127,6 @@ def _evaluate(token_header: str | None) -> OperatorDecision:
     """
     global _inactive_warned
 
-    key = os.environ.get(_OPERATOR_KEY_ENV, "").strip()
     if not key:
         if not _inactive_warned:
             logger.warning(
@@ -150,17 +170,35 @@ def _write_audit(decision: OperatorDecision, *, active: bool) -> None:
         pass
 
 
-def check_operator_proof(token_header: str | None) -> OperatorDecision:
+def check_operator_proof(
+    token_header: str | None,
+    *,
+    sets_gated_field: bool = True,
+) -> OperatorDecision:
     """Decide whether `token_header` proves operator presence for THIS request.
 
     Returns `OperatorDecision.OPERATOR` or `NOT_OPERATOR` per the activation
-    semantics in the module docstring. ALWAYS writes an audit row (for BOTH
-    allow and deny) before returning — the caller raises HTTP 403 on
-    `NOT_OPERATOR`.
+    semantics in the module docstring.
+
+    `sets_gated_field` (Kanban #2697, option b): when False the audit row is
+    suppressed even if the gate is ACTIVE. Pass False from `update_task` when
+    the PATCH does NOT attempt a gated operator-only `verified_by` field — this
+    eliminates the audit noise from the frequent non-gated board PATCHes while
+    keeping the row for the rare PATCH that actually touches a gated field.
+
+    Default is True to preserve the existing behavior for `require_operator_proof`
+    (which calls this function with no flag) and therefore for every other gated
+    route (email, projects, calendar, templates, gallery). The inactive-gate guard
+    (`if active`) is the outer condition — gate INACTIVE always skips the write
+    regardless of `sets_gated_field`.
+
+    The caller raises HTTP 403 on `NOT_OPERATOR`.
     """
-    active = _gate_active()
-    decision = _evaluate(token_header)
-    _write_audit(decision, active=active)
+    key = _read_key()  # single os.environ read for this call, threaded below
+    active = _gate_active(key)
+    decision = _evaluate(token_header, key)
+    if active and sets_gated_field:
+        _write_audit(decision, active=active)
     return decision
 
 

@@ -147,12 +147,29 @@ async def check_budget(
         - Threshold alerts (80% / 100%) are fire-and-forget; failures inside
           the notification path are swallowed + logged so a Telegram outage
           can never block a spawn decision.
+        - No-cap path (budget_daily_usd=None) short-circuits before
+          compute_spend and returns used_today_usd=Decimal('0'). Callers
+          that need the live daily spend on an uncapped project must call
+          compute_spend themselves.
     """
     project = await db.get(Project, project_id)
     if project is None:
         raise ValueError(f"project_id={project_id} not found")
 
     cap = project.budget_daily_usd
+
+    # Short-circuit: no cap configured → skip the DB aggregation entirely.
+    # Mirror of budget_enforcer.check_budget's all-NULL short-circuit pattern.
+    if cap is None:
+        return BudgetCheckResult(
+            allowed=True,
+            used_today_usd=Decimal("0"),
+            cap_daily_usd=None,
+            projected_usd=Decimal("0"),
+            pct_used=None,
+            reason="no_cap_configured",
+        )
+
     new_cost = estimated_cost_usd if estimated_cost_usd is not None else Decimal("0")
     # Defensive coerce — Pydantic gives us Decimal already, but raw-SQL / direct
     # service callers might pass an int / float / str.
@@ -162,16 +179,6 @@ async def check_budget(
     now = datetime.now(timezone.utc)
     used_today = await compute_spend(db, project_id, since=_utc_midnight(now))
     projected = used_today + new_cost
-
-    if cap is None:
-        return BudgetCheckResult(
-            allowed=True,
-            used_today_usd=used_today,
-            cap_daily_usd=None,
-            projected_usd=projected,
-            pct_used=None,
-            reason="no_cap_configured",
-        )
 
     # cap is not None below — safe to divide.
     if cap <= 0:

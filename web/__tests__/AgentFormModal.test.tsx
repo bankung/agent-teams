@@ -56,6 +56,7 @@ function summary() {
     domain: "dev" as const,
     valid: true,
     validation_errors: [],
+    tool_chips: [],
   };
 }
 

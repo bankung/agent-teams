@@ -129,7 +129,7 @@ async def create_tool_call(
     missing summary on the lead path; the unchanged engine 422s otherwise.
 
     Internal endpoint — engine path consumed by
-    `langgraph/audit.py::record_tool_invocation`; lead path by the `tn-report`
+    `langgraph/audit.py::record_tool_invocation`; lead path by the `zb-report`
     skill. The audit table is append-only on the wire (no PATCH / DELETE) and
     the writer service owns the only persistence path.
 

@@ -20,6 +20,7 @@ configure({ asyncUtilTimeout: 5000 });
 const mockKillProject = vi.fn();
 const mockReviveProject = vi.fn();
 const mockGrantConsent = vi.fn();
+const mockSetProjectToolsConfig = vi.fn();
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -28,6 +29,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     killProject: (...a: unknown[]) => mockKillProject(...a),
     reviveProject: (...a: unknown[]) => mockReviveProject(...a),
     grantConsent: (...a: unknown[]) => mockGrantConsent(...a),
+    setProjectToolsConfig: (...a: unknown[]) => mockSetProjectToolsConfig(...a),
   };
 });
 
@@ -276,31 +278,7 @@ describe("ProjectConsentGrantModal — operator token", () => {
     expect(token).toBe("consent-secret");
   });
 
-  it("calls grantConsent without a token when the field is left empty", async () => {
-    const user = userEvent.setup();
-    mockGrantConsent.mockResolvedValueOnce(SUCCESS_PROJECT_READ);
-
-    const project = { id: 1, name: "test-project" };
-    render(<ProjectConsentGrantModal project={project} />);
-
-    await user.click(
-      document.body.querySelector("[data-consent-grant-trigger]") as HTMLButtonElement,
-    );
-    await user.type(
-      document.body.querySelector("[data-consent-grant-input]") as HTMLInputElement,
-      "test-project",
-    );
-    await user.click(
-      document.body.querySelector("[data-consent-grant-submit]") as HTMLButtonElement,
-    );
-
-    await waitFor(() => expect(mockGrantConsent).toHaveBeenCalledTimes(1));
-    const [, , token] = mockGrantConsent.mock.calls[0];
-    // Empty string — applyOperatorToken will NOT set the header.
-    expect(token).toBe("");
-  });
-
-  it("submit is NOT disabled when token field is empty (token is optional)", async () => {
+  it("submit is disabled when project name is typed but operator token is empty", async () => {
     const user = userEvent.setup();
     const project = { id: 1, name: "test-project" };
     render(<ProjectConsentGrantModal project={project} />);
@@ -318,6 +296,119 @@ describe("ProjectConsentGrantModal — operator token", () => {
     const submitBtn = document.body.querySelector(
       "[data-consent-grant-submit]",
     ) as HTMLButtonElement;
-    expect(submitBtn.disabled).toBe(false);
+    expect(submitBtn.disabled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ProjectConsentGrantModal — posture radio (#2732 Option C)
+// ---------------------------------------------------------------------------
+
+describe("ProjectConsentGrantModal — posture radio", () => {
+  it("default posture (Q&A): submit calls grantConsent but NOT setProjectToolsConfig", async () => {
+    const user = userEvent.setup();
+    mockGrantConsent.mockResolvedValueOnce(SUCCESS_PROJECT_READ);
+
+    const project = { id: 1, name: "test-project" };
+    render(<ProjectConsentGrantModal project={project} />);
+
+    await user.click(
+      document.body.querySelector("[data-consent-grant-trigger]") as HTMLButtonElement,
+    );
+    await user.type(
+      document.body.querySelector("[data-consent-grant-input]") as HTMLInputElement,
+      "test-project",
+    );
+    await user.type(
+      document.body.querySelector("[data-consent-grant-operator-token]") as HTMLInputElement,
+      "qa-token",
+    );
+
+    // Q&A radio is default — do NOT click standard
+    await user.click(
+      document.body.querySelector("[data-consent-grant-submit]") as HTMLButtonElement,
+    );
+
+    await waitFor(() => expect(mockGrantConsent).toHaveBeenCalledTimes(1));
+    expect(mockSetProjectToolsConfig).not.toHaveBeenCalled();
+  });
+
+  it("Standard posture: submit calls grantConsent then setProjectToolsConfig with correct body", async () => {
+    const user = userEvent.setup();
+    mockGrantConsent.mockResolvedValueOnce(SUCCESS_PROJECT_READ);
+    mockSetProjectToolsConfig.mockResolvedValueOnce(SUCCESS_PROJECT_READ);
+
+    const project = { id: 1, name: "test-project" };
+    render(<ProjectConsentGrantModal project={project} />);
+
+    await user.click(
+      document.body.querySelector("[data-consent-grant-trigger]") as HTMLButtonElement,
+    );
+    await user.type(
+      document.body.querySelector("[data-consent-grant-input]") as HTMLInputElement,
+      "test-project",
+    );
+    await user.type(
+      document.body.querySelector("[data-consent-grant-operator-token]") as HTMLInputElement,
+      "standard-token",
+    );
+
+    // Select standard posture
+    await user.click(
+      document.body.querySelector("[data-consent-posture-standard]") as HTMLInputElement,
+    );
+
+    await user.click(
+      document.body.querySelector("[data-consent-grant-submit]") as HTMLButtonElement,
+    );
+
+    await waitFor(() => expect(mockGrantConsent).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockSetProjectToolsConfig).toHaveBeenCalledTimes(1));
+
+    const [projectId, toolsConfig, token] = mockSetProjectToolsConfig.mock.calls[0];
+    expect(projectId).toBe(1);
+    expect(toolsConfig).toEqual({
+      tools_enabled: true,
+      auto_allow_tiers: ["read"],
+      halt_tiers: ["write", "network", "destructive"],
+    });
+    expect(token).toBe("standard-token");
+  });
+
+  it("partial-failure: grantConsent succeeds but setProjectToolsConfig rejects → distinct error text renders", async () => {
+    const user = userEvent.setup();
+    mockGrantConsent.mockResolvedValueOnce(SUCCESS_PROJECT_READ);
+    mockSetProjectToolsConfig.mockRejectedValueOnce(new Error("tools write failed"));
+
+    const project = { id: 1, name: "test-project" };
+    render(<ProjectConsentGrantModal project={project} />);
+
+    await user.click(
+      document.body.querySelector("[data-consent-grant-trigger]") as HTMLButtonElement,
+    );
+    await user.type(
+      document.body.querySelector("[data-consent-grant-input]") as HTMLInputElement,
+      "test-project",
+    );
+    await user.type(
+      document.body.querySelector("[data-consent-grant-operator-token]") as HTMLInputElement,
+      "partial-fail-token",
+    );
+
+    // Select standard posture to trigger the tools write
+    await user.click(
+      document.body.querySelector("[data-consent-posture-standard]") as HTMLInputElement,
+    );
+
+    await user.click(
+      document.body.querySelector("[data-consent-grant-submit]") as HTMLButtonElement,
+    );
+
+    // Modal stays open with the partial-failure error (consent succeeded, tools write failed).
+    await waitFor(() => {
+      const el = document.body.querySelector("[data-consent-grant-error]") as HTMLElement | null;
+      expect(el).not.toBeNull();
+      expect(el?.textContent).toMatch(/Consent granted, but enabling Standard tools failed/);
+    });
   });
 });

@@ -298,17 +298,125 @@ and emits a warning marker for audit.
 }
 
 # ---------------------------------------------------------------------------
+# BIND-BOOTSTRAP ALLOW (#2706) — narrow early-allow for the two READ-ONLY commands
+# /zb-bind MUST run BEFORE a per-session binding can exist. Get-ProjectId (below)
+# reads _runtime/lead_project_id_<sid>.txt, but that file is written only AFTER the
+# bind resolves the project + reads the session id — so during the bind itself
+# Get-ProjectId returns $null, the gate falls through to ASK, and EVERY fresh
+# session's bind forces a permission prompt on its own bootstrap commands. (A hook
+# 'ask' overrides the static allowlist, so allowlisting echo/curl cannot fix it.)
+#
+# These two shapes are read-only (echo + curl GET), carry no mutation, and are
+# exactly what is needed when no binding can yet exist. Placed AFTER all local deny
+# guards (so a deny still short-circuits at exit 2 first) and BEFORE the project
+# fetch (so it short-circuits the no-binding fallthrough). Kept deliberately tight:
+# any -X/--request, request-body/upload, or config-file flag forces the normal path.
+# NOTE: this carve-out fires regardless of binding state, so for these two read-only
+# shapes it also supersedes any project-level approval_policies auto_deny on Bash —
+# acceptable because both are read-only GET/echo to our own API with no write path.
+# ---------------------------------------------------------------------------
+if ($cmd) {
+    $bootstrapCmd = $cmd.Trim()
+
+    # Defense-in-depth: a bind-bootstrap command is ONE simple invocation. If any
+    # shell-composition metacharacter is present (chain ; , && / || via & |, pipe,
+    # redirect < >, backtick, $() command-substitution, or an embedded CR/newline),
+    # refuse the bypass so a crafted `curl <resolve-url> ; <evil>` cannot ride it to
+    # auto-allow. (The echo branch is already fully anchored; this hardens the
+    # substring-matched curl branch.)
+    $hasShellMeta = ($bootstrapCmd -match '[;&|<>`\r\n]') -or ($bootstrapCmd -match '\$\(')
+
+    # And refuse if ANY http(s) URL in the command points somewhere other than
+    # localhost:8456 — stops a foreign GET (or URL smuggled in a header) from riding
+    # the curl branch's substring URL match. The legit bind commands carry exactly
+    # one URL, always http://localhost:8456/...
+    $hasForeignUrl = $bootstrapCmd -match '(?i)https?://(?!localhost:8456/)'
+
+    # (a) echo $CLAUDE_CODE_SESSION_ID — pure read; how the bind reads the session
+    #     id to name the per-session binding file. Case-sensitive, single-space match;
+    #     accepts the bare form (per #2706) OR a fully PAIRED-double-quoted form
+    #     (echo "$CLAUDE_CODE_SESSION_ID", the natural Lead/skill form) — asymmetric
+    #     quotes are rejected (#2711, NIT-2). Anchored to that one env var; the final
+    #     $hasShellMeta guard rejects any newline/metacharacter, so the quotes admit
+    #     nothing executable.
+    $isEchoSessionId = $bootstrapCmd -cmatch '^echo (\$CLAUDE_CODE_SESSION_ID|"\$CLAUDE_CODE_SESSION_ID")$'
+
+    # (b) curl GET to the project-resolution endpoints (by-name / active-list). The
+    #     first token must be curl(.exe) (after any leading VAR= assignments), the
+    #     URL must be one of the two resolve endpoints, and NO unsafe flag may be
+    #     present. A bind GET uses none of -X/--request/-d/--data*/-F/--form/-T/
+    #     --upload-file (write/upload) nor -K/--config (reads a config file that can
+    #     OVERRIDE the URL to a foreign host, defeating $hasForeignUrl), so the mere
+    #     presence of any forces the normal path.
+    $isBindResolveCurl = $false
+    $bTokens = $bootstrapCmd -split '\s+'
+    $bFirst  = $bTokens[0]
+    while ($bFirst -match '^[A-Z_][A-Z0-9_]*=') {
+        $bTokens = $bTokens | Select-Object -Skip 1
+        $bFirst  = $bTokens[0]
+    }
+    if ($bFirst -match '^curl(\.exe)?$') {
+        $hitsResolveUrl = ($bootstrapCmd -match '(?i)https?://localhost:8456/api/projects/by-name/') -or `
+                          ($bootstrapCmd -match '(?i)https?://localhost:8456/api/projects\?status=')
+        $hasUnsafeFlag = ($bootstrapCmd -match '(?i)(?:^|\s)(?:-X|--request)\b') -or `
+                         ($bootstrapCmd -match '(?i)(?:^|\s)(?:-d|--data|--data-binary|--data-raw|--data-urlencode|-F|--form|-T|--upload-file)\b') -or `
+                         ($bootstrapCmd -match '(?i)(?:^|\s)(?:-K|--config)\b')
+        if ($hitsResolveUrl -and -not $hasUnsafeFlag) { $isBindResolveCurl = $true }
+    }
+
+    if (($isEchoSessionId -or $isBindResolveCurl) -and -not $hasShellMeta -and -not $hasForeignUrl) {
+        Emit-Decision -Decision 'allow' -Reason 'pretooluse-bash-gate: bind-bootstrap read-only command (echo session-id / curl GET project-resolve) — allowed pre-binding (#2706)'
+        exit 0
+    }
+}
+
+# ---------------------------------------------------------------------------
+# BIND-BINDING-WRITE ALLOW (#2711) — the ONE mutation /zb-bind performs.
+# /zb-bind writes the resolved project id (a bare integer) to the per-session
+# binding marker _runtime/lead_project_id_<sid>.txt AND the global
+# _runtime/lead_project_id.txt. Those writes happen DURING the bind, before any
+# per-session binding exists, so Get-ProjectId (below) is still $null and the gate
+# would otherwise emit the no-binding ASK — forcing a prompt on the bind's own
+# writes. The #2706 allow only covered the read-only echo + curl GET; the writes
+# fell through. (Write tool can't be used for the GLOBAL file: it always exists and
+# the Write tool refuses to overwrite a file not first Read — but the skill's core
+# invariant is "a session must NEVER READ the global". So the write stays Bash printf
+# and is allow-listed HERE, the only place a Bash write can be silenced during the
+# no-binding window — a static allowlist entry would be overridden by the no-binding
+# ASK, exactly as Bash(echo:*) is.)
+#
+# Anchored FULL-STRING and path-locked so it cannot be ridden to anything else:
+# first token printf, a bare (optionally single/double-quoted) run of DIGITS, a
+# single '>' redirect, target locked to the two binding-file shapes, and (defense
+# in depth vs the .NET '$'-before-trailing-newline corner) NO CR/LF anywhere. The
+# trailing '$' anchor means no second statement survives, so `printf ... ; evil`
+# cannot smuggle a command. Placed AFTER the local deny guards (a deny still
+# short-circuits at exit 2 first) and BEFORE the project fetch. Like the #2706 read
+# allow, it fires regardless of binding state and supersedes any project-level
+# approval_policies auto_deny on Bash for this exact shape — acceptable because the
+# sole effect is writing the session's own integer binding marker.
+# ---------------------------------------------------------------------------
+if ($cmd) {
+    $bw = $cmd.Trim()
+    if (($bw -cmatch '^printf [''"]?[0-9]+[''"]?\s*>\s*_runtime/lead_project_id(_[0-9a-fA-F-]+)?\.txt$') -and `
+        ($bw -notmatch '[\r\n]')) {
+        Emit-Decision -Decision 'allow' -Reason 'pretooluse-bash-gate: bind-binding-write (printf <id> > _runtime/lead_project_id marker) — allowed pre-binding (#2711)'
+        exit 0
+    }
+}
+
+# ---------------------------------------------------------------------------
 # GUARD 5 — approval-policies-gate  (LAST: runs only if no local block-* guard
 # denied above — does the Lever B project fetch, so deny paths skip it. #2541)
 # ---------------------------------------------------------------------------
-$projectId = Get-ProjectId
+$projectId = Get-ProjectId -SessionId $payload.session_id
 $policies = $null
 if ($null -eq $projectId) {
     # Infra error at the approval stage — record an ask candidate but DO NOT exit.
     # The local block-* deny guards above already ran (none denied, else we'd have
     # exited 2), so recording an ask here cannot mask a deny.
-    [Console]::Error.WriteLine("WARN: pretooluse-bash-gate: _runtime/lead_project_id.txt missing or invalid ; ask candidate")
-    if (-not $askReason) { $askReason = 'pretooluse-bash-gate fallthrough: _runtime/lead_project_id.txt missing or invalid' }
+    [Console]::Error.WriteLine("WARN: pretooluse-bash-gate: no per-session project binding (session may need re-bind) ; ask candidate")
+    if (-not $askReason) { $askReason = 'pretooluse-bash-gate fallthrough: no per-session project binding (session may need re-bind)' }
 } else {
     $fetchResult = Invoke-CachedPolicyFetch -ProjectId $projectId
     if ($fetchResult.failed) {

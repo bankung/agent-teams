@@ -17,6 +17,7 @@ from src.schemas.task import (
     TaskRead,
     TaskUpdate,
 )
+from src.schemas.task_outputs import ProjectOutputItem, ProjectOutputsResponse
 from src.schemas.task_template import (
     TaskTemplateCreate,
     TaskTemplateRead,
@@ -37,6 +38,8 @@ __all__ = [
     "PLBucket",
     "PLSummary",
     "ProjectCreate",
+    "ProjectOutputItem",
+    "ProjectOutputsResponse",
     "ProjectRead",
     "ProjectUpdate",
     "ProposedTask",

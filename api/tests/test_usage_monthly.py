@@ -22,7 +22,9 @@ Regression tests added by dev-tester (Kanban #2356):
 The boundary timestamps are computed DYNAMICALLY from ``now()`` so the tests
 pass on any calendar day. The chosen cut-off day keeps the current-cycle
 boundary within the last few days, so seeded Mode-A events never trip the
-30-day occurred_at clamp (Part B of this task).
+30-day occurred_at clamp (Part B of this task). In-cycle seed instants use
+``_in_cycle_instant`` (midpoint of ``[cycle_start, now]``) so they also stay
+within the +5min FUTURE upper bound at any wall-clock hour.
 
 The rigorous suite (DST/year-rollover matrices, FK SET NULL on task delete,
 CASCADE on project delete, cross-mode race, etc.) is dev-tester's.
@@ -67,6 +69,20 @@ def _current_cycle_start(now: datetime, cycle_day: int) -> datetime:
     else:
         y, m = _prev_month(now.year, now.month)
     return datetime(y, m, cycle_day, 0, 0, 0, tzinfo=timezone.utc)
+
+
+def _in_cycle_instant(now: datetime, cycle_day: int) -> datetime:
+    """A timestamp strictly inside the current cycle AND never in the future.
+
+    The midpoint between the current cycle_start and ``now`` — always in
+    ``(cycle_start, now]`` because ``now >= cycle_start`` by construction. This
+    satisfies the POST /api/usage/events occurred_at clamp ``[now-30d, now+5min]``
+    at ANY wall-clock hour: a fixed ``cycle_start + Nh`` offset overshoots the
+    +5min future bound in the early UTC hours, because cycle_start can be TODAY
+    00:00 UTC (``min(now.day, 28) == now.day`` on days 1-28).
+    """
+    start = _current_cycle_start(now, cycle_day)
+    return start + (now - start) / 2
 
 
 def _safe_cycle_day(now: datetime) -> int:
@@ -277,9 +293,7 @@ async def test_mode_a_plus_mode_b_split_and_total(client, scaffold_cleanup) -> N
 
     now = datetime.now(timezone.utc)
     cycle_day = _safe_cycle_day(now)
-    boundary = _current_cycle_start(now, cycle_day)
-    # A timestamp safely inside the current cycle (1 hour after the boundary).
-    in_cycle = boundary + timedelta(hours=1)
+    in_cycle = _in_cycle_instant(now, cycle_day)
 
     project_id = await _make_project(client, scaffold_cleanup, "um-split")
 
@@ -335,7 +349,7 @@ async def test_per_task_drilldown_groups_and_orders(client, scaffold_cleanup) ->
     """
     now = datetime.now(timezone.utc)
     cycle_day = _safe_cycle_day(now)
-    in_cycle = _current_cycle_start(now, cycle_day) + timedelta(hours=2)
+    in_cycle = _in_cycle_instant(now, cycle_day)
 
     project_id = await _make_project(client, scaffold_cleanup, "um-tasks")
     task_high = await _make_task(client, project_id, "high-cost task")
@@ -453,7 +467,7 @@ async def test_project_filter_excludes_other_projects(
     """A monthly query for project A must not include project B's spend."""
     now = datetime.now(timezone.utc)
     cycle_day = _safe_cycle_day(now)
-    in_cycle = _current_cycle_start(now, cycle_day) + timedelta(hours=3)
+    in_cycle = _in_cycle_instant(now, cycle_day)
 
     project_a = await _make_project(client, scaffold_cleanup, "um-pf-a")
     project_b = await _make_project(client, scaffold_cleanup, "um-pf-b")

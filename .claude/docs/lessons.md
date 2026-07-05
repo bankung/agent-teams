@@ -105,34 +105,20 @@ The DB is the single source of truth. If pre-scaffold or hardcoded fallbacks lin
 - Kanban #1300 (2026-05-17): dev DB wipe via fixture leakage; triggered hard hook `block-pytest-on-live-db.ps1` (L1 gate).
 - Kanban #794 (2026-05-12): acceptance_criteria acceptance_discipline incident (1.5/4 criteria honestly counted vs 4/4 claimed); spawned structured AC field.
 
-## Path resolution — `projects.working_path` (Kanban #1185, 2026-05-18)
+## Path resolution — `projects.working_path` (Kanban #1185, 2026-05-18; canonical rule now in context-layout.md)
 
-**Context.** Every non-agent-teams project has a filesystem folder where its code, migrations, and working state live. The `projects.working_path` column (nullable) governs where project-scoped context (shared/ and role state) resolves on disk.
+**Canonical rule + mechanics:** [.claude/docs/context-layout.md](context-layout.md) "Path resolution — `projects.working_path`" — the set-vs-null resolution, the MUST-set-on-creation rule, and the agent-prompt absolute-path requirement all live there now; this section keeps only the incident narrative.
 
-**The rule:**
-- **`working_path` is set** (typical for non-agent-teams projects like NewsAnalyzer, secretary, novel-drift) → project context resolves to `<working_path>/shared/` + `<working_path>/<role>/`. Lives OUTSIDE the agent-teams repo, in the project's own folder.
-- **`working_path` is null** (agent-teams itself + legacy projects pre-migration) → fallback `agent-teams/context/projects/<name>/shared|<role>/`. agent-teams's own context legitimately lives in agent-teams repo since the project IS agent-teams.
+**Decision status.** The architectural question (context-with-code vs context-with-platform) was decided in favor of per-repo (`working_path`) via #1185 (2026-05-18); the audit/decision task #941 is CLOSED as superseded by #1620 (verified 2026-07-01, `process_status=6`). Not "in progress" — settled.
 
-**Agent prompt rule.** When a spawn brief references project-scoped files, **always use the resolved absolute path**, not legacy relative form. Examples:
-- ✗ `context/projects/secretary/shared/voice.md` (relative, doesn't resolve correctly across repos)
-- ✓ `C:/Users/banku/Documents/Personal/Projects/WebApp/secretary/shared/voice.md` (absolute, works everywhere)
-
-When `working_path` changes on a project, BOTH the DB row AND any agent prompts with hardcoded file paths must be updated together — otherwise agent spawns will write to stale locations.
-
-**Migration audit.** Per Kanban #941: audit every project in the DB to ensure `working_path` is set. Projects created via `POST /api/projects` should set `working_path` on creation; existing projects may need migration. The architectural decision: should context live with code (project's repo) or with lead (agent-teams)? Current status: working_path migration in progress; all NEW projects MUST set `working_path` on creation.
-
-**Why this matters.** Three observed incidents (2026-05-14 → 2026-05-15) showed project context silently creeping into agent-teams git history when `working_path` was null:
+**Why this matters — incident record.** Three observed incidents (2026-05-14 → 2026-05-15) showed project context silently creeping into agent-teams git history when `working_path` was null:
 1. NewsAnalyzer decisions.md + role state written to agent-teams instead of NewsAnalyzer's own repo.
 2. novel-drift agents written to agent-teams `.claude/agents/` instead of novel-drift's own `.claude/`.
 3. agent-teams becomes a content store coupled to N external projects' release cadence — unsustainable.
 
 ## Karpathy lane (universal discipline on every turn)
 
-**Three core principles:**
-
-1. **Think before coding** — diagnose the actual environment state (existing code, installed packages, schema, service topology) before drafting solutions. Never invent install procedures, env-var names, library versions, or compose service shapes — read what's actually there first.
-2. **Minimum viable change** — smallest surgical edit that satisfies the AC. Resist sweeping refactors. If a "small fix" reaches >50 LOC, stop and re-scope. The AC is the north star, not feature completeness.
-3. **Goal-driven verification** — after any spawn or Edit/Write, run the smallest concrete check (curl, pytest selector, grep on a string the output should contain) that proves it works independent of the agent's claim. "Tests pass" is not proof if fixtures leak; "file modified" is not proof if the line is wrong.
+The canonical lane is CLAUDE.md's "Karpathy lane" (5 points: think-before-coding, minimum-viable-change decision ladder, goal-driven verification, review-to-rewrite, token economy). This section keeps only the drift-mode catalog + incident history — do not restate the points here.
 
 **Four observed drift modes** (catalogued in feedback_karpathy_lane.md, incident history below):
 

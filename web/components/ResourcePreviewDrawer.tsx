@@ -13,7 +13,7 @@
 // layering and reads like a detail panel. ESC + backdrop close. The preview is
 // fetched fresh each open (cheap; reads off stored tags, never re-reads files).
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import {
   getResourcePreview,
@@ -22,6 +22,7 @@ import {
   type ResourcePreview,
 } from "@/lib/api";
 import { useAsyncData } from "@/lib/useAsyncData";
+import { useFocusTrap } from "@/lib/useFocusTrap";
 
 type Props = {
   resource: Resource;
@@ -39,6 +40,13 @@ export function ResourcePreviewDrawer({ resource, onClose }: Props) {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // FOCUS-1 (#1315 deferred review) — initial focus + Tab trap + restore.
+  // Not built on ModalShell (this is a drawer, not a portal-modal), so it
+  // wires the shared hook directly. `active` is always true while mounted —
+  // the parent (ResourcesPanel) conditionally renders this component itself.
+  const drawerRef = useRef<HTMLDivElement | null>(null);
+  useFocusTrap(drawerRef, true);
 
   // #2492 — preview fetch + cancel-guard via useAsyncData. Links never call the
   // preview endpoint (their metadata renders straight off the Resource), so the
@@ -72,9 +80,11 @@ export function ResourcePreviewDrawer({ resource, onClose }: Props) {
       data-resource-preview-backdrop
     >
       <div
+        ref={drawerRef}
         role="dialog"
         aria-modal="true"
         aria-label={`Preview of ${title}`}
+        tabIndex={-1}
         className="flex h-full w-full max-w-xl flex-col overflow-y-auto border-l border-zinc-200 bg-white p-4 shadow-xl dark:border-zinc-800 dark:bg-zinc-900"
         data-resource-preview-drawer
       >
@@ -260,8 +270,14 @@ function PreviewBody({
           </thead>
           <tbody>
             {rows.map((r, i) => (
+              // NIT-3 (#1315 deferred review) — key derived from the row's own
+              // cell content (not its array index): rows have no guaranteed id
+              // column, so this joins the resolved `cols` values into a cheap
+              // content fingerprint. `i` is appended only as a final tie-break
+              // for two genuinely identical rows (a valid CSV state), so it
+              // never collides — but position no longer drives the key.
               <tr
-                key={i}
+                key={`${i}:${rowFingerprint(r, cols)}`}
                 className="even:bg-zinc-50/50 dark:even:bg-zinc-950/40"
               >
                 {cols.map((c) => (
@@ -308,4 +324,11 @@ function cellText(v: unknown): string {
   } catch {
     return String(v);
   }
+}
+
+// NIT-3 (#1315 deferred review) — cheap content fingerprint for a preview
+// row, used as the stable half of the table's `key`. O(cols), reuses the
+// already-resolved column list (no re-walk of the row's own keys).
+function rowFingerprint(row: Record<string, unknown>, cols: string[]): string {
+  return cols.map((c) => cellText(row[c])).join("");
 }

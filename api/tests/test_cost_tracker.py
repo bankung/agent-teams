@@ -10,12 +10,12 @@ from decimal import Decimal
 import pytest
 
 
-def test_compute_cost_opus_1m_in_1m_out_is_90_dollars() -> None:
-    """1M input @ $15 + 1M output @ $75 = $90.0000 exactly."""
+def test_compute_cost_opus_1m_in_1m_out_is_30_dollars() -> None:
+    """1M input @ $5 + 1M output @ $25 = $30.0000 exactly (was legacy $90 pre-#2727)."""
     from src.services.cost_tracker import compute_cost
 
     result = compute_cost("anthropic", "claude-opus-4-7", 1_000_000, 1_000_000)
-    assert result == Decimal("90.0000")
+    assert result == Decimal("30.0000")
 
 
 def test_compute_cost_sonnet_500k_in_100k_out() -> None:
@@ -37,8 +37,8 @@ def test_compute_cost_returns_decimal_with_4_places() -> None:
     """numeric(10,4) — quantized to 4 decimal places."""
     from src.services.cost_tracker import compute_cost
 
-    result = compute_cost("anthropic", "claude-opus-4-7", 1, 1)
-    # 15/1M + 75/1M = 0.000015 + 0.000075 = 0.00009 → quantized to 0.0001
+    result = compute_cost("anthropic", "claude-opus-4-7", 2, 2)
+    # 5*2/1M + 25*2/1M = 0.00001 + 0.00005 = 0.00006 → quantized HALF_UP to 0.0001
     assert result.as_tuple().exponent == -4
     assert result == Decimal("0.0001")
 
@@ -63,6 +63,7 @@ def test_pricing_table_has_three_locked_models() -> None:
     V1 CTX-3 locked three keys (opus-4-7, sonnet-4-6, haiku-4-5-20251001).
     Kanban #2301 added claude-opus-4-8 as a 4th exact key.
     Kanban #944 added claude-opus-4-x and claude-haiku alias entries.
+    Kanban #2727 corrected opus-4-7 to $5/$25 and added opus-4-6 exact key.
     This test pins all exact-key presences so regressions are caught immediately.
     """
     from src.services.cost_tracker import PRICING
@@ -71,7 +72,9 @@ def test_pricing_table_has_three_locked_models() -> None:
     assert ("anthropic", "claude-sonnet-4-6") in PRICING
     assert ("anthropic", "claude-haiku-4-5-20251001") in PRICING
     assert ("anthropic", "claude-opus-4-8") in PRICING
-    assert PRICING[("anthropic", "claude-opus-4-7")] == {"input": 15.0, "output": 75.0}
+    assert PRICING[("anthropic", "claude-opus-4-7")] == {"input": 5.0, "output": 25.0}
+    assert ("anthropic", "claude-opus-4-6") in PRICING
+    assert PRICING[("anthropic", "claude-opus-4-6")] == {"input": 5.0, "output": 25.0}
 
 
 # ---------------------------------------------------------------------------
@@ -260,3 +263,42 @@ def test_resolve_pricing_key_opus_4_8_versioned_id_uses_5_25_rates() -> None:
     )
     # Confirm the resolved key carries the correct $5/$25 rates, not legacy $15/$75.
     assert PRICING[key] == {"input": 5.0, "output": 25.0}
+
+
+@pytest.mark.parametrize(
+    "model", ["claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6"]
+)
+def test_current_opus_models_resolve_to_5_25(model: str) -> None:
+    """#2727 AC1: every current frontier Opus resolves to $5/$25, not legacy $15/$75."""
+    from src.services.cost_tracker import PRICING, resolve_pricing_key
+
+    key = resolve_pricing_key("anthropic", model)
+    assert PRICING[key] == {"input": 5.0, "output": 25.0}, (model, key, PRICING[key])
+
+
+def test_opus_catch_all_is_current_rate_not_legacy() -> None:
+    """#2727 AC2: the claude-opus-4-x catch-all is the CURRENT Opus rate ($5/$25),
+    not legacy $15/$75 — an unknown/future opus string must not be 3x-overcharged.
+    """
+    from src.services.cost_tracker import PRICING, resolve_pricing_key
+
+    key = resolve_pricing_key("anthropic", "claude-opus-4-9-future")
+    assert key == ("anthropic", "claude-opus-4-x"), key
+    assert PRICING[key] == {"input": 5.0, "output": 25.0}, PRICING[key]
+
+
+def test_compute_cost_opus_4_8_reconciles_to_validated_session_baseline() -> None:
+    """#2727 AC3: opus-4-8 at $5/$25 with cache write 1.25x / read 0.10x reconciles
+    to the validated transcript baseline $12.1623 (session 01046e4f Lead aggregate).
+    """
+    from src.services.cost_tracker import compute_cost
+
+    result = compute_cost(
+        "anthropic",
+        "claude-opus-4-8",
+        input_tokens=19869,
+        output_tokens=94513,
+        cache_read_input_tokens=12551957,
+        cache_creation_input_tokens=547871,
+    )
+    assert result == Decimal("12.1623"), result

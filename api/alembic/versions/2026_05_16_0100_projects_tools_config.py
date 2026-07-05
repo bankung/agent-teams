@@ -35,7 +35,11 @@ Locked default (Q2 → Option B "permissive read" — design lock #949):
 false (the ship default for every fresh / existing project), the gate
 returns `reject` for EVERY tool regardless of `auto_allow_tiers` /
 `halt_tiers` — including read-only tools. Only the user (via PATCH from
-the FE config UI, gated by Kanban #943) can flip it to true.
+the FE config UI, gated by Kanban #943) can flip it to true. As of #2707
+this flag is decoupled from multi-board eligibility — consent-granted
+projects are eligible for auto-run even with tools disabled; the
+operator write path for this flag lands in #2707 Option C (the #943 UI
+was never built).
 
 `auto_allow_tiers` and `halt_tiers` MUST be disjoint (Pydantic
 `ToolsConfig` enforces — 422 on overlap at the API boundary). Any tier
