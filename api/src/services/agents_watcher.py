@@ -62,7 +62,11 @@ def compute_dir_signature(agents_dir: Path) -> frozenset[tuple[str, int, int]]:
     is the actual crash guard for transient I/O mid-scan.
     """
     entries: set[tuple[str, int, int]] = set()
-    for path in agents_dir.iterdir():
+    try:
+        candidates = list(agents_dir.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        return frozenset()
+    for path in candidates:
         if path.suffix != ".md" or path.name.startswith("_"):
             continue
         st = path.stat()
