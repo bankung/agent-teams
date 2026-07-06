@@ -128,7 +128,7 @@ npx @bankung/agent-teams up
 npx @bankung/agent-teams up --images
 ```
 
-`status` · `down` · `reset` manage the stack afterward. Prefer a global install?
+`status` · `down` · `reset` manage the stack afterward — full flags + commands in the [CLI reference](cli/README.md). Prefer a global install?
 `npm install -g @bankung/agent-teams` → `agent-teams up`.
 
 ### Or clone + run the installer
@@ -252,6 +252,7 @@ langgraph/   autonomous worker engine (Mode B)
 .claude/     agents/ · teams/ · skills/ · hooks/      (operator-applied)
 context/     standards/ (engineering rules) · projects/<p>/shared/ · teams/
 bin/         install / bring-up / reset helpers
+cli/         npx launcher — @bankung/agent-teams (up / down / status / reset)
 ```
 
 ---
