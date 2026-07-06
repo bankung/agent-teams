@@ -5,7 +5,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSL%201.1-blue.svg" alt="License: BSL 1.1"></a>
   &nbsp;
-  <img src="https://img.shields.io/badge/version-0.7.1-brightgreen.svg" alt="Version 0.7.1">
+  <img src="https://img.shields.io/badge/version-0.8.0-brightgreen.svg" alt="Version 0.8.0">
   &nbsp;
   <img src="https://img.shields.io/badge/deploy-self--hosted-orange.svg" alt="Self-hosted">
   &nbsp;
@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <code>v0.7.1</code> &nbsp;·&nbsp; 8 teams · 40 agents · 21 skills &nbsp;·&nbsp; FastAPI + PostgreSQL · Next.js · LangGraph · Docker
+  <code>v0.8.0</code> &nbsp;·&nbsp; 8 teams · 40 agents · 22 skills &nbsp;·&nbsp; FastAPI + PostgreSQL · Next.js · LangGraph · Docker
 </p>
 
 <p align="center">
@@ -209,9 +209,21 @@ An append-only, per-task telemetry record of every spawn, result, commit, and st
 **One-size LLM spend on every task → dial cost vs quality per task.**
 Per-agent model tiers (`opus` / `sonnet` / `haiku`), per-task `model_override` + `effort_override` (the Mode B worker drives the Anthropic effort lever — auto-resolved or manual), multi-provider (Anthropic / OpenAI / Google / DeepSeek / Ollama), and a per-task + monthly cost view.
 
+### 🎛️ Agent Gallery & Governance
+**A fixed roster with unchecked access → curate, cost-preview, and gate every agent per project.**
+Enable or disable agents per project, override model tier + effort per agent, preview each agent's projected monthly cost with a budget traffic-light, read per-agent tool-risk chips, and **runtime-enforced spawn gates** — a disabled or out-of-role agent is blocked at spawn, not merely discouraged.
+
 ### 🌐 Web Workspace
 **Agent runs scattered across logs → one board you can manage.**
-A Next.js workspace: Kanban board, Gantt timeline, calendar, and milestone roll-ups — visual project management, not just a CLI.
+A Next.js workspace: Kanban board, Gantt timeline, calendar, milestone roll-ups, and an **Artifacts view** that aggregates every output agents produce — visual project management, not just a CLI.
+
+### 📲 Telegram Command Surface
+**Tied to a terminal → run the board from your phone.**
+Read state (`/projects`, `/tasks`, `/gates`) and drive it with safe-mutation verbs (`/new`, `/approve`, `/deny`, `/hold`, `/run`, `/halt`) — deny-by-default and HITL-gated, with the same operator-proof guardrails as the web UI.
+
+### 🔌 MCP Tool Surface
+**Locked to one client → drive tasks from any MCP-aware agent.**
+An MCP server exposes a task-tool surface (list · get · create · update · complete) under the same acceptance-criteria gating — `complete_task` refuses to flip a task DONE until every criterion verifies.
 
 ### 🔍 Self-Maintaining Knowledge Base
 **Docs and memory rot over time → continuous, review-gated hygiene.**
@@ -246,7 +258,7 @@ bin/         install / bring-up / reset helpers
 
 ## Status
 
-`v0.7.1`
+`v0.8.0`
 
 - **Production use:** yes — self-host and run it today
 - **Breaking changes:** expected before 1.0
@@ -261,7 +273,8 @@ See `context/projects/agent-teams/shared/decisions.md` for the decision log.
 | Version | Focus | Status |
 |---|---|---|
 | **0.7** | Story-based memory · Auditor (skill / decision / memory) · cost & control levers | ✅ shipped (v0.7.1) |
-| **0.8** | Multi-workspace · secrets (Infisical) · MCP integration | 🚧 in progress |
+| **0.8** | Agent gallery & governance · Telegram command surface · MCP tool surface · Artifacts view · auditor liveness | ✅ shipped (v0.8.0) |
+| **next** | Secrets (Infisical) rollout · multi-workspace | 🚧 in progress |
 | **1.0** | Stable release | planned |
 
 Forward-looking; subject to change.
