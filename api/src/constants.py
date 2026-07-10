@@ -71,7 +71,7 @@ class RecordStatus:
 
 
 class ProjectTeam:
-    """projects.team — dev / novel / general / content / seo / data-analytics / sem.
+    """projects.team — dev / novel / general / content / seo / data-analytics / sem / netops / social.
 
     SINGLE SOURCE OF TRUTH for the team enum (Kanban #1620, 2026-05-28). The
     DB-side CHECK `ck_projects_team_valid` was DROPPED by migration
