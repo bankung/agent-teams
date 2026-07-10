@@ -49,8 +49,10 @@ RUN if [ "$INSTALL_INFISICAL_CLI" = "true" ]; then \
 # scripts/ visible at install time (see api/pyproject.toml).
 COPY . /repo/api/
 
+# requirements.lock pins the resolved transitive closure (Kanban #2440) so
+# rebuilds are reproducible instead of floating pyproject's version ranges.
 RUN pip install --upgrade pip \
- && pip install -e ".[dev]"
+ && pip install -e ".[dev]" -c requirements.lock
 
 EXPOSE 8456
 
