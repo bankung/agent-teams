@@ -94,8 +94,9 @@ class ProjectTeam:
     DATA_ANALYTICS = "data-analytics"
     SEM = "sem"
     NETOPS = "netops"
+    SOCIAL = "social"
 
-    ALL = (DEV, NOVEL, GENERAL, CONTENT, SEO, DATA_ANALYTICS, SEM, NETOPS)
+    ALL = (DEV, NOVEL, GENERAL, CONTENT, SEO, DATA_ANALYTICS, SEM, NETOPS, SOCIAL)
 
 
 # Per-team scaffold roster — the SINGLE source for which dedicated agents own a
@@ -165,6 +166,16 @@ TEAM_ROSTERS: dict[str, tuple[str, ...]] = {
         "sql-optimizer",
         "dashboard-designer",
         "analytics-platform-integrator",
+    ),
+    # social is BORROW-ONLY (Kanban #2811, 2026-07-10) — reuses the content
+    # pipeline verbatim, no dedicated social-* agents. Excludes
+    # content-seo-optimizer (on-page-SEO step doesn't apply to social copy).
+    ProjectTeam.SOCIAL: (
+        "content-writer",
+        "content-editor",
+        "content-hook-doctor",
+        "content-veracity-checker",
+        "thai-proofreader",
     ),
 }
 
