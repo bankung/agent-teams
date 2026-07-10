@@ -78,7 +78,7 @@ from src.schemas.project import (
 from src.schemas.agent_metadata import AGENT_NAME_RE
 from src.services.agent_validation import default_agents_dir, list_agents
 from src.services.budget_gate import reconcile_budget
-from src.services.data_scaffold import scaffold_data_analytics
+from src.services.team_starter_scaffold import scaffold_team_starter
 from src.services.kill_switch import kill_project, revive_project
 from src.services.operator_auth import OperatorDecision, require_operator_proof
 from src.services.pause_switch import pause_project, unpause_project
@@ -1200,25 +1200,28 @@ async def create_project(
                     len(report.errors),
                 )
 
-                # Kanban #1308 — data-analytics starter folders (data/raw/
-                # sample_sales.csv, data/cleaned/, analysis/outputs/, README.md).
+                # Kanban #1308 (data-analytics) + #1319 (social) — team
+                # starter folders. Unconditional call: `scaffold_team_starter`'s
+                # `templates/<team>/`-existence check IS the per-team gate now
+                # (teams without a bundled tree get a silent no-op report).
                 # Same try/except as the orchestration copy above: a
                 # path-traversal ValueError or any other failure here is
                 # best-effort and must never roll back the DB row.
-                if project.team == ProjectTeam.DATA_ANALYTICS:
-                    data_report = scaffold_data_analytics(
-                        target_path=target,
-                        agent_teams_root=settings.repo_root,
-                    )
-                    logger.info(
-                        "scaffolded data-analytics starter for %s at %s: "
-                        "%d copied, %d skipped, %d errors",
-                        project.name,
-                        target,
-                        len(data_report.copied),
-                        len(data_report.skipped),
-                        len(data_report.errors),
-                    )
+                starter_report = scaffold_team_starter(
+                    target_path=target,
+                    agent_teams_root=settings.repo_root,
+                    team=project.team,
+                )
+                logger.info(
+                    "scaffolded %s starter for %s at %s: "
+                    "%d copied, %d skipped, %d errors",
+                    project.team,
+                    project.name,
+                    target,
+                    len(starter_report.copied),
+                    len(starter_report.skipped),
+                    len(starter_report.errors),
+                )
             except ValueError as e:
                 # Path-traversal guard (target is/under agent_teams_root).
                 logger.warning("scaffold rejected: %s", e)

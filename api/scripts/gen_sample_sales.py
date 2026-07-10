@@ -3,7 +3,7 @@
 Usage:
     python -m scripts.gen_sample_sales
 
-Writes `src/templates/data_analytics/data/raw/sample_sales.csv`. The output IS
+Writes `src/templates/data-analytics/data/raw/sample_sales.csv`. The output IS
 committed to the repo (this script documents/reproduces it; it is not run at
 install time). Re-running regenerates a BYTE-IDENTICAL file: every random
 choice is drawn from a single `random.Random(SEED)` instance seeded with a
@@ -56,7 +56,7 @@ OUTPUT_PATH = (
     Path(__file__).resolve().parent.parent
     / "src"
     / "templates"
-    / "data_analytics"
+    / "data-analytics"
     / "data"
     / "raw"
     / "sample_sales.csv"
