@@ -18,6 +18,19 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-07-10 — #2767 review-layer design LOCK (v0.9.0 gate) + spec-review hardening
+**Scope:** shared (design contract for #2770–2776)
+
+- **4 decisions operator-locked (4/4 recommendations accepted):** D1 BOTH surfaces — one `close_record` JSONB rendered as web task-detail card AND Lead chat close-message markdown, no divergent facts. D2 rework-rate ships as placeholder → history_query later (follow-up #2813 files the tasks_history computation). D3 three tiers (low/medium/high) + ORTHOGONAL permanent `never_auto_clear` flag with a per-team always-human table — **secretary is a `general`-team project profile, NOT a team** (spec-review WARN-2). D4 per-team emphasis default: dev = `fast_track` ("can I fast-track?"), non-dev = `judgment_first` ("what needs your judgment?").
+- **close_record contract (snapshot model, spec-review WARN-1/3):** `ac[]` = READ-ONLY SNAPSHOT of `tasks.acceptance_criteria` at flip time (live locked shape UNCHANGED — #2770 implements the snapshot write, NOT inline AC extension); record immutable once written — kickback (#2771) re-opens, the next legitimate flip overwrites (history via `tasks_history`); `ac[].status ∈ {passed, na}` at write. Evidence taxonomy: independent vs born_in_work + teeth-checks (red_green / mutation / coverage / post_fix_recheck + non-dev analogues hypotheses_first / explain_delta / two_independent_sources). Enforcement (WARN-4): card semantics advisory; ONE hard server gate (#2773 born-in-work-without-teeth-check); `never_auto_clear` rides the EXISTING operator_gate mechanism (#2127), no new blocking primitive; high tier needs ≥2 independent items of DIFFERENT kinds.
+- **Spec-review outcome:** dev-spec-reviewer verdict "lock after edits" — 2 BLOCKERs fixed in-doc same session; #2770 + #2775 descriptions realigned pre-spawn (2775: social restored, secretary de-teamed; 8 non-dev = 9 registered teams minus dev). Contract: `shared/design/review-layer-design.md`. Unblocks #2770–2776.
+
+## 2026-07-10 — #806 MCP adapter: DUAL-MODE (decision AC4)
+**Scope:** backend + platform direction
+
+- The Claude-Code-shaped `.claude/` flow REMAINS authoritative (playbooks, golden rules, Lead-applies discipline); the MCP server (#2518 phase 2 — 6 tools, thin `/api/*` shims) is an ADDITIONAL client surface, not a migration path. No sunset date. Storage-zone discipline maps cleanly: MCP clients PROPOSE via API tools (server-side validation, AC-verify-then-flip in `complete_task`); `.claude/`-zone writes stay human/Lead-only — the golden rule survives because the MCP tool surface has no `.claude/` write capability at all.
+- Rationale: dogfood proof of the `.claude/` flow is deep (multi-project, hooks, walker); MCP unlocks other clients without forking the discipline. AC3 (desktop-client mount smoke) pending operator round-trip.
+
 ## 2026-07-05 — #1019: restart-session UX for newly-added agents (agents-dir watcher → SSE banner)
 **Scope:** backend + frontend
 
