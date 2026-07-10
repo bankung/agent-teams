@@ -1,6 +1,6 @@
 <h1 align="center">Agent Teams</h1>
 
-<p align="center"><strong>Run AI agents like a real engineering team.</strong></p>
+<p align="center"><strong>The operating system for AI work — run AI agents like a real engineering team.</strong></p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSL%201.1-blue.svg" alt="License: BSL 1.1"></a>
@@ -24,7 +24,7 @@
   <img src="docs/media/heroes.jpg" alt="Agent Teams — project board (Kanban + Gantt + calendar)" width="820">
 </p>
 
-Agent Teams turns a single instruction into coordinated work across a roster of specialist agents. A **Lead orchestrator** resolves the active project, loads the right domain playbook, spawns the right specialists, integrates their output, and tracks everything on a Kanban board with acceptance-criteria.
+Agent Teams is an **operating system for AI work** — it turns a single instruction into coordinated work across a roster of specialist agents. A **Lead orchestrator** resolves the active project, loads the right domain playbook, spawns the right specialists, integrates their output, and tracks everything on a Kanban board with acceptance-criteria.
 
 > **Two execution modes, one platform.** Drive agents **interactively** (attended, in Claude Code or Codex) or hand tasks to an **autonomous LangGraph worker** (headless — **experimental** today). Same roster, tasks, guardrails, and cost controls in both.
 
