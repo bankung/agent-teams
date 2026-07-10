@@ -111,6 +111,26 @@ Range allocation (41-50 = data-analytics team) may shift; confirm against `api/s
 7. **Update task status in the DB** — `process_status=2` + `started_at` on start; `process_status=5` + `completed_at` on done; `process_status=4` + comment on block.
 8. **Handoff or close** — package the reviewed specs + operator checklists; summarize to user (2-3 sentences); operator implements externally.
 
+## Recipe → cohort mapping
+
+Task templates (#1314) encode 7 standard analytics workflows. When Lead reads a task's `template_name` field during execution, this mapping translates it to the default agent cohort sequence. Override the sequence only when the task's supplementary context (data volume, question complexity, schema unfamiliarity) signals a deviation — otherwise, spawn in the order below.
+
+| Recipe | Default cohort sequence |
+|---|---|
+| Summarize dataset | bi-analyst |
+| Trend chart | bi-analyst → dashboard-designer |
+| Find anomalies | bi-analyst (+ sql-optimizer if SQL-heavy) |
+| Q&A on data | bi-analyst (+ sql-optimizer for structured questions) |
+| Compare cohorts | bi-analyst |
+| Dashboard | bi-analyst → dashboard-designer (+ analytics-platform-integrator if a data warehouse is involved) |
+| Export | bi-analyst |
+
+**Cohort shorthand:** a single agent name (e.g., `bi-analyst`) means spawn that role alone. Arrows (`→`) indicate sequential dependency — spawn left-hand agent first, review output, then spawn right-hand agent. Parenthetical modifiers (`+ role if condition`) are optional — include them only when the condition holds based on the task's inputs or bi-analyst's flags.
+
+## Container usage
+
+D.5 (#1313) will codify the Bash invocation pattern and container lifecycle for the `agent-teams-data` service. Agents write outputs to `<working_path>/analysis/outputs/<task_id>/` (live convention in `api/src/services/task_outputs.py`; same as the auto-scaffolded directory from #1308). This section will detail the exact `docker compose exec data python -c "..."` template and error-handling conventions.
+
 ## Data Analytics-specific anti-patterns
 
 - **Recommending dashboards without identifying the decision they support** — "show me everything" dashboards rot fast. Every section must trace to a decision-question.
