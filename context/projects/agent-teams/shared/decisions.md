@@ -18,6 +18,13 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-07-10 — #1308 data-analytics starter-folder auto-scaffold (3rd scaffold concern)
+**Scope:** backend (project create / scaffold). from #1301 (cancelled ps=6, moot — the team is `data-analytics` and the CHECK already accepts it)
+
+- **Third scaffold, a distinct concern.** `api/src/services/data_scaffold.py::scaffold_data_analytics` joins the two existing scaffolds but is the ONLY one gated on team AND targeting `working_path`: `project_scaffold` writes `context/projects/<name>/` (working_path=null projects), `zero_config_scaffold` live-copies the agent harness into working_path (all teams), and this copies a STATIC bundled template tree `src/templates/data_analytics/` (4 light-tech READMEs + seeded 1000-row `sample_sales.csv`) into working_path ONLY when `team==ProjectTeam.DATA_ANALYTICS`. Wired inside create_project's existing `if target_is_dir:` block right after `scaffold_orchestration` (projects.py:1208-1221), under the SAME best-effort try/except (path-traversal `ValueError` caught; a scaffold failure never rolls back the DB row). Idempotent-add (`dest.exists()`→skip), mirrors zero_config `_copy_one`.
+- **Sample CSV = committed static file, not runtime-generated.** `api/scripts/gen_sample_sales.py` (seeded `random.Random`) reproduces it byte-identical; run once, CSV committed as a template. Leaner than per-create RNG and deterministic/testable (exact 1000 rows / 20 anomalies / no PII). `analysis/outputs/README` convention matches `task_outputs.py:223` (`<wp>/analysis/outputs/<task_id>/`) — no divergent path invented.
+- **Live-verified end-to-end** (Lead, independent of subagent claim; the mkdir'd `/tmp` test dir was wiped by container `/tmp` churn on the first attempt — used an existing container dir on retry): POST team=data-analytics → all 5 files land under working_path; POST team=dev → none (single team-equality gate = no regression). Commit 7139ec1 (local; push held). Deferred nits (both nil/low value, not tracked as tasks): reserved-path comment in zero_config = YAGNI-skip (guards a hypothetical future manifest edit); test parametrize covers `general` vs the AC-named `content` = nil-risk given the team-agnostic gate. 10 pytest tests await the operator's batched run.
+
 ## 2026-07-10 — #2812 wire social TaskRole codes 51-57 (RANGE_MAX 50→60)
 **Scope:** backend (constants/validator). from #1318 (social playbook) + #2811 (team reg)
 
