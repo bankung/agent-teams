@@ -18,6 +18,14 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-07-10 — #1319 social scaffold + generalize the starter scaffold (team-agnostic, convention-gated)
+**Scope:** backend (project create / scaffold). from #1308 (generalizes it) + #1317 (cancelled ps=6, moot — team CHECK dropped #1620)
+
+- **Generalized the team starter scaffold.** #1308's `data_scaffold.scaffold_data_analytics` (hardcoded `templates/data_analytics/`, gated `if team==DATA_ANALYTICS`) is now `team_starter_scaffold.scaffold_team_starter(target, root, team)` resolving `templates/<team>/` VERBATIM. `create_project` calls it UNCONDITIONALLY — the `templates/<team>/`-existence check IS the per-team gate now (a team without a bundled tree = silent no-op), so there is NO per-team `if` in the caller. Adding a team's starter tree = drop `templates/<team>/`, nothing else. **This supersedes the #1308 entry's "gated on team==DATA_ANALYTICS" mechanism.**
+- **Convention fix:** renamed `templates/data_analytics/` → `templates/data-analytics/` (verbatim team value, matching the zero_config `.claude/teams/<team>.md` convention; #1308's underscore was the inconsistency). Added `templates/social/` (posts/drafts+ready READMEs, media/README, voice.md placeholder [S.5-deferred], sample-linkedin-post.md).
+- **Trust-boundary hardening (dev-reviewer MAJOR, fixed in-task):** `scaffold_team_starter` now self-guards `team not in ProjectTeam.ALL → no-op` BEFORE path resolution. Without it a future caller passing `team='..'` would resolve `templates/..` = `src/` and copy the whole api source tree into `working_path` (confirmed live: `templates/..`.is_dir() is True). Not exploitable via the sole caller (create_project 422s invalid teams first), but the module is documented as reusable — self-guard over trusting future callers; mirrors the existing target_path traversal guard. **Standards insight (proposed):** a path-resolution helper taking a caller-supplied path SEGMENT from a DB column should guard it against its own allowlist, not rely on caller pre-validation — `context/standards/fastapi/filesystem-path-resolution.md`.
+- **Live-verified all 3 teams** (Lead, independent of subagents): data-analytics 5 files (NO #1308 regression, CSV 1001 lines) + social 6 files + dev no-op. Commit d753e7c (local; push held). Parametrized tests (both teams + guard lock) await the operator's batched pytest.
+
 ## 2026-07-10 — #1308 data-analytics starter-folder auto-scaffold (3rd scaffold concern)
 **Scope:** backend (project create / scaffold). from #1301 (cancelled ps=6, moot — the team is `data-analytics` and the CHECK already accepts it)
 
