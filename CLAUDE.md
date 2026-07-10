@@ -119,8 +119,11 @@ Each playbook is a domain extension of these universal rules — **read CLAUDE.m
 | seo | SEO strategy / audit / content / reporting | [`seo.md`](.claude/teams/seo.md) |
 | sem | paid media (Google / Meta / secondary) | [`sem.md`](.claude/teams/sem.md) |
 | data-analytics | BI analysis / SQL / dashboards | [`data-analytics.md`](.claude/teams/data-analytics.md) |
+| content | content production (write / edit / hook / veracity / proofread) | [`content.md`](.claude/teams/content.md) |
+| netops | network incident diagnosis (read-only estate) | [`netops.md`](.claude/teams/netops.md) |
+| social | organic social content — 6 platforms, no auto-post | [`social.md`](.claude/teams/social.md) |
 
-Additional playbooks may exist in `.claude/teams/`. Add a team: write `.claude/teams/<name>.md` + extend the `team` CHECK constraint on `projects`. **Research-first:** non-trivial tasks open with a researcher spawn (Haiku) before the specialist — per-team "non-trivial" heuristics + escape valves live in each playbook.
+Add a team (post-#1620 — NO migration, the team CHECK was dropped): add the value to `ProjectTeam` + a `TEAM_ROSTERS` entry in `api/src/constants.py`, mirror `web/lib/constants.ts`, write `.claude/teams/<name>.md` (precedent: #2811 social). **Research-first:** non-trivial tasks open with a researcher spawn (Haiku) before the specialist — per-team "non-trivial" heuristics + escape valves live in each playbook.
 
 ## Reference files (load on demand)
 
@@ -129,3 +132,4 @@ Additional playbooks may exist in `.claude/teams/`. Add a team: write `.claude/t
 - [.claude/docs/context-lifecycle.md](.claude/docs/context-lifecycle.md) — story-doc mechanics, pickup-read fallback, sunset.
 - [.claude/docs/new-project-flow.md](.claude/docs/new-project-flow.md) — creating a new project end-to-end.
 - [.claude/docs/lessons.md](.claude/docs/lessons.md) — anti-patterns with the reasoning behind each one.
+- [.claude/docs/spawn-decision.md](.claude/docs/spawn-decision.md) — spawn-vs-Lead-direct decision ladder (#1189).

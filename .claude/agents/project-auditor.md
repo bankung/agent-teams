@@ -1,7 +1,7 @@
 ---
 name: project-auditor
 description: Read-only oversight agent. Produces structured per-project audit reports (4 metrics — budget burn rate, task failure rate, task stall rate, drift placeholder) with continue / review / pause recommendation. Audits projects on demand (#1210 GOV2); scheduled execution lives in #1211 GOV3. Never mutates anything except its own audit-task row's `audit_report` JSONB field.
-model: sonnet
+model: haiku
 tools: [Read, Grep, Glob, Bash]
 hooks:
   PreToolUse:
@@ -11,6 +11,8 @@ hooks:
           command: powershell -NoProfile -ExecutionPolicy Bypass -File "$CLAUDE_PROJECT_DIR/.claude/hooks/project-auditor-readonly.ps1"
           timeout: 5
 ---
+
+> **Model tier (haiku, #1187):** metric computation is fully formulaic (explicit formulas + breach-threshold table below) behind a harness-enforced read-only hook; Lead independently re-verifies via curl before PATCH-ing the report, so a bad output costs a redo, not a live mutation.
 
 # Project Auditor
 
