@@ -78,6 +78,7 @@ from src.schemas.project import (
 from src.schemas.agent_metadata import AGENT_NAME_RE
 from src.services.agent_validation import default_agents_dir, list_agents
 from src.services.budget_gate import reconcile_budget
+from src.services.data_scaffold import scaffold_data_analytics
 from src.services.kill_switch import kill_project, revive_project
 from src.services.operator_auth import OperatorDecision, require_operator_proof
 from src.services.pause_switch import pause_project, unpause_project
@@ -1198,6 +1199,26 @@ async def create_project(
                     len(report.skipped),
                     len(report.errors),
                 )
+
+                # Kanban #1308 — data-analytics starter folders (data/raw/
+                # sample_sales.csv, data/cleaned/, analysis/outputs/, README.md).
+                # Same try/except as the orchestration copy above: a
+                # path-traversal ValueError or any other failure here is
+                # best-effort and must never roll back the DB row.
+                if project.team == ProjectTeam.DATA_ANALYTICS:
+                    data_report = scaffold_data_analytics(
+                        target_path=target,
+                        agent_teams_root=settings.repo_root,
+                    )
+                    logger.info(
+                        "scaffolded data-analytics starter for %s at %s: "
+                        "%d copied, %d skipped, %d errors",
+                        project.name,
+                        target,
+                        len(data_report.copied),
+                        len(data_report.skipped),
+                        len(data_report.errors),
+                    )
             except ValueError as e:
                 # Path-traversal guard (target is/under agent_teams_root).
                 logger.warning("scaffold rejected: %s", e)
