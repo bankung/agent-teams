@@ -102,7 +102,7 @@ Social team drafts are **locale-sensitive** when the project specifies a target 
 
 ## Kanban schema codes (`tasks.assigned_role`)
 
-Within `team='social'` projects, integer codes map to (proposed — NOT yet wired: the app-layer range validator caps `assigned_role` at `TaskRole.RANGE_MAX=50`, so codes 51+ are rejected today; wiring tracked in #2812):
+Within `team='social'` projects, integer codes map to (wired 2026-07-10 by #2812 — `TaskRole.RANGE_MAX=60`; codes 51-57 are live on the wire):
 
 | Code | Role |
 |---|---|
@@ -114,7 +114,7 @@ Within `team='social'` projects, integer codes map to (proposed — NOT yet wire
 | 56 | bi-analyst (cross-team, data-analytics) |
 | 57 | general-researcher (cross-team) |
 
-Range allocation (51-60 = social team) is app-validated only — there is NO DB CHECK on `assigned_role` (dropped by migration 0002); the authoritative gate is `api/src/constants.py::TaskRole`. As of 2026-07-10, #2812 wires the codes + bumps `RANGE_MAX`.
+Range allocation (51-60 = social team) is app-validated only — there is NO DB CHECK on `assigned_role` (dropped by migration 0002); the authoritative gate is `api/src/constants.py::TaskRole`. #2812 (2026-07-10) wired the 7 codes + bumped `RANGE_MAX` 50→60; codes 58-60 remain reserved for future social team roles.
 
 ## Lifecycle (per task — operational)
 

@@ -18,6 +18,14 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-07-10 — #2812 wire social TaskRole codes 51-57 (RANGE_MAX 50→60)
+**Scope:** backend (constants/validator). from #1318 (social playbook) + #2811 (team reg)
+
+- **Constants-only, NO migration.** `tasks.assigned_role` has no DB CHECK (dropped 2026-05-08 migration 0002) — the app-layer Pydantic range validator (derives from `TaskRole.RANGE_MIN/RANGE_MAX`) is the sole gate. So wiring = `api/src/constants.py::TaskRole`: named codes 51-57 (content-writer / -hook-doctor / -editor / -veracity-checker / thai-proofreader / bi-analyst / general-researcher), `ALL` extended (len 28), `RANGE_MAX` 50→60, docstring partition `51..60 social, 61+ reserved`. Live-verified (Lead independent): assigned_role 51→201, 61→422 `"...range 1..60, got 61"`; probes soft-deleted (soft-delete = excluded from list queries, NOT an is_active flip — is_active stays true; verified via `?assigned_role=51`→`[]` + `include_deleted=true` shows the row).
+- **Naming:** the 2 cross-team codes are `SOCIAL_BI_ANALYST=56` / `SOCIAL_GENERAL_RESEARCHER=57`, NOT bare `BI_ANALYST` (already 41). A second `BI_ANALYST=56` in the class body would silently shadow 41 in the `ALL` tuple → corrupt the data-analytics entry. `THAI_PROOFREADER=55` coexists with `NOVEL_PROOFREADER=13` (same agent, two per-team codes) by design.
+- **FE mirror = na** (evidenced): `web/lib/constants.ts` carries a DEV-ONLY role map (codes 1-6); none of the 4 prior non-dev ranges (novel/seo/sem/data-analytics) were ever mirrored there. Mirroring only social would be a new inconsistent partial mirror — left as-is per precedent.
+- **Latent bug → follow-up #2819:** `handoff_templates.default_assigned_role` has its OWN DB `CheckConstraint <= 50` (`ck_handoff_templates_default_assigned_role_range`, handoff_template.py:133) that was NEVER dropped. Its validator derives from RANGE_MAX, so post-bump the app accepts 51-60 there but the DB CHECK IntegrityErrors on INSERT. Latent (no path creates a social-role handoff template yet). Fix = migration (drop mirroring tasks.assigned_role, or widen to 60). **Standards insight:** on a RANGE_MAX bump, grep sibling CHECK-constrained columns mirroring the same logical field that may not share the drop-the-CHECK precedent — they silently diverge (app accepts / DB rejects).
+
 ## 2026-07-10 — #2440 committed api lockfile + fastapi/starlette version-line HOLD
 **Scope:** devops (api image / deps). from #2437
 

@@ -701,9 +701,10 @@ class TaskCreate(BaseModel):
     _check_priority = field_validator("priority")(
         _make_code_validator("priority", TaskPriority.ALL, required=True)
     )
-    # Kanban #926 (2026-05-15): widened from membership-in-(1..5) to range
-    # 1..20 to admit novel team codes (11..20). DB CHECK was already dropped
-    # 2026-05-08 → app-layer is the only gate; widening here is sufficient.
+    # Kanban #926 (2026-05-15): widened from membership-in-(1..5) to a range
+    # gate derived from TaskRole.RANGE_MIN..RANGE_MAX (see TaskRole's
+    # docstring for the current per-team partition). DB CHECK was already
+    # dropped 2026-05-08 → app-layer is the only gate.
     _check_role = field_validator("assigned_role")(
         _make_role_range_validator(
             "assigned_role", TaskRole.RANGE_MIN, TaskRole.RANGE_MAX

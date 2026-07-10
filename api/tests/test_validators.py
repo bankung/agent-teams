@@ -10,11 +10,12 @@ Error message contracts (must remain stable):
   7 intentionally skipped/reserved. The message renders TaskStatus.ALL verbatim.)
 - process_status required (POST): "process_status is required"
 - priority invalid:       "priority must be one of (1, 2, 3, 4), got <repr>"
-- assigned_role invalid:  "assigned_role must be NULL or in range 1..50, got <repr>"
+- assigned_role invalid:  "assigned_role must be NULL or in range 1..60, got <repr>"
   (Kanban #926, 2026-05-15: widened from "one of (1, 2, 3, 4, 5)" to a range
   to admit novel team codes 11..20 — 1..10 = dev, 11..20 = novel, 21+ reserved.
   Kanban #1266/#1269/#1271, 2026-05-20: further widened 1..50 to admit SEO
-  codes 21..30, SEM codes 31..40, data-analytics codes 41..50.)
+  codes 21..30, SEM codes 31..40, data-analytics codes 41..50. Kanban #2812,
+  2026-07-10: further widened 1..60 to admit social codes 51..57.)
 
 The 1..5 lifecycle code is now `process_status` (renamed by the 2026-05-08
 soft-delete-and-lead migration); the bare `status` name is reserved for the
@@ -75,7 +76,7 @@ def test_task_create_role_invalid_message() -> None:
     with pytest.raises(ValidationError) as ei:
         TaskCreate(project_id=1, title="x", assigned_role=99)
     assert (
-        "assigned_role must be NULL or in range 1..50, got 99"
+        "assigned_role must be NULL or in range 1..60, got 99"
         in _first_msg(ei.value)
     )
 
@@ -129,6 +130,21 @@ def test_task_create_role_accepts_data_analytics_codes() -> None:
         assert task.assigned_role == code
 
 
+def test_task_create_role_accepts_social_codes() -> None:
+    """Kanban #2812 (2026-07-10): social range 51..60 — codes 51-57 named."""
+    for code in (
+        TaskRole.CONTENT_WRITER,
+        TaskRole.CONTENT_HOOK_DOCTOR,
+        TaskRole.CONTENT_EDITOR,
+        TaskRole.CONTENT_VERACITY_CHECKER,
+        TaskRole.THAI_PROOFREADER,
+        TaskRole.SOCIAL_BI_ANALYST,
+        TaskRole.SOCIAL_GENERAL_RESEARCHER,
+    ):
+        task = TaskCreate(project_id=1, title="x", assigned_role=code)
+        assert task.assigned_role == code
+
+
 def test_task_role_security_reviewer_code_is_six() -> None:
     """Kanban #7 Section B (2026-05-16): SECURITY_REVIEWER pins to integer
     code 6 in the dev range (1..10). Numbers are stable forever; this test
@@ -150,19 +166,20 @@ def test_task_create_accepts_security_reviewer_role() -> None:
 def test_task_create_role_accepts_unnamed_reserved_codes() -> None:
     """Kanban #926: range gate admits unnamed codes inside the partition.
     Kanban #1266/#1269/#1271: expanded to 1..50 — reserved sub-ranges:
-    7..10 (dev), 14..20 (novel), 25..30 (seo), 35..40 (sem), 45..50 (data)."""
-    for code in (7, 10, 14, 20, 25, 30, 35, 40, 45, 50):
+    7..10 (dev), 14..20 (novel), 25..30 (seo), 35..40 (sem), 45..50 (data).
+    Kanban #2812: expanded to 1..60 — reserved sub-range 58..60 (social)."""
+    for code in (7, 10, 14, 20, 25, 30, 35, 40, 45, 50, 58, 60):
         task = TaskCreate(project_id=1, title="x", assigned_role=code)
         assert task.assigned_role == code
 
 
 def test_task_create_role_rejects_above_range() -> None:
-    """Kanban #1266/#1269/#1271: 51+ is out of range — reserved for future
-    team domains beyond data-analytics. Range is now 1..50."""
+    """Kanban #2812: 61+ is out of range — reserved for future team domains
+    beyond social. Range is now 1..60 (51..60 = social, Kanban #2812)."""
     with pytest.raises(ValidationError) as ei:
-        TaskCreate(project_id=1, title="x", assigned_role=51)
+        TaskCreate(project_id=1, title="x", assigned_role=61)
     assert (
-        "assigned_role must be NULL or in range 1..50, got 51"
+        "assigned_role must be NULL or in range 1..60, got 61"
         in _first_msg(ei.value)
     )
 
@@ -171,7 +188,7 @@ def test_task_create_role_rejects_zero() -> None:
     with pytest.raises(ValidationError) as ei:
         TaskCreate(project_id=1, title="x", assigned_role=0)
     assert (
-        "assigned_role must be NULL or in range 1..50, got 0"
+        "assigned_role must be NULL or in range 1..60, got 0"
         in _first_msg(ei.value)
     )
 
@@ -180,7 +197,7 @@ def test_task_create_role_rejects_negative() -> None:
     with pytest.raises(ValidationError) as ei:
         TaskCreate(project_id=1, title="x", assigned_role=-1)
     assert (
-        "assigned_role must be NULL or in range 1..50, got -1"
+        "assigned_role must be NULL or in range 1..60, got -1"
         in _first_msg(ei.value)
     )
 
@@ -249,7 +266,7 @@ def test_task_update_role_invalid_message() -> None:
     with pytest.raises(ValidationError) as ei:
         TaskUpdate(assigned_role=99)
     assert (
-        "assigned_role must be NULL or in range 1..50, got 99"
+        "assigned_role must be NULL or in range 1..60, got 99"
         in _first_msg(ei.value)
     )
 
@@ -262,11 +279,11 @@ def test_task_update_role_accepts_novel_codes() -> None:
 
 
 def test_task_update_role_rejects_above_range() -> None:
-    """Kanban #1266/#1269/#1271: PATCH path rejects 51+ — symmetric with POST."""
+    """Kanban #2812: PATCH path rejects 61+ — symmetric with POST."""
     with pytest.raises(ValidationError) as ei:
-        TaskUpdate(assigned_role=51)
+        TaskUpdate(assigned_role=61)
     assert (
-        "assigned_role must be NULL or in range 1..50, got 51"
+        "assigned_role must be NULL or in range 1..60, got 61"
         in _first_msg(ei.value)
     )
 

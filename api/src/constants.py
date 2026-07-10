@@ -202,7 +202,7 @@ class TaskPriority:
 
 
 class TaskRole:
-    """tasks.assigned_role — INTEGER NULLABLE. Validated 1..20 at app layer
+    """tasks.assigned_role — INTEGER NULLABLE. Validated 1..60 at app layer
     (the DB CHECK was dropped 2026-05-08 by migration 0002; per-team roster
     enforcement is too dynamic for a single static CHECK).
 
@@ -212,7 +212,8 @@ class TaskRole:
       * 21..30  → seo team (.claude/teams/seo.md)
       * 31..40  → sem team (.claude/teams/sem.md)
       * 41..50  → data-analytics team (.claude/teams/data-analytics.md)
-      * 51+     → reserved for future team domains
+      * 51..60  → social team (.claude/teams/social.md)
+      * 61+     → reserved for future team domains
 
     Each team's playbook owns the named codes inside its range. Unnamed codes
     inside an existing range (e.g. 6..10) are RESERVED for that team to claim
@@ -253,12 +254,26 @@ class TaskRole:
     ANALYTICS_PLATFORM_INTEGRATOR = 44
     # 45-50 reserved for future data-analytics team roles
 
+    # Social range (51..60) — Kanban #2812 (2026-07-10). Code map locked by
+    # social.md #1318. SOCIAL_BI_ANALYST / SOCIAL_GENERAL_RESEARCHER are
+    # deliberately distinct constants from BI_ANALYST=41 (general-researcher
+    # has no other TaskRole code) — social claims its own slot for these
+    # cross-team agents rather than reusing the data-analytics code.
+    CONTENT_WRITER = 51
+    CONTENT_HOOK_DOCTOR = 52
+    CONTENT_EDITOR = 53
+    CONTENT_VERACITY_CHECKER = 54
+    THAI_PROOFREADER = 55
+    SOCIAL_BI_ANALYST = 56  # cross-team, data-analytics
+    SOCIAL_GENERAL_RESEARCHER = 57  # cross-team
+    # 58-60 reserved for future social team roles
+
     # Validator bounds — range, not membership. ALL stays as the union of
     # currently-named codes (used by callers that want to enumerate the
     # known roster, e.g. tests / docs); the wire-layer range gate lives in
     # the Pydantic validator on `assigned_role`.
     RANGE_MIN = 1
-    RANGE_MAX = 50
+    RANGE_MAX = 60
 
     ALL = (
         FRONTEND,
@@ -282,6 +297,13 @@ class TaskRole:
         SQL_OPTIMIZER,
         DASHBOARD_DESIGNER,
         ANALYTICS_PLATFORM_INTEGRATOR,
+        CONTENT_WRITER,
+        CONTENT_HOOK_DOCTOR,
+        CONTENT_EDITOR,
+        CONTENT_VERACITY_CHECKER,
+        THAI_PROOFREADER,
+        SOCIAL_BI_ANALYST,
+        SOCIAL_GENERAL_RESEARCHER,
     )
 
 
