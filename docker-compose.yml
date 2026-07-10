@@ -324,5 +324,36 @@ services:
     command: ["python", "-m", "scripts.telegram_poller"]
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # data — preinstalled Python data-analysis sandbox for the data-analytics
+  # team (Kanban #1307). Idle container; data-analytics agents `docker compose
+  # exec` in to run pandas/polars/duckdb scripts against the bind-mounted repo
+  # — no runtime pip installs. Opt-in via profile (mirrors langgraph /
+  # telegram-poller above) so a routine profile-less `docker compose up -d`
+  # doesn't sweep it in; the data-analytics team brings it up explicitly:
+  #   docker compose -p agent-teams --profile data up -d data
+  # ---------------------------------------------------------------------------
+  data:
+    profiles: ["data"]
+    build:
+      context: ./data
+      dockerfile: Dockerfile
+    container_name: agent-teams-data
+    environment:
+      REPO_ROOT: /repo
+      PYTHONUNBUFFERED: 1
+    volumes:
+      - .:/repo
+    healthcheck:
+      # python -c (not curl) — same reasoning as the langgraph healthcheck:
+      # this image has no HTTP endpoint and no curl installed. A clean import
+      # of the whole preinstalled stack doubles as the readiness signal.
+      test: ["CMD", "python", "-c", "import duckdb,pandas,polars,matplotlib,plotly,openpyxl,numpy,scipy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    command: ["tail", "-f", "/dev/null"]
+
 volumes:
   agent-teams-pgdata:
