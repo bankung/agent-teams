@@ -76,6 +76,25 @@ dependencies = [
     # endpoint (FastAPI UploadFile/Form REQUIRE python-multipart). Pure-Python,
     # no native deps. Container MUST be rebuilt after adding this (Lead/devops).
     "python-multipart>=0.0.9,<0.1",
+    # Kanban #1906 — XLSX parser for the resources verify-and-tag pipeline
+    # (services/resource_verify.py _parse_xlsx, lazy-imported). 3.1.5 current;
+    # <4.0 caps the next major. Container MUST be rebuilt after adding this
+    # (Lead/devops) — mirrors the #1309 IMPORT-SAFETY posture.
+    "openpyxl>=3.1,<4.0",
+    # Kanban #1906 — XXE hardening for openpyxl's XLSX XML parsing. openpyxl
+    # auto-detects and prefers defusedxml over stdlib ElementTree when it's
+    # importable (no code change needed on our side to opt in). Matters
+    # because resource_verify parses UNTRUSTED uploaded files.
+    "defusedxml>=0.7,<1.0",
+    # Kanban #1906 — PDF parser for the resources verify-and-tag pipeline
+    # (services/resource_verify.py _parse_pdf, lazy-imported). Floor pinned
+    # to 0.11.10 (not the earlier-considered >=0.11): CVE-2025-64512
+    # (arbitrary code execution in pdfminer-six on a crafted PDF) is only
+    # guaranteed fixed at pdfplumber>=0.11.10, which strict-pins
+    # pdfminer-six==20260107 — an older 0.11.x resolution could still pull a
+    # vulnerable pdfminer-six. Matters because resource_verify parses
+    # UNTRUSTED uploaded files.
+    "pdfplumber>=0.11.10,<1.0",
 ]
 
 [project.optional-dependencies]

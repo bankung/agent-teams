@@ -128,6 +128,17 @@ class Settings(BaseSettings):
         alias="COST_CYCLE_DAY",
     )
 
+    # Kanban #1906 — optional override for the resources API's null-
+    # working_path storage fallback (services/resource_storage.py
+    # resolve_storage_base). Unset (None) preserves the existing documented
+    # behavior byte-for-byte: <repo_root>/_data/projects/<id>/. When set,
+    # DATA_ROOT IS the data root itself (the "_data" segment is NOT
+    # re-appended) -> <DATA_ROOT>/projects/<id>/. Lets an operator point
+    # resource storage outside the source tree, and lets tests redirect it to
+    # a tmp dir (see tests/conftest.py autouse fixture) instead of writing
+    # real files into <repo_root>/_data during a pytest run.
+    data_root: Path | None = Field(default=None, alias="DATA_ROOT")
+
     @field_validator("cors_allow_origins", mode="before")
     @classmethod
     def _split_csv_origins(cls, v: object) -> object:

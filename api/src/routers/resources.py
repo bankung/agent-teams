@@ -57,6 +57,7 @@ from src.services.resource_storage import (
     sanitize_filename,
     stream_to_disk,
 )
+from src.services.link_probe import probe_link
 from src.services.resource_verify import (
     guess_content_type,
     verify_and_tag_file,
@@ -108,9 +109,8 @@ async def _validate_task_same_project(
         )
 
 
-# HEAD probe deferred — SSRF guard needed first (#1309 follow-up).
-# _probe_link_head removed; link resources are created with head_status=None,
-# title=None until a safe allow-listed probe is implemented.
+# HEAD probe: re-enabled behind an SSRF guard (Kanban #1906) — see
+# services/link_probe.py (`probe_link`). #1309 shipped this disabled.
 
 # ---------------------------------------------------------------------------
 # POST — create (multipart file OR json link)
@@ -237,6 +237,7 @@ async def _create_file_resource(
         project.working_path if project else None,
         project_id,
         settings.repo_root,
+        settings.data_root,
     )
 
     safe_name = sanitize_filename(filename)
@@ -289,8 +290,13 @@ async def _create_file_resource(
     try:
         data = await anyio.to_thread.run_sync(stored.path.read_bytes)
         resolved_ct = guess_content_type(safe_name, upload_content_type)
-        tags = verify_and_tag_file(
-            data, safe_name, upload_content_type, stored.size_bytes
+        # Offloaded to a thread (Kanban #1906): a decompression/zip-ratio
+        # bomb xlsx/pdf parsed synchronously here would freeze the WHOLE api
+        # process (single-worker event loop), not just "burn worker time".
+        tags = await anyio.to_thread.run_sync(
+            lambda: verify_and_tag_file(
+                data, safe_name, upload_content_type, stored.size_bytes
+            )
         )
     except Exception:
         try:
@@ -322,8 +328,8 @@ async def _create_file_resource(
 async def _create_link_resource(
     session: AsyncSession, project_id: int, request: Request
 ) -> ProjectResource:
-    """LINK path: validate URL syntax, best-effort HEAD probe, verify-and-tag,
-    INSERT. Body shape: {kind:'link', url, task_id?, label?}.
+    """LINK path: validate URL syntax, best-effort SSRF-guarded probe,
+    verify-and-tag, INSERT. Body shape: {kind:'link', url, task_id?, label?}.
     """
     try:
         body = await request.json()
@@ -364,12 +370,24 @@ async def _create_link_resource(
 
     await _validate_task_same_project(session, task_id, project_id)
 
-    # URL-syntax validate (422 on malformed) — no outbound network call here.
-    # HEAD probe deferred — SSRF guard needed first (#1309 follow-up).
+    # URL-syntax validate FIRST (422 on malformed) — no outbound network call
+    # for a syntactically invalid url.
     try:
-        link_tags = verify_and_tag_link(url, head_status=None, title=None)
+        link_tags = verify_and_tag_link(url)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # SSRF-guarded best-effort probe (Kanban #1906) — only after syntax
+    # validation succeeds. Never raises; blocked/failed -> head_status/title
+    # stay None. Populate the tags dict already produced above.
+    head_status, title, blocked_reason = await probe_link(url)
+    link_tags["head_status"] = head_status
+    link_tags["title"] = title
+    if blocked_reason is not None:
+        # Dict KEY stays "probe_skipped" — that's the persisted tags
+        # contract; only the local variable is renamed for readability to
+        # match probe_link's own docstring naming (`blocked_reason`).
+        link_tags["probe_skipped"] = blocked_reason
 
     resource = ProjectResource(
         project_id=project_id,
@@ -541,6 +559,7 @@ async def delete_resource(
                 project.working_path if project else None,
                 resource.project_id,
                 settings.repo_root,
+                settings.data_root,
             )
             try:
                 move_to_trash(storage_base, stored_path)

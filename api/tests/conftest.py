@@ -619,3 +619,27 @@ def _redirect_email_actions_audit(monkeypatch, tmp_path):
         # tools_email not present (e.g., minimal test env without the router).
         # Silently skip so this fixture is never a blocker.
         pass
+
+
+@pytest.fixture(autouse=True)
+def _redirect_resource_storage_data_root(monkeypatch, tmp_path):
+    """Redirect the resources API's null-working_path storage fallback to a
+    per-test tmp dir (Kanban #1906).
+
+    Without this, any resource test that uploads a file to a project with
+    working_path=None (the norm for test-scaffolded projects — see
+    schemas/project.py ProjectCreate.working_path default) writes a REAL file
+    under <repo_root>/_data/projects/<id>/ (resource_storage.resolve_storage_base's
+    documented fallback). #1309's integration tests did exactly this before
+    _data/ was gitignored; this fixture prevents the recurrence for every
+    current and future resource test.
+
+    Settings.get_settings() is intentionally NOT cached (see settings.py
+    docstring — removed 2026-05-17 for a prior DB-isolation incident), so the
+    env var set here is picked up fresh on every router call with no
+    cache-invalidation needed. Global autouse (not scoped to the resources
+    test files) mirrors `_redirect_email_actions_audit` / `_operator_gate_
+    inactive_by_default` above — safe because DATA_ROOT is a brand-new env
+    var that no other code path reads.
+    """
+    monkeypatch.setenv("DATA_ROOT", str(tmp_path / "resource_data_root"))
