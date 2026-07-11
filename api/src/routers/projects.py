@@ -924,10 +924,18 @@ async def get_project_spawn_check(
 
     config: dict[str, Any] = project.config or {}
     enabled_roles: list[int] | None = config.get("enabled_roles")
+    if not isinstance(enabled_roles, list):  # #2807/#2769: malformed row -> no restriction
+        enabled_roles = None
     agent_settings: dict[str, Any] = config.get("agent_settings") or {}
+    if not isinstance(agent_settings, dict):  # #2807/#2769: malformed row -> no restriction
+        agent_settings = {}
     role_code: int | None = AGENT_ROLE_CODE.get(agent)
 
-    if agent_settings.get(agent, {}).get("enabled") is False:
+    # #2807/#2769: per-agent entry may be a non-dict on a hand-edited/legacy
+    # row — degrade to "no entry" instead of AttributeError on `.get`.
+    agent_entry = agent_settings.get(agent)
+    agent_entry = agent_entry if isinstance(agent_entry, dict) else {}
+    if agent_entry.get("enabled") is False:
         return SpawnCheckResponse(
             allowed=False,
             reason=(
