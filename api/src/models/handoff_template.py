@@ -130,11 +130,8 @@ class HandoffTemplate(Base):
             "default_priority IN (1, 2, 3, 4)",
             name="ck_handoff_templates_default_priority_valid",
         ),
-        CheckConstraint(
-            "default_assigned_role IS NULL OR "
-            "(default_assigned_role >= 1 AND default_assigned_role <= 50)",
-            name="ck_handoff_templates_default_assigned_role_range",
-        ),
+        # default_assigned_role range is app-validated (schemas/handoff_template.
+        # _validate_role_range); no DB CHECK (#1620 / #2819).
         Index("ix_handoff_templates_status", "status"),
         Index("ix_handoff_templates_project_id", "project_id"),
         # Partial unique index — declared via Index for ORM autogenerate
