@@ -298,6 +298,14 @@ async def run_worker_loop(graph_module: ModuleType) -> None:
     Kanban #2184: when LANGGRAPH_PROJECT_ID is unset, delegates to
     `_run_multi_board_loop` instead of the single-board path below.
     """
+    # Fail-closed startup guard (#1859 W1) — runs once per process boot, before
+    # the multi/single-board branch below.
+    if os.getenv("OPERATOR_ACTION_KEY", "").strip():
+        raise RuntimeError(
+            "OPERATOR_ACTION_KEY must NOT be present in the langgraph worker env "
+            "(operator-proof secret is api-container-only; its presence here would "
+            "let a drifting agent self-promote to OPERATOR). See operator_auth.py §7 / #1859 W1."
+        )
     cfg = WorkerConfig()
     if cfg.multi_board:
         # Warn if LANGGRAPH_SESSION_ID is set — it's single-board-only. #2184
