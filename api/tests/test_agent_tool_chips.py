@@ -18,10 +18,17 @@ Every assertion pairs a POSITIVE check with the NEGATIVE lock it is guarding.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from src.schemas.agent_metadata import KNOWN_TOOLS
-from src.services.tool_risk import TOOL_RISK_TABLE, build_tool_chips, classify_tool
+from src.services.tool_risk import (
+    ALL_TOOLS_CHIP,
+    RISK_CLASSES,
+    TOOL_RISK_TABLE,
+    build_tool_chips,
+    classify_tool,
+)
 
 # =============================================================================
 # 1. Unit — classify_tool: one case per class
@@ -207,3 +214,77 @@ async def test_list_and_detail_endpoints_carry_tool_chips(client, tmp_path, monk
     # NEGATIVE lock: the detail-only `tools` field (structured, edit-prefill)
     # is STILL present and untouched — tool_chips is additive, not a replacement.
     assert detail_body["tools"] == ["Bash", "Read", "mcp__firecrawl-scrape"]
+
+
+# =============================================================================
+# 4. Lockstep guard — FE RISK_ORDER (AgentBadges.tsx) vs BE RISK_CLASSES
+# (Kanban #2789 AC2: the two risk-class taxonomies were kept in sync by a
+# COMMENT ONLY on each side — this section replaces that with a fail-loud
+# guard so an add/remove on either side breaks the suite instead of drifting
+# silently. Mirrors the `_find_agents_dir()` walk-up pattern in
+# test_spawn_check.py so the FE path isn't hardcoded to a parents[N] depth.)
+# =============================================================================
+
+_RISK_ORDER_RE = re.compile(
+    r"RISK_ORDER:\s*ToolChipRiskClass\[\]\s*=\s*\[(.*?)\]", re.DOTALL
+)
+_QUOTED_STRING_RE = re.compile(r'"([^"]+)"')
+
+
+def _find_repo_root() -> Path:
+    """Walk up from this test file until the repo root is found (marked by
+    the presence of `web/components/AgentBadges.tsx`).
+    """
+    here = Path(__file__).resolve()
+    for candidate in (here, *here.parents):
+        fe_file = candidate / "web" / "components" / "AgentBadges.tsx"
+        if fe_file.is_file():
+            return candidate
+    raise RuntimeError(
+        f"Could not locate web/components/AgentBadges.tsx walking up from {here}"
+    )
+
+
+def _parse_fe_risk_order() -> list[str]:
+    fe_path = _find_repo_root() / "web" / "components" / "AgentBadges.tsx"
+    assert fe_path.is_file(), f"expected FE file at {fe_path}"
+    text = fe_path.read_text(encoding="utf-8")
+    match = _RISK_ORDER_RE.search(text)
+    assert match is not None, (
+        "RISK_ORDER array literal not found in AgentBadges.tsx — FE source "
+        "shape changed; update _RISK_ORDER_RE."
+    )
+    order = _QUOTED_STRING_RE.findall(match.group(1))
+    assert order, "RISK_ORDER parsed to an empty list — regex likely mismatched"
+    return order
+
+
+def test_fe_risk_order_matches_be_risk_classes():
+    fe_order = _parse_fe_risk_order()
+    # Sanity-check the parse itself before trusting it as a NEGATIVE lock:
+    # must be the 5 expected classes, not an accidental partial/empty match.
+    assert len(fe_order) == 5, fe_order
+    # POSITIVE + NEGATIVE in one (mirrors test_risk_table_names_are_known_tools
+    # above): membership must match exactly in both directions — a class
+    # added/removed on either side shows up as a non-empty symmetric diff.
+    assert set(fe_order) == set(RISK_CLASSES), (
+        f"FE RISK_ORDER {sorted(fe_order)} != BE RISK_CLASSES "
+        f"{sorted(RISK_CLASSES)} — a risk class was added/removed on one "
+        f"side without the other. Update web/components/AgentBadges.tsx "
+        f"RISK_ORDER and src/services/tool_risk.py RISK_CLASSES together."
+    )
+    # Nice-to-have: severity ORDER also matches, not just membership.
+    assert fe_order == list(RISK_CLASSES), (
+        f"FE RISK_ORDER order {fe_order} != BE RISK_CLASSES order "
+        f"{list(RISK_CLASSES)} (same classes, different severity ranking)."
+    )
+
+
+def test_be_risk_classes_are_self_consistent():
+    # Every value TOOL_RISK_TABLE can produce is a member of the canonical set.
+    assert set(TOOL_RISK_TABLE.values()) <= set(RISK_CLASSES)
+    # NEGATIVE lock companion: an empty TOOL_RISK_TABLE would vacuously pass
+    # the subset check above, so confirm it's actually populated.
+    assert TOOL_RISK_TABLE, "TOOL_RISK_TABLE is empty — subset check above is vacuous"
+    # The All-tools pseudo-entry's risk_class is also a member.
+    assert ALL_TOOLS_CHIP["risk_class"] in RISK_CLASSES

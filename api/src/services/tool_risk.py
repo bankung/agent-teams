@@ -27,6 +27,18 @@ from src.schemas.agent_metadata import ALL_TOOLS_LITERAL
 
 RiskClass = str  # one of the five literals documented above
 
+# Canonical risk-class taxonomy (low→high severity). The FE mirror is
+# web/components/AgentBadges.tsx RISK_ORDER; test_agent_tool_chips.py's
+# test_fe_risk_order_matches_be_risk_classes keeps the two in lockstep
+# (fail-loud on divergence, replacing the old comment-only sync). #2789 AC2.
+RISK_CLASSES: tuple[str, ...] = (
+    "always-safe",
+    "read-only",
+    "external",
+    "write-edit",
+    "shell-or-destructive",
+)
+
 # Explicit per-tool classification. Covers every literal tool name actually
 # found in `.claude/agents/*.md` `tools:` frontmatter as of #1021 (Read, Grep,
 # Glob, Bash, Write, Edit, WebFetch, WebSearch), PLUS the wider tool families

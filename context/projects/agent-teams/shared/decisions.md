@@ -18,6 +18,12 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-07-11 — #2789 ms50 deferred-minor: risk-class FE↔BE lockstep guard + cost-estimate fan-out defer
+**Scope:** backend + qa. from #2789 (ms50 intense-review deferred MINOR/NIT, both non-blocking)
+
+- **AC1 (batched cost-estimate endpoint) DEFERRED — recorded decision (YAGNI escape valve).** `AgentOverridesPanel` lazy-fetches one `GET /api/agents/{name}/cost-estimate` per roster agent (~40 concurrent per panel mount). The task's own trigger — "roster meaningfully grows past ~40 OR panel-open latency is felt" — has NOT fired (current roster ~41 `.claude/agents/*.md`; localhost; no latency complaint). A batched `GET /api/agents/cost-estimates?project_id=` (one grouped query over the #2352 rollup, FE per-name fallback for misses) is deferred until it does; per-name fan-out is acceptable at the current size. Task AC1 explicitly offers this recorded-decision path.
+- **AC2 (risk-class lockstep guard) LANDED.** FE `RISK_ORDER` (`web/components/AgentBadges.tsx`) ↔ BE risk taxonomy were synced by COMMENT only. Added a canonical `RISK_CLASSES` tuple in `services/tool_risk.py` (BE single source of truth: always-safe/read-only/external/write-edit/shell-or-destructive) + `test_agent_tool_chips.py::test_fe_risk_order_matches_be_risk_classes` which regex-parses FE `RISK_ORDER` and asserts `set==RISK_CLASSES` (+ order-equal + `TOOL_RISK_TABLE.values() ⊆ RISK_CLASSES`). Fail-loud on divergence now. Verified live in-container: set-equal + order-equal + subset all True.
+
 ## 2026-07-11 — #2820 intense-review hardening of the team-starter scaffold
 **Scope:** backend (scaffold) + qa. from #1308 + #1319 (hardens their still-unpushed work)
 
