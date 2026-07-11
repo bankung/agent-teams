@@ -6,7 +6,7 @@ Background: `ck_handoff_templates_default_assigned_role_range` (migration
 `TaskRole.RANGE_MAX` 50 -> 60 (social team codes 51-57), so
 `schemas/handoff_template.py::_validate_role_range` now accepts 1..60 at the
 Pydantic boundary — but until migration
-0077_drop_handoff_templates_role_check is APPLIED, the DB CHECK still
+0077_drop_handoff_role_check is APPLIED, the DB CHECK still
 rejects 51..60 with an IntegrityError (surfaced by the router's generic
 IntegrityError handler as HTTP 400 "violates a database constraint").
 

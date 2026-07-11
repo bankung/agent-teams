@@ -1,6 +1,6 @@
 """Drop ck_handoff_templates_default_assigned_role_range CHECK constraint (Kanban #2819)
 
-Revision ID: 0077_drop_handoff_templates_role_check
+Revision ID: 0077_drop_handoff_role_check
 Revises: 0076_telegram_chat_state
 Create Date: 2026-07-11 10:00 UTC
 
@@ -37,7 +37,7 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "0077_drop_handoff_templates_role_check"
+revision = "0077_drop_handoff_role_check"
 down_revision = "0076_telegram_chat_state"
 branch_labels = None
 depends_on = None
