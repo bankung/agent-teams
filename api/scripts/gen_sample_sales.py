@@ -68,6 +68,10 @@ def _build_skus(rng: random.Random) -> list[tuple[str, str, int]]:
     (10 SKUs/category x 5 categories = 50), so a SKU's category never varies
     across rows the way a truly random per-row category would."""
     skus: list[tuple[str, str, int]] = []
+    assert N_SKUS % len(CATEGORIES) == 0, (
+        f"N_SKUS ({N_SKUS}) must divide evenly by len(CATEGORIES) "
+        f"({len(CATEGORIES)}) or SKUs will be under-generated"
+    )
     per_category = N_SKUS // len(CATEGORIES)
     idx = 1
     for category in CATEGORIES:

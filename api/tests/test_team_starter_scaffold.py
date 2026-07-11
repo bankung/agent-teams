@@ -29,6 +29,7 @@ import tempfile
 import uuid
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -177,6 +178,31 @@ def test_scaffold_path_traversal_guard(team: str) -> None:
         )
 
 
+@pytest.mark.parametrize("team", _STARTER_TEAMS)
+def test_scaffold_path_traversal_guard_nested_subdir(team: str) -> None:
+    """target_path STRICTLY INSIDE (not equal to) agent_teams_root must also
+    raise ValueError — exercises the `target_abs.is_relative_to(root_abs)`
+    disjunct independently of the `target_abs == root_abs` disjunct already
+    covered by `test_scaffold_path_traversal_guard` above. Mirrors
+    test_zero_config_scaffold.py's guard test, which asserts this exact
+    subdirectory case alongside the equality case for the identical guard
+    shape.
+
+    Positive-path companion: `test_scaffold_fresh_target_copies_all_files`
+    already proves a target OUTSIDE agent_teams_root succeeds and copies
+    files, so this isn't a vacuous "always raises" check — the guard is
+    proven to distinguish inside-root from outside-root, not just to always
+    fire.
+    """
+    from src.services.team_starter_scaffold import scaffold_team_starter
+
+    nested = AGENT_TEAMS_ROOT / "context" / "projects" / "evil-sub"
+    with pytest.raises(ValueError, match="resolves to or under"):
+        scaffold_team_starter(
+            target_path=nested, agent_teams_root=AGENT_TEAMS_ROOT, team=team
+        )
+
+
 @pytest.mark.parametrize("team", ["..", "bogus"])
 def test_scaffold_rejects_unvalidated_team(team: str) -> None:
     """Trust-boundary guard (MAJOR finding, #1319 dev-reviewer pass): a `team`
@@ -199,6 +225,91 @@ def test_scaffold_rejects_unvalidated_team(team: str) -> None:
         # Guard fires before target_path is ever resolved/mkdir'd — proves
         # the rejection happens pre-path-resolution, not merely post-hoc.
         assert not target.exists()
+
+
+def test_scaffold_partial_error_continues() -> None:
+    """Force one shutil.copyfile call to raise -> that single relative path
+    lands in `report.errors` (and NOT in `copied`, NOT on disk), while the
+    walk continues and every other file in the tree still copies normally.
+
+    Single-team check (data-analytics), matching the project's existing
+    convention for team-invariant mechanics (see
+    `test_scaffold_never_overwrites_mutated_dest`'s docstring) — the
+    try/except-around-copyfile logic is identical for every team, only the
+    specific template tree differs.
+
+    Technique adapted from test_zero_config_scaffold.py's own
+    test_scaffold_partial_error_continues: patch `copyfile` via the service
+    module's `shutil` reference (`svc.shutil`); it's the shared stdlib
+    module object, so this works because the test is single-threaded and
+    nothing else calls `shutil.copyfile` during the `with` block.
+    """
+    from src.services import team_starter_scaffold as svc
+    from src.services.team_starter_scaffold import scaffold_team_starter
+
+    real_copyfile = svc.shutil.copyfile
+    # Unique relative path within the data-analytics tree (only file with
+    # this name anywhere in that tree) so the fake only intercepts the one
+    # call we intend to fail.
+    failing_rel = "data/raw/sample_sales.csv"
+
+    def fake_copyfile(src, dst, *args, **kwargs):
+        src_posix = str(src).replace("\\", "/")
+        if src_posix.endswith(failing_rel):
+            raise PermissionError("simulated copy failure")
+        return real_copyfile(src, dst, *args, **kwargs)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj-partial-team-starter"
+        with patch.object(svc.shutil, "copyfile", side_effect=fake_copyfile):
+            report = scaffold_team_starter(
+                target_path=target,
+                agent_teams_root=AGENT_TEAMS_ROOT,
+                team="data-analytics",
+            )
+
+        # NEGATIVE: the targeted file failed — not copied, not on disk.
+        assert any(rel == failing_rel for rel, _ in report.errors)
+        assert failing_rel not in report.copied
+        assert not (target / failing_rel).is_file()
+
+        # POSITIVE companion (never bare-assert the negative alone): sibling
+        # files in the SAME tree still copied successfully, proving the
+        # exception didn't abort the whole rglob walk.
+        assert "README.md" in report.copied
+        assert (target / "README.md").is_file()
+
+
+def test_scaffold_non_file_collision_recorded_as_error() -> None:
+    """A non-file collision at a template's destination path (e.g. a
+    directory sitting where a template file would land) is a real conflict,
+    not an idempotent re-scaffold: it must land under `report.errors` (NOT
+    `report.skipped`) and must not raise — the walk continues for every
+    other file in the tree, same shape as
+    `test_scaffold_partial_error_continues` above.
+    """
+    from src.services.team_starter_scaffold import scaffold_team_starter
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "proj-non-file-collision"
+        # Pre-create a DIRECTORY at the dest path a template file would land
+        # — not a file, so this isn't the idempotent-add (skip) case.
+        (target / "README.md").mkdir(parents=True)
+
+        report = scaffold_team_starter(
+            target_path=target,
+            agent_teams_root=AGENT_TEAMS_ROOT,
+            team="data-analytics",
+        )
+
+        assert any(rel == "README.md" for rel, _ in report.errors)
+        assert "README.md" not in report.skipped
+        assert "README.md" not in report.copied
+
+        # POSITIVE companion: sibling files in the same tree still copied,
+        # proving the collision didn't abort the walk.
+        assert "data/raw/sample_sales.csv" in report.copied
+        assert _has_file(target, "data/raw/sample_sales.csv")
 
 
 # =============================================================================

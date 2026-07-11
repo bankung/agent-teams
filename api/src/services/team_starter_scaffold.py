@@ -34,6 +34,7 @@ back), and `target_path` resolving to/under `agent_teams_root` raises
 
 from __future__ import annotations
 
+import filecmp
 import logging
 import shutil
 from dataclasses import dataclass, field
@@ -143,6 +144,30 @@ def scaffold_team_starter(
         dest = target_abs / rel
         try:
             if dest.exists():
+                if not dest.is_file():
+                    # Non-file collision (e.g. a dir at this rel path) — a real
+                    # conflict, not an idempotent re-scaffold: surface as error.
+                    report.errors.append(
+                        (rel, f"destination exists and is not a regular file: {dest}")
+                    )
+                    continue
+                # Existing file left untouched (idempotent-add). WARN if its
+                # content differs from the template — distinguishes a benign
+                # re-scaffold from a working_path reused across teams (a
+                # `%d skipped` count can't). filecmp short-circuits on a size
+                # mismatch and reads in bounded chunks, so a large pre-existing
+                # dest is never slurped into memory. Best-effort; see decisions.md #1319.
+                try:
+                    if not filecmp.cmp(src, dest, shallow=False):
+                        logger.warning(
+                            "team_starter_scaffold: %s already exists with "
+                            "content differing from the %s template — left "
+                            "untouched (working_path reused across teams?)",
+                            rel,
+                            team,
+                        )
+                except OSError:
+                    pass  # visibility only; a read error must not abort the walk
                 report.skipped.append(rel)
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)

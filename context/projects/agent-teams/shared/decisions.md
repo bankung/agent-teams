@@ -18,6 +18,15 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-07-11 — #2820 intense-review hardening of the team-starter scaffold
+**Scope:** backend (scaffold) + qa. from #1308 + #1319 (hardens their still-unpushed work)
+
+- **2-round adversarial review, 0 blockers / 0 majors surviving.** Security cleared both trust boundaries: the symlink-escape angle fails because `.resolve()` runs BEFORE `is_relative_to`, and the scaffold `report` never reaches the HTTP response (only `len(errors)` is server-logged) — so an error-embedded absolute path can't leak to a caller.
+- **MAJOR-1 (cross-team `working_path` reuse) → low-severity, visibility fix not structural.** Two different-team projects sharing one `working_path` collide on the lone non-namespaced rel path `README.md`; the idempotent `dest.exists()→skip` silently leaves the first team's copy. Verified non-destructive (all team-specific subtree content still lands; only the top README mismatches) and requires an abnormal config, so a `working_path` UNIQUE constraint / per-team README namespacing were **DECLINED as over-engineering**. Fix = make the skip branch honest: non-file dest → `report.errors` (was silent `skipped`); existing-file-with-differing-content → WARN.
+- **filecmp over hand-rolled byte compare (Karpathy rung ②: stdlib does it).** Content check is `filecmp.cmp(src, dest, shallow=False)` — size-mismatch short-circuit + bounded-chunk read — so a large pre-existing dest on the sync event-loop path is never slurped into memory (a Round-1-fix regression, self-caught in Round 2).
+- **Closed 2 real test gaps:** the traversal guard's `is_relative_to` disjunct (trust-boundary — only `==` equality was covered) + the per-file error path (& a non-file-collision test for the new branch).
+- **Deferred (nil/low, untasked):** symlink-follow in the copy walk (0 instances today; a cross-scaffolder concern — patching 1 of 3 scaffolders = false-coverage skew); the `gen_sample_sales.py` divisibility assert is stripped under `python -O` (manual dev-only script, never run that way). **Standards insight (proposed):** an idempotent scaffolder copying variant-specific content to a SHARED rel path must namespace-or-loudly-flag the collision, not fold it into the "already scaffolded" silent skip — `context/standards/fastapi/filesystem-path-resolution.md`.
+
 ## 2026-07-10 — #1319 social scaffold + generalize the starter scaffold (team-agnostic, convention-gated)
 **Scope:** backend (project create / scaffold). from #1308 (generalizes it) + #1317 (cancelled ps=6, moot — team CHECK dropped #1620)
 
