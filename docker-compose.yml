@@ -35,6 +35,10 @@ services:
     build:
       context: ./api
       dockerfile: Dockerfile
+      # Dockerfile is multi-stage (dev/prod, Kanban #2529) — the LAST stage is
+      # Docker's implicit default target, so pin explicitly. docker-compose.prod.yml
+      # overrides this to `prod`.
+      target: dev
     container_name: agent-teams-api
     depends_on:
       db:
@@ -302,6 +306,10 @@ services:
     build:
       context: ./api
       dockerfile: Dockerfile
+      # Pinned to the same target as the api service (Kanban #2529) — this
+      # service isn't uvicorn, so dev vs prod behavior doesn't matter beyond
+      # staying on the well-exercised (dev) image shape.
+      target: dev
     container_name: agent-teams-telegram-poller
     depends_on:
       api:

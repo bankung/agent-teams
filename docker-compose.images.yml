@@ -170,4 +170,10 @@ volumes:
   agent-teams-pgdata:
   # Writable persistence for /repo inside the api container (REPO_ROOT=/repo).
   # Allows scaffold/session/resource/audit writes without a source bind-mount.
+  # Kanban #2529: the api image now runs as non-root uid 1000. Docker only seeds
+  # a named volume's ownership from the image on FIRST use, so a volume created
+  # by an OLDER (root-run) image stays root-owned after an in-place image
+  # upgrade — appuser then can't mkdir context/_scratch/etc. One-time fix for an
+  # existing deployment:
+  #   docker run --rm -v agent-teams-repo-data:/repo alpine chown -R 1000:1000 /repo
   agent-teams-repo-data:
