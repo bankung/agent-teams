@@ -18,6 +18,14 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-07-12 — #2819 handoff_templates role CHECK: DROP (not widen), 0077 applied live
+**Scope:** backend (schema/migration). from #2812 (RANGE_MAX 50→60 made the stale `<=50` CHECK reachable-but-broken for roles 51-60)
+
+- **Drop-vs-widen: DROP, locked.** `ck_handoff_templates_default_assigned_role_range` duplicated the Pydantic `_validate_role_range` (which derives `TaskRole.RANGE_MIN/MAX` dynamically) as a static `<=50` — a widen-to-60 would re-diverge on every future RANGE_MAX bump. DROP matches the #1620 doctrine + both precedents (`tasks.assigned_role` CHECK dropped in 0002; `ck_projects_team_valid` dropped in 0051). `default_assigned_role` is now app-validated ONLY; future range bumps need NO migration on this table.
+- **Landed:** migration `0077_drop_handoff_role_check` (revises 0076; plain DROP CONSTRAINT, downgrade recreates the original `<=50`) + model `CheckConstraint` removed (`handoff_template.py`) + regression `test_handoff_template_role_range.py` (51+60 → 201 end-to-end, 61 → 422). Commits aac95cb + 73964ae (revision-id lesson: `alembic_version.version_num` is varchar(32) — the first 38-char id broke CI setup; ids must stay ≤32 chars). CI green on `_test` (run 29142220024).
+- **Reversibility EXECUTED, not just reviewed:** scratch DB `agent_teams_test_migration_smoke_2819` — empty → `upgrade head` (0001..0077 clean) → `downgrade -1` recreated the CHECK with the verbatim original definition (`pg_get_constraintdef` checked) → `upgrade head` dropped it again; scratch DB removed after.
+- **Applied live 2026-07-12** (operator, `MIGRATION_TARGET=live`, single step 0076→0077). Live-verified (Lead): `default_assigned_role=51` → 201 (identical POST returned 400 "violates a database constraint" pre-apply, same session), `=61` → 422 from the validator; probe row soft-deleted (204, absent from default list). The #2812 standards insight (on a RANGE_MAX bump, grep sibling CHECK-constrained columns) stays proposed for `context/standards/sqlalchemy/migrations.md` (human MA).
+
 ## 2026-07-11 — #2789 ms50 deferred-minor: risk-class FE↔BE lockstep guard + cost-estimate fan-out defer
 **Scope:** backend + qa. from #2789 (ms50 intense-review deferred MINOR/NIT, both non-blocking)
 
