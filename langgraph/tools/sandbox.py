@@ -196,6 +196,28 @@ def _tool_writes_to_path_arg(tool: Tool) -> bool:
     return "path" in getattr(schema, "model_fields", {})
 
 
+def resolve_fs_path(ctx: InvokeContext, raw_path: str) -> str:
+    """Resolve `raw_path` to an absolute path using fs_boundary_check's base.
+
+    Kanban #2837: file_write/file_edit MUST touch the exact location this
+    resolves to — never re-derive the join independently, or the gate's
+    checked path and the tool's touched path can silently diverge (the
+    original bug: a relative path resolved against the process CWD
+    `/repo/langgraph` instead of `working_path`/`repo_root`). Relative
+    `raw_path` anchors at `ctx.working_path` when set, else `ctx.repo_root`
+    (default `/repo`); absolute paths resolve as-is. `os.path.realpath()`
+    collapses `..` and follows symlinks in both cases — identical to the
+    resolution `fs_boundary_check` performs below (it now calls this same
+    function), so "checked path" and "touched path" are provably one call.
+    """
+    base = ctx.working_path if ctx.working_path else (ctx.repo_root or "/repo")
+    boundary = os.path.realpath(base)
+    candidate = (
+        raw_path if os.path.isabs(raw_path) else os.path.join(boundary, raw_path)
+    )
+    return os.path.realpath(candidate)
+
+
 def fs_boundary_check(
     tool: Tool, ctx: InvokeContext, args: dict[str, Any]
 ) -> ToolResult | None:
@@ -241,10 +263,9 @@ def fs_boundary_check(
         boundary = os.path.realpath(ctx.working_path)
         # Relative paths anchor at the boundary (today's behaviour); absolute
         # paths resolve as-is. realpath() collapses `..` and follows symlinks.
-        candidate = (
-            raw_path if os.path.isabs(raw_path) else os.path.join(boundary, raw_path)
-        )
-        resolved = os.path.realpath(candidate)
+        # `resolve_fs_path` (#2837) centralizes this join so file_write/
+        # file_edit resolve the IDENTICAL path for the actual disk I/O.
+        resolved = resolve_fs_path(ctx, raw_path)
 
         # rule 5 — allowlist override applies first, even when the boundary is
         # unmounted or the target is outside the subtree.
@@ -267,10 +288,8 @@ def fs_boundary_check(
         return _outside_subtree_result(raw_path, resolved, boundary)
 
     # --- working_path NULL ---------------------------------------------------
-    candidate = (
-        raw_path if os.path.isabs(raw_path) else os.path.join(repo_root, raw_path)
-    )
-    resolved = os.path.realpath(candidate)
+    # `resolve_fs_path` (#2837) — same rationale as the working_path-SET branch.
+    resolved = resolve_fs_path(ctx, raw_path)
 
     scratch_root = os.path.realpath(os.path.join(repo_root, _SCRATCH_SUBDIR))
     if _is_under(resolved, scratch_root):

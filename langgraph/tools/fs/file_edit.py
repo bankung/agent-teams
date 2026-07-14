@@ -9,6 +9,14 @@ naive replace would clobber the wrong occurrence. The LLM is expected to widen
 Dry-run mode returns a unified diff describing what WOULD change, without
 touching the file. Useful for the engine to preview before committing (and for
 #979's halt-for-approval flow to surface a diff in the Kanban UI).
+
+Kanban #2837: path resolution mirrors `sandbox.fs_boundary_check` exactly
+(via `resolve_fs_path`) so the boundary-checked path and the path actually
+read/written are provably identical — a relative path anchors at
+working_path/repo_root, never the process CWD. Both the read and the write
+are wrapped in `asyncio.wait_for` (self.timeout_sec) so a hung disk I/O
+can't freeze the serial worker loop forever, mirroring how
+shell_run/git_*/http_* already self-enforce a timeout.
 """
 
 from __future__ import annotations
@@ -21,6 +29,7 @@ from pydantic import Field
 
 from ..base import InvokeContext, Tier, Tool, ToolInput, ToolResult
 from ..registry import GLOBAL_REGISTRY
+from ..sandbox import resolve_fs_path
 from ._common import read_text, write_text
 
 
@@ -72,7 +81,11 @@ class FileEditTool(Tool):
     async def _run(
         self, input_obj: FileEditInput, context: InvokeContext
     ) -> ToolResult:
-        path = Path(input_obj.path)
+        # Resolve via the SAME base fs_boundary_check uses (#2837) so a
+        # relative path anchors at working_path/repo_root — never the
+        # process CWD (/repo/langgraph) — and the gate's checked path is
+        # provably the path touched below.
+        path = Path(resolve_fs_path(context, input_obj.path))
         if not path.exists():
             return ToolResult(
                 success=False,
@@ -89,7 +102,20 @@ class FileEditTool(Tool):
             )
 
         try:
-            before = await asyncio.to_thread(read_text, path)
+            # shortcut: wait_for() unblocks the caller on timeout but can't
+            # force-kill the to_thread() worker (Python threads aren't
+            # cancellable) — see file_write.py's write wait_for for the full
+            # rationale; the same tradeoff applies to both read and write here.
+            before = await asyncio.wait_for(
+                asyncio.to_thread(read_text, path), timeout=self.timeout_sec
+            )
+        except asyncio.TimeoutError:
+            return ToolResult(
+                success=False,
+                error_code="timeout",
+                error_msg=f"file_edit exceeded {self.timeout_sec}s reading {path}",
+                retry_safe=True,
+            )
         except Exception as exc:
             return ToolResult(
                 success=False,
@@ -139,7 +165,16 @@ class FileEditTool(Tool):
             )
 
         try:
-            await asyncio.to_thread(write_text, path, after)
+            await asyncio.wait_for(
+                asyncio.to_thread(write_text, path, after), timeout=self.timeout_sec
+            )
+        except asyncio.TimeoutError:
+            return ToolResult(
+                success=False,
+                error_code="timeout",
+                error_msg=f"file_edit exceeded {self.timeout_sec}s writing {path}",
+                retry_safe=False,  # partial write possible — caller should verify.
+            )
         except Exception as exc:
             return ToolResult(
                 success=False,

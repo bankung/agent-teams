@@ -43,6 +43,7 @@ from tools.sandbox import (
     _read_allowlist,
     _safe_raw_path,
     _tool_writes_to_path_arg,
+    resolve_fs_path,
 )
 
 
@@ -455,6 +456,67 @@ def test_2215_allowlist_cache_keyed_by_path(tmp_path, monkeypatch) -> None:
     assert prefixes_b == []
     # And A is still cached under its own key (not clobbered by the B read).
     assert _read_allowlist(str(a)) == [os.path.realpath(str(allowed))]
+
+
+# ---------------------------------------------------------------------------
+# resolve_fs_path (Kanban #2837) — checked path == touched path
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_fs_path_relative_anchors_at_working_path(tmp_path: Path) -> None:
+    """A relative raw_path anchors at ctx.working_path when set."""
+    ctx = InvokeContext(working_path=str(tmp_path))
+    resolved = resolve_fs_path(ctx, "sub/out.txt")
+    assert resolved == os.path.realpath(str(tmp_path / "sub" / "out.txt"))
+
+
+def test_resolve_fs_path_relative_anchors_at_repo_root_when_working_path_null() -> None:
+    """A relative raw_path anchors at ctx.repo_root when working_path is None —
+    NEVER the process CWD (/repo/langgraph), which was the original bug."""
+    ctx = InvokeContext(working_path=None, repo_root="/repo")
+    resolved = resolve_fs_path(ctx, "_scratch/out.txt")
+    assert resolved == os.path.realpath("/repo/_scratch/out.txt")
+
+
+def test_resolve_fs_path_absolute_path_ignores_working_path(tmp_path: Path) -> None:
+    """An absolute raw_path resolves as-is, unaffected by working_path."""
+    ctx = InvokeContext(working_path=str(tmp_path / "unrelated"))
+    resolved = resolve_fs_path(ctx, "/etc/hostname")
+    assert resolved == os.path.realpath("/etc/hostname")
+
+
+def test_resolve_fs_path_matches_fs_boundary_check_resolution(tmp_path: Path) -> None:
+    """The identity the fix depends on: whatever fs_boundary_check validates
+    as a legitimate destination, `resolve_fs_path` — called independently by
+    the tool — computes the SAME absolute path. Proven by driving both with
+    identical inputs rather than trusting they happen to agree."""
+    ctx = InvokeContext(working_path=str(tmp_path))
+    raw = "sub/nested/out.txt"
+    args = {"path": raw, "content": "x"}
+    file_write = GLOBAL_REGISTRY.get("file_write")
+
+    assert fs_boundary_check(file_write, ctx, args) is None  # legitimate destination
+    assert resolve_fs_path(ctx, raw) == os.path.realpath(
+        str(tmp_path / "sub" / "nested" / "out.txt")
+    )
+
+
+def test_resolve_fs_path_relative_dotdot_escape_still_caught_by_gate(
+    tmp_path: Path,
+) -> None:
+    """A genuinely relative `../` raw_path resolves OUTSIDE working_path —
+    resolve_fs_path and fs_boundary_check agree, and the gate still rejects
+    it (this is the escape-attempt companion to the happy-path test above)."""
+    ctx = InvokeContext(working_path=str(tmp_path))
+    raw = "../escape-2837.txt"
+
+    resolved = resolve_fs_path(ctx, raw)
+    assert not resolved.startswith(os.path.realpath(str(tmp_path)))
+
+    file_write = GLOBAL_REGISTRY.get("file_write")
+    result = fs_boundary_check(file_write, ctx, {"path": raw, "content": "x"})
+    assert result is not None
+    assert result.error_code == "fs_boundary"
 
 
 # ---------------------------------------------------------------------------
