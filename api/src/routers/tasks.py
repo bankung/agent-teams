@@ -151,9 +151,11 @@ _DETAIL_TEMPLATE_AUTO_RUN_NEEDS_CONFIRM = (
 
 # Kanban #1121 (L14 prevention): a task whose author-supplied content matched
 # a destructive-intent pattern in services/content_moderation.py carries
-# requires_human_review=true. The auto-headless gate below refuses any PATCH
-# that resolves run_mode=auto_headless on such a row. Source-text-locked by
-# test_content_moderation — keep both in sync.
+# requires_human_review=true. The auto-run gate below refuses any PATCH that
+# resolves run_mode=auto_headless OR auto_pickup on such a row (auto_pickup
+# coverage added by Kanban #2838 — see next_task_stmt for the sibling
+# auto-SELECTION gate, the actual runtime enforcement point). Source-text-
+# locked by test_content_moderation — keep both in sync.
 _DETAIL_REQUIRES_HUMAN_REVIEW = (
     "task requires human review before auto-run (matched fields: {matched}). "
     "PATCH requires_human_review=false explicitly to unblock."
@@ -670,6 +672,20 @@ async def get_next_autorun(
             Task.process_status == TaskStatus.TODO,
             Task.run_mode.in_([TaskRunMode.AUTO_PICKUP, TaskRunMode.AUTO_HEADLESS]),
             Task.halt_reason.is_(None),
+            # Kanban #2838: a task flagged requires_human_review=true (L14
+            # destructive-intent scanner, #1121) must never be auto-SELECTED
+            # here, regardless of run_mode. The PATCH-time gate further below
+            # (~Step 3, "auto-run gate") only refuses SETTING run_mode to an
+            # auto value on a flagged row — it does not re-check a row whose
+            # flag flips true AFTER it already sits at auto_pickup/
+            # auto_headless. This predicate is the actual auto-selection
+            # enforcement point; the flagged row simply stays in TODO for a
+            # human. Null-safe form (`IS NOT TRUE`): the column is NOT NULL
+            # DEFAULT false (models/task.py, migration 0037_tasks_requires_
+            # human_review) so no row can be NULL today, but `.is_not(True)`
+            # keeps False AND any hypothetical NULL eligible, excluding only
+            # True — defense-in-depth against future nullable drift.
+            Task.requires_human_review.is_not(True),
             or_(Task.blocked_by.is_(None), blocker.process_status.in_(_TERMINAL_BLOCKER_STATUSES)),
             or_(Task.scheduled_at.is_(None), Task.scheduled_at <= now),
             # #2566: a gate-driven task never surfaces as a FRESH pickup. The
@@ -2629,7 +2645,8 @@ async def update_task(
             detail=_DETAIL_TEMPLATE_AUTO_RUN_NEEDS_CONFIRM.format(task_id=task_id),
         )
 
-    # Kanban #1121 (L14 prevention) — scan + auto-headless gate.
+    # Kanban #1121 (L14 prevention) — scan + auto-run gate (#2838 extended to
+    # both auto_headless and auto_pickup).
     #
     # Step 1: scan the PATCH-supplied content fields (title / description /
     # acceptance_criteria / halt_reason / status_change_reason) for
@@ -2676,15 +2693,19 @@ async def update_task(
     else:
         resolved_requires_human_review = task.requires_human_review
 
-    # Step 3: auto-headless gate. If the row would land at
-    # run_mode='auto_headless' AND requires_human_review is True, refuse
-    # the PATCH with 422 and the source-text-locked detail. This is the
-    # primary enforcement point — the scanner TAGS, this gate BLOCKS auto-
-    # pickup. Note the gate fires REGARDLESS of whether the caller is
-    # PATCHing run_mode in this body (a flipped flag + an existing
-    # auto_headless row is the same risk surface as an explicit flip).
+    # Step 3: auto-run gate. If the row would land at run_mode='auto_headless'
+    # OR run_mode='auto_pickup' AND requires_human_review is True, refuse the
+    # PATCH with 422 and the source-text-locked detail. auto_pickup coverage
+    # added by Kanban #2838 (mirrors the pre-existing auto_headless branch —
+    # a flagged row must not be settable to EITHER auto mode via PATCH; the
+    # sibling next_task_stmt predicate in GET /api/tasks/next-autorun is the
+    # actual runtime auto-SELECTION enforcement, since a flag can also flip
+    # true after the row already sits at an auto run_mode). Note the gate
+    # fires REGARDLESS of whether the caller is PATCHing run_mode in this
+    # body (a flipped flag + an existing auto row is the same risk surface
+    # as an explicit flip).
     if (
-        resolved_run_mode == TaskRunMode.AUTO_HEADLESS
+        resolved_run_mode in (TaskRunMode.AUTO_HEADLESS, TaskRunMode.AUTO_PICKUP)
         and resolved_requires_human_review is True
     ):
         # Build the matched-fields list for the error detail. Prefer the
