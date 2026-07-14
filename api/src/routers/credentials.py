@@ -25,6 +25,14 @@ Audit:
   - Every create / update / delete / use lands a row in `credential_access_log`.
   - Failed (denied) /use attempts also land a row with `accessed_by` carrying
     the denial reason — the audit trail covers both grants AND refusals.
+
+Operator gate (Kanban #2832): create / update / delete are wired through
+`require_operator_proof`, mirroring task_templates.py / resources.py — 403 when
+the gate is ACTIVE and no valid X-Operator-Token (fail-OPEN/dormant until
+OPERATOR_ACTION_KEY is set). GET (list) is ungated (read-only, no plaintext).
+`use_credential` is intentionally NOT operator-gated here — it has its own
+`_policy_grants_use` approval-policy gate, which is the correct control for
+that endpoint and is left untouched.
 """
 
 from __future__ import annotations
@@ -52,6 +60,7 @@ from src.schemas.credential import (
     CredentialUseResponse,
 )
 from src.services.credentials_crypto import decrypt, encrypt
+from src.services.operator_auth import OperatorDecision, require_operator_proof
 from src.services.session_project import require_project_id_header
 
 logger = logging.getLogger(__name__)
@@ -67,6 +76,26 @@ _DETAIL_USE_DENIED = (
     "HITL approval flow not implemented in M3 (deferred); operator must add "
     "an approval_policies entry to project to grant use."
 )
+
+# Source-text-locked 403 detail (parity with task_templates / resources gate).
+_DETAIL_OPERATOR_PROOF_REQUIRED = (
+    "operator_proof_required: creating/editing/deleting a stored credential is "
+    "operator-only"
+)
+
+
+def _require_operator(operator_proof: OperatorDecision) -> None:
+    """Raise 403 unless the request is operator-backed (no-op when gate inactive).
+
+    `require_operator_proof` (the Depends) RETURNS an OperatorDecision — it does
+    NOT raise. This helper is what turns a NOT_OPERATOR decision into the 403;
+    every gated handler below must call it explicitly (declaring the Depends
+    alone leaves the gate dormant).
+    """
+    if operator_proof is not OperatorDecision.OPERATOR:
+        raise HTTPException(
+            status_code=403, detail=_DETAIL_OPERATOR_PROOF_REQUIRED
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -180,14 +209,18 @@ async def create_credential(
     payload: CredentialCreate,
     session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
 ) -> ProjectCredential:
-    """Encrypt + insert a new credential. Logs action='create' in access log.
+    """Encrypt + insert a new credential (operator-gated). Logs action='create'
+    in access log.
 
     Errors:
+      - 403 — operator-proof gate active and no valid X-Operator-Token.
       - 404 — path/header project_id mismatch OR project does not exist.
       - 409 — name already exists in this project (UNIQUE violation).
       - 422 — Pydantic validation (kind invalid, value too long, etc.).
     """
+    _require_operator(operator_proof)
     _assert_project_match(project_id, session_project_id)
     await _resolve_project(session, project_id)
 
@@ -278,11 +311,17 @@ async def update_credential(
     payload: CredentialUpdate,
     session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
 ) -> ProjectCredential:
-    """Partial update: re-encrypt value if supplied, replace metadata if supplied.
+    """Partial update (operator-gated): re-encrypt value if supplied, replace
+    metadata if supplied.
 
-    Bumps `updated_at`. Logs action='update' in access log.
+    Bumps `updated_at`. Logs action='update' in access log. Errors:
+      - 403 — operator-proof gate active and no valid X-Operator-Token.
+      - 404 — path/header project_id mismatch, project missing, or credential
+              not found (soft-deleted rows count as not-found).
     """
+    _require_operator(operator_proof)
     _assert_project_match(project_id, session_project_id)
 
     cred = await _get_active_credential_or_404(session, project_id, name)
@@ -320,15 +359,20 @@ async def delete_credential(
     name: str,
     session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
+    operator_proof: OperatorDecision = Depends(require_operator_proof),
 ) -> Response:
-    """Soft-delete (status=0). Subsequent GET/list hides the row; subsequent
-    /use returns 404.
+    """Soft-delete (status=0), operator-gated. Subsequent GET/list hides the
+    row; subsequent /use returns 404.
 
     Idempotency: double-DELETE returns 404 because soft-deleted rows are
     treated as "not found" from the wire perspective — the same as a never-
     existed name. This matches the project's stated AC ("Subsequent GET
-    hides; subsequent /use returns 404").
+    hides; subsequent /use returns 404"). Errors:
+      - 403 — operator-proof gate active and no valid X-Operator-Token.
+      - 404 — path/header project_id mismatch, project missing, or credential
+              not found.
     """
+    _require_operator(operator_proof)
     _assert_project_match(project_id, session_project_id)
 
     cred = await _get_active_credential_or_404(session, project_id, name)
