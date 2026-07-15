@@ -601,6 +601,7 @@ _DOMAIN_RULES: tuple[tuple[str, str, str], ...] = (
     ("secretary", "secretary", "exact-or-prefix"),
     ("sem-", "sem", "prefix"),
     ("seo-", "seo", "prefix"),
+    ("netops-", "netops", "prefix"),
     ("google-ads-", "sem", "prefix"),
     ("meta-ads-", "sem", "prefix"),
     ("platform-ads-", "sem", "prefix"),
