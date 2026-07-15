@@ -294,9 +294,19 @@ class Task(Base):
     # Set to TRUE by `routers/tasks.py` on POST + PATCH when the scanner in
     # `src/services/content_moderation.py` matches a destructive-intent pattern
     # in any of (title, description, acceptance_criteria[*].text, halt_reason,
-    # status_change_reason). The auto-headless gate refuses
-    # `run_mode=auto_headless` PATCHes on flagged rows — reviewer must
-    # explicitly clear via PATCH `requires_human_review=false`. NOT NULL with
+    # status_change_reason). Three enforcement points cover a flagged row, all
+    # in `routers/tasks.py`: (1) the PATCH-time auto-run gate refuses a PATCH
+    # that resolves run_mode to auto_headless OR auto_pickup on a flagged row
+    # (Kanban #2838 broadened this from auto_headless-only) — reviewer must
+    # explicitly clear via PATCH `requires_human_review=false`; (2)
+    # `next_task_stmt` (GET /api/tasks/next-autorun) excludes a flagged row
+    # from fresh auto-SELECTION regardless of run_mode (Kanban #2838); and (3)
+    # `gate_resume_stmt` (same endpoint) excludes a flagged row from
+    # auto-RESUME via an answered async-HITL gate, #2566 (Kanban #2843 — the
+    # sibling gap #2838 left open). (2) and (3) are the real runtime
+    # enforcement points: (1) alone cannot catch a flag that flips true AFTER
+    # the row already sits at an auto run_mode, and (2)/(3) are disjoint lanes
+    # so excluding one does not exclude the other. NOT NULL with
     # server_default=false so existing rows backfill cleanly via migration
     # 0037. Sticky: false → true happens on every scan-match; true → false
     # ONLY via an explicit caller-supplied PATCH (the router never re-clears

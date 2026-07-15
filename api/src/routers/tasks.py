@@ -852,6 +852,22 @@ async def get_next_autorun(
             # always halt_reason=NULL; belt-and-suspenders vs a future resolve
             # change that might stamp it (would otherwise silently drop the task).
             Task.halt_reason.is_(None),
+            # Kanban #2843: sibling of the next_task_stmt predicate above (added
+            # by #2838, ~line 675) — a task flagged requires_human_review=true
+            # (L14 destructive-intent scanner, #1121) must never be auto-RESUMED
+            # via an answered async-HITL gate (#2566) either. Without this, a
+            # flagged task that reached run_mode=auto_pickup/auto_headless and
+            # then went through open-gate -> resolve (ps 8->TODO, halt_reason
+            # stays NULL) would sail through here ungated even though the
+            # fresh-pickup lane (next_task_stmt) already excludes it — the two
+            # lanes are disjoint (§7) so excluding one does not exclude the
+            # other. Same null-safe form as next_task_stmt: the column is NOT
+            # NULL DEFAULT false (models/task.py, migration 0037_tasks_
+            # requires_human_review) so no row can be NULL today, but
+            # `.is_not(True)` keeps False AND any hypothetical NULL eligible,
+            # excluding only True — defense-in-depth against future nullable
+            # drift.
+            Task.requires_human_review.is_not(True),
             or_(
                 Task.blocked_by.is_(None),
                 blocker.process_status.in_(_TERMINAL_BLOCKER_STATUSES),
