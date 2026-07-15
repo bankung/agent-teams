@@ -81,9 +81,10 @@ async def _watch_loop(agents_dir: Path) -> None:
     startup banner on every api restart). Every subsequent scan compares
     against the last-known signature; a difference triggers one broadcast and
     updates the baseline. Any exception during a scan (missing dir mid-tick,
-    transient IO) is caught, logged, and the tick is skipped — the loop itself
-    must never crash, since a raised exception here would silently kill the
-    background task with the broker never noticing.
+    transient IO) is caught, logged, and the tick is skipped; a broadcast()
+    exception is likewise caught + logged without aborting the tick (Kanban
+    #2836) — the loop itself must never crash, since a raised exception here
+    would silently kill the background task with the broker never noticing.
     """
     baseline: frozenset[tuple[str, int, int]] | None = None
     while True:
@@ -104,14 +105,26 @@ async def _watch_loop(agents_dir: Path) -> None:
                 )
             elif current != baseline:
                 baseline = current
-                row_changed_listener.broker.broadcast(
-                    {
-                        "table": "agents",
-                        "op": "changed",
-                        "ts": datetime.now(timezone.utc).isoformat(),
-                    }
-                )
-                logger.info("agents_watcher: change detected — broadcast sent")
+                try:
+                    row_changed_listener.broker.broadcast(
+                        {
+                            "table": "agents",
+                            "op": "changed",
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
+                except Exception:
+                    # Broad catch is deliberate: broadcast() failing must
+                    # never take the watch loop down with it (same posture as
+                    # the scan's except OSError above, just for the fan-out
+                    # step). logger.exception (not .warning) — an unexpected
+                    # exception here is worth the traceback.
+                    logger.exception(
+                        "agents_watcher: broadcast failed for %r — tick continues",
+                        str(agents_dir),
+                    )
+                else:
+                    logger.info("agents_watcher: change detected — broadcast sent")
 
         await asyncio.sleep(_poll_seconds())
 

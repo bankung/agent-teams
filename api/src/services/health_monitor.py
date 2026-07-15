@@ -417,6 +417,7 @@ class HealthMonitor:
             # per-project 7-day spend baseline + the per-project today spend
             # in three queries (avoids N+1).
             tasks = await self._fetch_active_autorun_tasks(session)
+            self._prune_burn_snapshots({t.id for t in tasks})
             if not tasks:
                 return
             project_ids = sorted({t.project_id for t in tasks})
@@ -482,6 +483,23 @@ class HealthMonitor:
         # PATCH — single round-trip per task, atomic at the DB layer.
         if alert_writes:
             await self._flush_alerts(alert_writes, auto_pause_ids, metrics)
+
+    def _prune_burn_snapshots(self, active_task_ids: set[int]) -> None:
+        """Evict cross-sweep token-burn snapshots for tasks no longer in the
+        active autorun set (completed / cancelled / flipped to manual
+        run_mode). Without this, `_burn_snapshots` grows unboundedly over the
+        container's lifetime — every task that ever passed through the
+        detector leaves a permanent entry. Mirrors the sibling
+        `budget_gate._mark_alert_sent_today`'s stale-key eviction (Kanban
+        #2836), keyed on "still active" instead of "still today".
+        """
+        stale_ids = [
+            task_id
+            for task_id in self._burn_snapshots
+            if task_id not in active_task_ids
+        ]
+        for task_id in stale_ids:
+            del self._burn_snapshots[task_id]
 
     def _evaluate_detectors(
         self,

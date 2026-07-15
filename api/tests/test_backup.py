@@ -571,3 +571,46 @@ def test_run_once_full_smoke_with_moto(tmp_path: Path) -> None:
             sql_member = tar.getmember("db-dump.sql")
             sql_bytes = tar.extractfile(sql_member).read()
             assert b"CREATE TABLE projects" in sql_bytes
+
+
+def test_run_once_dry_run_makes_no_s3_write(tmp_path: Path) -> None:
+    """Kanban #2836 — dry_run=True must be a TRUE no-op: the dump/archive/
+    encrypt stages still run (so a dry run proves the pipeline is sound) but
+    NO object is ever written to S3, not even under the `_dryrun/` prefix.
+
+    Previously `_run_once_sync()` called `self._upload()` unconditionally, so
+    a "dry run" performed a real `put_object` — just namespaced away from the
+    canonical retention math.
+    """
+    pub, _ = _gen_age_keypair()
+    cfg = BackupConfig.from_env(
+        _required_env(pub=pub, extras={"BACKUP_DRY_RUN": "true"})
+    )
+    runner = BackupRunner(cfg)
+    assert cfg.dry_run is True
+
+    def fake_run(cmd, **kwargs):  # noqa: ANN001 — test stub
+        out_path = Path(cmd[cmd.index("-f") + 1])
+        out_path.write_bytes(b"x" * (150 * 1024))  # above the 100KB L12 floor
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with mock_aws():
+        _make_bucket(cfg.s3_bucket)
+        with patch("src.services.backup.subprocess.run", side_effect=fake_run):
+            import asyncio
+            result = asyncio.run(runner.run_once())
+
+        # POSITIVE: the pipeline still ran end to end and reports success —
+        # proves the assertion below isn't vacuously true because run_once
+        # itself failed for an unrelated reason.
+        assert result.ok is True, f"run_once failed: {result.error}"
+        assert result.key is not None
+        assert result.key.startswith("agent-teams/_dryrun/")
+
+        # NEGATIVE (the fix being locked): nothing was actually uploaded.
+        client = boto3.client("s3", region_name="us-east-1")
+        listing = client.list_objects_v2(Bucket=cfg.s3_bucket)
+        assert listing.get("KeyCount", 0) == 0, (
+            "expected zero S3 objects after a dry run; found "
+            f"{[o['Key'] for o in listing.get('Contents', [])]}"
+        )

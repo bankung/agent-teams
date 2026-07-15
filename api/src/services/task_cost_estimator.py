@@ -123,10 +123,22 @@ def chars_per_token(text: str) -> int:
 
 
 def _heuristic_tokens(text: str) -> int:
-    """Approximate token count: max(0, chars // chars_per_token(text))."""
-    if not text:
+    """Approximate token count: max(1, chars // chars_per_token(text)) once
+    the text has real (non-whitespace) content; 0 when there's none.
+
+    Kanban #2836: previously floor-divided straight through, so any string
+    shorter than chars_per_token(text) (e.g. a 1-3 char ASCII string, cpt=4)
+    rounded down to 0 — inconsistent with token_counter.count_tokens' own
+    `max(1, ...)` floor. Emptiness is checked via `.strip()` rather than a
+    bare truthiness check on `text`: callers here (forecast_task_cost) join
+    optional fields with literal separator spaces, so an all-empty task
+    would otherwise present as a non-empty "  " string; `.strip()` keeps
+    that case at 0 so the "empty task prices at role-brief only" forecast
+    contract (test_forecast_empty_task_role_brief_only) still holds.
+    """
+    if not text.strip():
         return 0
-    return len(text) // chars_per_token(text)
+    return max(1, len(text) // chars_per_token(text))
 
 
 def resolve_provider_model() -> tuple[str, str]:
