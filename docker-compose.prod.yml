@@ -52,3 +52,10 @@ services:
       HEALTH_MONITOR_INTERVAL_MINUTES: "60"
       # HITL nudge scan: 120 min instead of 30 min default.
       HITL_NUDGE_INTERVAL_MINUTES: "120"
+
+  langgraph:
+    # langgraph/Dockerfile bakes `uvicorn --reload` into its CMD unconditionally
+    # (it's a dev-only single-stage image — no dev/prod build target to switch,
+    # unlike api above). Override command here to drop --reload for prod
+    # deployments (Kanban #2825 — same class as the api fix in #2529).
+    command: ["uvicorn", "graph:app", "--host", "0.0.0.0", "--port", "8000"]
