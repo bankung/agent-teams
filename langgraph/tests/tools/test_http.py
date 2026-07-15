@@ -163,6 +163,64 @@ async def test_wildcard_allowlist_with_warning(caplog: pytest.LogCaptureFixture)
 
 
 # ----------------------------------------------------------------------
+# Scheme allowlist (Kanban #2840)
+# ----------------------------------------------------------------------
+
+
+@_SKIP_ON_OLLAMA
+@respx.mock
+async def test_non_http_scheme_rejected_get():
+    """A non-http(s) scheme halts with error_code='scheme_not_allowed' BEFORE
+    any httpx call — an explicit gate, not incidental httpx rejection. The
+    host ('api.allowed.com') IS in the allowlist, proving the scheme check
+    (not the host check) is what catches this. No respx route is registered
+    for this URL; if the gate didn't short-circuit, respx would raise on the
+    unmocked request rather than letting a real network call escape.
+    """
+    tool = GLOBAL_REGISTRY.get("http_get")
+    ctx = InvokeContext(host_allowlist=["api.allowed.com"])
+    result = await tool.invoke(
+        {"url": "ftp://api.allowed.com/x"}, context=ctx
+    )
+    assert result.success is False
+    assert result.error_code == "scheme_not_allowed"
+    assert "ftp" in (result.error_msg or "")
+
+
+@_SKIP_ON_OLLAMA
+@respx.mock
+async def test_non_http_scheme_rejected_post():
+    """Same gate on http_post — both tools call the shared _common helper."""
+    tool = GLOBAL_REGISTRY.get("http_post")
+    ctx = InvokeContext(host_allowlist=["api.allowed.com"])
+    result = await tool.invoke(
+        {"url": "ftp://api.allowed.com/x", "body": {}}, context=ctx
+    )
+    assert result.success is False
+    assert result.error_code == "scheme_not_allowed"
+    assert "ftp" in (result.error_msg or "")
+
+
+@_SKIP_ON_OLLAMA
+async def test_dry_run_non_http_scheme_still_rejected():
+    """dry_run=True never calls httpx at all — before #2840 this meant a bad
+    scheme was reported as a would-succeed envelope (zero protection, not
+    even the old incidental httpx rejection). The explicit gate runs before
+    the dry_run branch, so this path is now covered too. No respx needed —
+    the assertion is on the ToolResult itself, and a passing test proves
+    httpx was never reached (dry_run's own contract already guarantees that
+    for an allowed scheme; this locks it for a disallowed one too).
+    """
+    tool = GLOBAL_REGISTRY.get("http_get")
+    ctx = InvokeContext(host_allowlist=["api.allowed.com"])
+    result = await tool.invoke(
+        {"url": "ftp://api.allowed.com/x", "dry_run": True}, context=ctx
+    )
+    assert result.success is False
+    assert result.error_code == "scheme_not_allowed"
+
+
+# ----------------------------------------------------------------------
 # Provider feature-flag
 # ----------------------------------------------------------------------
 

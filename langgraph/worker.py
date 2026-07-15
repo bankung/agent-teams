@@ -729,6 +729,31 @@ async def _poll_once(
         )
         return
 
+    # Kanban #2136 / #2840 — structured halt taxonomy + bounded transient
+    # retry. LangGraph checkpoints make re-invocation safe (idempotent per
+    # thread_id). Retry count / backoff come from env-vars resolved here
+    # (not from WorkerConfig) so tests can monkeypatch without a WorkerConfig
+    # roundtrip. Validated BEFORE the IN_PROGRESS PATCH below — mirrors the
+    # H-2 fix in WorkerConfig.__init__ (~line 268): a bad value must fail
+    # fast here too, not raise mid-tick (as it used to, well after the PATCH)
+    # and strand the task IN_PROGRESS with no further PATCH to recover it.
+    _retries_raw = os.getenv("LANGGRAPH_TRANSIENT_RETRIES", str(_DEFAULT_TRANSIENT_RETRIES))
+    try:
+        _max_retries = max(0, int(_retries_raw))
+    except ValueError:
+        raise RuntimeError(
+            f"LANGGRAPH_TRANSIENT_RETRIES must be a non-negative integer; "
+            f"got {_retries_raw!r}. Unset to use the default ({_DEFAULT_TRANSIENT_RETRIES})."
+        )
+    _backoff_raw = os.getenv("LANGGRAPH_RETRY_BACKOFF_SEC", str(_DEFAULT_RETRY_BACKOFF_SEC))
+    try:
+        _backoff_base = max(0.0, float(_backoff_raw))
+    except ValueError:
+        raise RuntimeError(
+            f"LANGGRAPH_RETRY_BACKOFF_SEC must be a non-negative number (seconds); "
+            f"got {_backoff_raw!r}. Unset to use the default ({_DEFAULT_RETRY_BACKOFF_SEC})."
+        )
+
     # 2) Flip to IN_PROGRESS.
     started_at = _config.utc_now()
     patch_in_progress = await _patch_task(
@@ -907,26 +932,9 @@ async def _poll_once(
         )
         return
 
-    # Kanban #2136 — structured halt taxonomy + bounded transient retry.
-    # LangGraph checkpoints make re-invocation safe (idempotent per thread_id).
-    # Retry count / backoff come from env-vars resolved here so tests can
-    # monkeypatch without a WorkerConfig roundtrip.
-    _retries_raw = os.getenv("LANGGRAPH_TRANSIENT_RETRIES", str(_DEFAULT_TRANSIENT_RETRIES))
-    try:
-        _max_retries = max(0, int(_retries_raw))
-    except ValueError:
-        raise RuntimeError(
-            f"LANGGRAPH_TRANSIENT_RETRIES must be a non-negative integer; "
-            f"got {_retries_raw!r}. Unset to use the default ({_DEFAULT_TRANSIENT_RETRIES})."
-        )
-    _backoff_raw = os.getenv("LANGGRAPH_RETRY_BACKOFF_SEC", str(_DEFAULT_RETRY_BACKOFF_SEC))
-    try:
-        _backoff_base = max(0.0, float(_backoff_raw))
-    except ValueError:
-        raise RuntimeError(
-            f"LANGGRAPH_RETRY_BACKOFF_SEC must be a non-negative number (seconds); "
-            f"got {_backoff_raw!r}. Unset to use the default ({_DEFAULT_RETRY_BACKOFF_SEC})."
-        )
+    # _max_retries / _backoff_base were validated above, BEFORE the
+    # IN_PROGRESS PATCH (Kanban #2840) — reused here as the retry loop's
+    # bound + backoff base.
     final_state: dict[str, Any] | None = None
     _last_exc: BaseException | None = None
     _attempts_made = 0
@@ -1110,6 +1118,26 @@ async def _poll_once(
 # ---------------------------------------------------------------------------
 
 
+def _forward_audit_fields(body: dict[str, Any], final_state: dict[str, Any]) -> None:
+    """Copy audit_report / audit_retry_count from `final_state` onto `body`.
+
+    Kanban #952 / #2840 — the worker is the SOLE writer of these two `tasks`
+    columns; every PATCH-body-building code path must forward them the same
+    way so the audit trail survives DONE / halt / HITL-resume alike. Shared
+    by `_build_finalize_body` (initial finalize) AND `_resume_hitl_task`
+    (HITL resume — previously did NOT call this, so the audit trail vanished
+    on a resumed ESCALATE task). Absent keys = the graph never reached the
+    auditor on this branch — `body` (and the DB column on PATCH) is left
+    untouched, never cleared.
+    """
+    audit_report = final_state.get("audit_report")
+    if audit_report is not None:
+        body["audit_report"] = audit_report
+    audit_retry_count = final_state.get("audit_retry_count")
+    if audit_retry_count is not None:
+        body["audit_retry_count"] = int(audit_retry_count)
+
+
 def _build_finalize_body(
     final_state: dict[str, Any], *, completed_at: str
 ) -> dict[str, Any]:
@@ -1129,8 +1157,10 @@ def _build_finalize_body(
         process_status other than IN_PROGRESS (2).
 
     Audit fields (`audit_report`, `audit_retry_count`) are appended on any
-    branch when present in state — the worker is the sole writer of these
-    columns and they survive across DONE / halt categories alike.
+    branch when present in state via `_forward_audit_fields` — the worker is
+    the sole writer of these columns and they survive across DONE / halt
+    categories alike (and across a HITL resume — see `_resume_hitl_task`,
+    which calls the same helper).
 
     Pure helper: no I/O, no client. Trivially unit-testable.
     """
@@ -1255,12 +1285,7 @@ def _build_finalize_body(
     # latest classification and tasks.audit_retry_count reflects the current
     # loop count. Absent keys = the graph didn't reach the auditor (e.g., a
     # specialist halted earlier); leave the DB column untouched.
-    audit_report = final_state.get("audit_report")
-    if audit_report is not None:
-        body["audit_report"] = audit_report
-    audit_retry_count = final_state.get("audit_retry_count")
-    if audit_retry_count is not None:
-        body["audit_retry_count"] = int(audit_retry_count)
+    _forward_audit_fields(body, final_state)
     return body
 
 
@@ -1973,6 +1998,12 @@ async def _resume_hitl_task(
            - HITLError raised → BLOCKED with halt_reason = error's halt_code
       5. Stamp resume_context.last_consumed_answered_at on the PATCH so a
          duplicate poll doesn't re-resume.
+      6. Forward audit_report / audit_retry_count from the post-resume state
+         onto the PATCH body (Kanban #2840, via `_forward_audit_fields`) —
+         mirrors `_build_finalize_body` so the audit trail survives a resume,
+         not just the initial finalize. Covers both callers of this function:
+         the operator-answer path (`_maybe_resume_hitl_task`) and the
+         auto-approve-policy path in `_poll_once`.
 
     `policy_rule_name` (Kanban #957): when the resume was triggered by an
     auto-approve policy hit, this is the matched rule's name — surfaced into
@@ -2156,6 +2187,16 @@ async def _resume_hitl_task(
                 task.get("resume_context"), answered_at
             ),
         }
+
+    # Kanban #2840 — audit fields must survive the resume path too; they
+    # previously vanished here even though _build_finalize_body forwards them
+    # on the initial finalize. final_state is the POST-RESUME state: when the
+    # pause was the auditor's ESCALATE branch, nodes._apply_escalation_resume
+    # re-stamps audit_report fresh on every outcome (accept/reject/retry), so
+    # this always reflects the freshest classification. Applies regardless of
+    # which branch above built `body` (DONE / sanitized-halt / generic-halt).
+    if isinstance(final_state, dict):
+        _forward_audit_fields(body, final_state)
 
     resp = await _patch_task(client, cfg, headers, task_id, body)
     if resp is None:

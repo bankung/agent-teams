@@ -712,3 +712,91 @@ async def test_auto_approve_then_fresh_interrupt_blocks(
     assert final["process_status"] == STATUS_BLOCKED
     # halt_reason on a fresh interrupt during resume = 'question'
     assert final["halt_reason"] == "question"
+
+
+# ---------------------------------------------------------------------------
+# 13. Kanban #2840 — auto-approve resume still carries audit_report /
+#     audit_retry_count, even though the auto-approve branch's
+#     synthetic_task never threads them through `task` itself.
+# ---------------------------------------------------------------------------
+
+
+async def test_auto_approve_resume_forwards_audit_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The exact #2840 repro: an auditor ESCALATE pause that an approval
+    policy auto-approves. `_poll_once`'s auto-approve branch builds
+    `synthetic_task` from only id/question_payload/interaction_kind/
+    resume_context — it never carried audit_report/audit_retry_count. The
+    fix forwards them inside `_resume_hitl_task` from ITS OWN post-resume
+    `final_state` instead (mirrors nodes._apply_escalation_resume, which
+    re-stamps audit_report fresh on every resume outcome), so the final
+    PATCH carries them regardless of what synthetic_task carried."""
+    cfg = _cfg(monkeypatch)
+    log = _RequestLog()
+
+    policies = {
+        "rules": [
+            {
+                "name": "approve auditor accept",
+                "match": {"text_contains": "auditor escalated"},
+                "action": "auto_approve",
+                "default_answer": "accept",
+            }
+        ]
+    }
+
+    invoke_count = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.method == "GET" and req.url.path == "/api/tasks/next-autorun":
+            return httpx.Response(200, json=_next_autorun_response())
+        if req.method == "GET" and req.url.path == f"/api/projects/{cfg.project_id}":
+            return httpx.Response(
+                200, json={"id": cfg.project_id, "approval_policies": policies}
+            )
+        if req.method == "PATCH" and req.url.path == "/api/tasks/42":
+            return httpx.Response(200, json={"id": 42})
+        raise AssertionError(f"unexpected request: {req.method} {req.url.path}")
+
+    async def pause_then_resolve(state, config):
+        invoke_count["n"] += 1
+        if invoke_count["n"] == 1:
+            # Auditor ESCALATE pause — audit_report already stamped, mirrors
+            # nodes.auditor_node's state right before it calls
+            # request_user_input (auto-approve fires on THIS pause).
+            pause = _hitl_pause_state(question="auditor escalated; accept?")
+            pause["audit_report"] = {
+                "verdict": "escalate",
+                "action_taken": None,
+                "audited_at": "2026-07-15T09:00:00Z",
+                "retry_count_at_audit": 0,
+            }
+            pause["audit_retry_count"] = 0
+            return pause
+        # Resume call — mirrors _apply_escalation_resume's 'accept' branch:
+        # audit_report re-stamped fresh, halt_reason cleared.
+        return {
+            "halt_reason": None,
+            "final_result": "auditor escalation resolved: accept",
+            "audit_report": {
+                "verdict": "escalate",
+                "action_taken": "operator_accept",
+                "audited_at": "2026-07-15T09:05:00Z",
+                "retry_count_at_audit": 0,
+            },
+            "audit_retry_count": 0,
+        }
+
+    async with _make_client(handler, log) as client:
+        await _poll_once(
+            client, _make_graph_module(pause_then_resolve), cfg, _headers(cfg)
+        )
+
+    final = _body(log.requests[-1])
+    assert final["process_status"] == STATUS_DONE
+    # The load-bearing assertion — carried through the auto-approve
+    # synthetic_task path despite that path never threading audit fields
+    # through `task`/`synthetic_task` itself.
+    assert final["audit_report"]["action_taken"] == "operator_accept"
+    assert final["audit_retry_count"] == 0

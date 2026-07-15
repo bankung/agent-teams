@@ -33,6 +33,42 @@ NON_2XX_BODY_EXCERPT_BYTES = 1024
 
 logger = logging.getLogger("tools.http")
 
+# Kanban #2840 — explicit scheme allowlist (defense-in-depth). Previously an
+# unlisted scheme (file://, ftp://, ws://, ...) was only rejected
+# incidentally: httpx.AsyncClient raises UnsupportedProtocol for anything it
+# doesn't transport, and the tools' `except httpx.HTTPError` caught that into
+# a generic 'network_error'. That was never a designed gate — it didn't fire
+# at all on the dry_run path (no httpx call is made there, so a bad-scheme
+# URL was reported as a would-succeed envelope), and it would silently stop
+# protecting if httpx ever widened its transport registry. This constant +
+# the two helpers below are the explicit, always-on gate.
+ALLOWED_SCHEMES = frozenset({"http", "https"})
+
+
+def check_scheme_allowed(url: str) -> tuple[bool, str]:
+    """True iff `url`'s scheme is in ALLOWED_SCHEMES.
+
+    Returns (allowed, scheme). `scheme` is the lowercased scheme as parsed by
+    urlparse (empty string for a scheme-less/malformed URL) — surfaced in the
+    error message so the caller sees exactly what was rejected.
+    """
+    scheme = urlparse(url).scheme.lower()
+    return scheme in ALLOWED_SCHEMES, scheme
+
+
+def scheme_not_allowed_result(scheme: str) -> ToolResult:
+    """Standard halt for a disallowed URL scheme. Same shape for both verbs."""
+    shown = scheme or "<no-scheme>"
+    return ToolResult(
+        success=False,
+        error_code="scheme_not_allowed",
+        error_msg=(
+            f"URL scheme {shown!r} is not allowed — only "
+            f"{sorted(ALLOWED_SCHEMES)} are supported."
+        ),
+        retry_safe=False,
+    )
+
 
 def check_host_allowed(
     url: str, allowlist: list[str]
