@@ -370,3 +370,54 @@ def test_task_update_process_status_int_one_still_accepted() -> None:
     upd = TaskUpdate(process_status=1)
     assert upd.process_status == 1
     assert type(upd.process_status) is int
+
+
+# -----------------------------------------------------------------------------
+# Bool-coercion guard for assigned_role (Kanban #2844) — sibling fix to the
+# #2829 guard above. `_make_role_range_validator`'s `isinstance(v, bool)`
+# check (an "after"-mode guard) had the identical dead-code defect: Pydantic's
+# lax `int` coercion rebuilds `True`/`False` into `1`/`0` before an "after"
+# validator ever sees it. `assigned_role=True` silently became `1` instead of
+# 422ing. Fixed by `_reject_bool_for_role_field`, a `mode="before"` companion
+# wired onto `assigned_role` on both TaskCreate and TaskUpdate. Error format
+# is the same range-style "must be NULL or in range X..Y, got <repr>" contract
+# pinned above — these tests lock that a bool `<repr>` now reaches it too.
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", [True, False])
+def test_task_create_role_rejects_bool(bad: bool) -> None:
+    with pytest.raises(ValidationError) as ei:
+        TaskCreate(project_id=1, title="x", assigned_role=bad)
+    assert (
+        f"assigned_role must be NULL or in range 1..60, got {bad!r}"
+        in _first_msg(ei.value)
+    )
+
+
+@pytest.mark.parametrize("bad", [True, False])
+def test_task_update_role_rejects_bool(bad: bool) -> None:
+    with pytest.raises(ValidationError) as ei:
+        TaskUpdate(assigned_role=bad)
+    assert (
+        f"assigned_role must be NULL or in range 1..60, got {bad!r}"
+        in _first_msg(ei.value)
+    )
+
+
+def test_task_create_role_int_not_confused_with_bool() -> None:
+    """Regression lock paired with the bool-rejection tests above: the guard
+    must not start rejecting plain ints. `1 == True` under `==`, so the type
+    check (not just `==`) is what proves the guard didn't overreach."""
+    task5 = TaskCreate(project_id=1, title="x", assigned_role=5)
+    assert task5.assigned_role == 5
+    assert type(task5.assigned_role) is int
+    task51 = TaskCreate(project_id=1, title="x", assigned_role=51)
+    assert task51.assigned_role == 51
+    assert type(task51.assigned_role) is int
+
+
+def test_task_update_role_int_still_accepted() -> None:
+    upd = TaskUpdate(assigned_role=5)
+    assert upd.assigned_role == 5
+    assert type(upd.assigned_role) is int
