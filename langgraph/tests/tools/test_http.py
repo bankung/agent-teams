@@ -464,9 +464,15 @@ def test_timeout_s_bounded():
 
 @_SKIP_ON_OLLAMA
 async def test_invalid_url_no_host_halts():
-    """A URL string with no parseable host → host_not_allowed (fail-closed)."""
+    """A valid-scheme URL with no parseable host → host_not_allowed (fail-closed).
+
+    Uses 'http://' (scheme passes the #2840 scheme gate, but urlparse hostname
+    is None) so this still exercises the host check rather than being preempted
+    by the scheme gate — a genuinely scheme-less URL is covered by the scheme
+    tests and now halts as scheme_not_allowed (#2840).
+    """
     tool = GLOBAL_REGISTRY.get("http_get")
     ctx = InvokeContext(host_allowlist=["api.allowed.com"])
-    result = await tool.invoke({"url": "not-a-real-url"}, context=ctx)
+    result = await tool.invoke({"url": "http://"}, context=ctx)
     assert result.success is False
     assert result.error_code == "host_not_allowed"
