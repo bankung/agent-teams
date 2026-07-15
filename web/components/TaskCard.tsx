@@ -52,22 +52,83 @@ const PRIORITY_CLASS: Record<number, string> = {
   [TaskPriority.URGENT]: "text-red-700 bg-red-50 dark:text-red-300 dark:bg-red-900/30",
 };
 
+// Kanban #2826 — covers all 28 named TaskRole codes (was dev-only 1-6), so a
+// non-dev-team task no longer renders a literal "role51"/"role21" chip. The
+// `?? \`role${n}\`` fallback at the render site still catches any RESERVED
+// (unnamed) code inside a range — by design, not a bug (see TaskRole docstring
+// in lib/constants.ts).
 const ROLE_LABEL: Record<number, string> = {
+  // Dev
   [TaskRole.FRONTEND]: "frontend",
   [TaskRole.BACKEND]: "backend",
   [TaskRole.DEVOPS]: "devops",
   [TaskRole.QA]: "qa",
   [TaskRole.REVIEWER]: "reviewer",
   [TaskRole.SECURITY_REVIEWER]: "security",
+  // Novel
+  [TaskRole.NOVEL_WRITER]: "novel writer",
+  [TaskRole.NOVEL_EDITOR]: "novel editor",
+  [TaskRole.NOVEL_PROOFREADER]: "novel proofreader",
+  // SEO
+  [TaskRole.SEO_STRATEGIST]: "seo strategist",
+  [TaskRole.TECHNICAL_SEO_SPECIALIST]: "technical seo",
+  [TaskRole.CONTENT_SEO_OPTIMIZER]: "seo optimizer",
+  [TaskRole.SEO_REPORTING_ANALYST]: "seo reporting",
+  // SEM
+  [TaskRole.SEM_CAMPAIGN_LEAD]: "sem lead",
+  [TaskRole.GOOGLE_ADS_SPECIALIST]: "google ads",
+  [TaskRole.META_ADS_SPECIALIST]: "meta ads",
+  [TaskRole.PLATFORM_ADS_COORDINATOR]: "platform ads",
+  // Data-analytics
+  [TaskRole.BI_ANALYST]: "bi analyst",
+  [TaskRole.SQL_OPTIMIZER]: "sql optimizer",
+  [TaskRole.DASHBOARD_DESIGNER]: "dashboard",
+  [TaskRole.ANALYTICS_PLATFORM_INTEGRATOR]: "analytics integrator",
+  // Social
+  [TaskRole.CONTENT_WRITER]: "content writer",
+  [TaskRole.CONTENT_HOOK_DOCTOR]: "hook doctor",
+  [TaskRole.CONTENT_EDITOR]: "content editor",
+  [TaskRole.CONTENT_VERACITY_CHECKER]: "veracity checker",
+  [TaskRole.THAI_PROOFREADER]: "thai proofreader",
+  [TaskRole.SOCIAL_BI_ANALYST]: "social bi",
+  [TaskRole.SOCIAL_GENERAL_RESEARCHER]: "social research",
 };
 
 const ROLE_CLASS: Record<number, string> = {
+  // Dev — existing blue/indigo/rose family (unchanged).
   [TaskRole.FRONTEND]: "text-blue-700 bg-blue-50 dark:text-blue-300 dark:bg-blue-900/30",
   [TaskRole.BACKEND]: "text-indigo-700 bg-indigo-50 dark:text-indigo-300 dark:bg-indigo-900/30",
   [TaskRole.DEVOPS]: "text-indigo-700 bg-indigo-50 dark:text-indigo-300 dark:bg-indigo-900/30",
   [TaskRole.QA]: "text-indigo-700 bg-indigo-50 dark:text-indigo-300 dark:bg-indigo-900/30",
   [TaskRole.REVIEWER]: "text-indigo-700 bg-indigo-50 dark:text-indigo-300 dark:bg-indigo-900/30",
   [TaskRole.SECURITY_REVIEWER]: "text-rose-700 bg-rose-50 dark:text-rose-300 dark:bg-rose-900/30",
+  // Novel — purple family.
+  [TaskRole.NOVEL_WRITER]: "text-purple-700 bg-purple-50 dark:text-purple-300 dark:bg-purple-900/30",
+  [TaskRole.NOVEL_EDITOR]: "text-purple-700 bg-purple-50 dark:text-purple-300 dark:bg-purple-900/30",
+  [TaskRole.NOVEL_PROOFREADER]: "text-purple-700 bg-purple-50 dark:text-purple-300 dark:bg-purple-900/30",
+  // SEO — teal family.
+  [TaskRole.SEO_STRATEGIST]: "text-teal-700 bg-teal-50 dark:text-teal-300 dark:bg-teal-900/30",
+  [TaskRole.TECHNICAL_SEO_SPECIALIST]: "text-teal-700 bg-teal-50 dark:text-teal-300 dark:bg-teal-900/30",
+  [TaskRole.CONTENT_SEO_OPTIMIZER]: "text-teal-700 bg-teal-50 dark:text-teal-300 dark:bg-teal-900/30",
+  [TaskRole.SEO_REPORTING_ANALYST]: "text-teal-700 bg-teal-50 dark:text-teal-300 dark:bg-teal-900/30",
+  // SEM — orange family.
+  [TaskRole.SEM_CAMPAIGN_LEAD]: "text-orange-700 bg-orange-50 dark:text-orange-300 dark:bg-orange-900/30",
+  [TaskRole.GOOGLE_ADS_SPECIALIST]: "text-orange-700 bg-orange-50 dark:text-orange-300 dark:bg-orange-900/30",
+  [TaskRole.META_ADS_SPECIALIST]: "text-orange-700 bg-orange-50 dark:text-orange-300 dark:bg-orange-900/30",
+  [TaskRole.PLATFORM_ADS_COORDINATOR]: "text-orange-700 bg-orange-50 dark:text-orange-300 dark:bg-orange-900/30",
+  // Data-analytics — cyan family.
+  [TaskRole.BI_ANALYST]: "text-cyan-700 bg-cyan-50 dark:text-cyan-300 dark:bg-cyan-900/30",
+  [TaskRole.SQL_OPTIMIZER]: "text-cyan-700 bg-cyan-50 dark:text-cyan-300 dark:bg-cyan-900/30",
+  [TaskRole.DASHBOARD_DESIGNER]: "text-cyan-700 bg-cyan-50 dark:text-cyan-300 dark:bg-cyan-900/30",
+  [TaskRole.ANALYTICS_PLATFORM_INTEGRATOR]: "text-cyan-700 bg-cyan-50 dark:text-cyan-300 dark:bg-cyan-900/30",
+  // Social — pink family.
+  [TaskRole.CONTENT_WRITER]: "text-pink-700 bg-pink-50 dark:text-pink-300 dark:bg-pink-900/30",
+  [TaskRole.CONTENT_HOOK_DOCTOR]: "text-pink-700 bg-pink-50 dark:text-pink-300 dark:bg-pink-900/30",
+  [TaskRole.CONTENT_EDITOR]: "text-pink-700 bg-pink-50 dark:text-pink-300 dark:bg-pink-900/30",
+  [TaskRole.CONTENT_VERACITY_CHECKER]: "text-pink-700 bg-pink-50 dark:text-pink-300 dark:bg-pink-900/30",
+  [TaskRole.THAI_PROOFREADER]: "text-pink-700 bg-pink-50 dark:text-pink-300 dark:bg-pink-900/30",
+  [TaskRole.SOCIAL_BI_ANALYST]: "text-pink-700 bg-pink-50 dark:text-pink-300 dark:bg-pink-900/30",
+  [TaskRole.SOCIAL_GENERAL_RESEARCHER]: "text-pink-700 bg-pink-50 dark:text-pink-300 dark:bg-pink-900/30",
 };
 
 export function TaskCard({ task, onOpenDetail, highlighted = false, projectId, blockingTaskIds, onPatch, onError }: Props) {

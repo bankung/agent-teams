@@ -17,21 +17,31 @@ type Props = {
   highlightedTaskId?: number | null;
 };
 
+// Kanban #2827 — CANCELLED(6) is a real TaskStatus value (mirrors the other 5
+// sibling status maps in CalendarTaskPicker / CalendarView / GanttView /
+// TaskDetail / TaskFocusView, which all carry a CANCELLED entry). Omitting it
+// here let a cancelled task fall through to `String(task.process_status)` and
+// render the literal "6" in the Status column / filter chip.
 const STATUS_LABEL: Record<number, string> = {
   [TaskStatus.TODO]: "TODO",
   [TaskStatus.IN_PROGRESS]: "In progress",
   [TaskStatus.REVIEW]: "Review",
   [TaskStatus.BLOCKED]: "Blocked",
   [TaskStatus.DONE]: "Done",
+  [TaskStatus.CANCELLED]: "Cancelled",
   [TaskStatus.HALTED_PENDING_USER]: "Halted / Pending user",
 };
 
+// CANCELLED reuses CalendarView's STATUS_CHIP treatment (zinc + line-through —
+// the only sibling map that carries an actual color/style for this status)
+// reordered to match this file's text-then-bg class convention.
 const STATUS_CLASS: Record<number, string> = {
   [TaskStatus.TODO]: "text-zinc-600 bg-zinc-100 dark:text-zinc-400 dark:bg-zinc-800",
   [TaskStatus.IN_PROGRESS]: "text-blue-700 bg-blue-50 dark:text-blue-300 dark:bg-blue-900/30",
   [TaskStatus.REVIEW]: "text-yellow-700 bg-yellow-50 dark:text-yellow-300 dark:bg-yellow-900/30",
   [TaskStatus.BLOCKED]: "text-red-700 bg-red-50 dark:text-red-300 dark:bg-red-900/30",
   [TaskStatus.DONE]: "text-green-700 bg-green-50 dark:text-green-300 dark:bg-green-900/30",
+  [TaskStatus.CANCELLED]: "text-zinc-400 bg-zinc-100 line-through dark:text-zinc-500 dark:bg-zinc-800",
   [TaskStatus.HALTED_PENDING_USER]: "text-amber-700 bg-amber-50 dark:text-amber-300 dark:bg-amber-900/30",
 };
 
@@ -42,6 +52,9 @@ const PRIORITY_LABEL: Record<number, string> = {
   [TaskPriority.URGENT]: "P4 urgent",
 };
 
+// Kanban #2826 — covers all 28 named TaskRole codes (was dev-only 1-6); the
+// `?? \`role${n}\`` fallback at the render site still catches RESERVED
+// (unnamed) codes inside a range — by design, see lib/constants.ts TaskRole.
 const ROLE_SHORT: Record<number, string> = {
   [TaskRole.FRONTEND]: "FE",
   [TaskRole.BACKEND]: "BE",
@@ -49,6 +62,28 @@ const ROLE_SHORT: Record<number, string> = {
   [TaskRole.QA]: "QA",
   [TaskRole.REVIEWER]: "Reviewer",
   [TaskRole.SECURITY_REVIEWER]: "Security",
+  [TaskRole.NOVEL_WRITER]: "Writer",
+  [TaskRole.NOVEL_EDITOR]: "Editor",
+  [TaskRole.NOVEL_PROOFREADER]: "Proofreader",
+  [TaskRole.SEO_STRATEGIST]: "SEO Strategist",
+  [TaskRole.TECHNICAL_SEO_SPECIALIST]: "Tech SEO",
+  [TaskRole.CONTENT_SEO_OPTIMIZER]: "SEO Optimizer",
+  [TaskRole.SEO_REPORTING_ANALYST]: "SEO Reporting",
+  [TaskRole.SEM_CAMPAIGN_LEAD]: "SEM Lead",
+  [TaskRole.GOOGLE_ADS_SPECIALIST]: "Google Ads",
+  [TaskRole.META_ADS_SPECIALIST]: "Meta Ads",
+  [TaskRole.PLATFORM_ADS_COORDINATOR]: "Platform Ads",
+  [TaskRole.BI_ANALYST]: "BI Analyst",
+  [TaskRole.SQL_OPTIMIZER]: "SQL Optimizer",
+  [TaskRole.DASHBOARD_DESIGNER]: "Dashboard",
+  [TaskRole.ANALYTICS_PLATFORM_INTEGRATOR]: "Analytics",
+  [TaskRole.CONTENT_WRITER]: "Content Writer",
+  [TaskRole.CONTENT_HOOK_DOCTOR]: "Hook Doctor",
+  [TaskRole.CONTENT_EDITOR]: "Content Editor",
+  [TaskRole.CONTENT_VERACITY_CHECKER]: "Veracity",
+  [TaskRole.THAI_PROOFREADER]: "Thai Proofreader",
+  [TaskRole.SOCIAL_BI_ANALYST]: "Social BI",
+  [TaskRole.SOCIAL_GENERAL_RESEARCHER]: "Social Research",
 };
 
 type SortKey = "id" | "title" | "process_status" | "priority" | "task_kind" | "run_mode" | "assigned_role" | "updated_at";
@@ -86,6 +121,7 @@ const STATUS_OPTIONS = [
   { value: TaskStatus.BLOCKED, label: "Blocked" },
   { value: TaskStatus.HALTED_PENDING_USER, label: "Halted" },
   { value: TaskStatus.DONE, label: "Done" },
+  { value: TaskStatus.CANCELLED, label: "Cancelled" },
 ];
 
 const PRIORITY_OPTIONS = [
@@ -111,6 +147,28 @@ const ROLE_OPTIONS = [
   { value: TaskRole.QA, label: "QA" },
   { value: TaskRole.REVIEWER, label: "Reviewer" },
   { value: TaskRole.SECURITY_REVIEWER, label: "Security" },
+  { value: TaskRole.NOVEL_WRITER, label: "Writer" },
+  { value: TaskRole.NOVEL_EDITOR, label: "Editor" },
+  { value: TaskRole.NOVEL_PROOFREADER, label: "Proofreader" },
+  { value: TaskRole.SEO_STRATEGIST, label: "SEO Strategist" },
+  { value: TaskRole.TECHNICAL_SEO_SPECIALIST, label: "Tech SEO" },
+  { value: TaskRole.CONTENT_SEO_OPTIMIZER, label: "SEO Optimizer" },
+  { value: TaskRole.SEO_REPORTING_ANALYST, label: "SEO Reporting" },
+  { value: TaskRole.SEM_CAMPAIGN_LEAD, label: "SEM Lead" },
+  { value: TaskRole.GOOGLE_ADS_SPECIALIST, label: "Google Ads" },
+  { value: TaskRole.META_ADS_SPECIALIST, label: "Meta Ads" },
+  { value: TaskRole.PLATFORM_ADS_COORDINATOR, label: "Platform Ads" },
+  { value: TaskRole.BI_ANALYST, label: "BI Analyst" },
+  { value: TaskRole.SQL_OPTIMIZER, label: "SQL Optimizer" },
+  { value: TaskRole.DASHBOARD_DESIGNER, label: "Dashboard" },
+  { value: TaskRole.ANALYTICS_PLATFORM_INTEGRATOR, label: "Analytics" },
+  { value: TaskRole.CONTENT_WRITER, label: "Content Writer" },
+  { value: TaskRole.CONTENT_HOOK_DOCTOR, label: "Hook Doctor" },
+  { value: TaskRole.CONTENT_EDITOR, label: "Content Editor" },
+  { value: TaskRole.CONTENT_VERACITY_CHECKER, label: "Veracity" },
+  { value: TaskRole.THAI_PROOFREADER, label: "Thai Proofreader" },
+  { value: TaskRole.SOCIAL_BI_ANALYST, label: "Social BI" },
+  { value: TaskRole.SOCIAL_GENERAL_RESEARCHER, label: "Social Research" },
 ];
 
 function compareTasks(a: TaskRead, b: TaskRead, key: SortKey, dir: SortDir): number {

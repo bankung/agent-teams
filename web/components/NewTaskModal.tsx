@@ -21,7 +21,7 @@ import {
 import {
   PRIORITY_OPTIONS,
   REASON_MIN_CHARS,
-  ROLE_OPTIONS,
+  roleOptionsForTeam,
   TaskPriority,
   TaskStatus,
   type TaskPriorityValue,
@@ -149,11 +149,13 @@ export function NewTaskModal({
   initialDueDate,
 }: Props) {
   const isProjectPaused = project?.is_paused === true;
-  // #7 §A AC#3 — narrow role dropdown to project.config.enabled_roles when set.
-  // Unassigned sentinel is always retained.
+  // #2826 — scope the role dropdown to the bound project's team FIRST (a
+  // seo/sem/novel/etc. project no longer sees the dev-only role list), then
+  // narrow further by project.config.enabled_roles when set (#7 §A AC#3).
+  // Unassigned sentinel is always retained through both steps.
   const visibleRoleOptions = useMemo(
-    () => filterRoleOptions(ROLE_OPTIONS, enabledRoles),
-    [enabledRoles],
+    () => filterRoleOptions(roleOptionsForTeam(project?.team), enabledRoles),
+    [enabledRoles, project?.team],
   );
   const router = useRouter();
   // #1781 — external open wins when provided; otherwise self-managed.
