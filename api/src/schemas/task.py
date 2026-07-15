@@ -113,9 +113,58 @@ def _make_code_validator(
             if required:
                 raise ValueError(f"{field_label} is required")
             return None
-        if v not in allowed:
+        # bool is an int subclass (True == 1, False == 0). This guard is
+        # defense-in-depth for a direct call to this closure (bypassing
+        # Pydantic) — when wired through Pydantic's own `mode="after"`
+        # field_validator (the default, used below), it never actually fires:
+        # Pydantic's lax `int` coercion already rebuilds bool into a plain int
+        # before an "after" validator runs (verified against pydantic 2.13.4 —
+        # `isinstance(v, bool)` is False here even for caller input `True`).
+        # The real guard is `_reject_bool_for_code_field` below, wired as a
+        # `mode="before"` companion at each call site, where the original bool
+        # object is still observable.
+        if isinstance(v, bool) or v not in allowed:
             raise ValueError(f"{error_prefix}, got {v!r}")
         return int(v)
+
+    return _validate
+
+
+def _reject_bool_for_code_field(
+    field_label: str,
+    allowed: tuple[int, ...],
+    null_phrase: str = "",
+) -> Callable[[Any], Any]:
+    """`mode="before"` companion to `_make_code_validator` (Kanban #2829).
+
+    Pydantic v2's lax `int` coercion treats `bool` as valid `int` input
+    (Python bool is an int subclass) and rebuilds it into a plain `int`
+    before any `mode="after"` validator runs — so an `isinstance(v, bool)`
+    check placed in `_make_code_validator`'s `_validate` (the default
+    "after" position) can never fire through the normal Pydantic pipeline:
+    `v` already arrives as plain `1`/`0`, indistinguishable from a
+    caller-supplied `1`/`0`. Verified live (pydantic 2.13.4): with only the
+    "after" guard, `process_status=True` is still silently accepted as `1`.
+
+    This `mode="before"` validator runs before Pydantic's own coercion, while
+    `v` is still the original bool object, so it is the only point that can
+    actually reject it. Non-bool input is returned unchanged so Pydantic's
+    own subsequent lax coercion (numeric strings, floats — out of scope for
+    this fix) is unaffected. Error text matches `_make_code_validator`'s
+    "must be one of" format so both branches read as one contract.
+
+    NOTE: the sibling `_make_role_range_validator` has the identical latent
+    defect (its `isinstance(v, bool)` guard is likewise unreachable in
+    "after" mode — confirmed live: `assigned_role=True` is silently accepted
+    as `1`). Out of scope for this fix (Kanban #2829 scoped to process_status
+    / priority only); flagged for a follow-up.
+    """
+    error_prefix = f"{field_label} must be {null_phrase}one of {allowed}"
+
+    def _validate(v: Any) -> Any:
+        if isinstance(v, bool):
+            raise ValueError(f"{error_prefix}, got {v!r}")
+        return v
 
     return _validate
 
@@ -695,8 +744,17 @@ class TaskCreate(BaseModel):
     # in DB. No validator coupling it to any other field.
     due_date: date | None = None
 
+    # Kanban #2829: mode="before" bool guard MUST be registered ahead of
+    # Pydantic's own int coercion — see _reject_bool_for_code_field docstring
+    # for why an "after"-mode isinstance(v, bool) check alone is a no-op.
+    _check_process_status_not_bool = field_validator("process_status", mode="before")(
+        _reject_bool_for_code_field("process_status", TaskStatus.ALL)
+    )
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=True)
+    )
+    _check_priority_not_bool = field_validator("priority", mode="before")(
+        _reject_bool_for_code_field("priority", TaskPriority.ALL)
     )
     _check_priority = field_validator("priority")(
         _make_code_validator("priority", TaskPriority.ALL, required=True)
@@ -1127,8 +1185,16 @@ class TaskUpdate(BaseModel):
     # posture as is_pending, requires_human_review).
     nudge_disabled: bool | None = None
 
+    # Kanban #2829: mode="before" bool guard — see _reject_bool_for_code_field
+    # docstring (TaskCreate's call site above has the full rationale).
+    _check_process_status_not_bool = field_validator("process_status", mode="before")(
+        _reject_bool_for_code_field("process_status", TaskStatus.ALL)
+    )
     _check_process_status = field_validator("process_status")(
         _make_code_validator("process_status", TaskStatus.ALL, required=False)
+    )
+    _check_priority_not_bool = field_validator("priority", mode="before")(
+        _reject_bool_for_code_field("priority", TaskPriority.ALL)
     )
     _check_priority = field_validator("priority")(
         _make_code_validator("priority", TaskPriority.ALL, required=False)

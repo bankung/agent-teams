@@ -309,3 +309,64 @@ def test_task_create_accepts_every_valid_role() -> None:
     for code in TaskRole.ALL:
         task = TaskCreate(project_id=1, title="x", assigned_role=code)
         assert task.assigned_role == code
+
+
+# -----------------------------------------------------------------------------
+# Bool-coercion guard (Kanban #2829) — Python `bool` is an `int` subclass
+# (`True == 1`, `False == 0`) and Pydantic's lax `int` coercion accepts it.
+# Without an explicit guard, `process_status=True` silently became `1` (TODO)
+# and `priority=True` became `1` (LOW) instead of 422ing. The error format is
+# the SAME "must be one of (...), got <repr>" contract pinned above — these
+# tests just lock that a bool `<repr>` (`True`/`False`) now reaches it too.
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", [True, False])
+def test_task_create_process_status_rejects_bool(bad: bool) -> None:
+    with pytest.raises(ValidationError) as ei:
+        TaskCreate(project_id=1, title="x", process_status=bad)
+    assert (
+        f"process_status must be one of (1, 2, 3, 4, 5, 6, 8), got {bad!r}"
+        in _first_msg(ei.value)
+    )
+
+
+@pytest.mark.parametrize("bad", [True, False])
+def test_task_create_priority_rejects_bool(bad: bool) -> None:
+    with pytest.raises(ValidationError) as ei:
+        TaskCreate(project_id=1, title="x", priority=bad)
+    assert f"priority must be one of (1, 2, 3, 4), got {bad!r}" in _first_msg(ei.value)
+
+
+@pytest.mark.parametrize("bad", [True, False])
+def test_task_update_process_status_rejects_bool(bad: bool) -> None:
+    with pytest.raises(ValidationError) as ei:
+        TaskUpdate(process_status=bad)
+    assert (
+        f"process_status must be one of (1, 2, 3, 4, 5, 6, 8), got {bad!r}"
+        in _first_msg(ei.value)
+    )
+
+
+@pytest.mark.parametrize("bad", [True, False])
+def test_task_update_priority_rejects_bool(bad: bool) -> None:
+    with pytest.raises(ValidationError) as ei:
+        TaskUpdate(priority=bad)
+    assert f"priority must be one of (1, 2, 3, 4), got {bad!r}" in _first_msg(ei.value)
+
+
+def test_task_create_process_status_int_not_confused_with_bool() -> None:
+    """Regression lock paired with the bool-rejection tests above: the guard
+    must not start rejecting plain ints. `1 == True` under `==`, so the type
+    check (not just `==`) is what proves the guard didn't overreach."""
+    task1 = TaskCreate(project_id=1, title="x", process_status=1)
+    assert task1.process_status == 1
+    assert type(task1.process_status) is int
+    task5 = TaskCreate(project_id=1, title="x", process_status=5)
+    assert task5.process_status == 5
+
+
+def test_task_update_process_status_int_one_still_accepted() -> None:
+    upd = TaskUpdate(process_status=1)
+    assert upd.process_status == 1
+    assert type(upd.process_status) is int
