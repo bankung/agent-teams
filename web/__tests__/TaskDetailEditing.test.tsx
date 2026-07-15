@@ -467,6 +467,46 @@ describe("AcEditor — AC edit interactions", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Kanban #2841 — handleAcSave was the only one of TaskDetail's mutation
+// handlers with no try/catch, so a rejected patchTask became an unhandled
+// promise rejection with no toast/inline error. Covers the full chain:
+// AcEditor.handleSave → TaskDetail.handleAcSave → patchTask (rejects).
+// ─────────────────────────────────────────────────────────────────────────────
+describe("TaskDetail — AC save error handling", () => {
+  it("save failure calls onError (not an unhandled rejection)", async () => {
+    const task = makeTask({
+      acceptance_criteria: [makeCriterion({ text: "existing" })],
+    });
+    mockPatchTask.mockRejectedValue(new Error("network down"));
+    const onError = vi.fn();
+    const onPatch = vi.fn();
+
+    render(
+      <TaskDetail
+        task={task}
+        allTasks={[task]}
+        projectId={1}
+        milestones={[]}
+        onClose={vi.fn()}
+        onPatch={onPatch}
+        onError={onError}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /edit acceptance criteria/i }),
+    );
+    fireEvent.click(document.querySelector("[data-ac-save]")!);
+
+    await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+    expect(onError.mock.calls[0][0]).toContain("Task #42");
+    expect(onError.mock.calls[0][0]).toContain("network down");
+    // onPatch must NOT have been called — the PATCH failed.
+    expect(onPatch).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // (d) SSE-refresh safety: props update during edit must not clobber draft
 // ─────────────────────────────────────────────────────────────────────────────
 describe("AcEditor — SSE-refresh safety", () => {

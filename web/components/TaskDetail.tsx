@@ -140,10 +140,19 @@ export function TaskDetail({
   };
 
   const handleAcSave = async (updated: AcceptanceCriterion[]) => {
-    const patched = await patchTask(projectId, task.id, {
-      acceptance_criteria: updated,
-    });
-    onPatch(patched);
+    try {
+      const patched = await patchTask(projectId, task.id, {
+        acceptance_criteria: updated,
+      });
+      onPatch(patched);
+    } catch (err: unknown) {
+      const msg = extractErrorMessage(err, "Update failed");
+      onError(`Task #${task.id}: ${msg}`);
+      // #2841 — re-throw: AcEditor's handleSave/handleQuickBlur branch on
+      // rejection (keep edit view open / show their own failure state).
+      // Swallowing here would make both wrongly treat this as success.
+      throw err;
+    }
   };
 
   // MED-2: stash deps in refs so the keydown listener subscribes ONCE ([] deps),
@@ -716,6 +725,7 @@ export function TaskDetail({
                 isTerminal={isTerminal}
                 onSave={handleAcSave}
                 disabled={submitting}
+                onToast={onError}
               />
             );
 
