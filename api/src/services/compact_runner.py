@@ -83,7 +83,10 @@ _COMPACT_SYSTEM_PROMPT = (
     "Summarize the following kanban session activity into a compact, dense "
     "markdown summary. Preserve concrete decisions, errors, and tasks "
     "involved. Drop conversational filler. Target ~3000 tokens. Output ONLY "
-    "the markdown summary, no preamble."
+    "the markdown summary, no preamble. Never output a line that is exactly "
+    "'## Compacted History' or '## Recent Activity' (verbatim, on its own "
+    "line) — those are reserved storage headings; if your summary needs "
+    "subsections, use a different heading level or different wording."
 )
 
 

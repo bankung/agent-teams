@@ -12,14 +12,21 @@ Layout (CTX-1 owns skeleton creation; we read/write into it):
         cards/                        <task_id>.md per-run heartbeat logs
         .lock                         advisory file lock (filelock)
 
-Section markers in `session.md` are byte-equal exact strings:
+Section markers in `session.md` are byte-equal exact strings, matched as a
+FULL LINE (the line must equal the marker exactly, not merely start with
+it):
 
     ## Compacted History
     ## Recent Activity
 
-`get_section_text` / `replace_section` find them by exact match. Recent
-Activity entries are appended as `### <ISO-Z> — task #<N> — <role>:<kind>`
-sub-headings followed by the body.
+`get_section_text` / `replace_section` find them by exact match.
+`replace_section` additionally refuses to mutate the file unless each
+marker appears exactly once — free-text section bodies (LLM-generated
+Compacted History, client-supplied Recent Activity summaries) could
+otherwise smuggle in a marker-like line and let one write silently destroy
+the OTHER section's content (Kanban #2835). Recent Activity entries are
+appended as `### <ISO-Z> — task #<N> — <role>:<kind>` sub-headings followed
+by the body.
 
 File-locking discipline: every WRITE under `_sessions/<sid>/` (session.md
 append/replace AND card log append) holds the per-session `.lock` for the
@@ -31,11 +38,14 @@ append is < 1ms; CTX-3 will surface heavier reads.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
 from filelock import FileLock
+
+logger = logging.getLogger(__name__)
 
 # Section heading byte-equal markers. Public — CTX-4 will import these
 # rather than re-typing the literals.
@@ -44,6 +54,18 @@ SECTION_RECENT_ACTIVITY = "## Recent Activity"
 _VALID_SECTIONS = (SECTION_COMPACTED_HISTORY, SECTION_RECENT_ACTIVITY)
 
 _SectionLiteral = Literal["## Compacted History", "## Recent Activity"]
+
+
+class MalformedSessionFile(ValueError):
+    """`session.md` does not have exactly one of each section marker.
+
+    Raised by `replace_section` instead of mutating — a marker-like line
+    smuggled into a section body (LLM-generated Compacted History, or a
+    client-supplied Recent Activity summary) must never be silently treated
+    as a real heading; that previously let one write destroy the other
+    section's content with no exception and no log. Kanban #2835.
+    """
+
 
 # Skeleton text — single-sourced here; consumed by sessions router directly.
 _SESSION_MD_SKELETON = (
@@ -124,28 +146,46 @@ def create_card_log_skeleton(
 # =============================================================================
 
 
+def _marker_line_offsets(text: str) -> dict[str, list[int]]:
+    """Map each valid section marker to every offset where it appears as a
+    FULL LINE — the line's entire content must equal the marker exactly.
+
+    Stricter than a substring-on-a-fresh-line check: a body line like
+    "## Recent Activity digest" no longer counts as the heading (it used to
+    — that was the root of Kanban #2835). Multiple offsets for one marker
+    means the file is malformed (a marker-like line landed inside a section
+    body) — `_assert_well_formed` checks for that before any caller trusts
+    `_split_sections`'s spans.
+    """
+    offsets: dict[str, list[int]] = {m: [] for m in _VALID_SECTIONS}
+    pos = 0
+    for line in text.split("\n"):
+        if line in offsets:
+            offsets[line].append(pos)
+        pos += len(line) + 1  # +1 for the newline `split` consumed.
+    return offsets
+
+
 def _split_sections(text: str) -> dict[str, tuple[int, int]]:
     """Locate each section marker in the file and return body slice indices.
 
     For each known section, returns (body_start, body_end) — character offsets
     into `text`. body_start is the position right after the marker line's
     newline; body_end is the position of the next section marker (or EOF).
-    Sections not present in the text are absent from the dict.
+    Sections not present in the text are absent from the dict. If a marker
+    appears more than once (malformed file), the FIRST occurrence wins here
+    — callers that mutate the file must call `_assert_well_formed` first
+    rather than relying on this tie-break (Kanban #2835).
     """
-    spans: dict[str, tuple[int, int]] = {}
-    # Find all marker positions first, sorted by offset.
-    found: list[tuple[int, str]] = []
-    for marker in _VALID_SECTIONS:
-        pos = text.find(marker)
-        if pos == -1:
-            continue
-        # Marker must start on a fresh line (offset 0 or preceded by \n).
-        if pos != 0 and text[pos - 1] != "\n":
-            continue
-        found.append((pos, marker))
-    found.sort()
+    offsets = _marker_line_offsets(text)
+    found = sorted(
+        (pos, marker) for marker, positions in offsets.items() for pos in positions
+    )
 
+    spans: dict[str, tuple[int, int]] = {}
     for i, (pos, marker) in enumerate(found):
+        if marker in spans:
+            continue
         # Body starts after the marker line's trailing newline.
         nl = text.find("\n", pos)
         body_start = nl + 1 if nl != -1 else len(text)
@@ -153,6 +193,29 @@ def _split_sections(text: str) -> dict[str, tuple[int, int]]:
         body_end = found[i + 1][0] if i + 1 < len(found) else len(text)
         spans[marker] = (body_start, body_end)
     return spans
+
+
+def _assert_well_formed(session_id: int, text: str) -> None:
+    """Raise `MalformedSessionFile` unless every marker appears exactly once.
+
+    `replace_section` calls this immediately before mutating — see
+    `MalformedSessionFile` for why (Kanban #2835).
+    """
+    offsets = _marker_line_offsets(text)
+    bad = {m: len(pos) for m, pos in offsets.items() if len(pos) != 1}
+    if not bad:
+        return
+    logger.error(
+        "session_store: refusing to mutate session_id=%d — malformed "
+        "section marker counts %r (expected exactly 1 of each)",
+        session_id,
+        bad,
+    )
+    raise MalformedSessionFile(
+        f"session_id={session_id}: session.md section markers are not "
+        f"well-formed (expected exactly one of each, found counts={bad!r}); "
+        "refusing to mutate to avoid corrupting section content"
+    )
 
 
 def get_section_text(
@@ -186,6 +249,11 @@ def replace_section(
     `new_content` should NOT include the section heading itself (we keep
     the heading line; only the body between markers is rewritten). A
     trailing newline is enforced so the next marker stays on a fresh line.
+
+    Raises `MalformedSessionFile` (without writing anything) if the file
+    does not have exactly one of each section marker — see
+    `MalformedSessionFile` for why this refuses rather than guessing which
+    occurrence is real (Kanban #2835).
     """
     if section not in _VALID_SECTIONS:
         raise ValueError(f"unknown section {section!r}")
@@ -195,19 +263,10 @@ def replace_section(
     sess_md = _session_md(session_id, repo_root)
     with _lock_for(session_id, repo_root):
         text = sess_md.read_text(encoding="utf-8")
+        _assert_well_formed(session_id, text)
         spans = _split_sections(text)
-        if section not in spans:
-            # Append a fresh section to EOF if missing — defensive.
-            text = (
-                text.rstrip("\n")
-                + "\n\n"
-                + section
-                + "\n"
-                + new_content
-            )
-        else:
-            start, end = spans[section]
-            text = text[:start] + new_content + text[end:]
+        start, end = spans[section]
+        text = text[:start] + new_content + text[end:]
         sess_md.write_text(text, encoding="utf-8")
 
 
