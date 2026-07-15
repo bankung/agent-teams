@@ -9,6 +9,11 @@ Project scoping:
   - Template `project_id` IS NULL → global (cross-project) template.
   - Template `project_id` IS NOT NULL → scoped to that project; only that
     project's `X-Project-Id` header may CRUD it.
+  - Detail GET / PATCH / DELETE REQUIRE `X-Project-Id` (400 if missing, via
+    `require_project_id_header`) and 404 when the template's project_id is
+    non-null and differs from the header. Global templates are reachable
+    under ANY valid header (parity with milestones.py's
+    `_get_milestone_in_session_or_404`, adapted for the nullable-global case).
 
 Listing semantics (GET):
   - With `X-Project-Id` header → return GLOBAL + that-project's templates.
@@ -41,10 +46,36 @@ from src.schemas.handoff_template import (
     HandoffTemplateRead,
     HandoffTemplateUpdate,
 )
+from src.services.session_project import require_project_id_header
 
 router = APIRouter(prefix="/handoff-templates", tags=["handoff-templates"])
 
 logger = logging.getLogger(__name__)
+
+
+async def _get_handoff_template_in_session_or_404(
+    session: AsyncSession, template_id: int, session_project_id: int
+) -> HandoffTemplate:
+    """Fetch a handoff template by id, 404 if missing OR if it is scoped to a
+    DIFFERENT project than the session-bound header.
+
+    Unlike milestones (always project-scoped, so their helper 404s
+    unconditionally on mismatch), a handoff template with `project_id IS
+    NULL` is GLOBAL and must stay reachable under any valid project header —
+    only a non-null project_id that differs from the header 404s.
+    """
+    template = await get_or_404(
+        session,
+        HandoffTemplate,
+        detail=f"HandoffTemplate id={template_id} not found",
+        id=template_id,
+    )
+    if template.project_id is not None and template.project_id != session_project_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"HandoffTemplate id={template_id} not found",
+        )
+    return template
 
 
 @router.get("", response_model=list[HandoffTemplateRead])
@@ -96,16 +127,18 @@ async def list_handoff_templates(
 @router.get("/{template_id}", response_model=HandoffTemplateRead)
 async def get_handoff_template(
     template_id: int,
+    session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
 ) -> HandoffTemplate:
     """Detail endpoint — returns the row regardless of soft-delete status
     (parity with the soft-delete detail convention; caller already has the id).
+
+    Project-scoped (Kanban #2828): 404s when the template belongs to a
+    different project than the session header. Global templates
+    (project_id IS NULL) are visible under any valid header.
     """
-    return await get_or_404(
-        session,
-        HandoffTemplate,
-        detail=f"HandoffTemplate id={template_id} not found",
-        id=template_id,
+    return await _get_handoff_template_in_session_or_404(
+        session, template_id, session_project_id
     )
 
 
@@ -185,6 +218,7 @@ async def create_handoff_template(
 async def update_handoff_template(
     template_id: int,
     payload: HandoffTemplateUpdate,
+    session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
 ) -> HandoffTemplate:
     """Partial update.
@@ -193,15 +227,16 @@ async def update_handoff_template(
     projects is intentionally NOT supported (consumers would be surprised).
     Soft-delete is via DELETE, not PATCH `status=0`.
 
+    Project-scoped (Kanban #2828): 404s when the template belongs to a
+    different project than the session header. Global templates
+    (project_id IS NULL) are updatable under any valid header.
+
     Errors:
-    - 404 — template id not found.
+    - 404 — template id not found / belongs to a different project.
     - 409 — name conflict on rename.
     """
-    template = await get_or_404(
-        session,
-        HandoffTemplate,
-        detail=f"HandoffTemplate id={template_id} not found",
-        id=template_id,
+    template = await _get_handoff_template_in_session_or_404(
+        session, template_id, session_project_id
     )
 
     updates = payload.model_dump(exclude_unset=True)
@@ -239,16 +274,18 @@ async def update_handoff_template(
 )
 async def delete_handoff_template(
     template_id: int,
+    session_project_id: int = Depends(require_project_id_header),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     """Soft-delete — flips `status=0`. Idempotent: subsequent DELETEs return 204
     without bumping `updated_at` (mirrors tasks / projects DELETE).
+
+    Project-scoped (Kanban #2828): 404s when the template belongs to a
+    different project than the session header. Global templates
+    (project_id IS NULL) are deletable under any valid header.
     """
-    template = await get_or_404(
-        session,
-        HandoffTemplate,
-        detail=f"HandoffTemplate id={template_id} not found",
-        id=template_id,
+    template = await _get_handoff_template_in_session_or_404(
+        session, template_id, session_project_id
     )
 
     if template.status == RecordStatus.ACTIVE:
