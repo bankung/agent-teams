@@ -541,8 +541,17 @@ export function Board({ initialTasks, initialDoneHasMore, hasHeadlessTask, proje
           );
         })
         .catch((err: unknown) => {
+          // #2842 — revert ONLY the optimistically-changed field via the live
+          // `t` from the functional updater, not the whole `original`
+          // snapshot captured at drop time. Splicing back `original` wholesale
+          // would discard a concurrent field change (e.g. another agent's
+          // PATCH landing via SSE while this one was in flight).
           setTasks((prev) =>
-            prev.map((t) => (t.id === taskId ? original : t)),
+            prev.map((t) =>
+              t.id === taskId
+                ? { ...t, process_status: original.process_status }
+                : t,
+            ),
           );
           const msg = extractErrorMessage(err, "Update failed");
           pushToast(`Task #${taskId}: ${msg}`);

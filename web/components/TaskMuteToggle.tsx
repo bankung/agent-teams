@@ -12,7 +12,7 @@
 // tasks; a revert-on-error keeps the perceived snappiness without losing
 // the failure signal.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { patchTask, type TaskRead } from "@/lib/api";
 import { extractErrorMessage } from "@/lib/errors";
@@ -30,21 +30,34 @@ export function TaskMuteToggle({ task, projectId, onPatch, onError }: Props) {
   // legacy serialized payloads may omit the field. Treat undefined as false.
   const muted = task.nudge_disabled === true;
 
+  // #2842 — stable read-latest-task ref (mirrors Board.tsx's tasksRef). The
+  // async onToggle closure below would otherwise pin `task` to its value at
+  // click time; if a concurrent PATCH (another agent, via SSE) lands on this
+  // task while ours is in flight, that closure goes stale. Reading
+  // taskRef.current at apply/revert time means only nudge_disabled is ever
+  // intentionally overwritten — every other field reflects the latest known
+  // snapshot, never a stale one.
+  const taskRef = useRef(task);
+  useEffect(() => {
+    taskRef.current = task;
+  });
+
   async function onToggle() {
     if (submitting) return;
     const next = !muted;
     setSubmitting(true);
     // Optimistic flip: synthesize an updated TaskRead so the parent's
     // muted-state reflects immediately. Revert on error.
-    onPatch({ ...task, nudge_disabled: next });
+    onPatch({ ...taskRef.current, nudge_disabled: next });
     try {
       const server = await patchTask(projectId, task.id, {
         nudge_disabled: next,
       });
       onPatch(server);
     } catch (err: unknown) {
-      // Revert to original state.
-      onPatch({ ...task, nudge_disabled: muted });
+      // Revert ONLY nudge_disabled — never splice back a stale whole
+      // snapshot (would discard a concurrent field change; #2842).
+      onPatch({ ...taskRef.current, nudge_disabled: muted });
       onError(`Task #${task.id}: ${extractErrorMessage(err, "Update failed")}`);
     } finally {
       setSubmitting(false);
