@@ -33,6 +33,7 @@ def test_in_clause_role_canonical() -> None:
     # Kanban #1266/#1269/#1271 (2026-05-20): further widened to include SEO codes
     # (21-24), SEM codes (31-34), data-analytics codes (41-44).
     # Kanban #2812 (2026-07-10): social codes (51-57) — RANGE_MAX 50 -> 60.
+    # Kanban #2871 (2026-08-24): mobile codes (61-62) — RANGE_MAX 60 -> 70.
     # Note: this IN-clause is no longer referenced by any active CHECK constraint —
     # the DB CHECK on tasks.assigned_role was dropped 2026-05-08 by migration 0002.
     # The helper is exercised here only to guarantee its render stays stable; the
@@ -40,7 +41,7 @@ def test_in_clause_role_canonical() -> None:
     # "Helper duplication between app and migration" pattern (standards/general.md).
     assert (
         in_clause("assigned_role", TaskRole.ALL)
-        == "assigned_role IN (1, 2, 3, 4, 5, 6, 11, 12, 13, 21, 22, 23, 24, 31, 32, 33, 34, 41, 42, 43, 44, 51, 52, 53, 54, 55, 56, 57)"
+        == "assigned_role IN (1, 2, 3, 4, 5, 6, 11, 12, 13, 21, 22, 23, 24, 31, 32, 33, 34, 41, 42, 43, 44, 51, 52, 53, 54, 55, 56, 57, 61, 62)"
     )
 
 

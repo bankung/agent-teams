@@ -6,7 +6,11 @@
 // #2826: TaskRole used to mirror ONLY the 6 dev-range codes; ROLE_OPTIONS
 // (the New Task modal's role catalog) was dev-only as a result, and
 // NewTaskModal could never offer a non-dev-team project its own roles. Locks
-// the full 28-code mirror + the roleOptionsForTeam() per-team derivation.
+// the full code mirror + the roleOptionsForTeam() per-team derivation.
+//
+// #2871: mobile team registered (ProjectTeam.MOBILE + codes 61-62, RANGE_MAX
+// 60→70). Only the two frontend roles are mobile-owned — backend / devops /
+// test / review are borrowed from the dev range and keep their dev codes.
 
 import { describe, it, expect } from "vitest";
 import {
@@ -21,11 +25,18 @@ describe("ProjectTeam (#2827a)", () => {
     expect(ProjectTeam.NETOPS).toBe("netops");
     expect(Object.values(ProjectTeam)).toContain("netops");
   });
+
+  // #2871 — same drift class as #2827(a): the API registered the team, the FE
+  // enum has to follow or the project's team never renders in the picker.
+  it("includes MOBILE = 'mobile'", () => {
+    expect(ProjectTeam.MOBILE).toBe("mobile");
+    expect(Object.values(ProjectTeam)).toContain("mobile");
+  });
 });
 
 describe("TaskRole full catalog mirror (#2826)", () => {
-  it("mirrors all 28 named codes from api/src/constants.py across 6 team ranges", () => {
-    expect(Object.keys(TaskRole)).toHaveLength(28);
+  it("mirrors all 30 named codes from api/src/constants.py across 7 team ranges", () => {
+    expect(Object.keys(TaskRole)).toHaveLength(30);
     // Spot-check one named code per range (full set covered indirectly via
     // ROLE_OPTIONS length + the per-team narrowing tests below).
     expect(TaskRole.FRONTEND).toBe(1); // dev
@@ -34,11 +45,12 @@ describe("TaskRole full catalog mirror (#2826)", () => {
     expect(TaskRole.SEM_CAMPAIGN_LEAD).toBe(31); // sem
     expect(TaskRole.BI_ANALYST).toBe(41); // data-analytics
     expect(TaskRole.CONTENT_WRITER).toBe(51); // social
+    expect(TaskRole.MOBILE_FRONTEND).toBe(61); // mobile
   });
 
-  it("ROLE_OPTIONS carries the unassigned sentinel plus all 28 named roles", () => {
-    // 1 sentinel ("" unassigned) + 28 named codes.
-    expect(ROLE_OPTIONS).toHaveLength(29);
+  it("ROLE_OPTIONS carries the unassigned sentinel plus all 30 named roles", () => {
+    // 1 sentinel ("" unassigned) + 30 named codes.
+    expect(ROLE_OPTIONS).toHaveLength(31);
     expect(ROLE_OPTIONS[0]).toEqual({ value: "", label: "— unassigned —" });
     for (const label of ROLE_OPTIONS.slice(1)) {
       expect(typeof label.value).toBe("number");
@@ -86,6 +98,19 @@ describe("roleOptionsForTeam (#2826 — per-team role dropdown scoping)", () => 
       TaskRole.SOCIAL_BI_ANALYST,
       TaskRole.SOCIAL_GENERAL_RESEARCHER,
     ]);
+  });
+
+  it("mobile team narrows to the 2 mobile-range codes (+ unassigned) — #2871", () => {
+    const opts = roleOptionsForTeam(ProjectTeam.MOBILE);
+    expect(opts.map((o) => o.value)).toEqual([
+      "",
+      TaskRole.MOBILE_FRONTEND,
+      TaskRole.MOBILE_SR_FRONTEND,
+    ]);
+    // The borrowed roles (dev-backend/devops/tester/reviewer) live in the dev
+    // range by design, so they are NOT offered by the mobile dropdown even
+    // though TEAM_ROSTERS[mobile] contains them.
+    expect(opts.map((o) => o.value)).not.toContain(TaskRole.BACKEND);
   });
 
   it("unranged teams (general/content/netops) and unknown/undefined fall back to the full catalog", () => {

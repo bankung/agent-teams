@@ -18,6 +18,31 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-08-24 — #2871 `mobile` team + `standards.mobile` lane + `stack` skill category (Angular/Ionic/Capacitor)
+**Scope:** backend + frontend + platform. from MorAI (project 726) needing an Angular/Ionic client
+
+**Decision:**
+
+1. **`mobile` is a TEAM, not a dev-frontend variant** — `ProjectTeam.MOBILE`, roster codes 61-62, `RANGE_MAX` 60→70. Roster is MIXED: only `mobile-frontend` (61) / `mobile-sr-frontend` (62) are new; backend / devops / tester / reviewer / security-reviewer are BORROWED from dev and keep their 1..10 codes. Nothing about those roles changes because the client is a mobile app; duplicating them would create two definitions that drift.
+2. **`mobile` is its own standards lane**, NOT `angular`/`ionic` folded into `standards.web`. Operator's call: mobile-dev carries native build, device permissions, offline/background state, store-release constraints and platform-conditional UI — concerns `web` does not have. Lane folders `context/standards/{angular,ionic,capacitor}/` seeded EMPTY (`.gitkeep`).
+3. **New skill category `stack`** — for skills tied to one technology stack rather than to the platform. First members: `zb-mobile-scaffold`, `zb-mobile-build`.
+4. **Lane folders stay empty until incidents earn entries.** Standards files in this repo each cite real code + a real Kanban id (`nextjs/empty-body-responses.md` → `web/lib/api.ts:push.unsubscribe`, #955.C). MorAI has zero Angular code, so there is nothing to cite. Precedent: `nextjs/` opened empty 2026-05-04, first rule 2026-05-11.
+
+**Reasoning:**
+
+- Alternative considered and rejected for the lane: add `angular`/`ionic` to `config.standards.web` (2 files, no new team). Correct if the goal were only "unblock MorAI" — but the goal was a reusable project type, and `dev-frontend` briefed on a mobile task reliably forgets the native half.
+- Alternative rejected for the roster: a full parallel `mobile-*` roster (~12 files). Only the frontend roles actually differ.
+
+**Implications — TWO silent-drop layers on `config.standards`, both hit during this task:**
+
+- `schemas/project.py::_Standards` had only `web/api/db` and no `model_config`; Pydantic's default `extra="ignore"` DROPPED `standards.mobile` with no 422 and no warning. Fixed by declaring the field + a docstring naming the trap.
+- **`ProjectUpdate` has NO `standards` field at all** (only `config: dict`) and is `extra="ignore"`, so a `PATCH {"standards": {...}}` is discarded WHOLESALE and still returns **200**. The `payload.standards` merge at `routers/projects.py:1054` is on the **create** path only. A standards PATCH must send the full `config` object (REPLACE semantics). This one is not fixed — documented here and in `context/standards/README.md`; a `standards` field on `ProjectUpdate` would be the real fix.
+- `CLAUDE.md` "Add a team" was INCOMPLETE and is why netops and social each shipped broken: it omitted `agent_validation.py::_DOMAIN_RULES` (netops needed #2830 after the fact) and under-stated the FE mirror (#2827a). Rewritten as an explicit 7-step list naming both, plus the `TEAM_ROSTERS`-or-import-fails invariant and the new-lane triple (`_Standards` + `EditProjectModal` + README role→lane table).
+- `validate-skills.mjs`'s category error message now derives from `VALID_CATEGORIES` instead of a hardcoded brace list that would have gone stale on this very change.
+- **Pre-existing, NOT caused here → #2872:** the skill validator was already failing 2/22 (`zb-walker` uses an unregistered `category: "walker"`; `zb-handoff` has no metadata block) and **CI never ran it** — so `CATALOG.md` silently omits both. Split out at operator's direction.
+- Live-verified (Lead, independent): `/api/teams` returns mobile + 7-role roster · `assigned_role=71` → 422 "range 1..70" · `61` → 201 (probe 2873 soft-deleted, absent from `?assigned_role=61`) · MorAI 726 `config.standards.mobile` persisted through a fresh GET · FE 58 files / 580 tests green · `tsc --noEmit` clean · `validate-skills` 22/24 (the 2 = #2872).
+- **Operator-applied (humans-only zone):** `context/standards/{angular,ionic,capacitor}/.gitkeep`, the README role→lane table, and the §1.4 taxonomy patch drafted at `_scratch/standards-draft/skill-authoring-1.4-patch.md`.
+
 ## 2026-07-15 — milestone-60 "Bug fixing after 0.8.1" audit — 21 fixes landed; Pydantic bool-coercion lesson; credentials write-path now operator-gated LIVE
 **Scope:** shared (backend + frontend + devops + qa). Two audit engagements against the whole repo post-0.8.1: a targeted sweep (#2823 → 7 findings #2824-2830) + a deep 4-lane code audit (#2831 → 11 findings #2832-2842), plus 2 siblings caught mid-fix (#2843, #2844). 21 tasks closed DONE this session; **#2839 (kind=human — operator's call on the `/invoke` L17/auth decision) is the only ms60 task left open.** #2824 CANCELLED (Ollama intentionally off). Per-fix commit hashes + pytest counts live in `git log` / the Kanban rail — this entry keeps only the durable decisions + reusable lessons.
 

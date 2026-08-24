@@ -122,8 +122,19 @@ Each playbook is a domain extension of these universal rules — **read CLAUDE.m
 | content | content production (write / edit / hook / veracity / proofread) | [`content.md`](.claude/teams/content.md) |
 | netops | network incident diagnosis (read-only estate) | [`netops.md`](.claude/teams/netops.md) |
 | social | organic social content — 6 platforms, no auto-post | [`social.md`](.claude/teams/social.md) |
+| mobile | mobile apps — Angular + Ionic + Capacitor (iOS/Android) | [`mobile.md`](.claude/teams/mobile.md) |
 
-Add a team (post-#1620 — NO migration, the team CHECK was dropped): add the value to `ProjectTeam` + a `TEAM_ROSTERS` entry in `api/src/constants.py`, mirror `web/lib/constants.ts`, write `.claude/teams/<name>.md` (precedent: #2811 social). **Research-first:** non-trivial tasks open with a researcher spawn (Haiku) before the specialist — per-team "non-trivial" heuristics + escape valves live in each playbook.
+Add a team (post-#1620 — NO migration, the team CHECK was dropped; precedent: #2811 social, #2871 mobile). **The full list — netops and social each shipped missing one of these and needed a follow-up (#2830, #2827a), so walk it:**
+
+1. `api/src/constants.py` — `ProjectTeam.<NAME>` + add to `ALL` + a `TEAM_ROSTERS` entry. The roster entry is **mandatory**: a team in `ALL` with no roster raises at module import, so the API won't start.
+2. `.claude/agents/<role>.md` for every role named in that roster — the scaffold manifest requires a matching file per role.
+3. `api/src/services/agent_validation.py::_DOMAIN_RULES` — a `("<prefix>-", "<team>", "prefix")` entry, if the team introduces its own agent-name prefix. **This is the one CLAUDE.md used to omit** (#2830 fixed netops after the fact).
+4. `web/lib/constants.ts` — mirror `ProjectTeam`, plus new `TaskRole` codes and their `TEAM_ROLE_RANGE` entry if the team claims a range. **#2827a existed because this was skipped.** Update `web/__tests__/constants.test.ts` — it hard-codes the role count.
+5. `api/src/constants.py::TaskRole` — new codes + `ALL` + bump `RANGE_MAX` if the range grows. On a `RANGE_MAX` bump, grep for sibling CHECK-constrained columns mirroring the same field (the #2819 class).
+6. `.claude/teams/<name>.md` — the playbook.
+7. **A new `config.standards` lane** (only if the team needs one) — `api/src/schemas/project.py::_Standards` **and** `web/components/EditProjectModal.tsx` **and** the role→lane table in `context/standards/README.md`. An undeclared lane is dropped SILENTLY by Pydantic `extra="ignore"` — no 422, no warning.
+
+NOT needed: migration, ORM CheckConstraint, `bin/agent-teams-init.ps1`, scaffold templates — those all derive from `constants.py` + the API. **Research-first:** non-trivial tasks open with a researcher spawn (Haiku) before the specialist — per-team "non-trivial" heuristics + escape valves live in each playbook.
 
 ## Reference files (load on demand)
 

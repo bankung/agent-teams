@@ -84,6 +84,9 @@ def test_constants_align_with_general_md() -> None:
     admit SEO (21-24), SEM (31-34), and data-analytics (41-44) codes.
     Kanban #2812 (2026-07-10): RANGE_MAX bumped 50 → 60 to admit social
     codes (51-57).
+    Kanban #2871 (2026-08-24): RANGE_MAX bumped 60 → 70 to admit mobile
+    codes (61-62). Only the two frontend roles are mobile-owned; the rest
+    of the mobile roster is borrowed from dev and keeps its 1..10 codes.
     """
     from src.constants import TaskPriority, TaskRole, TaskStatus
 
@@ -100,9 +103,10 @@ def test_constants_align_with_general_md() -> None:
         31, 32, 33, 34,          # sem range (31..40)
         41, 42, 43, 44,          # data-analytics range (41..50)
         51, 52, 53, 54, 55, 56, 57,  # social range (51..60)
+        61, 62,                  # mobile range (61..70)
     )
     assert TaskRole.RANGE_MIN == 1
-    assert TaskRole.RANGE_MAX == 60
+    assert TaskRole.RANGE_MAX == 70
 
 
 @pytest.mark.asyncio

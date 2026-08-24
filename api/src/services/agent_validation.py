@@ -602,6 +602,7 @@ _DOMAIN_RULES: tuple[tuple[str, str, str], ...] = (
     ("sem-", "sem", "prefix"),
     ("seo-", "seo", "prefix"),
     ("netops-", "netops", "prefix"),
+    ("mobile-", "mobile", "prefix"),  # Kanban #2871
     ("google-ads-", "sem", "prefix"),
     ("meta-ads-", "sem", "prefix"),
     ("platform-ads-", "sem", "prefix"),

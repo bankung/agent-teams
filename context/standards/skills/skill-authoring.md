@@ -82,7 +82,7 @@ tags      : array of free-form strings, lowercase, hyphen-separated.
             job-search) + the action style (read-only, mutate, orchestration).
 ```
 
-### 1.4 `category` taxonomy (derived from the 18-skill corpus)
+### 1.4 `category` taxonomy
 
 | Category | Description | Skills |
 |---|---|---|
@@ -90,9 +90,15 @@ tags      : array of free-form strings, lowercase, hyphen-separated.
 | `platform` | Cross-cutting platform ops: git, release, bind, audit | zb-git-commit, zb-release, zb-bind, zb-audit |
 | `review` | Quality / adversarial review passes | zb-intense-review |
 | `secretary` | Personal/secretary domain (email, job-search) | zb-email, zb-jobs |
+| `stack` | Tied to one technology stack rather than to the platform — usable only on projects running that stack | zb-mobile-scaffold, zb-mobile-build |
 
-Four categories cover all 18 skills. Add a new category only when a new skill genuinely doesn't fit —
-do not fragment `kanban` into sub-categories.
+Add a new category only when a new skill genuinely doesn't fit — do not fragment `kanban` into
+sub-categories.
+
+> **Two places, always together.** This table and `scripts/validate-skills.mjs`'s
+> `VALID_CATEGORIES` are the same list. Editing one without the other makes the validator and
+> the standard disagree; the validator wins at runtime and the standard silently becomes a lie.
+> (`zb-walker` shipped `category: "walker"` against neither — tracked in #2872.)
 
 ---
 

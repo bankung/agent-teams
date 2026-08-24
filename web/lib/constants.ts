@@ -1,7 +1,7 @@
 // Mirror of api/src/constants.py — keep in sync. Numbers are stable forever; never repurpose.
-// Mirrored: RecordStatus, TaskStatus, TaskPriority, TaskRole (all 28 named codes across
-// 6 team ranges — dev 1-10, novel 11-20, seo 21-30, sem 31-40, data-analytics 41-50,
-// social 51-60), ProjectTeam (incl. netops), TaskRunMode.
+// Mirrored: RecordStatus, TaskStatus, TaskPriority, TaskRole (all 30 named codes across
+// 7 team ranges — dev 1-10, novel 11-20, seo 21-30, sem 31-40, data-analytics 41-50,
+// social 51-60, mobile 61-70), ProjectTeam (incl. netops), TaskRunMode.
 // Deferred: TaskHistoryOperation ('U','D') — internal audit-trigger payload, no browser-facing use.
 
 export const RecordStatus = {
@@ -76,6 +76,12 @@ export const TaskRole = {
   THAI_PROOFREADER: 55,
   SOCIAL_BI_ANALYST: 56, // cross-team, data-analytics
   SOCIAL_GENERAL_RESEARCHER: 57, // cross-team
+
+  // Mobile range (61..70) — Kanban #2871 (2026-08-24). Only the two frontend
+  // roles are mobile-owned; backend / devops / test / review are borrowed from
+  // the dev range (1..10) and keep their dev codes.
+  MOBILE_FRONTEND: 61,
+  MOBILE_SR_FRONTEND: 62,
 } as const;
 export type TaskRoleValue = typeof TaskRole[keyof typeof TaskRole];
 
@@ -89,6 +95,7 @@ export const ProjectTeam = {
   SEM: "sem", // Kanban #1269 (migration 0044, 2026-05-20)
   NETOPS: "netops", // Kanban #2827 (app-validated post-#1620, no migration)
   SOCIAL: "social", // Kanban #2811 (no migration — app-validated post-#1620, 2026-07-10)
+  MOBILE: "mobile", // Kanban #2871 (no migration — app-validated post-#1620, 2026-08-24)
 } as const;
 export type ProjectTeamValue = typeof ProjectTeam[keyof typeof ProjectTeam];
 
@@ -159,6 +166,9 @@ export const ROLE_OPTIONS: RoleOption[] = [
   { value: TaskRole.THAI_PROOFREADER, label: "Thai Proofreader" },
   { value: TaskRole.SOCIAL_BI_ANALYST, label: "Social BI Analyst" },
   { value: TaskRole.SOCIAL_GENERAL_RESEARCHER, label: "Social General Researcher" },
+  // Mobile
+  { value: TaskRole.MOBILE_FRONTEND, label: "Mobile Frontend" },
+  { value: TaskRole.MOBILE_SR_FRONTEND, label: "Mobile Sr Frontend" },
 ];
 
 // Kanban #2826 — per-team role-code ranges, mirroring the "range partition"
@@ -175,6 +185,7 @@ const TEAM_ROLE_RANGE: Partial<Record<ProjectTeamValue, readonly [number, number
   [ProjectTeam.SEM]: [31, 40],
   [ProjectTeam.DATA_ANALYTICS]: [41, 50],
   [ProjectTeam.SOCIAL]: [51, 60],
+  [ProjectTeam.MOBILE]: [61, 70],
 };
 
 /**

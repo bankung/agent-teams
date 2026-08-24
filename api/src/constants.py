@@ -71,7 +71,7 @@ class RecordStatus:
 
 
 class ProjectTeam:
-    """projects.team — dev / novel / general / content / seo / data-analytics / sem / netops / social.
+    """projects.team — dev / novel / general / content / seo / data-analytics / sem / netops / social / mobile.
 
     SINGLE SOURCE OF TRUTH for the team enum (Kanban #1620, 2026-05-28). The
     DB-side CHECK `ck_projects_team_valid` was DROPPED by migration
@@ -95,8 +95,9 @@ class ProjectTeam:
     SEM = "sem"
     NETOPS = "netops"
     SOCIAL = "social"
+    MOBILE = "mobile"
 
-    ALL = (DEV, NOVEL, GENERAL, CONTENT, SEO, DATA_ANALYTICS, SEM, NETOPS, SOCIAL)
+    ALL = (DEV, NOVEL, GENERAL, CONTENT, SEO, DATA_ANALYTICS, SEM, NETOPS, SOCIAL, MOBILE)
 
 
 # Per-team scaffold roster — the SINGLE source for which dedicated agents own a
@@ -177,6 +178,20 @@ TEAM_ROSTERS: dict[str, tuple[str, ...]] = {
         "content-veracity-checker",
         "thai-proofreader",
     ),
+    # mobile is MIXED (Kanban #2871) — only the two frontend roles are new;
+    # Angular/Ionic/Capacitor differs from web frontend enough to warrant its
+    # own agents + `config.standards.mobile` lane. The backend / devops / test
+    # / review roles are BORROWED from dev verbatim: nothing about those roles
+    # changes when the client happens to be a mobile app.
+    ProjectTeam.MOBILE: (
+        "mobile-sr-frontend",
+        "mobile-frontend",
+        "dev-backend",
+        "dev-devops",
+        "dev-tester",
+        "dev-reviewer",
+        "dev-security-reviewer",
+    ),
 }
 
 # Import-time invariant: every team in the enum MUST carry a roster entry. A new
@@ -202,7 +217,7 @@ class TaskPriority:
 
 
 class TaskRole:
-    """tasks.assigned_role — INTEGER NULLABLE. Validated 1..60 at app layer
+    """tasks.assigned_role — INTEGER NULLABLE. Validated 1..70 at app layer
     (the DB CHECK was dropped 2026-05-08 by migration 0002; per-team roster
     enforcement is too dynamic for a single static CHECK).
 
@@ -213,7 +228,8 @@ class TaskRole:
       * 31..40  → sem team (.claude/teams/sem.md)
       * 41..50  → data-analytics team (.claude/teams/data-analytics.md)
       * 51..60  → social team (.claude/teams/social.md)
-      * 61+     → reserved for future team domains
+      * 61..70  → mobile team (.claude/teams/mobile.md)
+      * 71+     → reserved for future team domains
 
     Each team's playbook owns the named codes inside its range. Unnamed codes
     inside an existing range (e.g. 6..10) are RESERVED for that team to claim
@@ -268,12 +284,22 @@ class TaskRole:
     SOCIAL_GENERAL_RESEARCHER = 57  # cross-team
     # 58-60 reserved for future social team roles
 
+    # Mobile range (61..70) — Kanban #2871. Angular + Ionic + Capacitor is a
+    # distinct discipline from web frontend (native build, device APIs, store
+    # release), so it carries its own lane (`config.standards.mobile`) and its
+    # own two frontend roles. The rest of the roster is BORROWED from dev
+    # (backend / devops / tester / reviewer / security-reviewer keep their
+    # 1..10 codes) — those roles do not change when the client is a mobile app.
+    MOBILE_FRONTEND = 61
+    MOBILE_SR_FRONTEND = 62
+    # 63-70 reserved for future mobile team roles
+
     # Validator bounds — range, not membership. ALL stays as the union of
     # currently-named codes (used by callers that want to enumerate the
     # known roster, e.g. tests / docs); the wire-layer range gate lives in
     # the Pydantic validator on `assigned_role`.
     RANGE_MIN = 1
-    RANGE_MAX = 60
+    RANGE_MAX = 70
 
     ALL = (
         FRONTEND,
@@ -304,6 +330,8 @@ class TaskRole:
         THAI_PROOFREADER,
         SOCIAL_BI_ANALYST,
         SOCIAL_GENERAL_RESEARCHER,
+        MOBILE_FRONTEND,
+        MOBILE_SR_FRONTEND,
     )
 
 
