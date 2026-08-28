@@ -188,3 +188,19 @@ jobs:
       - name: Run pytest
         working-directory: langgraph
         run: pytest tests/ --maxfail=20 -q
+
+  # ---------------------------------------------------------------------------
+  # skills — zb-* SKILL.md frontmatter validator (#2872: was never run in CI,
+  # so broken skills reached main silently). Zero-dependency ESM; exits 1 on FAIL.
+  # ---------------------------------------------------------------------------
+  skills:
+    name: skills — frontmatter validator
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Validate skill frontmatter
+        run: node scripts/validate-skills.mjs

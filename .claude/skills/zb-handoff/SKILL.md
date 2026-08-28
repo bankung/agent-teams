@@ -13,6 +13,10 @@ allowed-tools:
   - Bash(git:*)
   - Read
   - Write
+metadata:
+  version: 1.0.0
+  category: platform
+  tags: [handoff, session-continuity, platform, boundary]
 ---
 
 # /zb-handoff — session-boundary handoff generator (continuity-first)

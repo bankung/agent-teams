@@ -11,7 +11,7 @@ allowed-tools:
   - Write
   - Bash(node:*)
 metadata:
-  version: 1.0.0
+  version: 1.0.1
   category: platform
   tags: [platform, skill, scaffold, authoring, mutate]
 ---
@@ -31,7 +31,7 @@ Collect the following (from `$ARGUMENTS` or by asking the operator):
 |---|---|
 | `name` | Must be `zb-<verb>` (kebab-case, no spaces). Reject anything else. |
 | `purpose` | One-line imperative (≤120 chars). Used as the description opening line. |
-| `category` | MUST be exactly one of: `kanban`, `platform`, `review`, `secretary`. Reject all others — the taxonomy is closed (skill-authoring standard §1.4). |
+| `category` | MUST be one of the taxonomy names in `scripts/validate-skills.mjs` `VALID_CATEGORIES` (documented in skill-authoring §1.4) — currently `kanban`, `platform`, `review`, `secretary`, `stack`. Reject values not in that list. The taxonomy is controlled-but-extensible: a genuinely new category is added via skill-authoring §7.3 step 6 (edit `VALID_CATEGORIES` first, then §1.4) — never invented ad hoc at scaffold time. Do NOT hard-code the list here; read §1.4 so this scaffolder never drifts from the validator. |
 | `tags` | 3–6 lowercase hyphen-separated strings. Must include at least one noun (the domain) and the action-style tag (`read-only` or `mutate`). |
 | `allowed-tools` | List the tools the new skill will actually call. Remind the operator of least-privilege: if the skill is read-only, `[Read]` alone is the expected range. |
 
@@ -144,7 +144,7 @@ Then restart Claude Code — skills load at session start; /<name> is NOT invoka
 
 | Step | Incident class / why it exists |
 |---|---|
-| 0 | Category must be one of the 4 taxonomy values — the validator hard-fails on any other value (skill-authoring §1.4). Reject "general" / "tooling" / etc. at input time, not after writing. |
+| 0 | Category must be one of the `VALID_CATEGORIES` names (skill-authoring §1.4 documents them) — the validator hard-fails on any other value. Reject "general" / "tooling" / etc. at input time, not after writing. Do NOT hard-code the list here; read §1.4 / `VALID_CATEGORIES` so this scaffolder never drifts from the validator (the drift that caused #2921). |
 | 1 | Write ONLY to `_scratch/` — `.claude/` is operator-applied; subagents writing there directly bypasses the review gate (CLAUDE.md, humans-commit rule; `ii` self-mod gate). |
 | 1 | `allowed-tools` in the new skill must match what its Procedure actually calls (least-privilege; E3). Over-declaration defeats the audit trail. |
 | 3 | Validate ONLY the just-scaffolded skill, not the full corpus — use `--skills-dir <staging-dir>` pointing at a directory containing only the new skill. Validating the corpus picks up pre-existing WARNs and can mask the new skill's result. |

@@ -23,7 +23,8 @@ function findRoot(start) {
 const ROOT = findRoot(HERE);
 const SKILLS_DIR = join(ROOT, ".claude", "skills");
 
-// Mirrors context/standards/skills/skill-authoring.md §1.4 — keep both in sync.
+// SOURCE OF TRUTH for the skill category taxonomy (#2921). skill-authoring §1.4 and
+// the zb-skill-new scaffolder document/reference THIS set — edit here FIRST, then §1.4.
 // `stack` added by Kanban #2871 (per-stack skills: mobile/Angular/Ionic).
 const VALID_CATEGORIES = new Set(["kanban", "platform", "review", "secretary", "stack"]);
 const SEMVER_RE = /^\d+\.\d+\.\d+$/;
