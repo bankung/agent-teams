@@ -18,6 +18,23 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-08-28 — #2921+#2872 skill-taxonomy single source of truth + validator wired into CI; #2920 rail sanitizer widened to Unicode-printable
+**Scope:** platform + backend + devops. Closes the #2872 thread split out of #2871 (line 42 below), folded together with #2921 (same walker/handoff/validator core, filed 4 days later from MorAI/726) at operator direction. Per-file hashes in `git log` (#2920 `6e1d0ec`, batch `cc793a1`).
+
+**Decisions (locked):**
+
+1. **Single source of truth for the skill category taxonomy = `scripts/validate-skills.mjs` `VALID_CATEGORIES`** — it is what enforces at runtime. `skill-authoring.md` §1.4 documents what each name *means* and must list exactly those names; the `zb-skill-new` scaffolder now **references** §1.4/`VALID_CATEGORIES` instead of hard-coding a list. Root cause of the whole mess: the list was copied into 3 places and drifted (validator had 5 incl `stack` after #2871; E8 rubric + zb-skill-new still said 4). Reusable rule: an enumerated set that must agree across a runtime-enforcer + docs gets ONE authoritative home (the enforcer); everything else points at it. Edit `VALID_CATEGORIES` FIRST, then §1.4.
+2. **Taxonomy is controlled-but-extensible, NOT "closed."** `zb-skill-new` previously said the taxonomy was "closed" — directly contradicting §1.4's own "add a new category when a skill genuinely doesn't fit" + §7.3 step 6 (which is exactly how `stack` was added). Removed "closed"; a new category is added via the §7.3 process (validator first, then §1.4), never invented ad hoc at scaffold time.
+3. **`zb-walker` `category: "walker"` → `platform`** (not a 6th category). §1.4 forbids a new category unless nothing existing fits; a single autonomous-runner skill is a cross-cutting platform op and `platform` fits. **`zb-handoff`** gained its entirely-missing metadata block (`version 1.0.0` / `category: platform` / tags). Validator now **24/24** (was 22/24); `CATALOG.md` regenerated — both skills had been **silently dropped** from the catalog because they failed the validator.
+4. **Validator wired into CI as a 4th job (`skills`)** — this is the #2872 ROOT CAUSE: nothing ran `validate-skills.mjs`, so broken-frontmatter skills reached `main` with no signal. The job is zero-dep (`node scripts/validate-skills.mjs`, exits 1 on FAIL). Without this, the same drift recurs.
+5. **Downstream project copies of `skill-authoring.md` are NOT auto-synced** (#2921 AC5) — advisory point-in-time snapshots; agent-teams is the single authoritative copy; no sync mechanism (YAGNI). Documented in §7.1.
+6. **Rail summary sanitizer (#2920): use `str.isprintable()`, not an ASCII+Thai allowlist.** `tool_call_writer.py` stripped everything outside `[\x20-\x7E]`+Thai to `?`, silently destroying printable Latin-1 (§ ±), dashes, arrows, emoji, and every non-Thai non-Latin script on the rail. Replaced the regex allowlist with the semantic `str.isprintable()` predicate (control/format/separator-except-space still stripped). **Reusable lesson:** an allowlist that names specific Unicode *ranges* is a silent data-loss trap for every script it forgot — reach for the semantic predicate. Live-proven against the hot-reloaded API: `§ ± ทดสอบ → — café` survive, `\x07`/`\x00` → `?`; cap 2000 + schema `max_length` untouched.
+
+**Implications / notes:**
+- All `.claude/**` + `context/standards/**` edits applied by **Lead under the operator's literal `ii`** (self-modification gate) — no subagent wrote those zones. `ci.yml` (functional CI config) was delegated to dev-devops; the #2920 backend fix + test to dev-backend.
+- `skill-authoring.md` "Last revised" bumped to 2026-08-28; E8 rubric de-hardcoded to reference §1.4.
+- This resolves the "**Pre-existing, NOT caused here → #2872**" note in the #2871 entry below (line 42): the validator no longer omits skills from `CATALOG.md`, and CI now catches the class.
+
 ## 2026-08-24 — #2871 `mobile` team + `standards.mobile` lane + `stack` skill category (Angular/Ionic/Capacitor)
 **Scope:** backend + frontend + platform. from MorAI (project 726) needing an Angular/Ionic client
 
