@@ -23,7 +23,6 @@ string lands as "" (preserved verbatim — not coerced to NULL).
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,13 +33,22 @@ from src.models.tool_call import ToolCall
 _OUTPUT_SUMMARY_MAX_CHARS = 256
 _ERROR_MSG_MAX_CHARS = 1024
 
-# Lead-activity summary cap (#2320) + #2136 non-printable strip. The summary is
-# Lead-supplied and lands on an LLM-facing surface (the activity rail + future
-# auditor mining). Mirror the tools_email.py #2136 convention: keep
-# ASCII-printable (\x20-\x7E) + the Thai block (U+0E00-U+0E7F), replace the rest
-# with '?'. Applied BEFORE the cap so the cap counts post-sanitize chars.
+# Lead-activity summary cap (#2320) + non-printable strip (#2136, widened #2920).
+# The summary is Lead-supplied and lands on an LLM-facing surface (the activity
+# rail + future auditor mining). Strip only NON-PRINTABLE code points (control /
+# format / separator-except-space / surrogate / unassigned — i.e. str.isprintable()
+# is False), replacing each with '?'. Every graphic character survives: Latin-1
+# (§ ±), Thai, dashes, arrows, emoji. The old ASCII+Thai allowlist (#2136) wrongly
+# mapped printable Latin-1 to '?' — see #2920. Applied BEFORE the cap so the cap
+# counts post-sanitize chars.
 _LEAD_SUMMARY_MAX_CHARS = 2000
-_NON_PRINTABLE_RE = re.compile(r"[^\x20-\x7E฀-๿]")
+
+
+def _strip_non_printable(value: str) -> str:
+    """Replace every non-printable (str.isprintable() is False) code point with
+    '?'. The ASCII space is printable and survives; control chars (\\x00, \\x07,
+    newline, tab) do not."""
+    return "".join(ch if ch.isprintable() else "?" for ch in value)
 
 
 def _truncate(value: str | None, limit: int) -> str | None:
@@ -144,7 +152,7 @@ async def record_lead_activity(
     Returns:
         The persisted ToolCall row (with `id` populated by the DB).
     """
-    safe_summary = _NON_PRINTABLE_RE.sub("?", summary)[:_LEAD_SUMMARY_MAX_CHARS]
+    safe_summary = _strip_non_printable(summary)[:_LEAD_SUMMARY_MAX_CHARS]
     row = ToolCall(
         task_id=task_id,
         source="lead",
