@@ -5,7 +5,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSL%201.1-blue.svg" alt="License: BSL 1.1"></a>
   &nbsp;
-  <img src="https://img.shields.io/badge/version-0.8.0-brightgreen.svg" alt="Version 0.8.0">
+  <img src="https://img.shields.io/badge/version-0.8.1-brightgreen.svg" alt="Version 0.8.1">
   &nbsp;
   <img src="https://img.shields.io/badge/deploy-self--hosted-orange.svg" alt="Self-hosted">
   &nbsp;
@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <code>v0.8.0</code> &nbsp;·&nbsp; 8 teams · 40 agents · 22 skills &nbsp;·&nbsp; FastAPI + PostgreSQL · Next.js · LangGraph · Docker
+  <code>v0.8.1</code> &nbsp;·&nbsp; 10 teams · 42 agents · 24 skills &nbsp;·&nbsp; FastAPI + PostgreSQL · Next.js · LangGraph · Docker
 </p>
 
 <p align="center">
@@ -259,7 +259,7 @@ cli/         npx launcher — @bankung/agent-teams (up / down / status / reset)
 
 ## Status
 
-`v0.8.0`
+`v0.8.1`
 
 - **Production use:** yes — self-host and run it today
 - **Breaking changes:** expected before 1.0
