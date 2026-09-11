@@ -161,7 +161,7 @@ All 8 tools are always registered in `GLOBAL_REGISTRY` at import time regardless
 | `db` | always | `postgres:16-alpine` | 5432 | `POSTGRES_PASSWORD`, `POSTGRES_DB` | `max_connections=20`, `shared_buffers=32MB` (hardcoded in command) |
 | `api` | always | `./api/Dockerfile` | 8456 | 40+ vars (LLM, backup, email, VAPID, SMTP, OAuth) | `--reload` in dev; bind-mounts repo at `/repo` |
 | `web` | always | `./web/Dockerfile` | 5431 | 3 vars | dev overlay adds source bind-mount + anon node_modules volume |
-| `langgraph` | `langgraph` profile only | `./langgraph/Dockerfile` | 8465→8000 | 26 vars | bind-mounts repo at `/repo` in dev; no bind-mount in images stack |
+| `langgraph` | `langgraph` profile only | `./langgraph/Dockerfile` (dev/prod targets; prod = non-root uid 1000, #3170) | none — in-network `langgraph:8000` only (#2839) | 26 vars | bind-mounts repo at `/repo` in dev; no bind-mount in images stack |
 
 The `langgraph` service is gated behind `profiles: ["langgraph"]` in the base compose — it does NOT start with a plain `docker compose up`. It must be started explicitly with `--profile langgraph`.
 

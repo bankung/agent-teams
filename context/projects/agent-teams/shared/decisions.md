@@ -18,6 +18,21 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-09-11 — v0.8.1 release gate: #2839 /invoke L17 gate + langgraph host port dropped (supersedes #2503 AC2 for langgraph); #3170 langgraph prod image non-root; #3169 aiohttp 3.14.3
+**Scope:** backend (langgraph) + devops + security. From the #3166 release review (dev-reviewer + dev-security-reviewer on `origin/main...dev`, 52 commits). Operator decisions 2026-09-11; hashes in `git log`.
+
+**Decisions (locked):**
+
+1. **#2839 = (a) + (b).** (a) `POST /invoke` runs `scan_task_content` on the brief before `graph.ainvoke`; a match → 422 `{error: destructive_intent_detected, matched}`, graph never invoked (the worker keeps its BLOCK-the-task path — `/invoke` has no task row to mutate). (b) The langgraph host port mapping `${LANGGRAPH_PORT:-8465}:8000` is removed from `docker-compose.yml` + `docker-compose.images.yml` — nothing depended on it (api/web/cli reach `langgraph:8000` in-network); operator health checks move to `docker compose -p agent-teams exec langgraph ...`. **Supersedes #2503 AC2 for langgraph only** (db/web bindings unchanged).
+2. **#3170 langgraph prod image runs non-root** — mirrors #2529: multi-stage `base`→`dev`/`prod`; prod = non-editable install, `appuser` uid/gid 1000, no `--reload`; `target: dev` in `docker-compose.yml`, `target: prod` in `docker-compose.prod.yml` + `release-images.yml`. **Gotcha:** non-root git on the bind-mounted `/repo` hits git's CVE-2022-24765 "dubious ownership" guard → `git config --system --add safe.directory /repo` in the base stage (system-wide: appuser has no `$HOME`). Without it the git tools (#977) break in prod.
+3. **#3169 aiohttp 3.14.1 → 3.14.3** in `api/requirements.lock` (PYSEC-2026-3545/3546/3547, transitive via pywebpush) — a one-line lock change; the #2440 HOLD pins are untouched. cryptography 48.0.1 advisories deferred to #3171 (unreachable — Fernet-only; the fix exists only at ≥49 vs the pyproject `<49.0` ceiling).
+
+**Implications:**
+- The langgraph worker has **no env switch to disable polling** — starting the `langgraph` profile for any check starts polling the live board (multi-board when `LANGGRAPH_PROJECT_ID` is unset). For verification runs: pin `LANGGRAPH_PROJECT_ID=<id>`, confirm `next-autorun` is empty, stop the container afterwards.
+- `docker compose up -d --build <svc>` also recreates `depends_on` services whose build context changed on disk (the #3170 run recreated api mid-edit). For a single-service rebuild use `build <svc>` + `up -d --no-deps <svc>`.
+- `.claude/settings.json` still carries 2 stale `curl localhost:8465/ok` allow entries (operator-gated file; harmless).
+- Review leftovers → #3171 (RateLimitError bucket label, stale create_task comment, link_probe overall deadline, cryptography ceiling).
+
 ## 2026-08-28 — #2921+#2872 skill-taxonomy single source of truth + validator wired into CI; #2920 rail sanitizer widened to Unicode-printable
 **Scope:** platform + backend + devops. Closes the #2872 thread split out of #2871 (line 42 below), folded together with #2921 (same walker/handoff/validator core, filed 4 days later from MorAI/726) at operator direction. Per-file hashes in `git log` (#2920 `6e1d0ec`, batch `cc793a1`).
 
