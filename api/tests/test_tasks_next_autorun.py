@@ -19,6 +19,7 @@ Coverage:
   (g) blocked_count correct when tasks have active blockers
   (h) empty project → next_task=null, resume_tasks=[], pending_questions=[], blocked_count=0
   (i-l) scheduled_at enforcement — Kanban #1972
+  (m-p) requires_human_review gates auto-SELECTION — Kanban #2838
 """
 
 from __future__ import annotations
@@ -79,6 +80,20 @@ async def _get_project_id(client) -> int:
     resp = await client.get("/api/projects/by-name/agent-teams")
     assert resp.status_code == 200, resp.text
     return resp.json()["id"]
+
+
+async def _grant_consent(client, project_id: int) -> None:
+    """Grant project auto_run consent so the auto_headless consent gate
+    doesn't shadow the requires_human_review gate under test (#2838).
+    Mirror of test_content_moderation.py's helper of the same name."""
+    proj = await client.get(f"/api/projects/{project_id}")
+    assert proj.status_code == 200, proj.text
+    name = proj.json()["name"]
+    grant = await client.post(
+        f"/api/projects/{project_id}/grant-consent",
+        json={"confirm_name": name},
+    )
+    assert grant.status_code == 200, grant.text
 
 
 # ---------------------------------------------------------------------------
@@ -672,4 +687,142 @@ async def test_next_task_scheduled_at_ordering_unchanged(client, scaffold_cleanu
     assert body["next_task"] is not None, body
     assert body["next_task"]["id"] == urgent["id"], (
         f"expected priority-4 task {urgent['id']}, got {body['next_task']['id']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# (m-p) Kanban #2838 — requires_human_review must gate auto-SELECTION, not
+# just the PATCH-time run_mode flip. next_task_stmt previously had NO
+# requires_human_review filter at all: a task landing at run_mode=auto_pickup
+# (or auto_headless) with the L14 scanner flag set (#1121) sailed through
+# next-autorun ungated — the PATCH-time gate in routers/tasks.py only refused
+# SETTING run_mode=auto_headless on a flagged row, never auto_pickup, and
+# never re-checked a row whose flag flipped true after landing at an auto
+# mode. POST is non-blocking by design (#1121 TAGS, does not refuse the
+# create), so a single POST with destructive content + run_mode=auto_pickup
+# is the realistic way a flagged+auto row lands in the DB.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_next_task_excludes_flagged_auto_pickup_task(
+    client, scaffold_cleanup
+) -> None:
+    """Kanban #2838: a requires_human_review=true task at run_mode=auto_pickup
+    must NOT be returned by next-autorun — it stays in TODO for a human."""
+    pid = await _make_fresh_project(client, scaffold_cleanup, "k2838-m")
+
+    flagged = await _make_task(
+        client,
+        pid,
+        "Quarterly archive purge",
+        description="Run TRUNCATE tasks_history to reclaim space",
+        run_mode="auto_pickup",
+        task_kind="ai",
+    )
+    assert flagged["requires_human_review"] is True, flagged
+    assert flagged["run_mode"] == "auto_pickup", flagged
+
+    body = await _get_next_autorun(client, pid)
+    assert body["next_task"] is None, (
+        f"flagged auto_pickup task {flagged['id']} must NOT be next_task: {body}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_next_task_excludes_flagged_auto_headless_task(
+    client, scaffold_cleanup
+) -> None:
+    """Kanban #2838: the same exclusion applies to run_mode=auto_headless —
+    the auto-SELECTION gap was NOT auto_headless-specific. The pre-existing
+    PATCH-time gate already refused setting auto_headless on a flagged row;
+    this proves the (new) next_task_stmt predicate covers it independently
+    too, e.g. for a flag that flips true via a later PATCH scan-hit that
+    doesn't touch run_mode."""
+    pid = await _make_fresh_project(client, scaffold_cleanup, "k2838-n")
+    await _grant_consent(client, pid)
+
+    flagged = await _make_task(
+        client,
+        pid,
+        "ops: TRUNCATE old logs table",
+        run_mode="auto_headless",
+        task_kind="ai",
+    )
+    assert flagged["requires_human_review"] is True, flagged
+    assert flagged["run_mode"] == "auto_headless", flagged
+
+    body = await _get_next_autorun(client, pid)
+    assert body["next_task"] is None, (
+        f"flagged auto_headless task {flagged['id']} must NOT be next_task: {body}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_next_task_includes_unflagged_auto_pickup_task(
+    client, scaffold_cleanup
+) -> None:
+    """Kanban #2838 null-safety: requires_human_review=false (the POST
+    default for benign content — and the only reachable value besides True,
+    since the column is NOT NULL DEFAULT false per migration
+    0037_tasks_requires_human_review; a genuine NULL cannot be constructed
+    through the public API) remains eligible. Locks the new
+    `.is_not(True)` predicate against an accidental over-exclusion regression
+    (e.g. a bug that filters on `== False` and would wrongly drop a
+    hypothetical NULL row under a future nullable migration)."""
+    pid = await _make_fresh_project(client, scaffold_cleanup, "k2838-o")
+
+    clean = await _make_task(
+        client,
+        pid,
+        "benign auto_pickup task",
+        description="Refresh the dashboard cache",
+        run_mode="auto_pickup",
+        task_kind="ai",
+    )
+    assert clean["requires_human_review"] is False, clean
+
+    body = await _get_next_autorun(client, pid)
+    assert body["next_task"] is not None, body
+    assert body["next_task"]["id"] == clean["id"], (
+        f"expected unflagged task {clean['id']}, got {body['next_task']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_next_task_prefers_unflagged_over_flagged_same_pool(
+    client, scaffold_cleanup
+) -> None:
+    """Kanban #2838: with a flagged auto_pickup task (higher priority) AND a
+    clean auto_pickup task (lower priority) both otherwise eligible,
+    next-autorun must skip the flagged one and surface the clean one —
+    proves the filter is a real WHERE exclusion, not merely an ordering
+    deprioritization that a higher-priority flagged row could still win."""
+    pid = await _make_fresh_project(client, scaffold_cleanup, "k2838-p")
+
+    flagged = await _make_task(
+        client,
+        pid,
+        "DROP TABLE archived_rows",
+        run_mode="auto_pickup",
+        task_kind="ai",
+        priority=4,  # URGENT — would win on priority alone if not excluded
+    )
+    assert flagged["requires_human_review"] is True, flagged
+
+    clean = await _make_task(
+        client,
+        pid,
+        "clean lower-priority task",
+        run_mode="auto_pickup",
+        task_kind="ai",
+        priority=2,
+    )
+    assert clean["requires_human_review"] is False, clean
+
+    body = await _get_next_autorun(client, pid)
+    assert body["next_task"] is not None, body
+    assert body["next_task"]["id"] == clean["id"], (
+        f"expected clean task {clean['id']} despite lower priority; flagged "
+        f"task {flagged['id']} must have been excluded: {body}"
     )

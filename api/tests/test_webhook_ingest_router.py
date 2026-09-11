@@ -426,6 +426,92 @@ async def test_webhook_rate_limit_resets_between_project_tag_pairs(client):
         del os.environ["WEBHOOK_RATE_LIMIT_PER_MIN"]
 
 
+def test_service_bucket_key_removed_after_full_expiry() -> None:
+    """A (project, tag) bucket that fully expires is removed from
+    ``_WINDOWS`` — not left behind as a permanent empty entry (Kanban #2833
+    MED, the memory-leak half of the fix).
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from src.services.webhook_rate_limit import (
+        RateLimitError,
+        _WINDOWS,
+        check_and_consume,
+        reset,
+    )
+
+    reset()
+    project_id, tag = 424242, "leak-probe"
+    key = (project_id, tag)
+    t0 = datetime(2030, 1, 1, tzinfo=timezone.utc)
+
+    check_and_consume(project_id, tag, now=t0, limit_per_minute=5)
+    # POSITIVE (sanity): the hit created a bucket for this (project, tag).
+    assert key in _WINDOWS
+
+    # 61s later the one entry is stale. limit_per_minute=0 forces THIS retry
+    # to be rejected instead of silently re-admitted — a successful retry
+    # would immediately recreate the key via the normal append path and mask
+    # the delete we're trying to observe here.
+    with pytest.raises(RateLimitError):
+        check_and_consume(project_id, tag, now=t0 + timedelta(seconds=61), limit_per_minute=0)
+
+    # NEGATIVE: the emptied bucket must be gone, not sitting there as
+    # `{(424242, "leak-probe"): deque([])}` forever.
+    assert key not in _WINDOWS
+
+
+@pytest.mark.asyncio
+async def test_webhook_rate_limit_bypass_via_many_tags_still_returns_429(client):
+    """Spreading hits across MANY distinct tags from ONE project must still
+    trip a 429 once the project-wide aggregate cap is reached — closes the
+    tag-variation bypass (Kanban #2833 MED).
+
+    Before the fix, each new tag got its own independent bucket, so varying
+    `tag` per request could exceed the intended aggregate rate indefinitely.
+    The project-wide ceiling (a multiple of the per-tag limit) now bounds the
+    TOTAL hits for a project regardless of how many distinct tags are used —
+    even though every individual tag below stays well under ITS OWN per-tag
+    cap of 2.
+    """
+    import os
+
+    os.environ["WEBHOOK_RATE_LIMIT_PER_MIN"] = "2"
+    os.environ["WEBHOOK_RATE_LIMIT_PROJECT_MULTIPLIER"] = "3"
+    # project ceiling = 2 * 3 = 6
+    try:
+        payload = {
+            "event": "invitee.created",
+            "payload": {
+                "event_type": {"uuid": "ET-byp", "name": "e"},
+                "invitee": {"name": "Bypass", "email": "byp@x.com", "uuid": "INV-byp"},
+                "event": {"start_time": "t", "end_time": "t", "uuid": "EVT-byp"},
+            },
+        }
+        headers = {"X-Webhook-Secret": WH_SENTINEL_SECRET_77889}
+
+        # 6 hits across 6 DISTINCT, never-before-seen tags (ONE hit each,
+        # nowhere near each tag's own per-tag cap of 2) -> all succeed,
+        # saturating the project-wide aggregate.
+        for i in range(6):
+            tag = f"bypass-probe-{i}"
+            await _seed_webhook_secret(client, tag=tag)
+            r = await client.post(f"/api/ingest/webhook/1/{tag}", json=payload, headers=headers)
+            assert r.status_code == 200, f"hit {i} (tag={tag}) returned {r.status_code}: {r.text}"
+
+        # A 7th hit on YET ANOTHER brand-new tag — itself nowhere near its
+        # own per-tag cap of 2 — must still be rejected: the PROJECT-wide
+        # aggregate (6) is now at the ceiling.
+        tag7 = "bypass-probe-6"
+        await _seed_webhook_secret(client, tag=tag7)
+        r = await client.post(f"/api/ingest/webhook/1/{tag7}", json=payload, headers=headers)
+        assert r.status_code == 429, r.text
+        assert r.json()["detail"] == "rate_limit_exceeded", r.json()
+    finally:
+        del os.environ["WEBHOOK_RATE_LIMIT_PER_MIN"]
+        del os.environ["WEBHOOK_RATE_LIMIT_PROJECT_MULTIPLIER"]
+
+
 # ===========================================================================
 # Pure unit test on substitute()
 # ===========================================================================

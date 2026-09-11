@@ -105,12 +105,17 @@ function parseStandards(raw: string): string[] {
     .filter((s) => s.length > 0);
 }
 
-// readStandards — extract `config.standards.{web,api,db}` defensively. Legacy
-// rows may have `config = {}` or `config.standards` shape drift; coerce to
+// StandardsLane — mirrors api/src/schemas/project.py::_Standards. Adding a lane
+// means BOTH sides: an undeclared lane is dropped silently server-side
+// (Pydantic `extra="ignore"`), so the UI would save it and read back nothing.
+type StandardsLane = "web" | "mobile" | "api" | "db";
+
+// readStandards — extract `config.standards.<lane>` defensively. Legacy rows
+// may have `config = {}` or `config.standards` shape drift; coerce to
 // `string[]` and drop non-string entries.
 function readStandards(
   config: Record<string, unknown> | undefined,
-  lane: "web" | "api" | "db",
+  lane: StandardsLane,
 ): string[] {
   if (!config) return [];
   const standards = config.standards as unknown;
@@ -138,6 +143,7 @@ export function EditProjectModal({ project }: Props) {
   const [stackApi, setStackApi] = useState("");
   const [stackDb, setStackDb] = useState("");
   const [standardsWeb, setStandardsWeb] = useState("");
+  const [standardsMobile, setStandardsMobile] = useState(""); // Kanban #2871
   const [standardsApi, setStandardsApi] = useState("");
   const [standardsDb, setStandardsDb] = useState("");
   const [workingPath, setWorkingPath] = useState("");
@@ -154,6 +160,7 @@ export function EditProjectModal({ project }: Props) {
     setStackApi(project.stack_api ?? "");
     setStackDb(project.stack_db ?? "");
     setStandardsWeb(readStandards(project.config, "web").join(", "));
+    setStandardsMobile(readStandards(project.config, "mobile").join(", "));
     setStandardsApi(readStandards(project.config, "api").join(", "));
     setStandardsDb(readStandards(project.config, "db").join(", "));
     setWorkingPath(project.working_path ?? "");
@@ -227,16 +234,19 @@ export function EditProjectModal({ project }: Props) {
     // keys (e.g. legacy keys the modal doesn't surface).
     const nextStandards = {
       web: parseStandards(standardsWeb),
+      mobile: parseStandards(standardsMobile),
       api: parseStandards(standardsApi),
       db: parseStandards(standardsDb),
     };
     const origStandards = {
       web: readStandards(project.config, "web"),
+      mobile: readStandards(project.config, "mobile"),
       api: readStandards(project.config, "api"),
       db: readStandards(project.config, "db"),
     };
     const standardsChanged =
       !arraysEqualString(nextStandards.web, origStandards.web) ||
+      !arraysEqualString(nextStandards.mobile, origStandards.mobile) ||
       !arraysEqualString(nextStandards.api, origStandards.api) ||
       !arraysEqualString(nextStandards.db, origStandards.db);
     if (standardsChanged) {
@@ -404,6 +414,7 @@ export function EditProjectModal({ project }: Props) {
               {(
                 [
                   { label: "web", value: standardsWeb, set: setStandardsWeb, key: "web" as const },
+                  { label: "mobile", value: standardsMobile, set: setStandardsMobile, key: "mobile" as const },
                   { label: "api", value: standardsApi, set: setStandardsApi, key: "api" as const },
                   { label: "db", value: standardsDb, set: setStandardsDb, key: "db" as const },
                 ]

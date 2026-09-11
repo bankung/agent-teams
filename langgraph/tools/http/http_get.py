@@ -24,8 +24,10 @@ from ..base import InvokeContext, Tier, Tool, ToolInput, ToolResult
 from ._common import (
     build_envelope,
     check_host_allowed,
+    check_scheme_allowed,
     host_not_allowed_result,
     non_2xx_error_msg,
+    scheme_not_allowed_result,
     truncate_response_body,
     warn_wildcard,
 )
@@ -75,6 +77,11 @@ class HttpGetTool(Tool):
     async def _run(
         self, input_obj: HttpGetInput, context: InvokeContext
     ) -> ToolResult:
+        # 0. Scheme gate (Kanban #2840 — explicit, not incidental on httpx).
+        scheme_allowed, scheme = check_scheme_allowed(input_obj.url)
+        if not scheme_allowed:
+            return scheme_not_allowed_result(scheme)
+
         # 1. Host gate.
         allowed, wildcard, offending_host = check_host_allowed(
             input_obj.url, context.host_allowlist

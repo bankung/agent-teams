@@ -1,6 +1,6 @@
 """Tests for the row_changed → SSE pipeline (Kanban #782).
 
-5 cases:
+8 cases:
 - (a) trigger fires NOTIFY on INSERT (verified via a separate asyncpg LISTEN
       connection in the test).
 - (b) SSE client receives a matching `row_changed` event when a task is
@@ -11,6 +11,9 @@
       ._listeners empty and don't grow asyncio.all_tasks().
 - (e) heartbeat — idle SSE client receives at least one `: keepalive` comment
       after the heartbeat interval.
+- (f)-(h) reconnect healthcheck (Kanban #2834) — `ensure_connected()` re-arms
+      a dead LISTEN connection and dispatch resumes; a healthy connection is
+      untouched; a failed reconnect attempt logs and does not raise.
 
 Common scaffolding:
 - The autouse `_enable_sse_listener` fixture flips APP_SSE_DISABLE=false +
@@ -35,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
 
@@ -415,4 +419,125 @@ async def test_e_heartbeat_fires_on_idle_stream(client, monkeypatch) -> None:
 
     assert seen_keepalive, (
         f"expected at least one ': keepalive' frame; saw={saw_frames!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# (f)-(h) reconnect healthcheck (Kanban #2834) — RowChangedBroker.ensure_
+# connected() re-arms a dead LISTEN connection; start()'s idempotency guard
+# only ever checked `_conn is not None`, never liveness, so a dropped
+# connection used to wedge the broker silently until process restart.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_f_ensure_connected_reconnects_dead_connection_and_dispatch_resumes(
+    client,
+) -> None:
+    """Force-close the broker's LISTEN connection — simulating a container
+    blip / idle reaper / DNS flap (#2834) — then call ensure_connected() and
+    confirm (1) a fresh connection replaces the dead one AND (2) a NOTIFY
+    dispatched after the reconnect still reaches a subscribed queue, proving
+    the re-armed connection is actually wired back to `_dispatch` and not
+    just a live-but-orphaned socket.
+    """
+    pres = await client.get("/api/projects/by-name/agent-teams")
+    project_id = pres.json()["id"]
+
+    # Kill the connection out from under the broker without going through
+    # stop() — mirrors what a container blip / idle reaper does: _conn stays
+    # non-None but dead, exactly the bug's failure mode.
+    dead_conn = global_broker._conn
+    assert dead_conn is not None
+    await dead_conn.close()
+    assert dead_conn.is_closed()
+
+    await global_broker.ensure_connected()
+
+    # Re-armed: a live, DIFFERENT connection object now backs the broker.
+    assert global_broker._conn is not None
+    assert not global_broker._conn.is_closed()
+    assert global_broker._conn is not dead_conn
+
+    # Prove it's actually wired — a NOTIFY after reconnect must still reach
+    # a subscribed listener (locks the "callback re-registered" half of the
+    # fix, not just "a connection object exists").
+    queue = global_broker.add_listener(project_id)
+    try:
+        headers = {"X-Project-Id": str(project_id)}
+        post_resp = await client.post(
+            "/api/tasks",
+            json={
+                "project_id": project_id,
+                "title": "sse-test-f (reconnect resumes dispatch)",
+            },
+            headers=headers,
+        )
+        assert post_resp.status_code == 201, post_resp.text
+        new_task_id = post_resp.json()["id"]
+
+        start = time.monotonic()
+        matched = None
+        while time.monotonic() - start < 1.0:
+            try:
+                payload = await asyncio.wait_for(queue.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                continue
+            if (
+                payload.get("table") == "tasks"
+                and payload.get("id") == new_task_id
+                and payload.get("op") == "insert"
+            ):
+                matched = payload
+                break
+
+        assert matched is not None, (
+            "expected the reconnected broker to still dispatch NOTIFY events"
+        )
+
+        await client.delete(f"/api/tasks/{new_task_id}", headers=headers)
+    finally:
+        global_broker.remove_listener(queue)
+
+
+@pytest.mark.asyncio
+async def test_g_ensure_connected_is_noop_on_healthy_connection() -> None:
+    """A healthy connection must NOT be replaced — ensure_connected() is
+    meant to be polled every tick without disrupting live listeners.
+    """
+    conn_before = global_broker._conn
+    assert conn_before is not None
+    assert not conn_before.is_closed()
+
+    await global_broker.ensure_connected()
+
+    assert global_broker._conn is conn_before  # same object — no reconnect
+
+
+@pytest.mark.asyncio
+async def test_h_ensure_connected_reconnect_failure_logs_and_does_not_raise(
+    monkeypatch, caplog
+) -> None:
+    """A reconnect attempt that fails (e.g. DB unreachable) must be caught
+    and logged, not raised — a scheduled healthcheck job must never die from
+    this, or APScheduler stops ticking it (coalesce/max_instances doesn't
+    save you from an exception escaping the job callable).
+    """
+    dead_conn = global_broker._conn
+    assert dead_conn is not None
+    await dead_conn.close()
+
+    async def _boom(*args, **kwargs):
+        raise OSError("simulated connection refused")
+
+    monkeypatch.setattr(asyncpg, "connect", _boom)
+
+    with caplog.at_level(logging.WARNING):
+        await global_broker.ensure_connected()  # must not raise
+
+    # Reconnect failed — _conn stays unset (None), retried on the next tick
+    # rather than left pointing at a half-open/garbage connection.
+    assert global_broker._conn is None
+    assert any(
+        "reconnect attempt failed" in rec.message for rec in caplog.records
     )

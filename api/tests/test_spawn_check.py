@@ -21,8 +21,11 @@ fixtures, mirroring `test_agent_overrides_audit.py`).
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 import pytest
+
+from src.models.project import Project
 
 # Real, currently-valid agent names (per `.claude/agents/*.md` + the
 # AGENT_ROLE_CODE map in constants.py) — mirrors test_agent_overrides_audit.py's
@@ -271,3 +274,95 @@ async def test_unknown_project_id_returns_404(client) -> None:
     )
     assert resp.status_code == 404, resp.text
     assert resp.json()["detail"] == "Project id=99999999 not found"
+
+
+# ---- 9. malformed config (non-dict agent_settings entry + non-list
+#         enabled_roles) -> degrades to "no restriction", never 500 (#2807) --
+
+
+@pytest.mark.asyncio
+async def test_malformed_config_degrades_instead_of_500(
+    client, scaffold_cleanup, db_session
+) -> None:
+    """Kanban #2807 (defense-in-depth, #2769 follow-up).
+
+    Write-side Pydantic validators (`schemas/project.py`) reject a non-list
+    `enabled_roles` and a non-dict `agent_settings[agent]` entry through the
+    normal API — this row shape is only reachable via a hand-edited/legacy/
+    direct-DB write. Seeded here via a DIRECT ORM write that bypasses those
+    validators entirely, mirroring
+    `test_get_agent_overrides_out_of_enum_tier_normalizes_to_null` in
+    test_project_agent_overrides.py (the established pattern for reaching a
+    row shape the API itself can never produce).
+
+    Pre-fix this 500s: `agent_settings.get(agent, {}).get("enabled")` raises
+    AttributeError on the non-dict entry (gate a, evaluated first). Note that
+    if gate a alone were guarded but gate b left bare, `role_code not in
+    enabled_roles` would still raise TypeError on the non-list `enabled_roles`
+    (gate b) — so this single combined case exercises BOTH guards in
+    sequence, not just whichever one the crash would otherwise stop at.
+
+    POSITIVE: normal 200 response, fail-open (`allowed=True` — "no
+    restriction" per the malformed-row degrade contract).
+    NEGATIVE this locks: no 500 from either malformed subkey.
+    """
+    project = await _make_project(client, scaffold_cleanup, slug="k2807-malformed")
+    pid = project["id"]
+    try:
+        row = await db_session.get(Project, pid)
+        assert row is not None, f"project id={pid} not found"
+        row.config = {
+            "agent_settings": {_BACKEND: "legacy-string-value"},  # non-dict entry
+            "enabled_roles": "oops-not-a-list",  # non-list
+        }
+        await db_session.commit()
+
+        resp = await client.get(
+            f"/api/projects/{pid}/spawn-check", params={"agent": _BACKEND}
+        )
+        assert resp.status_code == 200, resp.text  # NEGATIVE: not a 500
+        body = resp.json()
+        assert "allowed" in body, body
+        assert body["allowed"] is True, body  # POSITIVE: fail-open, no restriction
+        assert body["role_code"] == 2, body
+    finally:
+        await client.delete(f"/api/projects/{pid}")
+
+
+# ---- 10. AGENT_ROLE_CODE drift guard: every key has a matching agent file --
+
+
+def _find_agents_dir() -> Path:
+    """Walk up from this test file until a `.claude/agents/` dir is found.
+
+    Avoids hardcoding a parents[N] depth (this file currently lives at
+    api/tests/, i.e. two levels under the repo root, but this walk is robust
+    to that changing).
+    """
+    here = Path(__file__).resolve()
+    for candidate in (here, *here.parents):
+        agents_dir = candidate / ".claude" / "agents"
+        if agents_dir.is_dir():
+            return agents_dir
+    raise RuntimeError(f"Could not locate .claude/agents/ walking up from {here}")
+
+
+def test_agent_role_code_keys_have_matching_agent_files() -> None:
+    """Kanban #2807 drift guard.
+
+    `AGENT_ROLE_CODE`'s own docstring (constants.py) claims "Each key was
+    verified 2026-07-05 to have a matching `.claude/agents/<name>.md` file" —
+    this test makes that claim self-enforcing so a future role-coded agent
+    added to the map without its agent file fails CI instead of silently
+    drifting.
+    """
+    from src.constants import AGENT_ROLE_CODE
+
+    agents_dir = _find_agents_dir()
+    existing = {p.stem for p in agents_dir.glob("*.md")}
+
+    missing = sorted(name for name in AGENT_ROLE_CODE if name not in existing)
+    assert not missing, (
+        "AGENT_ROLE_CODE keys with no matching .claude/agents/<name>.md file: "
+        f"{missing} (checked {agents_dir})"
+    )

@@ -4,6 +4,15 @@
 # Prod/lightweight: docker compose -p agent-teams -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 
 services:
+  api:
+    environment:
+      # Only consumed when api/bin/infisical-entrypoint.sh actually runs (the
+      # dev+secrets combo — docker-compose.secrets.yml overrides `command:` to
+      # the entrypoint script, see its line ~93). The base command: (with its
+      # own explicit --reload) wins in every other dev combo, so this env var
+      # is a no-op there and only matters once secrets.yml is layered on top.
+      UVICORN_RELOAD: "true"
+
   web:
     environment:
       # WATCHPACK_POLLING enables inotify-less file watching via polling — required on
@@ -17,3 +26,13 @@ services:
       # container-installed one (Linux/Windows binary mismatch).
       - ./web:/app
       - /app/node_modules
+
+  langgraph:
+    environment:
+      # WATCHFILES_FORCE_POLLING forces the `watchfiles` library (uvicorn --reload's
+      # file watcher, used by langgraph/Dockerfile's CMD) to poll instead of relying
+      # on native OS file-change events — required on Windows Docker Desktop bind-mounts
+      # where inotify events don't propagate from host to container, same reasoning as
+      # web's WATCHPACK_POLLING above. Without it the Rust-based watcher can crash-loop
+      # (respawn churn) instead of detecting source edits cleanly. (Kanban #2825)
+      WATCHFILES_FORCE_POLLING: "true"

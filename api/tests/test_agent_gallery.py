@@ -178,6 +178,7 @@ def test_hook_count_counts_matcher_entries(tmp_path):
         ("secretary-job-scout", "secretary"),
         ("sem-campaign-lead", "sem"),
         ("seo-strategist", "seo"),
+        ("netops-triage", "netops"),
         ("google-ads-specialist", "sem"),
         ("meta-ads-specialist", "sem"),
         ("platform-ads-coordinator", "sem"),

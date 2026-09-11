@@ -3,6 +3,9 @@ payloads to per-client asyncio queues (Kanban #782).
 
 Wiring:
     main.lifespan → start_listener(app) on enter, stop_listener(app) on exit.
+    main.lifespan → schedule_row_changed_healthcheck_job(scheduler) registers
+        the reconnect healthcheck into the SAME AsyncIOScheduler used by
+        hitl_nudge / audit_archive (Kanban #2834) — no parallel scheduler.
     routers/events.py → broker.add_listener(project_id) / remove_listener.
     services/agents_watcher.py → broker.broadcast({"table": "agents", ...})
         (Kanban #1019) — a non-DB, platform-level signal fanned to EVERY
@@ -17,13 +20,19 @@ Cross-project leak guard lives in `_dispatch`:
     - projects events (the `projects` table has no project_id column;
       project-level changes are always relevant to project-bound listeners).
 
-The connection is held for the lifetime of the worker process and uses
-`add_listener(channel, callback)` (asyncpg's LISTEN API). One connection per
-worker — sufficient for V1 single-uvicorn-worker deploy; multi-worker scales
-via the DB being the broker.
+The connection is normally held for the lifetime of the worker process and
+uses `add_listener(channel, callback)` (asyncpg's LISTEN API). One connection
+per worker — sufficient for V1 single-uvicorn-worker deploy; multi-worker
+scales via the DB being the broker. A periodic healthcheck (`ensure_connected`,
+Kanban #2834) detects a silently-dropped connection (container blip, idle
+reaper, a DNS flap) and re-arms it — `start()`'s idempotency guard only ever
+checked `_conn is not None`, never liveness, so a dead connection used to
+wedge the broker (no more row_changed events, no error) until the worker
+process restarted.
 
 Skip startup when `APP_SSE_DISABLE=true` (pytest default — fixtures that need
-the broker flip this back to false explicitly).
+the broker flip this back to false explicitly). The healthcheck job respects
+the same flag so it doesn't fight an intentionally-disabled broker.
 """
 
 from __future__ import annotations
@@ -32,9 +41,12 @@ import asyncio
 import json
 import logging
 import os
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import asyncpg
+
+if TYPE_CHECKING:
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +108,64 @@ class RowChangedBroker:
                     logger.exception("row_changed broker: close failed")
             self._listeners.clear()
             logger.info("row_changed broker stopped")
+
+    async def ensure_connected(self) -> None:
+        """Health-check the LISTEN connection and re-arm it if dead (#2834).
+
+        `start()`'s idempotency guard only checks `self._conn is not None` —
+        it never verifies the connection is still alive. When the socket
+        drops silently (container blip, idle reaper, a DNS flap — the same
+        class of failure already fixed for the telegram poller in #2698)
+        `_conn` stays a non-None-but-dead object forever because nothing
+        ever reconnects: the broker quietly stops delivering `row_changed`
+        events with no visible error until the process restarts.
+
+        Meant to be polled on an interval by the scheduled healthcheck job
+        below. A live connection is a cheap no-op. A dead one (`_conn is
+        None` or `_conn.is_closed()`) is re-armed by resetting `_conn` to
+        `None` FIRST — so `start()`'s guard actually reconnects instead of
+        no-op'ing — then calling `start()`, which opens a fresh connection
+        and re-registers the NOTIFY callback.
+
+        The lock is held only for the read-and-decide step, not across the
+        `start()` call — `asyncio.Lock` is not reentrant and `start()`
+        acquires the same lock itself.
+
+        Resilient by construction: a failed reconnect attempt is logged and
+        swallowed (not raised) so a still-down DB just means "retry next
+        tick" instead of killing the scheduled job.
+        """
+        async with self._lock:
+            conn = self._conn
+            if conn is not None and not conn.is_closed():
+                return  # healthy — no-op, cheap to poll
+            # Dead or never connected: clear the ref under the lock so the
+            # start() call below (outside the lock) actually reconnects
+            # instead of no-op'ing on its idempotency guard.
+            self._conn = None
+
+        # shortcut: the lock is released here, so a concurrent stop() (e.g.
+        # lifespan shutdown) could interleave with the start() call below and
+        # open a fresh connection right after shutdown meant to close
+        # everything. Narrow window (a few event-loop ticks); pre-existing
+        # property of start()/stop() not being atomic against each other
+        # (this method doesn't widen it) and out of scope per #2834 ("don't
+        # change start()/stop() beyond what the re-arm needs"). Upgrade path
+        # if it ever bites: a shutdown flag checked after start() returns, or
+        # a second lock covering the full decide+start span.
+        logger.warning(
+            "row_changed broker: connection unhealthy (channel=%s) — reconnecting",
+            CHANNEL,
+        )
+        try:
+            await self.start()
+        except Exception:
+            logger.exception(
+                "row_changed broker: reconnect attempt failed — will retry "
+                "on next healthcheck"
+            )
+            return
+        logger.info("row_changed broker: reconnected (channel=%s)", CHANNEL)
 
     # ---------------- public API ------------------------------------------
 
@@ -209,6 +279,66 @@ async def start_listener() -> None:
 async def stop_listener() -> None:
     """Called from FastAPI lifespan on exit. Always safe."""
     await broker.stop()
+
+
+# ---------------- reconnect healthcheck (Kanban #2834) ---------------------
+
+
+async def _healthcheck_tick() -> None:
+    """APScheduler job target — mirrors hitl_nudge._nudge_tick /
+    audit_archive._audit_archive_tick: a catch-all exception guard so
+    APScheduler never silently drops the job on an unhandled error.
+    `ensure_connected()` already swallows its own reconnect failures; this
+    is defense-in-depth for anything unexpected (e.g. the lock itself).
+
+    Respects APP_SSE_DISABLE — the healthcheck must not fight a broker that
+    was intentionally left unstarted (pytest default; an operator could also
+    disable SSE while leaving the rest of the scheduler running).
+    """
+    if is_disabled():
+        return
+    try:
+        await broker.ensure_connected()
+    except Exception:
+        logger.exception("row_changed: _healthcheck_tick unhandled error")
+
+
+def schedule_row_changed_healthcheck_job(scheduler: "AsyncIOScheduler") -> None:
+    """Register the LISTEN-connection reconnect healthcheck (Kanban #2834).
+
+    Called from main.py lifespan startup AFTER the scheduler is created but
+    BEFORE scheduler.start() — mirrors hitl_nudge.schedule_nudge_job /
+    audit_archive.schedule_audit_archive_job. Registered into the SAME
+    AsyncIOScheduler instance; no parallel scheduler, no always-on
+    task/thread. Must tick after start_listener()'s initial connect — that
+    call already happens earlier in lifespan, well before this job's first
+    IntervalTrigger fire (which is one interval AFTER scheduler.start()).
+
+    Interval: ROW_CHANGED_HEALTHCHECK_INTERVAL_SECONDS env, default 30s —
+    frequent enough that a dropped connection is caught well inside typical
+    SSE-client patience, without hammering the DB with liveness checks every
+    tick. Clamped to >= 5s so a bad env value can't create a tight loop.
+    """
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    interval_seconds = int(
+        os.environ.get("ROW_CHANGED_HEALTHCHECK_INTERVAL_SECONDS", "30")
+    )
+    interval_seconds = max(5, interval_seconds)
+
+    scheduler.add_job(
+        _healthcheck_tick,
+        trigger=IntervalTrigger(seconds=interval_seconds),
+        id="row_changed_healthcheck_tick",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info(
+        "row_changed: healthcheck job registered — every %ds "
+        "(job_id=row_changed_healthcheck_tick)",
+        interval_seconds,
+    )
 
 
 # ---------------- DSN helper -----------------------------------------------

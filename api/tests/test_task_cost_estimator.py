@@ -23,6 +23,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.services.task_cost_estimator import (
+    _heuristic_tokens,
     chars_per_token,
     estimate_task_cost,
     resolve_provider_model,
@@ -73,6 +74,23 @@ def test_chars_per_token_mixed_below_threshold_stays_4() -> None:
 
 def test_chars_per_token_empty_returns_4_default() -> None:
     assert chars_per_token("") == 4
+
+
+def test_heuristic_tokens_floors_short_string_to_at_least_1() -> None:
+    """Kanban #2836 — a string shorter than chars_per_token(text) (ASCII
+    cpt=4) must not floor-divide down to 0; mirrors token_counter.count_tokens'
+    own max(1, ...) floor."""
+    assert chars_per_token("hi") == 4  # sanity: confirms this is the sub-cpt case
+    assert _heuristic_tokens("hi") == 1
+
+
+def test_heuristic_tokens_empty_and_whitespace_only_stay_zero() -> None:
+    """Negative lock: truly-empty / whitespace-only text stays at 0 tokens —
+    the floor fix must not regress the 'empty task prices at role-brief only'
+    forecast contract (test_cost_forecast.py::test_forecast_empty_task_role_brief_only),
+    which joins optional empty task fields with literal separator spaces."""
+    assert _heuristic_tokens("") == 0
+    assert _heuristic_tokens("   ") == 0
 
 
 def test_estimate_task_cost_heuristic_uses_2_cpt_for_thai() -> None:

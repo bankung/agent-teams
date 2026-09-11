@@ -550,8 +550,8 @@ def search_messages(
 
     Caller is responsible for cap enforcement BEFORE invoking.
     """
-    # FIX-6 (#1939): schema caps max_results at 50; $top already covers it.
-    # The while/nextLink pagination loop never iterated a second time (50 < 1000).
+    # FIX-6 (#1939): schema caps max_results at 300 (#2857); $top already covers it.
+    # The while/nextLink pagination loop never iterated a second time (300 < 1000).
     # Replace with a single Graph request — simpler, no nextLink SSRF surface here.
     access_token = _acquire_silent(creds)
     headers = {

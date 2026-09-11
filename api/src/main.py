@@ -315,6 +315,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from src.services.audit_archive import schedule_audit_archive_job
     schedule_audit_archive_job(scheduler)
 
+    # Kanban #2834 (2026-07-14) — row_changed SSE broker reconnect
+    # healthcheck. start_listener() above opened the one LISTEN connection
+    # for this process but never reconnected it — a silently-dropped
+    # connection (container blip, idle reaper, a DNS flap) left the Kanban
+    # board / dashboard live SSE updates quietly dead until the container
+    # restarted. Registered into the SAME scheduler instance (no parallel
+    # scheduler); its first tick fires one interval after scheduler.start()
+    # below, well after start_listener()'s initial connect. Interval via
+    # ROW_CHANGED_HEALTHCHECK_INTERVAL_SECONDS (default 30s).
+    from src.services.row_changed_listener import schedule_row_changed_healthcheck_job
+    schedule_row_changed_healthcheck_job(scheduler)
+
     scheduler.start()
     _scheduler = scheduler
     logger.info(

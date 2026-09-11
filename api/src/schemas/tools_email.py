@@ -535,8 +535,8 @@ class OutlookSearchRequest(BaseModel):
     max_results: int = Field(
         default=10,
         ge=1,
-        le=50,
-        description="Maximum number of messages to return (1–50).",
+        le=300,
+        description="Maximum number of messages to return (1–300).",
     )
 
 

@@ -10,11 +10,18 @@ Error message contracts (must remain stable):
   7 intentionally skipped/reserved. The message renders TaskStatus.ALL verbatim.)
 - process_status required (POST): "process_status is required"
 - priority invalid:       "priority must be one of (1, 2, 3, 4), got <repr>"
-- assigned_role invalid:  "assigned_role must be NULL or in range 1..50, got <repr>"
+- assigned_role invalid:  "assigned_role must be NULL or in range 1..<RANGE_MAX>, got <repr>"
   (Kanban #926, 2026-05-15: widened from "one of (1, 2, 3, 4, 5)" to a range
   to admit novel team codes 11..20 — 1..10 = dev, 11..20 = novel, 21+ reserved.
   Kanban #1266/#1269/#1271, 2026-05-20: further widened 1..50 to admit SEO
-  codes 21..30, SEM codes 31..40, data-analytics codes 41..50.)
+  codes 21..30, SEM codes 31..40, data-analytics codes 41..50. Kanban #2812,
+  2026-07-10: further widened to 1..60 for social codes 51..57. Kanban #2871,
+  2026-08-24: further widened to 1..70 for mobile codes 61..62.)
+
+  The assertions below interpolate `TaskRole.RANGE_MAX` rather than pinning the
+  literal — required by `context/standards/pydantic/v2-conventions.md`, which
+  Kanban #1355 already had to clean out of THIS file once after the 20->50 bump.
+  A hardcoded bound re-breaks on every range change; a derived one does not.
 
 The 1..5 lifecycle code is now `process_status` (renamed by the 2026-05-08
 soft-delete-and-lead migration); the bare `status` name is reserved for the
@@ -75,7 +82,7 @@ def test_task_create_role_invalid_message() -> None:
     with pytest.raises(ValidationError) as ei:
         TaskCreate(project_id=1, title="x", assigned_role=99)
     assert (
-        "assigned_role must be NULL or in range 1..50, got 99"
+        f"assigned_role must be NULL or in range 1..{TaskRole.RANGE_MAX}, got 99"
         in _first_msg(ei.value)
     )
 
@@ -129,6 +136,21 @@ def test_task_create_role_accepts_data_analytics_codes() -> None:
         assert task.assigned_role == code
 
 
+def test_task_create_role_accepts_social_codes() -> None:
+    """Kanban #2812 (2026-07-10): social range 51..60 — codes 51-57 named."""
+    for code in (
+        TaskRole.CONTENT_WRITER,
+        TaskRole.CONTENT_HOOK_DOCTOR,
+        TaskRole.CONTENT_EDITOR,
+        TaskRole.CONTENT_VERACITY_CHECKER,
+        TaskRole.THAI_PROOFREADER,
+        TaskRole.SOCIAL_BI_ANALYST,
+        TaskRole.SOCIAL_GENERAL_RESEARCHER,
+    ):
+        task = TaskCreate(project_id=1, title="x", assigned_role=code)
+        assert task.assigned_role == code
+
+
 def test_task_role_security_reviewer_code_is_six() -> None:
     """Kanban #7 Section B (2026-05-16): SECURITY_REVIEWER pins to integer
     code 6 in the dev range (1..10). Numbers are stable forever; this test
@@ -150,19 +172,22 @@ def test_task_create_accepts_security_reviewer_role() -> None:
 def test_task_create_role_accepts_unnamed_reserved_codes() -> None:
     """Kanban #926: range gate admits unnamed codes inside the partition.
     Kanban #1266/#1269/#1271: expanded to 1..50 — reserved sub-ranges:
-    7..10 (dev), 14..20 (novel), 25..30 (seo), 35..40 (sem), 45..50 (data)."""
-    for code in (7, 10, 14, 20, 25, 30, 35, 40, 45, 50):
+    7..10 (dev), 14..20 (novel), 25..30 (seo), 35..40 (sem), 45..50 (data).
+    Kanban #2812: expanded to 1..60 — reserved sub-range 58..60 (social).
+    Kanban #2871: expanded to 1..70 — reserved sub-range 63..70 (mobile)."""
+    for code in (7, 10, 14, 20, 25, 30, 35, 40, 45, 50, 58, 60, 63, 70):
         task = TaskCreate(project_id=1, title="x", assigned_role=code)
         assert task.assigned_role == code
 
 
 def test_task_create_role_rejects_above_range() -> None:
-    """Kanban #1266/#1269/#1271: 51+ is out of range — reserved for future
-    team domains beyond data-analytics. Range is now 1..50."""
+    """Kanban #2871: 71+ is out of range — reserved for future team domains
+    beyond mobile. Range is now 1..70 (61..70 = mobile, Kanban #2871; 61 was
+    the ceiling probe until this bump)."""
     with pytest.raises(ValidationError) as ei:
-        TaskCreate(project_id=1, title="x", assigned_role=51)
+        TaskCreate(project_id=1, title="x", assigned_role=71)
     assert (
-        "assigned_role must be NULL or in range 1..50, got 51"
+        f"assigned_role must be NULL or in range 1..{TaskRole.RANGE_MAX}, got 71"
         in _first_msg(ei.value)
     )
 
@@ -171,7 +196,7 @@ def test_task_create_role_rejects_zero() -> None:
     with pytest.raises(ValidationError) as ei:
         TaskCreate(project_id=1, title="x", assigned_role=0)
     assert (
-        "assigned_role must be NULL or in range 1..50, got 0"
+        f"assigned_role must be NULL or in range 1..{TaskRole.RANGE_MAX}, got 0"
         in _first_msg(ei.value)
     )
 
@@ -180,7 +205,7 @@ def test_task_create_role_rejects_negative() -> None:
     with pytest.raises(ValidationError) as ei:
         TaskCreate(project_id=1, title="x", assigned_role=-1)
     assert (
-        "assigned_role must be NULL or in range 1..50, got -1"
+        f"assigned_role must be NULL or in range 1..{TaskRole.RANGE_MAX}, got -1"
         in _first_msg(ei.value)
     )
 
@@ -249,7 +274,7 @@ def test_task_update_role_invalid_message() -> None:
     with pytest.raises(ValidationError) as ei:
         TaskUpdate(assigned_role=99)
     assert (
-        "assigned_role must be NULL or in range 1..50, got 99"
+        f"assigned_role must be NULL or in range 1..{TaskRole.RANGE_MAX}, got 99"
         in _first_msg(ei.value)
     )
 
@@ -262,11 +287,11 @@ def test_task_update_role_accepts_novel_codes() -> None:
 
 
 def test_task_update_role_rejects_above_range() -> None:
-    """Kanban #1266/#1269/#1271: PATCH path rejects 51+ — symmetric with POST."""
+    """Kanban #2871: PATCH path rejects 71+ — symmetric with POST."""
     with pytest.raises(ValidationError) as ei:
-        TaskUpdate(assigned_role=51)
+        TaskUpdate(assigned_role=71)
     assert (
-        "assigned_role must be NULL or in range 1..50, got 51"
+        f"assigned_role must be NULL or in range 1..{TaskRole.RANGE_MAX}, got 71"
         in _first_msg(ei.value)
     )
 
@@ -292,3 +317,115 @@ def test_task_create_accepts_every_valid_role() -> None:
     for code in TaskRole.ALL:
         task = TaskCreate(project_id=1, title="x", assigned_role=code)
         assert task.assigned_role == code
+
+
+# -----------------------------------------------------------------------------
+# Bool-coercion guard (Kanban #2829) — Python `bool` is an `int` subclass
+# (`True == 1`, `False == 0`) and Pydantic's lax `int` coercion accepts it.
+# Without an explicit guard, `process_status=True` silently became `1` (TODO)
+# and `priority=True` became `1` (LOW) instead of 422ing. The error format is
+# the SAME "must be one of (...), got <repr>" contract pinned above — these
+# tests just lock that a bool `<repr>` (`True`/`False`) now reaches it too.
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", [True, False])
+def test_task_create_process_status_rejects_bool(bad: bool) -> None:
+    with pytest.raises(ValidationError) as ei:
+        TaskCreate(project_id=1, title="x", process_status=bad)
+    assert (
+        f"process_status must be one of (1, 2, 3, 4, 5, 6, 8), got {bad!r}"
+        in _first_msg(ei.value)
+    )
+
+
+@pytest.mark.parametrize("bad", [True, False])
+def test_task_create_priority_rejects_bool(bad: bool) -> None:
+    with pytest.raises(ValidationError) as ei:
+        TaskCreate(project_id=1, title="x", priority=bad)
+    assert f"priority must be one of (1, 2, 3, 4), got {bad!r}" in _first_msg(ei.value)
+
+
+@pytest.mark.parametrize("bad", [True, False])
+def test_task_update_process_status_rejects_bool(bad: bool) -> None:
+    with pytest.raises(ValidationError) as ei:
+        TaskUpdate(process_status=bad)
+    assert (
+        f"process_status must be one of (1, 2, 3, 4, 5, 6, 8), got {bad!r}"
+        in _first_msg(ei.value)
+    )
+
+
+@pytest.mark.parametrize("bad", [True, False])
+def test_task_update_priority_rejects_bool(bad: bool) -> None:
+    with pytest.raises(ValidationError) as ei:
+        TaskUpdate(priority=bad)
+    assert f"priority must be one of (1, 2, 3, 4), got {bad!r}" in _first_msg(ei.value)
+
+
+def test_task_create_process_status_int_not_confused_with_bool() -> None:
+    """Regression lock paired with the bool-rejection tests above: the guard
+    must not start rejecting plain ints. `1 == True` under `==`, so the type
+    check (not just `==`) is what proves the guard didn't overreach."""
+    task1 = TaskCreate(project_id=1, title="x", process_status=1)
+    assert task1.process_status == 1
+    assert type(task1.process_status) is int
+    task5 = TaskCreate(project_id=1, title="x", process_status=5)
+    assert task5.process_status == 5
+
+
+def test_task_update_process_status_int_one_still_accepted() -> None:
+    upd = TaskUpdate(process_status=1)
+    assert upd.process_status == 1
+    assert type(upd.process_status) is int
+
+
+# -----------------------------------------------------------------------------
+# Bool-coercion guard for assigned_role (Kanban #2844) — sibling fix to the
+# #2829 guard above. `_make_role_range_validator`'s `isinstance(v, bool)`
+# check (an "after"-mode guard) had the identical dead-code defect: Pydantic's
+# lax `int` coercion rebuilds `True`/`False` into `1`/`0` before an "after"
+# validator ever sees it. `assigned_role=True` silently became `1` instead of
+# 422ing. Fixed by `_reject_bool_for_role_field`, a `mode="before"` companion
+# wired onto `assigned_role` on both TaskCreate and TaskUpdate. Error format
+# is the same range-style "must be NULL or in range X..Y, got <repr>" contract
+# pinned above — these tests lock that a bool `<repr>` now reaches it too.
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", [True, False])
+def test_task_create_role_rejects_bool(bad: bool) -> None:
+    with pytest.raises(ValidationError) as ei:
+        TaskCreate(project_id=1, title="x", assigned_role=bad)
+    assert (
+        f"assigned_role must be NULL or in range 1..{TaskRole.RANGE_MAX}, got {bad!r}"
+        in _first_msg(ei.value)
+    )
+
+
+@pytest.mark.parametrize("bad", [True, False])
+def test_task_update_role_rejects_bool(bad: bool) -> None:
+    with pytest.raises(ValidationError) as ei:
+        TaskUpdate(assigned_role=bad)
+    assert (
+        f"assigned_role must be NULL or in range 1..{TaskRole.RANGE_MAX}, got {bad!r}"
+        in _first_msg(ei.value)
+    )
+
+
+def test_task_create_role_int_not_confused_with_bool() -> None:
+    """Regression lock paired with the bool-rejection tests above: the guard
+    must not start rejecting plain ints. `1 == True` under `==`, so the type
+    check (not just `==`) is what proves the guard didn't overreach."""
+    task5 = TaskCreate(project_id=1, title="x", assigned_role=5)
+    assert task5.assigned_role == 5
+    assert type(task5.assigned_role) is int
+    task51 = TaskCreate(project_id=1, title="x", assigned_role=51)
+    assert task51.assigned_role == 51
+    assert type(task51.assigned_role) is int
+
+
+def test_task_update_role_int_still_accepted() -> None:
+    upd = TaskUpdate(assigned_role=5)
+    assert upd.assigned_role == 5
+    assert type(upd.assigned_role) is int

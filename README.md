@@ -163,7 +163,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 ```
 Web on **:5431**, API on **:8456**.
-Optional autonomous worker (Mode B, **experimental**): `docker compose --profile langgraph -f docker-compose.yml -f docker-compose.prod.yml up -d` → **:8465**.
+Optional autonomous worker (Mode B, **experimental**): `docker compose --profile langgraph -f docker-compose.yml -f docker-compose.prod.yml up -d`. No host port (Kanban #2839) — it's reachable only inside the compose network; check it's up with `docker compose -p agent-teams exec langgraph python -c "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/ok').read().decode())"`.
 
 ---
 
@@ -297,7 +297,7 @@ Forward-looking; subject to change.
           ┌──────────┴───────────┐
    Mode A: Claude Code      Mode B: LangGraph worker
    (interactive Lead +      (autonomous task execution,
-    spawned subagents)       headless)                                       (:8465)
+    spawned subagents)       headless)                                       (in-network only)
 ```
 
 Both modes share the same task store, agent roster, team playbooks, skills, and guardrails. **Mode B (the LangGraph worker) is experimental today** — Mode A (interactive) is the production path.

@@ -20,8 +20,8 @@
     Absolute Windows path where the harness should land. Created silently if missing.
 
 .PARAMETER Team
-    One of: dev, novel, general, content, seo, data-analytics, sem.
-    Drives which roster + standards subset the manifest carries.
+    One of ProjectTeam.ALL: dev, novel, general, content, seo, data-analytics, sem,
+    netops, social, mobile. Drives which roster + standards subset the manifest carries.
 
 .PARAMETER ApiUrl
     Base URL of the agent-teams API. Default http://localhost:8456.
@@ -39,7 +39,12 @@
 param(
     [Parameter(Mandatory)][string]$Name,
     [Parameter(Mandatory)][string]$WorkingPath,
-    [Parameter(Mandatory)][ValidateSet('dev','novel','general','content','seo','data-analytics','sem')][string]$Team,
+    # Mirrors api/src/constants.py::ProjectTeam.ALL — a DUPLICATE source of truth that
+    # silently drifted 3 teams behind (netops #2827, social #2811, mobile #2871 were all
+    # unscaffoldable through this script until #2871 noticed). The server already rejects
+    # an unknown team with 422 at /api/scaffold/<team>/files, so this set buys only a
+    # faster local error; when it next drifts, prefer deleting it over extending it again.
+    [Parameter(Mandatory)][ValidateSet('dev','novel','general','content','seo','data-analytics','sem','netops','social','mobile')][string]$Team,
     [string]$ApiUrl = 'http://localhost:8456',
     [switch]$Force  # MVP no-op; reserved
 )

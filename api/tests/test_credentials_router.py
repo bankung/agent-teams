@@ -953,3 +953,205 @@ async def test_use_audit_row_created_at_before_or_equal_response_timestamp(
     assert cred.last_accessed_at is not None, (
         "last_accessed_at should be set after granted /use"
     )
+
+
+# ---------------------------------------------------------------------------
+# 13. Operator gate (Kanban #2832) — create/update/delete gated; use untouched.
+#
+# Mirrors test_task_templates_router.py's "Operator gate (#1857)" section
+# exactly: activate the gate via monkeypatch.setenv("OPERATOR_ACTION_KEY", ...)
+# + reset the operator_auth one-time-warn flag, assert 403 without a token and
+# success with the matching X-Operator-Token header. The suite-wide autouse
+# fixture `_operator_gate_inactive_by_default` (conftest.py) keeps the gate
+# OFF for every other test in this file — those already exercise the
+# gate-INACTIVE / no-op-200 path for create/update/delete, so no separate
+# "inactive" test is added here (same posture as the task_templates sibling).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_credential_gated_403_when_active_without_token(
+    client, scaffold_cleanup, monkeypatch
+):
+    """With OPERATOR_ACTION_KEY set, POST without a valid token is 403."""
+    import src.services.operator_auth as oa
+    from src.routers.credentials import _DETAIL_OPERATOR_PROOF_REQUIRED
+
+    pid = await _make_project(client, scaffold_cleanup, "cred-gate-create-403")
+    headers = {"X-Project-Id": str(pid)}
+
+    monkeypatch.setenv("OPERATOR_ACTION_KEY", "secret-token-123")
+    oa._inactive_warned = False  # noqa: SLF001 — reset module guard for test
+
+    resp = await client.post(
+        f"/api/projects/{pid}/credentials",
+        json=_cred_create_body(name="gate_create_key"),
+        headers=headers,
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"] == _DETAIL_OPERATOR_PROOF_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_create_credential_gated_succeeds_with_valid_token(
+    client, scaffold_cleanup, monkeypatch
+):
+    """With OPERATOR_ACTION_KEY set, POST WITH the matching token succeeds."""
+    pid = await _make_project(client, scaffold_cleanup, "cred-gate-create-200")
+    headers = {"X-Project-Id": str(pid)}
+
+    monkeypatch.setenv("OPERATOR_ACTION_KEY", "secret-token-123")
+
+    resp = await client.post(
+        f"/api/projects/{pid}/credentials",
+        json=_cred_create_body(name="gate_create_ok_key"),
+        headers={**headers, "X-Operator-Token": "secret-token-123"},
+    )
+    assert resp.status_code == 201, resp.text
+
+
+@pytest.mark.asyncio
+async def test_update_credential_gated_403_when_active_without_token(
+    client, scaffold_cleanup, monkeypatch
+):
+    """With OPERATOR_ACTION_KEY set, PATCH without a valid token is 403."""
+    import src.services.operator_auth as oa
+    from src.routers.credentials import _DETAIL_OPERATOR_PROOF_REQUIRED
+
+    pid = await _make_project(client, scaffold_cleanup, "cred-gate-update-403")
+    headers = {"X-Project-Id": str(pid)}
+    cred_name = "gate_update_key"
+
+    # Create while the gate is still inactive (autouse fixture default).
+    create_resp = await client.post(
+        f"/api/projects/{pid}/credentials",
+        json=_cred_create_body(name=cred_name, value="before"),
+        headers=headers,
+    )
+    assert create_resp.status_code == 201, create_resp.text
+
+    monkeypatch.setenv("OPERATOR_ACTION_KEY", "secret-token-123")
+    oa._inactive_warned = False  # noqa: SLF001 — reset module guard for test
+
+    resp = await client.patch(
+        f"/api/projects/{pid}/credentials/{cred_name}",
+        json={"value": "rotated-should-not-apply"},
+        headers=headers,
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"] == _DETAIL_OPERATOR_PROOF_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_update_credential_gated_succeeds_with_valid_token(
+    client, scaffold_cleanup, monkeypatch
+):
+    """With OPERATOR_ACTION_KEY set, PATCH WITH the matching token succeeds."""
+    pid = await _make_project(client, scaffold_cleanup, "cred-gate-update-200")
+    headers = {"X-Project-Id": str(pid)}
+    cred_name = "gate_update_ok_key"
+
+    create_resp = await client.post(
+        f"/api/projects/{pid}/credentials",
+        json=_cred_create_body(name=cred_name, value="before"),
+        headers=headers,
+    )
+    assert create_resp.status_code == 201, create_resp.text
+
+    monkeypatch.setenv("OPERATOR_ACTION_KEY", "secret-token-123")
+
+    resp = await client.patch(
+        f"/api/projects/{pid}/credentials/{cred_name}",
+        json={"value": "after"},
+        headers={**headers, "X-Operator-Token": "secret-token-123"},
+    )
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_delete_credential_gated_403_when_active_without_token(
+    client, scaffold_cleanup, monkeypatch
+):
+    """With OPERATOR_ACTION_KEY set, DELETE without a valid token is 403 AND
+    the credential is NOT removed (still active — proves the gate blocks the
+    mutation, not just the response).
+    """
+    import src.services.operator_auth as oa
+    from src.routers.credentials import _DETAIL_OPERATOR_PROOF_REQUIRED
+
+    pid = await _make_project(client, scaffold_cleanup, "cred-gate-delete-403")
+    headers = {"X-Project-Id": str(pid)}
+    cred_name = "gate_delete_key"
+
+    create_resp = await client.post(
+        f"/api/projects/{pid}/credentials",
+        json=_cred_create_body(name=cred_name),
+        headers=headers,
+    )
+    assert create_resp.status_code == 201, create_resp.text
+
+    monkeypatch.setenv("OPERATOR_ACTION_KEY", "secret-token-123")
+    oa._inactive_warned = False  # noqa: SLF001 — reset module guard for test
+
+    resp = await client.delete(
+        f"/api/projects/{pid}/credentials/{cred_name}",
+        headers=headers,
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"] == _DETAIL_OPERATOR_PROOF_REQUIRED
+
+    # NEGATIVE: the credential must still be active (delete did not apply).
+    list_resp = await client.get(
+        f"/api/projects/{pid}/credentials",
+        headers={**headers, "X-Operator-Token": "secret-token-123"},
+    )
+    assert cred_name in {r["name"] for r in list_resp.json()}
+
+
+@pytest.mark.asyncio
+async def test_delete_credential_gated_succeeds_with_valid_token(
+    client, scaffold_cleanup, monkeypatch
+):
+    """With OPERATOR_ACTION_KEY set, DELETE WITH the matching token succeeds."""
+    pid = await _make_project(client, scaffold_cleanup, "cred-gate-delete-200")
+    headers = {"X-Project-Id": str(pid)}
+    cred_name = "gate_delete_ok_key"
+
+    create_resp = await client.post(
+        f"/api/projects/{pid}/credentials",
+        json=_cred_create_body(name=cred_name),
+        headers=headers,
+    )
+    assert create_resp.status_code == 201, create_resp.text
+
+    monkeypatch.setenv("OPERATOR_ACTION_KEY", "secret-token-123")
+
+    resp = await client.delete(
+        f"/api/projects/{pid}/credentials/{cred_name}",
+        headers={**headers, "X-Operator-Token": "secret-token-123"},
+    )
+    assert resp.status_code == 204, resp.text
+
+
+@pytest.mark.asyncio
+async def test_use_credential_unaffected_by_operator_gate(
+    client, scaffold_cleanup, monkeypatch
+):
+    """`use_credential` is untouched by the #2832 fix: with OPERATOR_ACTION_KEY
+    set (gate ACTIVE) and NO X-Operator-Token header, /use still succeeds
+    purely on its own `_policy_grants_use` approval-policy grant — proving the
+    new operator-proof gate was never wired onto this endpoint.
+    """
+    pid, headers, cred_name = await _make_approved_project_and_cred(
+        client, scaffold_cleanup, "cred-gate-use-unaffected"
+    )
+
+    monkeypatch.setenv("OPERATOR_ACTION_KEY", "secret-token-123")
+
+    use_resp = await client.post(
+        f"/api/projects/{pid}/credentials/{cred_name}/use",
+        json={},
+        headers=headers,  # no X-Operator-Token — must not be required
+    )
+    assert use_resp.status_code == 200, use_resp.text
+    assert use_resp.json()["value"] == SENTINEL_PLAINTEXT

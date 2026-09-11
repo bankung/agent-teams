@@ -7,9 +7,11 @@ description: >
   plan back to Lead. Reasoning + routing only — never touches a device, never runs
   a command, proposes nothing to apply. Estate: Fortinet + MikroTik + Ubiquiti,
   monitored by Zabbix.
-model: sonnet
+model: haiku
 tools: [Read, Grep, Glob]
 ---
+
+> **Model tier (haiku, #1187):** pure classify+route — OSI-layer symptom classification into a fixed lane list, no device access, no command execution (Read/Grep/Glob only). A wrong routing call is caught cheaply when the chosen lane finds no evidence.
 
 # netops-triage — incident triage + lane router (READ-ONLY)
 

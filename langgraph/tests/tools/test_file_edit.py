@@ -7,15 +7,23 @@ Covers (#977 AC1):
 - >1 matches → error_code='match_ambiguous'.
 - Path doesn't exist → error_code='not_found'.
 - Path is a directory → error_code='not_a_file'.
+
+Kanban #2837 additions:
+- A relative path anchors at ctx.working_path, never the process CWD.
+- A hung to_thread() read/write is cut off by asyncio.wait_for →
+  error_code='timeout' (read and write phases tested separately — they carry
+  different retry_safe values).
 """
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 
-from tools import GLOBAL_REGISTRY
+from tools import GLOBAL_REGISTRY, InvokeContext
+from tools.fs import _common
 
 
 @pytest.fixture
@@ -114,3 +122,78 @@ async def test_directory_target_rejected(tmp_path: Path):
 async def test_tier_is_write():
     tool = GLOBAL_REGISTRY.get("file_edit")
     assert tool.tier.value == "write"
+
+
+# ---------------------------------------------------------------------------
+# Kanban #2837 — path anchoring
+# ---------------------------------------------------------------------------
+
+
+async def test_relative_path_resolves_inside_working_path(tmp_path: Path):
+    """A relative path anchors at ctx.working_path — never the process CWD
+    (/repo/langgraph). Mirrors the same fix in file_write."""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    target = sub / "e.txt"
+    target.write_text("hello\n", encoding="utf-8")
+    ctx = InvokeContext(working_path=str(tmp_path))
+    tool = GLOBAL_REGISTRY.get("file_edit")
+    result = await tool.invoke(
+        {"path": "sub/e.txt", "old_string": "hello", "new_string": "world"}, ctx
+    )
+    assert result.success is True, result.error_msg
+    assert target.read_text(encoding="utf-8") == "world\n"
+
+
+# ---------------------------------------------------------------------------
+# Kanban #2837 — enforced timeout (read + write phases)
+# ---------------------------------------------------------------------------
+
+
+async def test_timeout_on_read_returns_timeout_result(monkeypatch, tmp_path: Path):
+    """A hung to_thread() read is cut off by asyncio.wait_for. Nothing has
+    been mutated yet, so this is retry_safe=True."""
+    p = tmp_path / "e.txt"
+    p.write_text("hello\n", encoding="utf-8")
+
+    async def _hang(func, *args, **kwargs):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(asyncio, "to_thread", _hang)
+    tool = GLOBAL_REGISTRY.get("file_edit")
+    monkeypatch.setattr(tool, "timeout_sec", 1)
+
+    result = await tool.invoke(
+        {"path": str(p), "old_string": "hello", "new_string": "world"}
+    )
+
+    assert result.success is False
+    assert result.error_code == "timeout"
+    assert result.retry_safe is True
+    # Negative: the file is untouched — the read never completed.
+    assert p.read_text(encoding="utf-8") == "hello\n"
+
+
+async def test_timeout_on_write_returns_timeout_result(monkeypatch, tmp_path: Path):
+    """A hung to_thread() write (read succeeds first) is cut off by
+    asyncio.wait_for. A write may be partial, so retry_safe=False."""
+    p = tmp_path / "e.txt"
+    p.write_text("hello\n", encoding="utf-8")
+    real_to_thread = asyncio.to_thread
+
+    async def _hang_write_only(func, *args, **kwargs):
+        if func is _common.write_text:
+            await asyncio.sleep(5)
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", _hang_write_only)
+    tool = GLOBAL_REGISTRY.get("file_edit")
+    monkeypatch.setattr(tool, "timeout_sec", 1)
+
+    result = await tool.invoke(
+        {"path": str(p), "old_string": "hello", "new_string": "world"}
+    )
+
+    assert result.success is False
+    assert result.error_code == "timeout"
+    assert result.retry_safe is False

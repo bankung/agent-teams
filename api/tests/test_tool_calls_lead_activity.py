@@ -140,6 +140,33 @@ async def test_lead_activity_201_and_get_roundtrip(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_lead_activity_summary_keeps_printable_unicode_strips_control(
+    client,
+) -> None:
+    """§ / ± / Thai survive the sanitizer; a control char (\\x07) is stripped
+    to '?' (#2920 — the old ASCII+Thai allowlist wrongly '?'-ed printable
+    Latin-1 like § and ±)."""
+    _project_id, task_id, headers = await _new_task(
+        client, "k2920-printable-unicode"
+    )
+    try:
+        resp = await client.post(
+            f"/api/tasks/{task_id}/tool-calls",
+            json=_lead_body(summary="§ ± ทดสอบ \x07 done"),
+            headers=headers,
+        )
+        assert resp.status_code == 201, resp.text
+        summary = resp.json()["summary"]
+        assert "§" in summary
+        assert "±" in summary
+        assert "ทดสอบ" in summary
+        assert "\x07" not in summary
+        assert "?" in summary
+    finally:
+        await client.delete(f"/api/tasks/{task_id}", headers=headers)
+
+
+@pytest.mark.asyncio
 async def test_lead_activity_422_on_invalid_kind(client) -> None:
     """kind not in the Literal enum → 422 with a `kind` loc."""
     _project_id, task_id, headers = await _new_task(

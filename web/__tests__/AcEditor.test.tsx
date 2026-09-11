@@ -164,3 +164,63 @@ describe("AcEditor quick-edit (long-press)", () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 });
+
+// Kanban #2841 — edit-panel Save must not become an unhandled promise
+// rejection when onSave (TaskDetail.handleAcSave) rejects. Listens on
+// process "unhandledRejection" directly rather than inferring it from DOM
+// state, since the DOM-visible effects (edit view staying open) already
+// happened before the rejection propagates — asserting on them alone would
+// pass even without the fix (Node's unhandledRejection is the only signal
+// that actually discriminates the try/finally-with-no-catch bug).
+describe("AcEditor — edit-panel Save error handling", () => {
+  it("Save rejecting does not produce an unhandled promise rejection", async () => {
+    const onSave = vi.fn().mockRejectedValue(new Error("boom"));
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    try {
+      render(<AcEditor criteria={CRITERIA} isTerminal={false} onSave={onSave} />);
+      fireEvent.click(screen.getByRole("button", { name: /edit acceptance criteria/i }));
+      fireEvent.click(document.querySelector("[data-ac-save]")!);
+
+      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+      // Let any pending unhandledRejection callback fire before asserting.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
+
+    expect(unhandled).toHaveLength(0);
+    // setEditing(false) was skipped — the Save button (edit view) is still present.
+    expect(document.querySelector("[data-ac-save]")).not.toBeNull();
+  });
+});
+
+// Kanban #2841 — parity with NewTaskModal's create-time >50 guard + the
+// backend hard cap (api/src/schemas/task.py max_length=50).
+describe("AcEditor — addItem 50-item cap", () => {
+  it("blocks adding a 51st item and surfaces onToast", () => {
+    const onSave = makeSave();
+    const onToast = vi.fn();
+    const fifty: AcceptanceCriterion[] = Array.from({ length: 50 }, (_, i) => ({
+      text: `criterion ${i}`,
+      status: "pending",
+      verified_by: null,
+      verified_at: null,
+      notes: null,
+    }));
+    render(
+      <AcEditor criteria={fifty} isTerminal={false} onSave={onSave} onToast={onToast} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /edit acceptance criteria/i }));
+    expect(screen.getAllByRole("textbox")).toHaveLength(50);
+
+    fireEvent.click(screen.getByRole("button", { name: /add acceptance criterion/i }));
+
+    // Still 50 — the 51st was blocked.
+    expect(screen.getAllByRole("textbox")).toHaveLength(50);
+    expect(onToast).toHaveBeenCalledWith(expect.stringContaining("50"));
+  });
+});

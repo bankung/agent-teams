@@ -14,6 +14,7 @@ import pytest
 from src.services.session_store import (
     SECTION_COMPACTED_HISTORY,
     SECTION_RECENT_ACTIVITY,
+    MalformedSessionFile,
     append_recent_activity,
     create_card_log_skeleton,
     create_session_files,
@@ -162,6 +163,96 @@ def test_replace_section_rejects_unknown_section(tmp_path: Path) -> None:
     create_session_files(6, tmp_path)
     with pytest.raises(ValueError, match="unknown section"):
         replace_section(6, "## Bogus", "x", repo_root=tmp_path)  # type: ignore[arg-type]
+
+
+# =============================================================================
+# Section markers — full-line matching + malformed-file refusal (#2835)
+# =============================================================================
+
+
+def test_split_sections_full_line_match_survives_prefix_collision(
+    tmp_path: Path,
+) -> None:
+    """A body line that merely STARTS WITH a marker (prefix, not exact) must
+    not be mistaken for the real heading. Before the fix, `_split_sections`
+    matched on substring-plus-fresh-line, so a Compacted History body line
+    like "## Recent Activity report on foo" would be treated as the Recent
+    Activity heading — truncating Compacted History and swallowing the real
+    Recent Activity heading into the wrong section's body.
+    """
+    sdir = create_session_files(22, tmp_path)
+    text = (
+        f"{SECTION_COMPACTED_HISTORY}\n"
+        "normal compacted line\n"
+        "## Recent Activity report on foo\n"  # prefix collision, NOT exact
+        "more compacted-history text\n"
+        "\n"
+        f"{SECTION_RECENT_ACTIVITY}\n"
+        "real recent activity body\n"
+    )
+    (sdir / "session.md").write_text(text, encoding="utf-8")
+
+    ch = get_section_text(22, SECTION_COMPACTED_HISTORY, tmp_path)
+    ra = get_section_text(22, SECTION_RECENT_ACTIVITY, tmp_path)
+
+    # POSITIVE — the lookalike line stays inside Compacted History's body;
+    # it is NOT treated as a section boundary.
+    assert "## Recent Activity report on foo" in ch
+    assert "more compacted-history text" in ch
+    # NEGATIVE (the bug this locks) — real Recent Activity is found at its
+    # true, later position, and is NOT the truncated/mixed text a prefix
+    # match would have produced.
+    assert ra.strip() == "real recent activity body"
+
+
+def test_replace_section_refuses_on_duplicate_marker(tmp_path: Path) -> None:
+    """A marker-like FULL-LINE smuggled into a section body (the shape a raw
+    LLM completion or client-supplied summary could plausibly produce) must
+    not let `replace_section` silently corrupt the other section — it must
+    refuse instead (Kanban #2835)."""
+    sdir = create_session_files(23, tmp_path)
+    # Simulates the exploit shape: Compacted History's body (already
+    # rewritten once, e.g. by compact_runner from raw LLM output) itself
+    # contains a full-line "## Recent Activity" — a duplicate marker.
+    poisoned = (
+        f"{SECTION_COMPACTED_HISTORY}\n"
+        "some summary text\n"
+        f"{SECTION_RECENT_ACTIVITY}\n"
+        "fake body smuggled in via free text\n"
+        "\n"
+        f"{SECTION_RECENT_ACTIVITY}\n"
+        "real recent activity — must survive\n"
+    )
+    (sdir / "session.md").write_text(poisoned, encoding="utf-8")
+
+    with pytest.raises(MalformedSessionFile):
+        replace_section(23, SECTION_RECENT_ACTIVITY, "", repo_root=tmp_path)
+
+    # POSITIVE — refusal is a true no-op: file bytes on disk are untouched,
+    # so the real Recent Activity body is still there.
+    # NEGATIVE (the bug this locks) — before the fix this call would have
+    # truncated the file at the fake marker, erasing the real heading below.
+    on_disk = (sdir / "session.md").read_text(encoding="utf-8")
+    assert on_disk == poisoned
+    assert "real recent activity — must survive" in on_disk
+
+
+def test_replace_section_refuses_on_missing_marker(tmp_path: Path) -> None:
+    """Missing-marker files are refused too, not silently patched — this
+    replaces the old "append a fresh section at EOF" fallback, which was
+    itself a silent-mutation risk (Kanban #2835)."""
+    sdir = create_session_files(24, tmp_path)
+    one_section_only = f"{SECTION_COMPACTED_HISTORY}\nbody only\n"
+    (sdir / "session.md").write_text(one_section_only, encoding="utf-8")
+
+    with pytest.raises(MalformedSessionFile):
+        replace_section(
+            24, SECTION_COMPACTED_HISTORY, "new body\n", repo_root=tmp_path
+        )
+
+    # POSITIVE/NEGATIVE pair — refusal left the file exactly as it was (no
+    # section silently appended, no body silently rewritten).
+    assert (sdir / "session.md").read_text(encoding="utf-8") == one_section_only
 
 
 # =============================================================================

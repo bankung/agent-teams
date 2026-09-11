@@ -320,7 +320,18 @@ class _Stack(BaseModel):
 
 
 class _Standards(BaseModel):
+    """Per-lane standards keys stored at `config.standards`.
+
+    Every lane MUST be declared here. Pydantic's default `extra="ignore"` means
+    an undeclared lane (e.g. a `standards.mobile` POST before Kanban #2871 added
+    the field) is DROPPED SILENTLY — no 422, no warning, the caller reads its
+    write back as absent. Adding a lane = this model + the lane inputs in
+    `web/components/EditProjectModal.tsx` + the role→lane table in
+    `context/standards/README.md`.
+    """
+
     web: list[str] = Field(default_factory=list)
+    mobile: list[str] = Field(default_factory=list)  # Kanban #2871 — Angular/Ionic/Capacitor
     api: list[str] = Field(default_factory=list)
     db: list[str] = Field(default_factory=list)
 

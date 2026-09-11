@@ -45,6 +45,7 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
 import worker as worker_module
+from content_safety import scan_task_content
 from llm import make_chat_model
 from nodes import (
     auditor_node,
@@ -358,6 +359,38 @@ class InvokeRequest(BaseModel):
 async def invoke(req: InvokeRequest) -> Any:
     if not graph_ready or graph is None:
         raise HTTPException(status_code=503, detail="graph not yet ready")
+
+    # L17 content-safety gate (Kanban #2839, closing the gap left by #1114).
+    # The worker's auto-pickup path (worker.py _poll_once, ~L662) already runs
+    # scan_task_content before invoking the graph; POST /invoke is a second,
+    # independent entrypoint into the same compiled graph (used by
+    # `langgraph dev` / direct callers) and was missing the same gate — a
+    # destructive brief posted directly here reached `ainvoke` unchecked.
+    # Mirrors the worker's matching semantics (title/description/AC haystack,
+    # same regex patterns) but only `req.brief` is available on this request
+    # shape, so it's passed as `description` (the scanner treats title/
+    # description/AC as one concatenated haystack, so this is equivalent to
+    # the worker scanning a task whose title/AC are empty).
+    matched = scan_task_content(title=None, description=req.brief, acceptance_criteria=None)
+    if matched:
+        logger.warning(
+            "L17: REFUSING /invoke for task %d — brief matched destructive patterns: %s",
+            req.task_id,
+            matched,
+        )
+        # 422 (not 503, which is reserved for graph-not-ready): matches the
+        # api layer's convention for a content-moderation refusal on a
+        # well-formed request (api/src/routers/tasks.py PATCH auto-run gate,
+        # ~L2714, also refuses with 422 + a matched-fields detail). Unlike
+        # the worker (which PATCHes the Kanban task to BLOCKED), /invoke has
+        # no task row to mutate here — it just refuses the call.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "destructive_intent_detected",
+                "matched": matched,
+            },
+        )
 
     initial_state: AgentState = {
         "task_id": req.task_id,

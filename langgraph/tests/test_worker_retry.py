@@ -472,6 +472,59 @@ async def test_junk_retry_backoff_raises_runtime_error(
 
 
 # ---------------------------------------------------------------------------
+# 5b. Kanban #2840 — junk retry-env values must raise BEFORE the IN_PROGRESS
+#     PATCH, not strand the task mid-PATCH. The two tests above only assert
+#     WHAT is raised; these assert WHEN — zero PATCH calls happen first.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "env_var,junk_value",
+    [
+        ("LANGGRAPH_TRANSIENT_RETRIES", "not-a-number"),
+        ("LANGGRAPH_RETRY_BACKOFF_SEC", "abc"),
+    ],
+)
+async def test_junk_retry_env_raises_before_in_progress_patch(
+    monkeypatch: pytest.MonkeyPatch, env_var: str, junk_value: str
+) -> None:
+    """A bad retry/backoff env value must leave the task untouched (no PATCH
+    at all — not even the IN_PROGRESS flip), so next-autorun keeps offering
+    it and the operator can fix the env without a stranded IN_PROGRESS row.
+
+    Before the fix, this validation ran AFTER the IN_PROGRESS PATCH
+    (~line 914 pre-fix), so a bad value raised mid-tick and left the task
+    stuck IN_PROGRESS forever — invisible to next-autorun, the exact
+    stranding bug the H-2 fix (WorkerConfig.__init__, ~line 268) already
+    prevents at startup but this call-time re-validation had reintroduced.
+    """
+    cfg = _cfg(monkeypatch)
+    monkeypatch.setenv(env_var, junk_value)
+
+    task = {"id": 104, "description": "junk-env-ordering", "assigned_role": None}
+    requests: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        requests.append(req)
+        return _standard_handler(task)(req)
+
+    async def ainvoke(state, config):
+        return {"halt_reason": None, "final_result": "ok"}
+
+    async with _make_client(handler) as client:
+        with pytest.raises(RuntimeError, match=env_var):
+            await _poll_once(client, _make_graph_module(ainvoke), cfg, _headers(cfg))
+
+    # The load-bearing assertion: NO PATCH occurred (not even IN_PROGRESS) —
+    # the task is left exactly as next-autorun handed it over.
+    patches = [r for r in requests if r.method == "PATCH"]
+    assert patches == [], (
+        f"expected zero PATCH calls before the env-validation raise, got: "
+        f"{[(p.method, p.url.path) for p in patches]}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 6. classify_exception — Google 429 / RESOURCE_EXHAUSTED (Kanban #2274)
 # ---------------------------------------------------------------------------
 

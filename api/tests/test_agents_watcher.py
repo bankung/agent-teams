@@ -19,6 +19,7 @@ Uses `tmp_path` throughout — the real `.claude/agents/` dir is never touched.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from pathlib import Path
@@ -188,3 +189,63 @@ async def test_start_agents_watcher_noop_when_sse_disabled(monkeypatch) -> None:
     assert svc._task is None
     # stop is always safe even when nothing was started.
     await svc.stop_agents_watcher()
+
+
+# ---------------------------------------------------------------------------
+# _watch_loop resilience — a broadcast() exception must not kill the loop
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_watch_loop_survives_broadcast_exception(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Kanban #2836 — the try/except around the signature scan previously left
+    broker.broadcast() unguarded, so a broadcast exception would propagate out
+    of `_watch_loop` and silently kill the background task. Now a broadcast
+    failure is caught + logged and the loop keeps polling.
+
+    Runs the real loop on a very short poll interval (rather than the ~4s
+    production default) since there's no single-tick seam to call directly —
+    this is the only way to prove "the loop survives", not a speed shortcut.
+    """
+    monkeypatch.setenv("APP_AGENTS_WATCH_SECONDS", "0.01")
+
+    call_count = {"n": 0}
+
+    def _boom(payload):  # noqa: ANN001 — test stub matching broadcast(payload)
+        call_count["n"] += 1
+        raise RuntimeError("broker exploded")
+
+    monkeypatch.setattr(global_broker, "broadcast", _boom)
+
+    p = _write(tmp_path, "agent-a.md")
+
+    task = asyncio.create_task(svc._watch_loop(tmp_path))
+    try:
+        await asyncio.sleep(0.05)  # let the baseline tick land (no broadcast yet)
+
+        # Mutate the dir so the NEXT tick's signature differs -> triggers a
+        # broadcast, which raises via the monkeypatch above.
+        st = p.stat()
+        os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+        p.write_text("---\nname: x\n---\nbody v2\n", encoding="utf-8")
+
+        # Poll (bounded) until the exploding broadcast has fired at least once.
+        for _ in range(200):
+            if call_count["n"] >= 1:
+                break
+            await asyncio.sleep(0.01)
+
+        # POSITIVE: the exploding broadcast was actually invoked (not a
+        # vacuous pass because the change was never detected).
+        assert call_count["n"] >= 1, "broadcast should have been invoked and raised"
+        # NEGATIVE (the fix being locked): the task is still alive, not
+        # crashed, despite broadcast() raising.
+        assert not task.done(), "the loop task must still be alive after broadcast raised"
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass

@@ -168,6 +168,25 @@ def test_session_compact_request_rejects_unknown_trigger() -> None:
 
 
 # =============================================================================
+# System prompt — defense-in-depth guard (Kanban #2835)
+# =============================================================================
+
+
+def test_compact_system_prompt_forbids_reserved_section_headings() -> None:
+    """The LLM must be told not to emit the literal storage headings.
+
+    This is defense-in-depth only (the real fix is session_store's
+    full-line matching + malformed-file refusal) — a compliant model is
+    just less likely to hand `replace_section` a summary that collides
+    with a reserved marker in the first place.
+    """
+    from src.services.compact_runner import _COMPACT_SYSTEM_PROMPT
+
+    assert "## Compacted History" in _COMPACT_SYSTEM_PROMPT
+    assert "## Recent Activity" in _COMPACT_SYSTEM_PROMPT
+
+
+# =============================================================================
 # Cost computation lock — snapshot at fixed token totals
 # =============================================================================
 

@@ -46,6 +46,10 @@ const STATUS_OPTIONS: AcceptanceCriterion["status"][] = [
   "na",
 ];
 
+// #2841 — mirrors the backend hard cap (api/src/schemas/task.py max_length=50)
+// and NewTaskModal's create-time guard; EDIT mode had no cap until now.
+const AC_MAX_ITEMS = 50;
+
 type Props = {
   criteria: AcceptanceCriterion[] | null;
   isTerminal: boolean;
@@ -167,6 +171,11 @@ export function AcEditor({ criteria, isTerminal, onSave, disabled = false, onToa
       await onSave(draft);
       setEditing(false);
       setEmptyIndices(new Set());
+    } catch {
+      // #2841 — onSave (TaskDetail.handleAcSave) already surfaced the error via
+      // onError/toast before rethrowing. Swallow here so this fire-and-forget
+      // onClick handler doesn't leave an unhandled rejection; edit view stays
+      // open and the draft is preserved (setEditing(false) above was skipped).
     } finally {
       setSaving(false);
     }
@@ -210,6 +219,12 @@ export function AcEditor({ criteria, isTerminal, onSave, disabled = false, onToa
   }
 
   function addItem() {
+    if (draft.length >= AC_MAX_ITEMS) {
+      if (onToast) {
+        onToast(`Acceptance criteria capped at ${AC_MAX_ITEMS}. Remove one before adding another.`);
+      }
+      return;
+    }
     setDraft((prev) => [
       ...prev,
       { text: "", status: "pending", verified_by: null, verified_at: null, notes: null },

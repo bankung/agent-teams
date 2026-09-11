@@ -6,7 +6,7 @@
 > standard at `context/standards/web/design-language.md`).
 >
 > **Commit home:** `context/standards/skills/skill-authoring.md` (humans-commit; see §7).
-> Derived from the 18-skill corpus + #2456 pilot (zb-jobs split). Last revised: 2026-06-17.
+> Derived from the 18-skill corpus + #2456 pilot (zb-jobs split). Last revised: 2026-08-28.
 
 ---
 
@@ -82,7 +82,7 @@ tags      : array of free-form strings, lowercase, hyphen-separated.
             job-search) + the action style (read-only, mutate, orchestration).
 ```
 
-### 1.4 `category` taxonomy (derived from the 18-skill corpus)
+### 1.4 `category` taxonomy
 
 | Category | Description | Skills |
 |---|---|---|
@@ -90,9 +90,18 @@ tags      : array of free-form strings, lowercase, hyphen-separated.
 | `platform` | Cross-cutting platform ops: git, release, bind, audit | zb-git-commit, zb-release, zb-bind, zb-audit |
 | `review` | Quality / adversarial review passes | zb-intense-review |
 | `secretary` | Personal/secretary domain (email, job-search) | zb-email, zb-jobs |
+| `stack` | Tied to one technology stack rather than to the platform — usable only on projects running that stack | zb-mobile-scaffold, zb-mobile-build |
 
-Four categories cover all 18 skills. Add a new category only when a new skill genuinely doesn't fit —
-do not fragment `kanban` into sub-categories.
+Add a new category only when a new skill genuinely doesn't fit — do not fragment `kanban` into
+sub-categories.
+
+> **Single source of truth = the validator.** `scripts/validate-skills.mjs`'s `VALID_CATEGORIES`
+> is authoritative — it is what actually enforces the taxonomy at runtime. This table documents
+> what each category *means* and MUST list exactly those names; the `zb-skill-new` scaffolder
+> references this section and MUST NOT hard-code a divergent list. When the taxonomy changes, edit
+> `VALID_CATEGORIES` FIRST, then update this table. Editing one without the other makes them
+> disagree and the standard silently becomes a lie. (`zb-walker` shipped `category: "walker"` against
+> neither — fixed in #2921, reassigned to `platform`; root-cause tracked in #2872.)
 
 ---
 
@@ -273,7 +282,7 @@ independently verifiable by reading the SKILL.md without running it.
 | E5 | **No test-surface pollution** | Skill does not write `*_for_tests` markers, touch production schemas, or leave `_scratch/` debris after the happy path completes (HITL-gated verbs that create `_scratch/` payloads are exempt — they clean up in the report step) |
 | E6 | **References load lazily** | If the skill points to external files (KB docs, tracker), it reads them only when the verb actually needs them — not in every invocation. A flat skill with ≤3 verbs and no split: this is N/A |
 | E7 | **Compose boundary explicit** | If the skill delegates to another skill, §0 names both the logic-owner and the mechanics-owner explicitly; the project-id requirement of the mechanics skill is stated |
-| E8 | **Category matches taxonomy** | `metadata.category` is one of: `kanban`, `platform`, `review`, `secretary` |
+| E8 | **Category matches taxonomy** | `metadata.category` is one of the taxonomy names in §1.4 (= the validator's `VALID_CATEGORIES`; currently `kanban`, `platform`, `review`, `secretary`, `stack`) |
 | E9 | **Version semver** | `metadata.version` follows `MAJOR.MINOR.PATCH` |
 | E10 | **Usage section has ≥ 3 examples** | `## Usage` section contains ≥ 3 invocation lines (code block) |
 
@@ -372,6 +381,12 @@ The workflow is:
 
 This same rule applies to any new or updated skill: the agent drafts changes, the operator commits
 them under `.claude/skills/<name>/SKILL.md`. Skill files take effect after a Claude Code restart.
+
+**Downstream project copies are NOT auto-synced.** Some downstream projects keep a point-in-time COPY
+of this standard for their own skill authoring. Those copies are advisory snapshots — there is no sync
+mechanism and building one is out of scope (YAGNI). THIS file (agent-teams) is the single authoritative
+copy; a downstream copy may lag and must be re-copied by hand if a project wants the current taxonomy.
+(Decision recorded #2921.)
 
 ### 7.2 How `metadata` fields feed downstream tooling
 

@@ -3,6 +3,11 @@
 Covers the happy path of:
   (1) CRUD: POST + GET + PATCH + DELETE /api/handoff-templates round-trip
       lands a template, soft-deletes it, and re-list excludes it by default.
+  (1b) Project-scoping enforcement (Kanban #2828) on detail GET / PATCH /
+      DELETE: a project-scoped template 404s for a different project's
+      header on all three verbs (with a positive check that the foreign
+      attempts never partially applied); a GLOBAL template (project_id
+      IS NULL) stays reachable under ANY valid project header.
   (2) DONE-flip spawn: a task carrying handoff_template_id, PATCHed to
       process_status=5, atomically spawns a child task with:
         - title interpolated from template.title_pattern + parent.title,
@@ -12,10 +17,11 @@ Covers the happy path of:
   (3) Loop guard (AC6): the spawned child has handoff_template_id=NULL —
       a further PATCH to DONE on the child does NOT chain-spawn.
 
-The rigorous suite (edge cases — global-template scope, malformed
-title_pattern 422, project-scope cross-tenant 422, soft-deleted template
-spawn no-op WARNING, idempotent re-PATCH of an already-DONE row, etc.)
-is dev-tester's domain.
+The rigorous suite (edge cases — missing X-Project-Id header 400 on GET/
+PATCH/DELETE, malformed title_pattern 422, `?project_id=` query-override
+interaction with detail/PATCH/DELETE, soft-deleted template spawn no-op
+WARNING, idempotent re-PATCH of an already-DONE row, etc.) is dev-tester's
+domain.
 """
 
 from __future__ import annotations
@@ -126,8 +132,9 @@ async def test_handoff_template_crud_happy_round_trip(
     ]
     assert body["carry_context_to_comment"] is False
 
-    # GET detail
-    resp = await client.get(f"/api/handoff-templates/{tmpl_id}")
+    # GET detail (project-scoped template — requires the owning project's
+    # header post-#2828; see the dedicated project-scoping tests below).
+    resp = await client.get(f"/api/handoff-templates/{tmpl_id}", headers=headers)
     assert resp.status_code == 200, resp.text
     assert resp.json()["id"] == tmpl_id
 
@@ -143,16 +150,17 @@ async def test_handoff_template_crud_happy_round_trip(
     items_no_scope = resp.json()
     assert not any(t["id"] == tmpl_id for t in items_no_scope), items_no_scope
 
-    # PATCH the description.
+    # PATCH the description (project-scoped template — requires the header).
     resp = await client.patch(
         f"/api/handoff-templates/{tmpl_id}",
+        headers=headers,
         json={"description": "updated by smoke test"},
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["description"] == "updated by smoke test"
 
-    # DELETE soft-deletes.
-    resp = await client.delete(f"/api/handoff-templates/{tmpl_id}")
+    # DELETE soft-deletes (project-scoped template — requires the header).
+    resp = await client.delete(f"/api/handoff-templates/{tmpl_id}", headers=headers)
     assert resp.status_code == 204, resp.text
 
     # Default list excludes the soft-deleted row.
@@ -166,6 +174,135 @@ async def test_handoff_template_crud_happy_round_trip(
     )
     assert resp.status_code == 200, resp.text
     assert any(t["id"] == tmpl_id for t in resp.json()), resp.json()
+
+
+# ---------------------------------------------------------------------------
+# (1b) Project-scoping enforcement on detail GET / PATCH / DELETE (Kanban #2828)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handoff_template_cross_project_404_all_verbs(
+    client, scaffold_cleanup
+) -> None:
+    """A project-scoped template is invisible to a DIFFERENT project's header.
+
+    Regression lock for Kanban #2828: before the fix, GET detail / PATCH /
+    DELETE resolved purely by template_id with no X-Project-Id enforcement,
+    so any caller knowing a sequential id could read/retarget/soft-delete
+    another project's template. All three verbs must now 404 the foreign
+    project's attempt, and the owning project's view must come back
+    unchanged (proving the 404s rejected outright rather than partially
+    applying).
+    """
+    pid_owner = await _make_fresh_project(
+        client, scaffold_cleanup, "handoff-xproj-owner"
+    )
+    pid_other = await _make_fresh_project(
+        client, scaffold_cleanup, "handoff-xproj-other"
+    )
+    headers_owner = {"X-Project-Id": str(pid_owner)}
+    headers_other = {"X-Project-Id": str(pid_other)}
+
+    resp = await client.post(
+        "/api/handoff-templates",
+        headers=headers_owner,
+        json=_handoff_template_payload(f"xproj-tmpl-{uuid.uuid4().hex[:6]}"),
+    )
+    assert resp.status_code == 201, resp.text
+    tmpl_id = resp.json()["id"]
+
+    # GET detail from the OTHER project's header → 404.
+    resp = await client.get(
+        f"/api/handoff-templates/{tmpl_id}", headers=headers_other
+    )
+    assert resp.status_code == 404, resp.text
+
+    # PATCH from the OTHER project's header → 404 (not a silent retarget).
+    resp = await client.patch(
+        f"/api/handoff-templates/{tmpl_id}",
+        headers=headers_other,
+        json={"description": "attempted cross-project update"},
+    )
+    assert resp.status_code == 404, resp.text
+
+    # DELETE from the OTHER project's header → 404 (not a silent soft-delete).
+    resp = await client.delete(
+        f"/api/handoff-templates/{tmpl_id}", headers=headers_other
+    )
+    assert resp.status_code == 404, resp.text
+
+    # POSITIVE: the owning project still sees the template, UNCHANGED —
+    # proves the cross-project PATCH above never applied.
+    resp = await client.get(
+        f"/api/handoff-templates/{tmpl_id}", headers=headers_owner
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["description"] == "smoke fixture handoff template", resp.json()
+
+    # POSITIVE: the template still appears in the owner's default (active-only)
+    # list — proves the cross-project DELETE above never soft-deleted it (GET
+    # detail alone wouldn't catch this: it returns rows regardless of
+    # soft-delete status by design).
+    resp = await client.get("/api/handoff-templates", headers=headers_owner)
+    assert resp.status_code == 200, resp.text
+    assert any(t["id"] == tmpl_id for t in resp.json()), resp.json()
+
+
+@pytest.mark.asyncio
+async def test_handoff_template_global_accessible_under_any_header(
+    client, scaffold_cleanup
+) -> None:
+    """A GLOBAL template (project_id IS NULL) stays reachable under ANY valid
+    project header for GET detail / PATCH / DELETE.
+
+    Regression lock for Kanban #2828: the fix must reject only a template
+    whose project_id is non-null AND differs from the header — it must NOT
+    accidentally scope globals to whichever project happens to touch them.
+    """
+    pid_a = await _make_fresh_project(client, scaffold_cleanup, "handoff-global-a")
+    pid_b = await _make_fresh_project(client, scaffold_cleanup, "handoff-global-b")
+
+    # Create WITHOUT project_id/header → global template.
+    resp = await client.post(
+        "/api/handoff-templates",
+        json=_handoff_template_payload(f"global-tmpl-{uuid.uuid4().hex[:6]}"),
+    )
+    assert resp.status_code == 201, resp.text
+    tmpl = resp.json()
+    tmpl_id = tmpl["id"]
+    assert tmpl["project_id"] is None, tmpl
+
+    # GET detail using an UNRELATED project's header → 200 (global reachable).
+    resp = await client.get(
+        f"/api/handoff-templates/{tmpl_id}", headers={"X-Project-Id": str(pid_a)}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["id"] == tmpl_id
+
+    # PATCH using that same unrelated header → 200 (global updatable from any project).
+    resp = await client.patch(
+        f"/api/handoff-templates/{tmpl_id}",
+        headers={"X-Project-Id": str(pid_a)},
+        json={"description": "updated via unrelated project header"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["description"] == "updated via unrelated project header"
+
+    # DELETE using a DIFFERENT, still-unrelated project's header → 204
+    # (global deletable from any project, not just the one that read/patched it).
+    resp = await client.delete(
+        f"/api/handoff-templates/{tmpl_id}", headers={"X-Project-Id": str(pid_b)}
+    )
+    assert resp.status_code == 204, resp.text
+
+    # POSITIVE: the delete actually landed — default list (any header)
+    # excludes it, proving the 204 wasn't a vacuous no-op response.
+    resp = await client.get(
+        "/api/handoff-templates", headers={"X-Project-Id": str(pid_b)}
+    )
+    assert resp.status_code == 200, resp.text
+    assert not any(t["id"] == tmpl_id for t in resp.json()), resp.json()
 
 
 # ---------------------------------------------------------------------------

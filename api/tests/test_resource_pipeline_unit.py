@@ -1,4 +1,5 @@
 """Kanban #1309 — resource verify-and-tag + storage UNIT tests (stdlib only).
+XLSX/PDF real-parser coverage added Kanban #1906.
 
 These run NOW (no server / no python-multipart needed). They lock the pure
 pipeline + storage-confinement logic:
@@ -8,7 +9,10 @@ pipeline + storage-confinement logic:
   - path-confinement guard (escape -> ValueError).
   - 520 MB cap logic via a monkeypatched small limit (NO 520 MB file created).
   - est_cost approximation (positive value + basis annotation).
-  - XLSX/PDF graceful-degrade (format detected, parser_unavailable=True, no crash).
+  - XLSX/PDF: parser-unavailable degrade (deterministic via sys.modules
+    poisoning — NOT dependent on whether the container has been rebuilt with
+    openpyxl/pdfplumber yet), too-large skip, malformed-no-crash, and (when
+    the dep IS importable — skip-guarded) the real-parse happy path.
 
 The integration suite (multipart upload, 413 over the wire, link kind, list
 filters, preview endpoint, delete-to-trash, same-project task_id 422,
@@ -19,12 +23,17 @@ regression rigor is dev-tester's domain.
 
 from __future__ import annotations
 
+import importlib.util
 import io
+import sys
 
 import pytest
 
 from src.services import resource_storage as rs
 from src.services import resource_verify as rv
+
+_HAS_OPENPYXL = importlib.util.find_spec("openpyxl") is not None
+_HAS_PDFPLUMBER = importlib.util.find_spec("pdfplumber") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -106,28 +115,194 @@ def test_malformed_json_records_error_no_crash() -> None:
 
 
 # ---------------------------------------------------------------------------
-# XLSX / PDF graceful-degrade
+# XLSX / PDF graceful-degrade (parser lib unavailable)
 # ---------------------------------------------------------------------------
 
 
-def test_xlsx_graceful_degrade() -> None:
-    # PK zip magic -> xlsx detection even without an .xlsx ext.
-    data = b"PK\x03\x04" + b"\x00" * 100
-    tags = rv.verify_and_tag_file(data, "book.xlsx", None, len(data))
-    assert tags["format_detected"] == "xlsx"
+@pytest.mark.parametrize(
+    "data,filename,content_type,fmt,parser_name",
+    [
+        (b"PK\x03\x04" + b"\x00" * 100, "book.xlsx", None, "xlsx", "openpyxl"),
+        (
+            b"%PDF-1.7\n" + b"binary junk \x00\x01\x02",
+            "doc.pdf",
+            "application/pdf",
+            "pdf",
+            "pdfplumber",
+        ),
+    ],
+)
+def test_graceful_degrade_when_parser_unavailable(
+    data, filename, content_type, fmt, parser_name, monkeypatch
+) -> None:
+    """Forces the lazy-import ImportError branch via sys.modules poisoning
+    (Kanban #1906) so this is deterministic regardless of whether
+    openpyxl/pdfplumber are ACTUALLY installed in the running environment —
+    i.e. true both pre- and post-container-rebuild. `sys.modules[name] =
+    None` makes `import <name>` raise ImportError immediately (documented
+    CPython import-system behavior); monkeypatch restores the prior
+    sys.modules entry (or absence) on teardown.
+    """
+    monkeypatch.setitem(sys.modules, parser_name, None)
+    tags = rv.verify_and_tag_file(data, filename, content_type, len(data))
+    assert tags["format_detected"] == fmt
     # POSITIVE: degrade path flagged, no parser ran, no crash.
     assert tags["parser_unavailable"] is True
     assert tags["preview"] is None
-    assert any("openpyxl" in n for n in tags.get("notes", []))
+    assert any(parser_name in n for n in tags.get("notes", []))
 
 
-def test_pdf_graceful_degrade() -> None:
-    data = b"%PDF-1.7\n" + b"binary junk \x00\x01\x02"
-    tags = rv.verify_and_tag_file(data, "doc.pdf", "application/pdf", len(data))
-    assert tags["format_detected"] == "pdf"
-    assert tags["parser_unavailable"] is True
+# ---------------------------------------------------------------------------
+# XLSX / PDF — malformed bytes never crash (either branch is acceptable)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "data,filename,content_type,fmt",
+    [
+        (b"PK\x03\x04garbage", "bad.xlsx", None, "xlsx"),
+        (b"%PDF-1.4 garbage", "bad.pdf", "application/pdf", "pdf"),
+    ],
+)
+def test_xlsx_pdf_malformed_no_crash(data, filename, content_type, fmt) -> None:
+    """Either the lazy-import degrade fires (dep not installed yet, pre-
+    rebuild) or a real parse attempt fails cleanly with parse_error (post-
+    rebuild) — both are acceptable per Kanban #1906 AC2; only a raise (there
+    isn't one — verify_and_tag_file never propagates) would be a failure."""
+    tags = rv.verify_and_tag_file(data, filename, content_type, len(data))
+    assert tags["format_detected"] == fmt
+    assert tags["parser_unavailable"] is True or tags.get("parse_error") is not None
     assert tags["preview"] is None
-    assert any("pdfplumber" in n for n in tags.get("notes", []))
+
+
+# ---------------------------------------------------------------------------
+# XLSX / PDF — 50 MB inline-parse cap (monkeypatched small limit)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "data,filename,content_type,fmt",
+    [
+        (b"PK\x03\x04" + b"\x00" * 100, "big.xlsx", None, "xlsx"),
+        (b"%PDF-1.7\n" + b"x" * 100, "big.pdf", "application/pdf", "pdf"),
+    ],
+)
+def test_xlsx_pdf_too_large_skips_inline_parse(data, filename, content_type, fmt, monkeypatch) -> None:
+    """Reuses the same _CSV_MAX_INLINE_BYTES cap + message shape as the
+    existing CSV/JSON too-large tests (Kanban #1906 design decision #5)."""
+    monkeypatch.setattr(rv, "_CSV_MAX_INLINE_BYTES", 10)
+    tags = rv.verify_and_tag_file(data, filename, content_type, len(data))
+    assert tags["format_detected"] == fmt
+    assert tags["preview"] is None
+    assert any("too_large_for_inline_parse" in n for n in tags.get("notes", [])), tags
+
+
+# ---------------------------------------------------------------------------
+# XLSX / PDF — real-parse happy path (skip-guarded until the container has
+# openpyxl/pdfplumber installed — Kanban #1906)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _HAS_OPENPYXL, reason="openpyxl not installed yet (Kanban #1906 needs container rebuild)")
+def test_xlsx_happy_path() -> None:
+    import openpyxl  # noqa: PLC0415 — only imported when the skip-guard passes
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["id", "name"])
+    ws.append([1, "alice"])
+    ws.append([2, "bob"])
+    buf = io.BytesIO()
+    wb.save(buf)
+    data = buf.getvalue()
+
+    tags = rv.verify_and_tag_file(data, "people.xlsx", None, len(data))
+    assert tags["format_detected"] == "xlsx"
+    assert tags["parser_unavailable"] is False
+    assert tags.get("parse_error") is None
+    # POSITIVE: first sheet's header + 2 data rows + preview mirror CSV shape.
+    assert tags["row_count"] == 2, tags["row_count"]
+    assert tags["col_count"] == 2, tags["col_count"]
+    assert tags["schema_detected"] == ["id", "name"]
+    assert len(tags["preview"]) == 2
+    assert tags["preview"][0] == {"id": 1, "name": "alice"}
+
+
+@pytest.mark.skipif(not _HAS_OPENPYXL, reason="openpyxl not installed yet (Kanban #1906 needs container rebuild)")
+def test_xlsx_empty_sheet_zero_rows() -> None:
+    """The `except StopIteration` branch in _parse_xlsx (0-row workbook, no
+    header row at all) — mirrors test_csv_empty_file_zero_rows."""
+    import openpyxl  # noqa: PLC0415 — only imported when the skip-guard passes
+
+    wb = openpyxl.Workbook()
+    # No .append() calls -> the default sheet has zero rows.
+    buf = io.BytesIO()
+    wb.save(buf)
+    data = buf.getvalue()
+
+    xlsx_ct = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    tags = rv.verify_and_tag_file(data, "empty.xlsx", xlsx_ct, len(data))
+    assert tags["format_detected"] == "xlsx"
+    assert tags["row_count"] == 0
+    assert tags["col_count"] == 0
+    assert tags["schema_detected"] == []
+    assert tags["preview"] == []
+    assert not tags["parser_unavailable"]
+
+
+def _make_minimal_pdf_bytes(text: str = "Hello") -> bytes:
+    """Hand-built minimal single-page PDF with one text object (Kanban #1906
+    pdf happy-path fixture). Byte offsets in the xref table are computed
+    programmatically below (not hand-counted) so the table is exact.
+    """
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> "
+        b"/MediaBox [0 0 200 200] /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    stream_content = f"BT /F1 24 Tf 20 100 Td ({text}) Tj ET".encode("ascii")
+    objects.append(
+        b"<< /Length " + str(len(stream_content)).encode("ascii") + b" >>\nstream\n"
+        + stream_content + b"\nendstream"
+    )
+
+    header = b"%PDF-1.4\n"
+    body = bytearray()
+    offsets: list[int] = []
+    pos = len(header)
+    for i, obj in enumerate(objects, start=1):
+        offsets.append(pos)
+        obj_bytes = f"{i} 0 obj\n".encode("ascii") + obj + b"\nendobj\n"
+        body += obj_bytes
+        pos += len(obj_bytes)
+
+    xref_offset = len(header) + len(body)
+    n = len(objects) + 1
+    xref_lines = [f"xref\n0 {n}\n".encode("ascii"), b"0000000000 65535 f \n"]
+    for off in offsets:
+        xref_lines.append(f"{off:010d} 00000 n \n".encode("ascii"))
+    xref = b"".join(xref_lines)
+
+    trailer = (
+        f"trailer\n<< /Size {n} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF"
+    ).encode("ascii")
+
+    return header + bytes(body) + xref + trailer
+
+
+@pytest.mark.skipif(not _HAS_PDFPLUMBER, reason="pdfplumber not installed yet (Kanban #1906 needs container rebuild)")
+def test_pdf_happy_path() -> None:
+    data = _make_minimal_pdf_bytes("Hello")
+    tags = rv.verify_and_tag_file(data, "note.pdf", "application/pdf", len(data))
+    assert tags["format_detected"] == "pdf"
+    assert tags["parser_unavailable"] is False
+    assert tags.get("parse_error") is None
+    # POSITIVE: page_count surfaced via notes; preview is the extracted text.
+    assert tags["preview"] is not None
+    assert "Hello" in tags["preview"]
+    assert any("page_count=1" in n for n in tags.get("notes", [])), tags
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +426,16 @@ def test_resolve_storage_base_fallback(tmp_path) -> None:
     # Empty/whitespace working_path also falls back.
     assert rs.resolve_storage_base("   ", 7, tmp_path) == \
         tmp_path / "_data" / "projects" / "7"
+    # Kanban #1906: working_path null + data_root set -> <data_root>/projects/<id>
+    # (the "_data" segment is NOT re-added — DATA_ROOT IS the data dir).
+    data_root = tmp_path / "custom_data_root"
+    out2 = rs.resolve_storage_base(None, 7, tmp_path, data_root)
+    assert out2 == data_root / "projects" / "7"
+    # NEGATIVE (precedence lock): working_path SET + data_root SET ->
+    # working_path wins (data_root only applies to the NULL-working_path
+    # fallback branch).
+    out3 = rs.resolve_storage_base("/custom/wp", 7, tmp_path, data_root)
+    assert out3 == rs.Path("/custom/wp")
 
 
 # ---------------------------------------------------------------------------

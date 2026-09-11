@@ -82,6 +82,8 @@ class BackupConfig(BaseModel):
     timezone: str = Field(default="UTC")
     keep_daily: int = Field(default=30, ge=1)
     keep_monthly: int = Field(default=12, ge=0)
+    # True no-op — dump/archive/encrypt still run (proves the pipeline is
+    # sound) but _run_once_sync() skips the S3 upload entirely (#2836).
     dry_run: bool = Field(default=False)
 
     # Where to read repo files from (`/repo` inside the api container).
@@ -346,9 +348,28 @@ class BackupRunner:
                 size = encrypted.stat().st_size
                 logger.info("backup.stage=encrypt done size=%d bytes", size)
 
-                logger.info("backup.stage=upload start key=%s", key)
-                self._upload(encrypted, key)
-                logger.info("backup.stage=upload done size=%d bytes", size)
+                # Kanban #2836 — dry_run is a TRUE no-op: no S3 write of any
+                # kind. Earlier stages (dump/archive/encrypt) still run so a
+                # dry run proves the pipeline is structurally sound end to
+                # end, but nothing leaves the local temp dir. This matches
+                # the dry_run convention used elsewhere in this codebase
+                # (src/routers/tools_email.py: "dry_run is a read-only
+                # preview... without moving anything"). Previously this
+                # branch always called self._upload(), just namespaced under
+                # a `_dryrun/` key prefix — a real S3 PUT despite the name.
+                # `_make_key()` still computes the `_dryrun/`-prefixed key
+                # below so BackupResult.key stays informative ("this is what
+                # the key WOULD have been") without implying anything was
+                # actually written there.
+                if self.cfg.dry_run:
+                    logger.info(
+                        "backup.stage=upload skipped (dry_run) key=%s size=%d bytes",
+                        key, size,
+                    )
+                else:
+                    logger.info("backup.stage=upload start key=%s", key)
+                    self._upload(encrypted, key)
+                    logger.info("backup.stage=upload done size=%d bytes", size)
 
             logger.info("backup.stage=prune start")
             pruned = self._prune()

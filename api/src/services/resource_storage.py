@@ -12,9 +12,12 @@ Storage layout
   <storage_root>/data/raw/<resource_id>-<sanitized_filename>
   <storage_base>/.trash/<resource_id>-<sanitized_filename>     (on delete)
 
-`<storage_root>` = `project.working_path` when set, else a documented fallback
-under the repo: `<repo_root>/_data/projects/<project_id>/`. The `.trash` dir
-hangs off the SAME base so a deleted file stays inside the project's storage
+`<storage_root>` = `project.working_path` when set, else `<DATA_ROOT>/projects/
+<project_id>/` when the optional `DATA_ROOT` env/setting is configured, else
+the documented fallback under the repo: `<repo_root>/_data/projects/
+<project_id>/` (Kanban #1906 — lets an operator/test redirect the
+null-working_path fallback outside the source tree). The `.trash` dir hangs
+off the SAME base so a deleted file stays inside the project's storage
 subtree.
 
 NEVER trusts the client filename. Sanitization strips path separators, `..`,
@@ -106,16 +109,28 @@ def sanitize_filename(raw: str | None) -> str:
     return base or _FALLBACK_NAME
 
 
-def resolve_storage_base(working_path: str | None, project_id: int, repo_root: Path) -> Path:
+def resolve_storage_base(
+    working_path: str | None,
+    project_id: int,
+    repo_root: Path,
+    data_root: Path | None = None,
+) -> Path:
     """Per-project storage BASE dir.
 
     `working_path` set  -> Path(working_path).
-    `working_path` null -> documented fallback `<repo_root>/_data/projects/<id>/`.
+    `working_path` null + `data_root` set  -> `<data_root>/projects/<id>/`
+        (DATA_ROOT IS the data dir — the "_data" segment is NOT re-added).
+    `working_path` null + `data_root` unset -> documented fallback
+        `<repo_root>/_data/projects/<id>/` (byte-identical to pre-#1906
+        behavior — `data_root` defaults to None so existing callers that
+        don't pass it are unaffected).
 
     Returns the base (NOT yet the data/raw subdir). Does not create anything.
     """
     if working_path and working_path.strip():
         return Path(working_path)
+    if data_root is not None:
+        return Path(data_root) / "projects" / str(project_id)
     return Path(repo_root) / "_data" / "projects" / str(project_id)
 
 

@@ -35,6 +35,10 @@ services:
     build:
       context: ./api
       dockerfile: Dockerfile
+      # Dockerfile is multi-stage (dev/prod, Kanban #2529) — the LAST stage is
+      # Docker's implicit default target, so pin explicitly. docker-compose.prod.yml
+      # overrides this to `prod`.
+      target: dev
     container_name: agent-teams-api
     depends_on:
       db:
@@ -206,8 +210,12 @@ services:
   langgraph:
     profiles: ["langgraph"]
     build:
+      # Dockerfile is multi-stage (dev/prod, Kanban #3170, same pattern as
+      # api's #2529) — pin dev here so local `up` keeps the editable-install
+      # + --reload workflow; docker-compose.prod.yml overrides to `prod`.
       context: ./langgraph
       dockerfile: Dockerfile
+      target: dev
     container_name: agent-teams-langgraph
     depends_on:
       db:
@@ -267,8 +275,13 @@ services:
       # the hardcoded interrupt branch).
       HITL_DEMO_ENABLED: ${HITL_DEMO_ENABLED:-1}
       REPO_ROOT: /repo
-    ports:
-      - "${LANGGRAPH_PORT:-8465}:8000"
+    # No host port published (Kanban #2839) — the compose-network-internal
+    # /invoke endpoint has no auth and bypasses L17 content-safety scanning
+    # when reached directly (unlike the worker's own scan_task_content path).
+    # Nothing depends on the host mapping: api/web/cli only ever reach this
+    # service at the in-network hostname `langgraph:8000` (LANGGRAPH_KANBAN_API_BASE
+    # is the OTHER direction — langgraph calling out to api). Reach it for
+    # ad-hoc checks via `docker compose -p agent-teams exec langgraph ...`.
     volumes:
       # Bind repo root rw so #850's code edits hot-reload during dev (same
       # pattern as the api service). For prod, bake the graph into the image
@@ -302,6 +315,10 @@ services:
     build:
       context: ./api
       dockerfile: Dockerfile
+      # Pinned to the same target as the api service (Kanban #2529) — this
+      # service isn't uvicorn, so dev vs prod behavior doesn't matter beyond
+      # staying on the well-exercised (dev) image shape.
+      target: dev
     container_name: agent-teams-telegram-poller
     depends_on:
       api:
@@ -323,6 +340,37 @@ services:
       - .:/repo
     command: ["python", "-m", "scripts.telegram_poller"]
     restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # data — preinstalled Python data-analysis sandbox for the data-analytics
+  # team (Kanban #1307). Idle container; data-analytics agents `docker compose
+  # exec` in to run pandas/polars/duckdb scripts against the bind-mounted repo
+  # — no runtime pip installs. Opt-in via profile (mirrors langgraph /
+  # telegram-poller above) so a routine profile-less `docker compose up -d`
+  # doesn't sweep it in; the data-analytics team brings it up explicitly:
+  #   docker compose -p agent-teams --profile data up -d data
+  # ---------------------------------------------------------------------------
+  data:
+    profiles: ["data"]
+    build:
+      context: ./data
+      dockerfile: Dockerfile
+    container_name: agent-teams-data
+    environment:
+      REPO_ROOT: /repo
+      PYTHONUNBUFFERED: 1
+    volumes:
+      - .:/repo
+    healthcheck:
+      # python -c (not curl) — same reasoning as the langgraph healthcheck:
+      # this image has no HTTP endpoint and no curl installed. A clean import
+      # of the whole preinstalled stack doubles as the readiness signal.
+      test: ["CMD", "python", "-c", "import duckdb,pandas,polars,matplotlib,plotly,openpyxl,numpy,scipy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    command: ["tail", "-f", "/dev/null"]
 
 volumes:
   agent-teams-pgdata:

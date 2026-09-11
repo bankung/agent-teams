@@ -777,6 +777,48 @@ async def test_run_sweep_burn_snapshot_persists_across_sweeps() -> None:
     )
 
 
+async def test_run_sweep_prunes_burn_snapshot_for_task_leaving_active_set() -> None:
+    """Kanban #2836 — _burn_snapshots is pruned to the active-task-id set on
+    every sweep. An entry for a task that leaves the active set (completed /
+    cancelled / flipped to manual run_mode) is evicted, while an entry for a
+    task that stays active survives the same prune (pairs the eviction
+    assertion with a non-vacuous retention check, so the prune can't be a
+    wholesale clear masquerading as a fix)."""
+    cfg = HealthMonitorConfig.from_env({})
+    now = datetime.now(timezone.utc)
+    stays = _FakeTask(
+        id=21,
+        project_id=1,
+        process_status=TaskStatus.IN_PROGRESS,
+        updated_at=now - timedelta(minutes=5),
+        estimated_input_tokens=1_000,
+    )
+    leaves = _FakeTask(
+        id=22,
+        project_id=1,
+        process_status=TaskStatus.IN_PROGRESS,
+        updated_at=now - timedelta(minutes=5),
+        estimated_input_tokens=2_000,
+    )
+    project = _FakeProject(id=1)
+    monitor = HealthMonitor(
+        cfg,
+        session_factory=_make_session_factory([stays, leaves], [project]),
+        http_client_factory=_CapturingHTTPClient,
+    )
+
+    await monitor.run_sweep()
+    assert {21, 22} <= monitor._burn_snapshots.keys()
+
+    # Task 22 leaves the active autorun set (done / cancelled / manual);
+    # task 21 is still active.
+    monitor._session_factory = _make_session_factory([stays], [project])
+    await monitor.run_sweep()
+
+    assert 22 not in monitor._burn_snapshots, "stale snapshot must be evicted"
+    assert 21 in monitor._burn_snapshots, "still-active snapshot must survive the prune"
+
+
 async def test_run_sweep_exception_returns_metrics_without_crashing() -> None:
     """Inner exception logged + metrics envelope still returned."""
     cfg = HealthMonitorConfig.from_env({})

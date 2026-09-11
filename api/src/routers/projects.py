@@ -78,6 +78,7 @@ from src.schemas.project import (
 from src.schemas.agent_metadata import AGENT_NAME_RE
 from src.services.agent_validation import default_agents_dir, list_agents
 from src.services.budget_gate import reconcile_budget
+from src.services.team_starter_scaffold import scaffold_team_starter
 from src.services.kill_switch import kill_project, revive_project
 from src.services.operator_auth import OperatorDecision, require_operator_proof
 from src.services.pause_switch import pause_project, unpause_project
@@ -923,10 +924,18 @@ async def get_project_spawn_check(
 
     config: dict[str, Any] = project.config or {}
     enabled_roles: list[int] | None = config.get("enabled_roles")
+    if not isinstance(enabled_roles, list):  # #2807/#2769: malformed row -> no restriction
+        enabled_roles = None
     agent_settings: dict[str, Any] = config.get("agent_settings") or {}
+    if not isinstance(agent_settings, dict):  # #2807/#2769: malformed row -> no restriction
+        agent_settings = {}
     role_code: int | None = AGENT_ROLE_CODE.get(agent)
 
-    if agent_settings.get(agent, {}).get("enabled") is False:
+    # #2807/#2769: per-agent entry may be a non-dict on a hand-edited/legacy
+    # row — degrade to "no entry" instead of AttributeError on `.get`.
+    agent_entry = agent_settings.get(agent)
+    agent_entry = agent_entry if isinstance(agent_entry, dict) else {}
+    if agent_entry.get("enabled") is False:
         return SpawnCheckResponse(
             allowed=False,
             reason=(
@@ -1197,6 +1206,29 @@ async def create_project(
                     len(report.copied),
                     len(report.skipped),
                     len(report.errors),
+                )
+
+                # Kanban #1308 (data-analytics) + #1319 (social) — team
+                # starter folders. Unconditional call: `scaffold_team_starter`'s
+                # `templates/<team>/`-existence check IS the per-team gate now
+                # (teams without a bundled tree get a silent no-op report).
+                # Same try/except as the orchestration copy above: a
+                # path-traversal ValueError or any other failure here is
+                # best-effort and must never roll back the DB row.
+                starter_report = scaffold_team_starter(
+                    target_path=target,
+                    agent_teams_root=settings.repo_root,
+                    team=project.team,
+                )
+                logger.info(
+                    "scaffolded %s starter for %s at %s: "
+                    "%d copied, %d skipped, %d errors",
+                    project.team,
+                    project.name,
+                    target,
+                    len(starter_report.copied),
+                    len(starter_report.skipped),
+                    len(starter_report.errors),
                 )
             except ValueError as e:
                 # Path-traversal guard (target is/under agent_teams_root).

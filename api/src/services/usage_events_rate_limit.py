@@ -19,6 +19,14 @@ Override via env ``USAGE_EVENTS_RATE_LIMIT_PER_10S`` (int, > 0).
 State is process-local — restart resets all buckets. Fine for single-instance
 docker-compose deployment; a multi-replica deployment would swap to Redis-backed
 storage preserving the same ``check_and_consume`` signature.
+
+Kanban #2833 (LOW): emptied buckets were never removed from ``_WINDOWS``, so
+every distinct project_id ever seen left a permanent (if empty) dict entry —
+unbounded memory growth over the process lifetime. ``check_and_consume`` now
+deletes a key the moment its deque drains to empty after eviction. Lower
+exposure than the sibling ``webhook_rate_limit.py`` bug (this module is keyed
+on ``project_id`` alone — no caller-controlled dimension to multiply — so no
+aggregate-cap fix was needed here, just the leak).
 """
 
 from __future__ import annotations
@@ -68,21 +76,32 @@ def check_and_consume(
     Sliding window: evicts entries older than ``_WINDOW_SECONDS`` before
     checking. ``limit`` overrides the env-resolved cap (test hook). ``now``
     defaults to UTC now; tests inject a fixed clock to verify expiry.
+
+    A bucket that drains to empty after eviction is deleted from ``_WINDOWS``
+    (Kanban #2833) rather than left behind as a permanent empty entry.
     """
     if now is None:
         now = datetime.now(timezone.utc)
     if limit is None:
         limit = _resolved_limit()
 
-    bucket = _WINDOWS[project_id]
     cutoff = now - timedelta(seconds=_WINDOW_SECONDS)
+    bucket = _WINDOWS[project_id]
     while bucket and bucket[0] < cutoff:
         bucket.popleft()
+    if not bucket:
+        # Reclaim memory (Kanban #2833). `bucket` still locally references
+        # the (now-orphaned) empty deque; `len(bucket)` below is unaffected.
+        del _WINDOWS[project_id]
 
     if len(bucket) >= limit:
         raise RateLimitError(limit)
 
-    bucket.append(now)
+    # Re-fetch via defaultdict: `bucket` may have just been `del`-ed above
+    # (when it drained to empty) and would then be an orphaned deque no
+    # longer reachable through the dict — appending to it would silently
+    # lose the hit on the next lookup.
+    _WINDOWS[project_id].append(now)
 
 
 def reset() -> None:

@@ -92,6 +92,38 @@ def test_service_window_resets_after_eviction() -> None:
     )
 
 
+def test_service_bucket_key_removed_after_full_expiry() -> None:
+    """A project_id bucket that fully expires is removed from ``_WINDOWS`` —
+    not left behind as a permanent empty entry (Kanban #2833 LOW, the
+    memory-leak fix).
+    """
+    from src.services.usage_events_rate_limit import (
+        RateLimitError,
+        _WINDOWS,
+        check_and_consume,
+        reset,
+    )
+
+    reset()
+    project_id = 888888  # won't collide with live data
+
+    t0 = datetime(2030, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    check_and_consume(project_id, now=t0, limit=5)
+    # POSITIVE (sanity): the hit created a bucket for this project_id.
+    assert project_id in _WINDOWS
+
+    # 11s later (past the 10s window) the one entry is stale. limit=0 forces
+    # THIS retry to be rejected instead of silently re-admitted — a
+    # successful retry would immediately recreate the key via the normal
+    # append path and mask the delete we're trying to observe here.
+    with pytest.raises(RateLimitError):
+        check_and_consume(project_id, now=t0 + timedelta(seconds=11), limit=0)
+
+    # NEGATIVE: the emptied bucket must be gone, not sitting there as
+    # `{888888: deque([])}` forever.
+    assert project_id not in _WINDOWS
+
+
 # ---------------------------------------------------------------------------
 # HTTP integration tests
 # ---------------------------------------------------------------------------

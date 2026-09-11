@@ -9,7 +9,14 @@
 #   ghcr.io/bankung/agent-teams-langgraph:<version>  + :latest
 #
 # The web image uses web/Dockerfile.prod (multi-stage standalone Next.js build).
-# api and langgraph use their existing single-stage Dockerfiles with no --reload.
+# api/Dockerfile is multi-stage as of Kanban #2529 (base -> dev/prod); this
+# workflow builds the `prod` target explicitly (matrix.target below) rather
+# than relying on prod happening to be the last/default stage. langgraph/Dockerfile
+# is multi-stage the same way as of Kanban #3170 and also pins target: prod below.
+#
+# NOTE: this workflow only runs on a `v*` tag push (or manual workflow_dispatch)
+# — the target: prod wiring below is exercised at the next release, not by
+# editing this file.
 
 name: Release — Build & Push Images to GHCR
 
@@ -35,6 +42,9 @@ jobs:
             context: ./api
             dockerfile: ./api/Dockerfile
             image: ghcr.io/bankung/agent-teams-api
+            # api/Dockerfile is multi-stage (Kanban #2529). prod is last but
+            # nothing should rely on the implicit default target — pin it.
+            target: prod
 
           - service: web
             context: ./web
@@ -45,6 +55,10 @@ jobs:
             context: ./langgraph
             dockerfile: ./langgraph/Dockerfile
             image: ghcr.io/bankung/agent-teams-langgraph
+            # langgraph/Dockerfile is multi-stage as of Kanban #3170 (same
+            # pattern as api's #2529) — pin prod explicitly, same reasoning
+            # as the api entry above.
+            target: prod
 
     steps:
       - name: Checkout
@@ -76,6 +90,10 @@ jobs:
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
+          # Empty for web/langgraph (no matrix.target set) — build-push-action
+          # omits --target entirely when this input is blank, so those two
+          # builds are functionally unchanged.
+          target: ${{ matrix.target }}
           push: true
           tags: |
             ${{ matrix.image }}:${{ steps.version.outputs.version }}

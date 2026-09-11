@@ -23,7 +23,10 @@ function findRoot(start) {
 const ROOT = findRoot(HERE);
 const SKILLS_DIR = join(ROOT, ".claude", "skills");
 
-const VALID_CATEGORIES = new Set(["kanban", "platform", "review", "secretary"]);
+// SOURCE OF TRUTH for the skill category taxonomy (#2921). skill-authoring §1.4 and
+// the zb-skill-new scaffolder document/reference THIS set — edit here FIRST, then §1.4.
+// `stack` added by Kanban #2871 (per-stack skills: mobile/Angular/Ionic).
+const VALID_CATEGORIES = new Set(["kanban", "platform", "review", "secretary", "stack"]);
 const SEMVER_RE = /^\d+\.\d+\.\d+$/;
 
 // Clip a string to `max` chars on a word boundary with an ellipsis (no mid-word cuts).
@@ -210,7 +213,9 @@ function runValidate(skills) {
       if (!fm.metadata.category)
         fails.push("metadata.category missing");
       else if (!VALID_CATEGORIES.has(fm.metadata.category))
-        fails.push(`metadata.category "${fm.metadata.category}" not in {kanban, platform, review, secretary}`);
+        fails.push(
+          `metadata.category "${fm.metadata.category}" not in {${[...VALID_CATEGORIES].join(", ")}}`,
+        );
       if (!fm.metadata.tags || fm.metadata.tags.length === 0)
         fails.push("metadata.tags missing or empty list");
 

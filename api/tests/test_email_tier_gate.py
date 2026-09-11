@@ -120,7 +120,7 @@ def test_tier_helper_read_is_open_no_proof_needed():
 
 @pytest.mark.parametrize(
     "tier",
-    [EmailTier.REPLY, EmailTier.SEND_INTERNAL, EmailTier.DELETE, EmailTier.EXTERNAL_SEND],
+    [EmailTier.REPLY, EmailTier.SEND_INTERNAL, EmailTier.DELETE],
 )
 def test_tier_helper_above_read_requires_proof(tier):
     """Every tier above `read` raises 403 when the proof is NOT_OPERATOR.
@@ -138,6 +138,17 @@ def test_tier_helper_above_read_requires_proof(tier):
 
     # POSITIVE: a valid operator proof passes the gate (no raise).
     _enforce_operator_tier_or_403(tier, OperatorDecision.OPERATOR)
+
+
+def test_tier_helper_rejects_external_send():
+    """#1859 N1 guard: external_send must NEVER reach the bare-403 tier gate —
+    it routes through _escalate_external_send_or_202 (202 HALT). The assert makes
+    a future miswiring fail loudly here instead of silently 403-ing an external
+    send. (external_send's real 202-HALT path is covered in the next section.)"""
+    with pytest.raises(AssertionError):
+        _enforce_operator_tier_or_403(
+            EmailTier.EXTERNAL_SEND, OperatorDecision.NOT_OPERATOR
+        )
 
 
 # ===========================================================================

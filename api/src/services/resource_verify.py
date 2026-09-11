@@ -1,25 +1,32 @@
-"""Resource verify-and-tag pipeline (Kanban #1309).
+"""Resource verify-and-tag pipeline (Kanban #1309, xlsx/pdf parsers #1906).
 
 Given a stored file (or a link URL) this module derives the METADATA that lands
 in `project_resources.tags` (a JSON object — see schemas/project_resource.py for
-the #1309 list->dict shape decision). Pure-stdlib: `csv`, `json`, `mimetypes`,
-`hashlib` only — NO third-party parsers are imported here.
+the #1309 list->dict shape decision). Mostly stdlib (`csv`, `json`, `mimetypes`,
+`hashlib`) plus two OPTIONAL, LAZILY-imported third-party parsers (openpyxl,
+pdfplumber) — see "GRACEFUL DEGRADE" below for why the imports are lazy.
 
 Design — PLUGGABLE per-format parser registry
 ----------------------------------------------
 `_FORMAT_PARSERS: dict[str, ParserFn]` maps a detected format ("csv", "tsv",
-"json") to a function that returns a `ParseResult`. FULL support today:
+"json", "xlsx", "pdf") to a function that returns a `ParseResult`. Support:
 
   - csv / tsv  -> header + row_count + col_count + first-N-row preview.
   - json       -> top-level type + (for a list-of-objects) row_count / col_count
                   / schema + preview; for an object, the key list.
+  - xlsx       -> FIRST sheet: header + row_count + col_count + first-N-row
+                  preview (openpyxl, lazy import).
+  - pdf        -> page_count (in `notes`) + first-page text preview
+                  (pdfplumber, lazy import).
 
-GRACEFUL DEGRADE (parsers NOT installed): xlsx + pdf are DETECTED (so the UI can
-show the format) but no parser runs — the metadata carries
-`parser_unavailable=true` + a note, `preview=None`, and the pipeline does NOT
-crash. Adding openpyxl/pdfplumber later is a one-line registry entry (#1309
-follow-up — see report). Every other / unknown format is treated the same
-graceful-degrade way.
+GRACEFUL DEGRADE (parser lib not installed): `_parse_xlsx`/`_parse_pdf` import
+openpyxl/pdfplumber INSIDE the function body (not at module level) so this
+module stays importable even on a container that hasn't been rebuilt with the
+new deps yet (mirrors the #1309 IMPORT-SAFETY posture in routers/resources.py).
+An `ImportError` there falls back to the original degrade behavior: format is
+DETECTED (so the UI can show it) but no parser runs — `parser_unavailable=true`
++ a note, `preview=None`, no crash. Every other / unknown format uses the same
+graceful-degrade fallback (`_parse_degrade`).
 
 est_cost approach (#1309)
 -------------------------
@@ -183,16 +190,9 @@ def _parse_delimited(data: bytes, ctx: ParseContext, delimiter: str, fmt: str) -
     Files > _CSV_MAX_INLINE_BYTES skip the full decode to avoid OOM on large
     uploads — mirrors the _JSON_MAX_INLINE_BYTES guard in _parse_json.
     """
-    if len(data) > _CSV_MAX_INLINE_BYTES:
-        return ParseResult(
-            format_detected=fmt,
-            notes=[
-                f"{fmt}: file too large for inline parse "
-                f"({len(data) // (1024 * 1024)} MB > "
-                f"{_CSV_MAX_INLINE_BYTES // (1024 * 1024)} MB limit); "
-                "too_large_for_inline_parse=true"
-            ],
-        )
+    too_large = _too_large_result(data, fmt, _CSV_MAX_INLINE_BYTES)
+    if too_large is not None:
+        return too_large
     try:
         text = data.decode("utf-8", errors="replace")
     except Exception as exc:  # pragma: no cover
@@ -247,6 +247,33 @@ _JSON_MAX_INLINE_BYTES: int = 50 * 1024 * 1024  # 50 MB
 _CSV_MAX_INLINE_BYTES: int = _JSON_MAX_INLINE_BYTES
 
 
+def _too_large_result(data: bytes, fmt: str, cap: int, suffix: str = "") -> ParseResult | None:
+    """Shared too-large guard (Kanban #1906) — was copy-pasted 4x (csv/tsv via
+    _parse_delimited, json, xlsx, pdf) before this extraction.
+
+    Returns the "file too large for inline parse" ParseResult when
+    `len(data) > cap`, else None (caller proceeds with the real parse). `cap`
+    is passed explicitly rather than read from one shared constant so each
+    format's inline-cap module attribute stays INDEPENDENTLY monkeypatchable
+    in tests — json keeps its own `_JSON_MAX_INLINE_BYTES`;
+    csv/tsv/xlsx/pdf share `_CSV_MAX_INLINE_BYTES` (aliased to the same
+    value at import time but a distinct, separately-patchable attribute).
+    `suffix` preserves json's extra " (#1309 fix #7)" note annotation —
+    every other caller leaves it empty.
+    """
+    if len(data) <= cap:
+        return None
+    return ParseResult(
+        format_detected=fmt,
+        notes=[
+            f"{fmt}: file too large for inline parse "
+            f"({len(data) // (1024 * 1024)} MB > "
+            f"{cap // (1024 * 1024)} MB limit); "
+            f"too_large_for_inline_parse=true{suffix}"
+        ],
+    )
+
+
 def _parse_json(data: bytes, ctx: ParseContext) -> ParseResult:
     """Parse JSON: for a list-of-objects derive row/col/schema/preview; for a
     bare object surface its keys; for a scalar just record the type.
@@ -254,17 +281,11 @@ def _parse_json(data: bytes, ctx: ParseContext) -> ParseResult:
     Files > _JSON_MAX_INLINE_BYTES skip the full parse to avoid loading the
     whole document into RAM — tags carry too_large_for_inline_parse=true.
     """
-    if len(data) > _JSON_MAX_INLINE_BYTES:
-        return ParseResult(
-            format_detected="json",
-            parser_unavailable=False,
-            notes=[
-                f"json: file too large for inline parse "
-                f"({len(data) // (1024 * 1024)} MB > "
-                f"{_JSON_MAX_INLINE_BYTES // (1024 * 1024)} MB limit); "
-                "too_large_for_inline_parse=true (#1309 fix #7)"
-            ],
-        )
+    too_large = _too_large_result(
+        data, "json", _JSON_MAX_INLINE_BYTES, suffix=" (#1309 fix #7)"
+    )
+    if too_large is not None:
+        return too_large
 
     try:
         text = data.decode("utf-8", errors="replace")
@@ -313,6 +334,117 @@ def _parse_json(data: bytes, ctx: ParseContext) -> ParseResult:
     )
 
 
+# Characters of page-1 extracted text kept in the PDF preview.
+_PDF_PREVIEW_CHARS: int = 500
+
+
+def _parse_xlsx(data: bytes, ctx: ParseContext) -> ParseResult:
+    """Parse the FIRST sheet of an XLSX workbook via openpyxl (lazy import).
+
+    Mirrors the CSV/TSV semantics: header = first row's cell values
+    (stringified), row_count = data rows below the header, col_count =
+    len(header), preview = first PREVIEW_ROWS data rows as header->value
+    dicts. `read_only=True` keeps memory bounded on a large sheet;
+    `data_only=True` resolves formula cells to their last-computed value
+    instead of the formula string.
+
+    Reuses the CSV/JSON 50 MB inline-parse cap (same message shape).
+    ImportError (openpyxl not installed) falls back to the degrade result —
+    see module docstring. Any other parse failure (corrupt/non-zip bytes)
+    is caught and recorded as `parse_error`, never raised.
+
+    # shortcut: a decompression/zip-ratio bomb blocks the event loop /
+    # balloons memory — the 50 MB cap is on the file's COMPRESSED size (XLSX
+    # is a ZIP container), and defusedxml (auto-wired into openpyxl when
+    # installed) stops XXE entity-expansion but NOT zip-ratio bombs;
+    # upgrade: subprocess/RLIMIT isolation for the parse call.
+    """
+    too_large = _too_large_result(data, "xlsx", _CSV_MAX_INLINE_BYTES)
+    if too_large is not None:
+        return too_large
+
+    try:
+        import openpyxl  # noqa: PLC0415 — intentional lazy import (#1906)
+    except ImportError:
+        return _parse_degrade("xlsx", "openpyxl")(data, ctx)
+
+    try:
+        workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        try:
+            sheet = workbook.worksheets[0]
+            rows = sheet.iter_rows(values_only=True)
+            try:
+                header_row = next(rows)
+            except StopIteration:
+                return ParseResult(
+                    format_detected="xlsx", row_count=0, col_count=0,
+                    schema_detected=[], preview=[],
+                )
+            header = [str(c).strip() if c is not None else "" for c in header_row]
+            col_count = len(header)
+            preview: list[dict[str, Any]] = []
+            row_count = 0
+            for row in rows:
+                row_count += 1
+                if len(preview) < PREVIEW_ROWS:
+                    cells = (list(row) + [None] * col_count)[:col_count]
+                    preview.append({header[i]: cells[i] for i in range(col_count)})
+            return ParseResult(
+                format_detected="xlsx",
+                row_count=row_count,
+                col_count=col_count,
+                schema_detected=header,
+                preview=preview,
+            )
+        finally:
+            workbook.close()
+    except Exception as exc:
+        return ParseResult(format_detected="xlsx", parse_error=f"xlsx parse failed: {exc}")
+
+
+def _parse_pdf(data: bytes, ctx: ParseContext) -> ParseResult:
+    """Parse basic metadata from a PDF via pdfplumber (lazy import).
+
+    row_count/col_count/schema_detected stay None — a PDF isn't tabular.
+    page_count is surfaced via `notes` (ParseResult has no dedicated column
+    for it). preview = the first page's extracted text, truncated to
+    `_PDF_PREVIEW_CHARS`.
+
+    Reuses the CSV/JSON 50 MB inline-parse cap. ImportError (pdfplumber not
+    installed) falls back to the degrade result. Any other parse failure
+    (corrupt PDF structure) is caught and recorded as `parse_error`, never
+    raised.
+
+    # shortcut: a decompression bomb (e.g. a PDF stream object whose
+    # compressed size is tiny but inflates enormously) blocks the event loop
+    # / balloons memory — the 50 MB cap is on the file's COMPRESSED/on-disk
+    # size, not the decompressed size; upgrade: subprocess/RLIMIT isolation
+    # for the parse call.
+    """
+    too_large = _too_large_result(data, "pdf", _CSV_MAX_INLINE_BYTES)
+    if too_large is not None:
+        return too_large
+
+    try:
+        import pdfplumber  # noqa: PLC0415 — intentional lazy import (#1906)
+    except ImportError:
+        return _parse_degrade("pdf", "pdfplumber")(data, ctx)
+
+    try:
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            page_count = len(pdf.pages)
+            first_page_text = pdf.pages[0].extract_text() if page_count else None
+    except Exception as exc:
+        return ParseResult(format_detected="pdf", parse_error=f"pdf parse failed: {exc}")
+
+    preview = (first_page_text or "")[:_PDF_PREVIEW_CHARS] or None
+    return ParseResult(
+        format_detected="pdf",
+        preview=preview,
+        notes=[f"pdf: page_count={page_count}"],
+    )
+
+
 def _parse_degrade(fmt: str, parser_name: str) -> ParserFn:
     """Build a graceful-degrade parser for a format whose lib isn't installed."""
 
@@ -329,15 +461,15 @@ def _parse_degrade(fmt: str, parser_name: str) -> ParserFn:
     return _inner
 
 
-# Registry — FULL parsers for csv/tsv/json (stdlib); degrade stubs for xlsx/pdf.
-# Adding a real xlsx/pdf parser later = swap the registry value for a function
-# that imports openpyxl / pdfplumber and returns a populated ParseResult.
+# Registry — FULL parsers for every format. xlsx/pdf lazily import their
+# third-party lib and self-degrade (via _parse_degrade) on ImportError, so
+# this registry entry is correct both pre- and post-container-rebuild (#1906).
 _FORMAT_PARSERS: dict[str, ParserFn] = {
     "csv": _parse_csv,
     "tsv": _parse_tsv,
     "json": _parse_json,
-    "xlsx": _parse_degrade("xlsx", "openpyxl"),
-    "pdf": _parse_degrade("pdf", "pdfplumber"),
+    "xlsx": _parse_xlsx,
+    "pdf": _parse_pdf,
 }
 
 
@@ -425,13 +557,20 @@ def verify_and_tag_file(
     return tags
 
 
-def verify_and_tag_link(url: str, head_status: int | None = None, title: str | None = None) -> dict[str, Any]:
+def verify_and_tag_link(url: str) -> dict[str, Any]:
     """Run the LINK verify-and-tag pipeline -> the `tags` metadata object.
 
-    URL-syntax validation only here (scheme + netloc must be present); the
-    best-effort HEAD probe (status + title) is performed by the router (it needs
-    async I/O + a timeout) and passed in. Raises ValueError on a syntactically
-    invalid URL so the router can 422.
+    URL-syntax validation only here (scheme + netloc must be present) —
+    raises ValueError on a syntactically invalid URL so the router can 422.
+
+    head_status/title are NOT parameters (dropped Kanban #1906 — dead: the
+    router now calls this FIRST for syntax validation only, then runs the
+    SSRF-guarded probe separately — services/link_probe.py `probe_link` —
+    and writes head_status/title/probe_skipped directly onto the returned
+    dict afterward). The two keys stay in the shape below (as None) so the
+    dict's documented shape is stable regardless of whether a caller goes on
+    to probe at all (e.g. a direct `verify_and_tag_link(url)` unit-test call
+    never gets them overwritten).
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
@@ -441,6 +580,6 @@ def verify_and_tag_link(url: str, head_status: int | None = None, title: str | N
     return {
         "url_scheme": parsed.scheme,
         "url_host": parsed.netloc,
-        "head_status": head_status,
-        "title": title,
+        "head_status": None,
+        "title": None,
     }

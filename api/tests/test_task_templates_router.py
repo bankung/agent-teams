@@ -164,6 +164,20 @@ async def test_post_netops_team_accepted(client) -> None:
     await client.delete(f"/api/task-templates/{resp.json()['id']}")
 
 
+@pytest.mark.asyncio
+async def test_post_social_team_accepted(client) -> None:
+    """`social` (Kanban #2811, added post-#1620 with NO migration) is valid here too.
+
+    Same regression guard as test_post_netops_team_accepted — social is a
+    borrow-only team (reuses the content pipeline roster) but still must be
+    accepted at this app-side gate, not just in ProjectTeam.ALL.
+    """
+    payload = _template_payload(team="social")
+    resp = await client.post("/api/task-templates", json=payload)
+    assert resp.status_code == 201, resp.text
+    await client.delete(f"/api/task-templates/{resp.json()['id']}")
+
+
 # ---------------------------------------------------------------------------
 # PATCH — toggle status + edit text, updated_at bump
 # ---------------------------------------------------------------------------

@@ -4,6 +4,16 @@
 #
 # Lightweight mode:  docker compose -p agent-teams -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 # Back to dev mode:  docker compose -p agent-teams -f docker-compose.yml -f docker-compose.dev.yml up -d
+# + Infisical:       docker compose -p agent-teams -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.secrets.yml --profile secrets up -d --build (secrets.yml LAST — see its header)
+#
+# Non-root image (Kanban #2529): api prod runs as uid/gid 1000. On a Linux
+# host, this file's source bind-mount (docker-compose.yml's `.::/repo`) needs
+# the checkout writable by uid 1000 for _runtime/, _scratch/, context/projects/*.
+# Existing root-owned (or other-uid) checkouts need a one-time fix before the
+# first prod-mode `up`: sudo chown -R 1000:1000 <repo>
+# Windows Docker Desktop bind-mounts are permissive regardless of uid — unaffected.
+# Kanban #3170: langgraph prod is the same uid/gid 1000 — the chown above
+# already covers its bind-mounted /repo too, no separate fix needed.
 
 services:
   web:
@@ -24,13 +34,34 @@ services:
       start_period: 20s
 
   api:
+    build:
+      # Dockerfile is multi-stage (dev/prod, Kanban #2529) — compose merges this
+      # into the base service's build: map, inheriting context/dockerfile from
+      # docker-compose.yml. Non-editable install, non-root user, no --reload.
+      target: prod
     # Drop --reload; add lightweight tuning env overrides.
     command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8456"]
     environment:
       APP_DEBUG: "false"
+      # Belt+suspenders alongside the no-reload command above: only takes
+      # effect if a secrets overlay later replaces command: with
+      # infisical-entrypoint.sh (that script reads this env var and defaults
+      # to no-reload anyway — this makes the intent explicit either way).
+      UVICORN_RELOAD: "false"
       # Recurrence scheduler tick: 300s (5 min) instead of 60s default.
       APP_SCHEDULER_TICK_SECONDS: "300"
       # Health monitor sweep: 60 min instead of 15 min default.
       HEALTH_MONITOR_INTERVAL_MINUTES: "60"
       # HITL nudge scan: 120 min instead of 30 min default.
       HITL_NUDGE_INTERVAL_MINUTES: "120"
+
+  langgraph:
+    # langgraph/Dockerfile is multi-stage as of Kanban #3170 (same pattern as
+    # api's #2529) — pin `target: prod` explicitly rather than relying on it
+    # being the last stage. The prod stage's own CMD already drops --reload
+    # (Kanban #2825 originally did this via a command: override here; #3170
+    # moved it into the image itself, so this override is now redundant but
+    # left in place as belt-and-suspenders / explicit intent).
+    build:
+      target: prod
+    command: ["uvicorn", "graph:app", "--host", "0.0.0.0", "--port", "8000"]

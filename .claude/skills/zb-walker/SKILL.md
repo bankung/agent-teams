@@ -18,8 +18,8 @@ allowed-tools:
   - Skill
   - AskUserQuestion
 metadata:
-  version: 0.1.0
-  category: walker
+  version: 0.1.1
+  category: platform
   tags: [mode-a, walker, autonomous, drain-loop, hitl, v0.8.0]
 ---
 

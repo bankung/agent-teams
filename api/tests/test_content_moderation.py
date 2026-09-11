@@ -394,6 +394,42 @@ async def test_patch_to_auto_headless_blocked_when_flagged(
 
 
 @pytest.mark.asyncio
+async def test_patch_to_auto_pickup_blocked_when_flagged(
+    client, scaffold_cleanup
+) -> None:
+    """Kanban #2838: the gate (formerly auto_headless-only) also refuses PATCH
+    run_mode=auto_pickup on a flagged task. auto_pickup needs no project
+    consent, so before this fix a flagged task could be flipped straight to
+    auto_pickup — the pre-#2838 gate checked only run_mode==auto_headless —
+    and would then sail through GET /api/tasks/next-autorun ungated."""
+    project_id = await _make_project(client, scaffold_cleanup, "l14-2838-pickup")
+    headers = {"X-Project-Id": str(project_id)}
+
+    create = await client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "Quarterly archive purge",
+            "description": "Run TRUNCATE tasks_history overnight.",
+        },
+        headers=headers,
+    )
+    assert create.status_code == 201, create.text
+    task_id = create.json()["id"]
+    assert create.json()["requires_human_review"] is True
+
+    resp = await client.patch(
+        f"/api/tasks/{task_id}",
+        json={"run_mode": "auto_pickup"},
+        headers=headers,
+    )
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert "task requires human review" in detail, detail
+    assert "requires_human_review=false" in detail, detail
+
+
+@pytest.mark.asyncio
 async def test_patch_to_auto_headless_allowed_after_reviewer_clears(
     client, scaffold_cleanup
 ) -> None:

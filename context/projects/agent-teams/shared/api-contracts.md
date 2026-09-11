@@ -491,11 +491,11 @@ In addition to the standard field-update semantics, the following **action-only 
 }
 ```
 
-- `next_task` — top-priority TODO task with `run_mode IN ('auto_pickup','auto_headless')`, `halt_reason IS NULL`, and blocker DONE or absent. Ordered: `priority DESC, sort_order ASC NULLS LAST, created_at ASC`.
+- `next_task` — top-priority TODO task with `run_mode IN ('auto_pickup','auto_headless')`, `halt_reason IS NULL`, `requires_human_review IS NOT TRUE` *(#2838)*, and blocker DONE or absent. Ordered: `priority DESC, sort_order ASC NULLS LAST, created_at ASC`.
 - `resume_tasks` — tasks with `halt_reason IS NOT NULL` whose blocker is DONE (ready to re-run with resume_context).
 - `pending_questions` — active `interaction_kind IN ('question','decision')` tasks not yet DONE.
 - `blocked_count` — count of TODO/IN_PROGRESS tasks whose blocker is still active (not DONE).
-- `gate_resume_tasks` *(#2566)* — tasks whose async-HITL `task_gates` are ALL answered (`resolve_gate` flipped `process_status` 8→TODO, `halt_reason IS NULL`): **resume from `resume_context`, do NOT start fresh.** Predicate: ps=TODO + `run_mode` auto + blocker terminal/absent + scheduled-ok + `EXISTS(answered gate) AND NOT EXISTS(open gate)`. **Disjoint from `next_task`** — `next_task` excludes any task with an open/answered gate, so the two lanes partition the auto-TODO lane (an open-gate task is ps=8, in neither). Ordered like `next_task`. Consumed by runner #2531.
+- `gate_resume_tasks` *(#2566)* — tasks whose async-HITL `task_gates` are ALL answered (`resolve_gate` flipped `process_status` 8→TODO, `halt_reason IS NULL`): **resume from `resume_context`, do NOT start fresh.** Predicate: ps=TODO + `run_mode` auto + `requires_human_review IS NOT TRUE` *(#2843)* + blocker terminal/absent + scheduled-ok + `EXISTS(answered gate) AND NOT EXISTS(open gate)`. **Disjoint from `next_task`** — `next_task` excludes any task with an open/answered gate, so the two lanes partition the auto-TODO lane (an open-gate task is ps=8, in neither). Ordered like `next_task`. Consumed by runner #2531.
 
 No side effects.
 

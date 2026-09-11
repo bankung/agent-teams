@@ -24,6 +24,8 @@ resumes from resume_context" path is ZommmBeeean runner #2531, not this task):
         blocker DONE but a gate still open -> absent
   (AC1) resolve MERGES the answer without clobbering a pre-existing resume_context snapshot
   (regression) plain fresh TODO (no gates) -> in next_task, NOT gate_resume_tasks
+  (#2843) requires_human_review=true excluded from gate_resume_tasks even once
+        answered (sibling of #2838's next_task_stmt gate); false remains eligible
 """
 
 from __future__ import annotations
@@ -329,4 +331,82 @@ async def test_plain_todo_task_unaffected_by_partition(client, scaffold_cleanup)
     )
     assert task["id"] not in _ids(body["gate_resume_tasks"]), (
         f"gate-free task {task['id']} must NOT appear in gate_resume_tasks: {body}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# (Kanban #2843) requires_human_review must gate auto-RESUME too — sibling of
+# #2838's next_task_stmt auto-SELECTION gate. gate_resume_stmt previously had
+# NO requires_human_review filter: a flagged task that reached an auto
+# run_mode and went through open-gate -> resolve (ps 8->TODO, halt_reason
+# stays NULL) sailed through here ungated even though next_task_stmt already
+# excluded it from fresh pickup — the two lanes are disjoint (§7).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flagged_task_excluded_from_gate_resume(
+    client, scaffold_cleanup
+) -> None:
+    """Kanban #2843: a requires_human_review=true task whose only gate is
+    answered (0 open, ps flipped 8->TODO) must NOT surface in
+    gate_resume_tasks — it stays in TODO for a human, same as the
+    next_task_stmt exclusion #2838 already applies to fresh pickup."""
+    pid = await _make_fresh_project(client, scaffold_cleanup, "k2843-flagged")
+    task = await _make_auto_task(
+        client,
+        pid,
+        "Quarterly archive purge",
+        description="Run TRUNCATE tasks_history to reclaim space",
+    )
+    assert task["requires_human_review"] is True, task
+
+    gate = await _open_gate(client, pid, task["id"])
+    res = await _resolve_gate(client, pid, gate["id"])
+    assert res["open_gate_count_remaining"] == 0
+    assert res["process_status"] == 1, "ps flips to TODO at count 0"
+
+    body = await _next_autorun(client, pid)
+    # NEGATIVE (the whole point): answered but flagged -> absent from the
+    # resume lane.
+    assert task["id"] not in _ids(body["gate_resume_tasks"]), (
+        f"flagged answered-gate task {task['id']} must NOT be in "
+        f"gate_resume_tasks: {body}"
+    )
+    # Belt-and-suspenders: also absent from next_task (already covered by
+    # #2838; re-asserted here so this test fails loudly if either gate regresses).
+    assert (body["next_task"] or {}).get("id") != task["id"], body
+
+
+@pytest.mark.asyncio
+async def test_unflagged_task_still_resumes_via_gate(
+    client, scaffold_cleanup
+) -> None:
+    """Kanban #2843 null-safety: requires_human_review=false (the POST default
+    for benign content — and the only reachable value besides True, since the
+    column is NOT NULL DEFAULT false per migration
+    0037_tasks_requires_human_review; a genuine NULL cannot be constructed
+    through the public API) remains eligible for gate-resume. Locks the new
+    `.is_not(True)` predicate on gate_resume_stmt against an accidental
+    over-exclusion regression (mirrors
+    test_next_task_includes_unflagged_auto_pickup_task in
+    test_tasks_next_autorun.py)."""
+    pid = await _make_fresh_project(client, scaffold_cleanup, "k2843-clean")
+    task = await _make_auto_task(
+        client,
+        pid,
+        "benign gate-resumed task",
+        description="Refresh the dashboard cache",
+    )
+    assert task["requires_human_review"] is False, task
+
+    gate = await _open_gate(client, pid, task["id"])
+    await _resolve_gate(client, pid, gate["id"])
+
+    body = await _next_autorun(client, pid)
+    # POSITIVE: unflagged answered-gate task still resumes — proves the new
+    # predicate excludes only True, not the whole lane.
+    assert task["id"] in _ids(body["gate_resume_tasks"]), (
+        f"unflagged answered-gate task {task['id']} must still be in "
+        f"gate_resume_tasks: {body}"
     )

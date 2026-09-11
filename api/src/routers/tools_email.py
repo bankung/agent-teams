@@ -514,6 +514,10 @@ def _enforce_operator_tier_or_403(
     `_escalate_external_send_or_202` (push confirm) rather than a bare 403 — call
     that helper instead of this one for external sends.
     """
+    assert tier is not EmailTier.EXTERNAL_SEND, (
+        "external_send must route through _escalate_external_send_or_202 "
+        "(202 HALT), never this bare-403 tier gate — see #1859 N1"
+    )
     if tier not in _PROOF_REQUIRED_TIERS:
         return
     if operator_proof is not OperatorDecision.OPERATOR:
