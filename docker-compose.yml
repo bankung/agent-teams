@@ -210,8 +210,12 @@ services:
   langgraph:
     profiles: ["langgraph"]
     build:
+      # Dockerfile is multi-stage (dev/prod, Kanban #3170, same pattern as
+      # api's #2529) — pin dev here so local `up` keeps the editable-install
+      # + --reload workflow; docker-compose.prod.yml overrides to `prod`.
       context: ./langgraph
       dockerfile: Dockerfile
+      target: dev
     container_name: agent-teams-langgraph
     depends_on:
       db:
@@ -271,8 +275,13 @@ services:
       # the hardcoded interrupt branch).
       HITL_DEMO_ENABLED: ${HITL_DEMO_ENABLED:-1}
       REPO_ROOT: /repo
-    ports:
-      - "${LANGGRAPH_PORT:-8465}:8000"
+    # No host port published (Kanban #2839) — the compose-network-internal
+    # /invoke endpoint has no auth and bypasses L17 content-safety scanning
+    # when reached directly (unlike the worker's own scan_task_content path).
+    # Nothing depends on the host mapping: api/web/cli only ever reach this
+    # service at the in-network hostname `langgraph:8000` (LANGGRAPH_KANBAN_API_BASE
+    # is the OTHER direction — langgraph calling out to api). Reach it for
+    # ad-hoc checks via `docker compose -p agent-teams exec langgraph ...`.
     volumes:
       # Bind repo root rw so #850's code edits hot-reload during dev (same
       # pattern as the api service). For prod, bake the graph into the image

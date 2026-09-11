@@ -137,4 +137,7 @@ is performed by the operator separately.
 | Web (Kanban UI) | 5431 | `WEB_PORT` |
 | API | 8456 | `API_PORT` |
 | PostgreSQL | 5432 | `POSTGRES_PORT` |
-| LangGraph | 8465 | `LANGGRAPH_PORT` |
+
+LangGraph (Mode B worker, optional/experimental) publishes no host port as of
+Kanban #2839 — it's reachable only inside the compose network at
+`langgraph:8000`.

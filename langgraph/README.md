@@ -1,8 +1,10 @@
 # langgraph — Phase 4 engine container
 
 Headless LangGraph runtime for the agent-teams supervisor + specialist subagents.
-Runs as the `langgraph` service in `docker-compose.yml`, published on host
-port `${LANGGRAPH_PORT:-8465}` (container always listens on 8000).
+Runs as the `langgraph` service in `docker-compose.yml`. Kanban #2839: no
+host port is published — the unauthenticated `/invoke` endpoint bypasses L17
+content-safety scanning, so it's reachable only inside the compose network at
+`http://langgraph:8000` (container always listens on 8000).
 
 > Status (2026-05-14, Kanban #851): scaffold only. `graph.py` is a FastAPI
 > stub exposing `GET /ok`. #850 will replace it with the supervisor
@@ -84,8 +86,8 @@ docker compose build langgraph
 # Start the service detached
 docker compose up -d langgraph
 
-# Liveness check
-curl http://localhost:8465/ok
+# Liveness check (in-network only — no host port, Kanban #2839)
+docker compose -p agent-teams exec langgraph python -c "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/ok').read().decode())"
 # -> {"ok":true,"note":"stub; #850 pending"}
 
 # Logs (the stub emits a single startup warning)
@@ -194,7 +196,7 @@ docker compose restart langgraph
 
 # 5. Verify provider switched:
 docker compose logs langgraph | grep -i provider
-curl http://localhost:8465/ok   # should report provider=ollama
+docker compose -p agent-teams exec langgraph python -c "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/ok').read().decode())"   # should report provider=ollama
 ```
 
 **Fail-fast caveat:** if Ollama is not running (or no model is pulled), the

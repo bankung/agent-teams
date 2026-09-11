@@ -154,8 +154,8 @@ services:
       HITL_DEMO_ENABLED: ${HITL_DEMO_ENABLED:-}
       # REPO_ROOT intentionally absent: langgraph uses baked paths / LANGGRAPH_*
       # vars and does not write to /repo. No volume mount is needed here.
-    ports:
-      - "${LANGGRAPH_PORT:-8465}:8000"
+    # No host port published (Kanban #2839 — see docker-compose.yml's
+    # langgraph service comment for why). Reachable in-network only.
     # No source bind-mount — code is baked into the image.
     command: ["uvicorn", "graph:app", "--host", "0.0.0.0", "--port", "8000"]
     restart: unless-stopped

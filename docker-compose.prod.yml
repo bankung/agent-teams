@@ -12,6 +12,8 @@
 # Existing root-owned (or other-uid) checkouts need a one-time fix before the
 # first prod-mode `up`: sudo chown -R 1000:1000 <repo>
 # Windows Docker Desktop bind-mounts are permissive regardless of uid — unaffected.
+# Kanban #3170: langgraph prod is the same uid/gid 1000 — the chown above
+# already covers its bind-mounted /repo too, no separate fix needed.
 
 services:
   web:
@@ -54,8 +56,12 @@ services:
       HITL_NUDGE_INTERVAL_MINUTES: "120"
 
   langgraph:
-    # langgraph/Dockerfile bakes `uvicorn --reload` into its CMD unconditionally
-    # (it's a dev-only single-stage image — no dev/prod build target to switch,
-    # unlike api above). Override command here to drop --reload for prod
-    # deployments (Kanban #2825 — same class as the api fix in #2529).
+    # langgraph/Dockerfile is multi-stage as of Kanban #3170 (same pattern as
+    # api's #2529) — pin `target: prod` explicitly rather than relying on it
+    # being the last stage. The prod stage's own CMD already drops --reload
+    # (Kanban #2825 originally did this via a command: override here; #3170
+    # moved it into the image itself, so this override is now redundant but
+    # left in place as belt-and-suspenders / explicit intent).
+    build:
+      target: prod
     command: ["uvicorn", "graph:app", "--host", "0.0.0.0", "--port", "8000"]
