@@ -1901,7 +1901,8 @@ async def create_task(
     # L14: stamp the flag iff the scanner matched. A clean POST leaves the
     # column at its DB DEFAULT (false). Note we do NOT raise here — the tag
     # is non-blocking by design; the operator may legitimately FILE
-    # destructive work, only auto-headless is gated.
+    # destructive work, only auto-run (auto_headless + auto_pickup, #2838)
+    # is gated.
     if moderation_matches:
         payload_dict["requires_human_review"] = True
     # #801 — JSONB serialization for JSONB columns. acceptance_criteria and

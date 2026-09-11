@@ -18,6 +18,18 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-09-11 — #3171 cryptography ceiling raised to <51 (48.0.1 → 50.0.1); v0.8.1 review leftovers closed
+**Scope:** backend + security. From #3166's release review (leftovers deferred out of v0.8.1, see the entry below). Lead decision; dev-backend (sonnet) implemented.
+
+**Decision (locked):** `api/pyproject.toml` `cryptography>=48.0.1,<49.0` → `>=50.0.1,<51.0`; `requirements.lock` → `50.0.1`. Raise, not keep.
+
+**Reasoning:** OSV for 48.0.1 lists PYSEC-2026-3552 (PKCS#7 Bleichenbacher oracle — fixed only in **50.0.0**) and PYSEC-2026-3553/3554 (X.509 path-building / wildcard name constraints — fixed in 49.0.0). All three are unreachable for us (we use Fernet + EC key serialization in `scripts/generate_vapid_keys.py` only), but "keep" would leave pip-audit red for no compatibility gain: the old ceilings (#1609 `<47`, #2737 `<49`) were just "next major", not a known incompatibility. Every installed dependent allows 50.x (msal caps `<51` — hence our ceiling; google-auth / py-vapid / pywebpush / http_ece / pdfminer.six are open), and no dependent uses the aliases removed in 49.0.0 or ChaCha20. Verified live after rebuild: `pip show` = 50.0.1, `pip-audit` = no known vulnerabilities, Fernet roundtrip + dependent imports OK.
+
+**Implications:**
+- Next major bump is gated by msal's own `<51`; re-check its ceiling before raising ours.
+- Same task: `webhook_rate_limit.RateLimitError` now takes a required `scope` (`tag` | `project`) and the ingest 429 log line says `bucket=`; the 429 body is unchanged. `link_probe.probe_link` gains an overall `asyncio.wait_for` deadline (`_PROBE_DEADLINE_SECONDS=10.0`) on top of the per-read `httpx.Timeout(5.0)` (slow-drip gap).
+- The api image running before this rebuild lacked the `[dev]` extras (no pytest/respx/pip-audit) despite compose `target: dev`; a fresh `build api` restores them.
+
 ## 2026-09-11 — v0.8.1 release gate: #2839 /invoke L17 gate + langgraph host port dropped (supersedes #2503 AC2 for langgraph); #3170 langgraph prod image non-root; #3169 aiohttp 3.14.3
 **Scope:** backend (langgraph) + devops + security. From the #3166 release review (dev-reviewer + dev-security-reviewer on `origin/main...dev`, 52 commits). Operator decisions 2026-09-11; hashes in `git log`.
 

@@ -453,8 +453,13 @@ def test_service_bucket_key_removed_after_full_expiry() -> None:
     # to be rejected instead of silently re-admitted — a successful retry
     # would immediately recreate the key via the normal append path and mask
     # the delete we're trying to observe here.
-    with pytest.raises(RateLimitError):
+    with pytest.raises(RateLimitError) as excinfo:
         check_and_consume(project_id, tag, now=t0 + timedelta(seconds=61), limit_per_minute=0)
+
+    # POSITIVE (Kanban #3171): this trip is the per-(project, tag) bucket —
+    # the project-aggregate check is never reached since the tag check raises
+    # first.
+    assert excinfo.value.scope == "tag"
 
     # NEGATIVE: the emptied bucket must be gone, not sitting there as
     # `{(424242, "leak-probe"): deque([])}` forever.
@@ -507,6 +512,18 @@ async def test_webhook_rate_limit_bypass_via_many_tags_still_returns_429(client)
         r = await client.post(f"/api/ingest/webhook/1/{tag7}", json=payload, headers=headers)
         assert r.status_code == 429, r.text
         assert r.json()["detail"] == "rate_limit_exceeded", r.json()
+
+        # Direct service-level check (Kanban #3171): the underlying
+        # RateLimitError for THIS trip carries scope="project" — the project
+        # aggregate bucket for project_id=1 is already saturated (6/6) from
+        # the HTTP round-trips above (same in-memory state), so a fresh,
+        # never-before-seen tag still trips the PROJECT bucket, not its own
+        # (empty) per-tag bucket.
+        from src.services.webhook_rate_limit import RateLimitError, check_and_consume
+
+        with pytest.raises(RateLimitError) as excinfo:
+            check_and_consume(1, "bypass-probe-yet-another", limit_per_minute=2)
+        assert excinfo.value.scope == "project"
     finally:
         del os.environ["WEBHOOK_RATE_LIMIT_PER_MIN"]
         del os.environ["WEBHOOK_RATE_LIMIT_PROJECT_MULTIPLIER"]

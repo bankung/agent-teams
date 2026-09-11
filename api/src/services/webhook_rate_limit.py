@@ -51,7 +51,7 @@ from __future__ import annotations
 import os
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-from typing import Final
+from typing import Final, Literal
 
 # Default — 60 hits per (project_id, tag) per minute. The original Kanban
 # description called for a 2-tier scheme (60/min soft + 600/min hard); we
@@ -80,18 +80,26 @@ _PROJECT_WINDOWS: dict[int, deque[datetime]] = defaultdict(deque)
 
 
 class RateLimitError(Exception):
-    """Raised by ``check_and_consume`` when the per-(project, tag) bucket is full.
+    """Raised by ``check_and_consume`` when either the per-(project, tag) bucket
+    or the per-project aggregate bucket (Kanban #2833) is full.
 
-    Carries the configured limit + the elapsed-window length so the router can
-    render a useful 429 detail string. Module-level (NOT subclass of HTTPException)
-    so unit tests on this service don't depend on FastAPI.
+    Carries the configured limit, the elapsed-window length, and which bucket
+    tripped (``scope``) so the router can render a useful 429 detail string
+    and log which cap was hit. Module-level (NOT subclass of HTTPException) so
+    unit tests on this service don't depend on FastAPI.
     """
 
-    def __init__(self, limit_per_minute: int) -> None:
+    def __init__(self, limit_per_minute: int, *, scope: Literal["tag", "project"]) -> None:
         self.limit_per_minute = limit_per_minute
-        super().__init__(
-            f"rate limit exceeded: {limit_per_minute}/min per (project, tag)"
-        )
+        self.scope = scope
+        if scope == "tag":
+            message = f"rate limit exceeded: {limit_per_minute}/min per (project, tag)"
+        else:
+            message = (
+                f"rate limit exceeded: {limit_per_minute}/min per project "
+                "(aggregate across tags)"
+            )
+        super().__init__(message)
 
 
 def _resolved_limit() -> int:
@@ -175,7 +183,7 @@ def check_and_consume(
         del _WINDOWS[key]
 
     if len(bucket) >= limit_per_minute:
-        raise RateLimitError(limit_per_minute)
+        raise RateLimitError(limit_per_minute, scope="tag")
 
     # ----- 2. Per-project aggregate bucket (bypass fix, Kanban #2833) ------
     project_limit = limit_per_minute * _resolved_project_multiplier()
@@ -186,7 +194,7 @@ def check_and_consume(
         del _PROJECT_WINDOWS[project_id]
 
     if len(project_bucket) >= project_limit:
-        raise RateLimitError(project_limit)
+        raise RateLimitError(project_limit, scope="project")
 
     # ----- 3. Both checks passed -> consume in both buckets ----------------
     # Re-fetch via defaultdict rather than reusing the `bucket` /

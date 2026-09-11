@@ -44,10 +44,15 @@ Best-effort, NEVER raises into the caller. A single bounded GET (not a real
 HEAD — many servers 405 a HEAD request; the field name `head_status` is
 historical from #1309's original design) with `follow_redirects=False` (a
 3xx is recorded as-is; the redirect target is NEVER fetched — this is what
-defeats the redirect-to-internal SSRF variant) and a bounded overall
-timeout. Reads at most `_MAX_PROBE_BYTES` of the body (streamed, so a slow
-or huge response can't hang/balloon the request) and extracts `<title>` via
-a light regex only when the response is `text/html`.
+defeats the redirect-to-internal SSRF variant). Two layers bound the request
+wall-clock (Kanban #3171): a per-read `httpx.Timeout(_PROBE_TIMEOUT)` bounds
+any SINGLE socket read, and an overall `asyncio.wait_for(...,
+_PROBE_DEADLINE_SECONDS)` bounds the WHOLE request end-to-end — the per-read
+timeout alone doesn't stop a slow-drip server that keeps sending a trickle of
+bytes just inside the per-read window indefinitely. Reads at most
+`_MAX_PROBE_BYTES` of the body (streamed, so a slow or huge response can't
+hang/balloon the request) and extracts `<title>` via a light regex only when
+the response is `text/html`.
 
 # shortcut: resolve-then-fetch leaves a DNS-rebinding TOCTOU window (the
 # guard resolves the hostname, then httpx independently re-resolves it to
@@ -58,6 +63,7 @@ a light regex only when the response is `text/html`.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
 import re
@@ -71,6 +77,11 @@ logger = logging.getLogger(__name__)
 
 _ALLOWED_SCHEMES = ("http", "https")
 _PROBE_TIMEOUT = httpx.Timeout(5.0)
+# Overall wall-clock cap for the whole probe (Kanban #3171) — the per-read
+# _PROBE_TIMEOUT above bounds any single socket read, but a slow-drip server
+# (one byte every <5s) can keep resetting that per-read clock forever. This
+# caps the entire client/stream/read sequence via asyncio.wait_for.
+_PROBE_DEADLINE_SECONDS = 10.0
 # Bytes read from the response body before we stop streaming (bounds a slow
 # or huge response; also caps how much we ever feed to the title regex).
 _MAX_PROBE_BYTES = 64 * 1024
@@ -183,7 +194,7 @@ async def probe_link(url: str) -> tuple[int | None, str | None, str | None]:
         logger.info("link_probe: blocked (%s): %s", reason, url)
         return None, None, reason
 
-    try:
+    async def _fetch() -> tuple[int, str | None]:
         async with httpx.AsyncClient(
             follow_redirects=False, timeout=_PROBE_TIMEOUT
         ) as http_client:
@@ -208,7 +219,14 @@ async def probe_link(url: str) -> tuple[int | None, str | None, str | None]:
                             .decode("utf-8", errors="replace")
                             .strip()[:_MAX_TITLE_CHARS]
                         )
-                return status, title, None
+                return status, title
+
+    try:
+        status, title = await asyncio.wait_for(_fetch(), _PROBE_DEADLINE_SECONDS)
+        return status, title, None
     except Exception as exc:  # best-effort — never raise into the create path
+        # Covers a per-read httpx timeout, the overall asyncio.wait_for
+        # deadline (TimeoutError is an Exception subclass on 3.12), and any
+        # other network/parse failure — all treated identically.
         logger.info("link_probe: probe failed for %s: %s", url, exc)
         return None, None, None

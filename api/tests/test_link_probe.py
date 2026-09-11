@@ -11,7 +11,9 @@ platform libc; monkeypatching removes that variable entirely).
 
 from __future__ import annotations
 
+import asyncio
 import socket
+import time
 
 import httpx
 import pytest
@@ -230,3 +232,63 @@ async def test_probe_link_public_happy_path(monkeypatch) -> None:
     assert status == 200
     assert title == "the title"
     assert reason is None
+
+
+# ---------------------------------------------------------------------------
+# probe_link — overall wall-clock deadline (Kanban #3171)
+# ---------------------------------------------------------------------------
+
+
+class _SlowDripStream(httpx.AsyncByteStream):
+    """Yields one small chunk, then stalls far longer than the (monkeypatched)
+    overall probe deadline — simulates a slow-drip server that trickles bytes
+    just inside the per-read httpx.Timeout forever, which the per-read timeout
+    alone can't defend against. ``chunks_yielded`` is set to 1 right before
+    the stall so the test can confirm the body was genuinely streamed
+    (partially consumed) rather than buffered whole before the deadline
+    could ever fire.
+    """
+
+    def __init__(self) -> None:
+        self.chunks_yielded = 0
+
+    async def __aiter__(self):
+        yield b"<html><title>never finishes"
+        self.chunks_yielded += 1
+        await asyncio.sleep(60)  # far longer than any deadline this test sets
+        yield b"unreachable"  # pragma: no cover - never reached
+
+
+@pytest.mark.asyncio
+async def test_probe_link_slow_drip_respects_overall_deadline(monkeypatch) -> None:
+    """A slow-drip target (a small first chunk, then an indefinite stall) must
+    not keep ``probe_link`` alive past the overall wall-clock deadline. The
+    per-read ``httpx.Timeout(5.0)`` alone doesn't bound this case, since each
+    individual read that DOES arrive resets that per-read clock — only the
+    ``asyncio.wait_for`` overall deadline added for Kanban #3171 catches it.
+    """
+    monkeypatch.setattr(link_probe.socket, "getaddrinfo", _fake_getaddrinfo_public)
+    monkeypatch.setattr(link_probe, "_PROBE_DEADLINE_SECONDS", 0.2)
+    url = "https://public.example.test/slow-drip"
+    stream = _SlowDripStream()
+
+    with respx.mock(assert_all_called=True) as router:
+        router.get(url).mock(
+            return_value=httpx.Response(
+                200, stream=stream, headers={"content-type": "text/html"}
+            )
+        )
+        start = time.monotonic()
+        status, title, reason = await link_probe.probe_link(url)
+        elapsed = time.monotonic() - start
+
+    # POSITIVE: the never-raises-into-the-caller contract holds even when the
+    # deadline (not a network error) is what stopped the probe.
+    assert (status, title, reason) == (None, None, None)
+    # NEGATIVE (the lock): wall-clock elapsed is well under the slow-drip's
+    # 60s stall — proves asyncio.wait_for actually cancelled the in-flight
+    # request rather than waiting it out.
+    assert elapsed < 2.0, f"probe_link took {elapsed:.2f}s, expected well under 2s"
+    # Sanity: the stream was genuinely iterated (streamed) before the
+    # deadline cancelled it — not buffered whole up front.
+    assert stream.chunks_yielded == 1

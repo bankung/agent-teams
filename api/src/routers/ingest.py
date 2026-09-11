@@ -586,8 +586,8 @@ async def ingest_webhook(
         rate_limit_check_and_consume(project_id, tag)
     except RateLimitError as exc:
         logger.warning(
-            "webhook rate limit exceeded project_id=%s tag=%s: %s",
-            project_id, tag, exc,
+            "webhook rate limit exceeded project_id=%s tag=%s bucket=%s: %s",
+            project_id, tag, exc.scope, exc,
         )
         raise HTTPException(status_code=429, detail="rate_limit_exceeded") from exc
 

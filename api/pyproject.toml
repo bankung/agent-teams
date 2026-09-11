@@ -46,7 +46,8 @@ dependencies = [
     # FIX-2 (#1609): CVE-2026-26007 + PYSEC-2026-35 + PYSEC-2026-36 require >=46.0.7.
     # Previous upper bound <46.0 blocked the patch. Bumped to >=46.0.7,<47.0.
     # FIX-3 (#2737): GHSA-537c-gmf6-5ccf requires >=48.0.1; prior <47.0 cap blocked it.
-    "cryptography>=48.0.1,<49.0",
+    # #3171: PYSEC-2026-3552 needs >=50.0.0 (3553/3554 >=49.0.0); <51 matches msal's own ceiling.
+    "cryptography>=50.0.1,<51.0",
     # Kanban #1437 — signed-token opt-out link in digest emails. URLSafeTimedSerializer
     # produces compact URL-safe HMAC-signed tokens with built-in expiry. No new
     # key material required — reuses SECRET_KEY (same posture as session signing).
