@@ -62,7 +62,7 @@ try {
         # agent-teams repo's own harness copy: it names this project + links
         # back to /zb-bind, and it contains zero markdown link syntax.
         $claudeMdRaw = Get-Content -LiteralPath $claudeMdPath -Raw
-        Assert-True ($claudeMdRaw -match '/zb-bind') "CLAUDE.md is the rendered stub (contains /zb-bind)"
+        Assert-True ($claudeMdRaw.Contains($projectName)) "CLAUDE.md is the rendered stub (contains the scaffolded project name)"
         Assert-True ($claudeMdRaw -notmatch '\]\(') "CLAUDE.md stub contains no markdown links"
     }
     Assert-True (Test-Path (Join-Path $tmp '.claude\agents\dev-backend.md')) "dev-backend.md present"
