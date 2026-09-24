@@ -1,3 +1,8 @@
+# NOT WIRED (#3327) — settings.json runs pretooluse-bash-gate.ps1 for BOTH the Bash and the
+# PowerShell matcher, and this file's logic lives there as GUARD 2, an in-process mirror. This
+# copy is kept as the readable reference. An edit HERE ALONE changes nothing at runtime: edit
+# the mirror too, or edit the gate.
+#
 # Block destructive raw SQL DML (DELETE / UPDATE / INSERT / TRUNCATE / DROP) at the harness layer.
 # Both Lead's main session AND every subagent inherit this hook from .claude/settings.json — the
 # enforcement is harness-side, immune to context compaction or agent-definition skim.

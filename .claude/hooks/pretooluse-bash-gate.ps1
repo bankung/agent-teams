@@ -1,4 +1,10 @@
-# pretooluse-bash-gate.ps1 — consolidated Bash PreToolUse dispatcher (Lever A).
+# pretooluse-bash-gate.ps1 — consolidated PreToolUse dispatcher (Lever A).
+#
+# NAME IS HISTORICAL (#3327): this is wired on BOTH the `Bash` and the
+# `PowerShell` matcher in settings.json. The file keeps its name so the decision
+# log and incident records that cite it by name stay resolvable. The only
+# tool-dependent behaviour is approval-policies-gate, which runs for Bash ONLY —
+# see the non-Bash stop just above that section for why.
 #
 # Replaces the 5 sequential Bash PreToolUse hooks with ONE process:
 #   approval-policies-gate.ps1   (policy eval + Lever B cache)
@@ -111,15 +117,21 @@ if ($cmd) {
         $tokens    = $tokens | Select-Object -Skip 1
         $firstWord = $tokens[0]
     }
-    if ($firstWord -match '^curl(\.exe)?$') {
-        if ($cmd -match '(?i)(?:^|\s)(?:-X|--request)\s+DELETE\b') {
+    # PowerShell HTTP cmdlets are matched by word boundary, not first word: the
+    # native shape assigns the result (`$r = Invoke-WebRequest ...`). #3327.
+    $isCurl   = $firstWord -match '^curl(\.exe)?$'
+    $isPsHttp = $cmd -match '(?i)\b(Invoke-RestMethod|Invoke-WebRequest|irm|iwr)\b'
+    if ($isCurl -or $isPsHttp) {
+        if (($isCurl   -and $cmd -match '(?i)(?:^|\s)(?:-X|--request)\s+DELETE\b') -or
+            ($isPsHttp -and $cmd -match '(?i)(?:^|\s)-Method(?:\s*:\s*|\s+)["'']?DELETE\b')) {
             $reason = @"
-curl DELETE detected — forcing permission prompt (overriding allowlist).
+HTTP DELETE detected — forcing permission prompt (overriding allowlist).
 
-The trailing-wildcard allowlist patterns (Bash(curl ... :*)) accept any suffix,
-which would let `-X DELETE` slip in via the wildcard tail. This hook routes
-every curl DELETE through the normal permission prompt so the user gets a
-deliberate yes/no on each one.
+The trailing-wildcard allowlist patterns (Bash(curl ... :*), and the same shape
+for a PowerShell HTTP entry) accept any suffix, which would let `-X DELETE` or
+`-Method DELETE` slip in via the wildcard tail. This hook routes every HTTP
+DELETE through the normal permission prompt so the user gets a deliberate
+yes/no on each one.
 
 If you (the user) intend this DELETE: click "yes" at the prompt.
 Otherwise: click "no".
@@ -215,18 +227,22 @@ the SAME shell — the hook honours it and emits a [BYPASS] marker for audit.
             exit 2
         }
 
-        # L1.5 check #2 — inline DATABASE_URL= prefix
-        $inlineMatch = [regex]::Match($cmd, '(?i)DATABASE_URL=([^\s"'']+)')
+        # L1.5 check #2 — inline DATABASE_URL set inside the command string, in
+        # either the bash form (`DATABASE_URL=<url> cmd`) or the PowerShell form
+        # (`$env:DATABASE_URL = "<url>"; cmd`), which has spaces around `=` and a
+        # quoted value. #3327.
+        $inlineMatch = [regex]::Match($cmd, '(?i)(?:\$env:)?DATABASE_URL\s*=\s*["'']?([^\s"'';]+)')
         if ($inlineMatch.Success) {
             $inlineUrl  = $inlineMatch.Groups[1].Value
             $normalized = ($inlineUrl -replace '\?.*$', '') -replace '/+$', ''
             if ($normalized -notmatch '(?i)_test$') {
                 $reason = @"
-pytest blocked: inline DATABASE_URL=$inlineUrl in the bash command string
+pytest blocked: inline DATABASE_URL=$inlineUrl set in the command string
 points at a non-_test DB.
 
 Inline `DATABASE_URL=... pytest ...` (or `DATABASE_URL=... docker compose exec
-api pytest ...`) bypasses the parent-shell env check because bash inline env
+api pytest ...`, or the PowerShell form ```$env:DATABASE_URL = "..."; pytest ...`)
+bypasses the parent-shell env check because an env var set inside the command
 does not propagate to the PowerShell parent scope. This is the exact pattern
 that wiped the dev DB on 2026-05-17.
 
@@ -406,8 +422,41 @@ if ($cmd) {
 }
 
 # ---------------------------------------------------------------------------
-# GUARD 5 — approval-policies-gate  (LAST: runs only if no local block-* guard
+# NON-BASH TOOLS STOP HERE (#3327). This script is wired on the PowerShell
+# matcher too, so that path gets all four block-* guards in ONE process instead
+# of four (measured: 2,114 ms -> 498 ms per call; ~539 ms of Windows PowerShell
+# startup each). What it must NOT inherit is approval-policies-gate below: its
+# fail-open-to-ask on an unbound session would turn every ordinary PowerShell
+# call into a permission prompt — the exact reason #3324 did not simply reuse
+# this gate. Policy evaluation on the PowerShell path is therefore unchanged
+# from before (it never ran there); only the guard coverage improved.
+#
+# The aggregation below is the same final step the bottom of this file performs,
+# minus the policy fetch — asks recorded by the guards above are preserved.
+# ---------------------------------------------------------------------------
+if ($toolName -ne 'Bash') {
+    if ($askReason) {
+        Emit-Decision -Decision 'ask' -Reason $askReason
+        exit 0
+    }
+    # NO OUTPUT on the no-match path — deliberately NOT `Emit-Decision allow`.
+    # An explicit "allow" is a decision that BYPASSES Claude Code's own permission
+    # check; emitting nothing is "no decision", so the command still falls through
+    # to the allowlist + the ordinary prompt. That fall-through is exactly what the
+    # four standalone guards did here before (each ends in a bare `exit 0`), and
+    # what #3324's ruling — that an unmatched PowerShell HTTP call "still raises the
+    # ordinary permission prompt" — depends on. The Bash path below keeps its own
+    # long-standing default-allow (#1614); do not copy it up here.
+    exit 0
+}
+
+# ---------------------------------------------------------------------------
+# GUARD 6 — approval-policies-gate  (renumbered from a second "GUARD 5" #3327;
+# block-pytest-on-live-db above is GUARD 5, and this file's comments key the
+# standalone-to-mirror pairing off these numbers.)
+#                          (LAST: runs only if no local block-* guard
 # denied above — does the Lever B project fetch, so deny paths skip it. #2541)
+# Bash only — see the non-Bash stop immediately above.
 # ---------------------------------------------------------------------------
 $projectId = Get-ProjectId -SessionId $payload.session_id
 $policies = $null

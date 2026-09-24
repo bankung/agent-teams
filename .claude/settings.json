@@ -68,23 +68,23 @@
       "Bash(rm _scratch/:*)",
       "Bash(rm -r _scratch/:*)",
       "Bash(where:*)",
-      "Bash(docker compose ps:*)",
-      "Bash(docker compose logs:*)",
+      "Bash(docker compose -p agent-teams ps:*)",
+      "Bash(docker compose -p agent-teams logs:*)",
       "Bash(docker inspect:*)",
-      "Bash(docker compose exec api alembic current)",
-      "Bash(docker compose exec api alembic heads)",
-      "Bash(docker compose exec api alembic check)",
-      "Bash(docker compose exec api alembic history:*)",
-      "Bash(docker compose exec -T api alembic current)",
-      "Bash(docker compose exec -T api alembic heads)",
-      "Bash(docker compose exec -T api alembic check)",
-      "Bash(docker compose exec -T api alembic history:*)",
-      "Bash(docker compose exec -T api which:*)",
-      "Bash(docker compose exec -T api pip-audit:*)",
-      "Bash(docker compose exec db psql -U postgres -d agent_teams -c SELECT:*)",
-      "Bash(docker compose exec -T db psql -U postgres -d agent_teams -c SELECT:*)",
-      "Bash(docker compose exec db psql -U postgres -d agent_teams -c \\d:*)",
-      "Bash(docker compose exec -T db psql -U postgres -d agent_teams -c \\d:*)",
+      "Bash(docker compose -p agent-teams exec api alembic current)",
+      "Bash(docker compose -p agent-teams exec api alembic heads)",
+      "Bash(docker compose -p agent-teams exec api alembic check)",
+      "Bash(docker compose -p agent-teams exec api alembic history:*)",
+      "Bash(docker compose -p agent-teams exec -T api alembic current)",
+      "Bash(docker compose -p agent-teams exec -T api alembic heads)",
+      "Bash(docker compose -p agent-teams exec -T api alembic check)",
+      "Bash(docker compose -p agent-teams exec -T api alembic history:*)",
+      "Bash(docker compose -p agent-teams exec -T api which:*)",
+      "Bash(docker compose -p agent-teams exec -T api pip-audit:*)",
+      "Bash(docker compose -p agent-teams exec db psql -U postgres -d agent_teams -c SELECT:*)",
+      "Bash(docker compose -p agent-teams exec -T db psql -U postgres -d agent_teams -c SELECT:*)",
+      "Bash(docker compose -p agent-teams exec db psql -U postgres -d agent_teams -c \\d:*)",
+      "Bash(docker compose -p agent-teams exec -T db psql -U postgres -d agent_teams -c \\d:*)",
       "WebSearch",
       "WebFetch(domain:dev.to)",
       "WebFetch(domain:aitmpl.com)",
@@ -292,36 +292,11 @@
         ]
       },
       {
-        "matcher": "Bash",
+        "matcher": "Bash|PowerShell",
         "hooks": [
           {
             "type": "command",
             "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-bash-gate.ps1\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "PowerShell",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-pytest-on-live-db.ps1\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-raw-sql-dml.ps1\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-bitdefender-triggers.ps1\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-curl-delete.ps1\"",
             "timeout": 5
           }
         ]

@@ -1,3 +1,9 @@
+# NOT WIRED (#3327) — settings.json runs pretooluse-bash-gate.ps1 for BOTH the
+# Bash and the PowerShell matcher, and this file's logic lives there as GUARD 5,
+# an in-process mirror. This copy is kept for the manual-test recipes below and
+# as the readable reference. An edit HERE ALONE changes nothing at runtime:
+# edit the mirror too, or edit the gate.
+#
 # Block pytest invocations whose DATABASE_URL points at the live agent_teams DB.
 # Belt-and-suspenders against the conftest in-process isolation being bypassed
 # (e.g. via get_settings() lru_cache poisoning). Pairs with L2 (conftest fail-loud)
@@ -106,22 +112,28 @@ the SAME shell — the hook honours it and emits a [BYPASS] marker for audit.
 }
 
 # ---------------------------------------------------------------------------
-# L1.5 check #2 — inline `DATABASE_URL=...` prefix in the bash command string.
-# Parent-shell env-var check (below) misses this because bash inline env does
-# NOT propagate to the PowerShell parent scope. Pattern: `DATABASE_URL=<url>`
-# optionally followed by other env vars and the actual command.
+# L1.5 check #2 — inline DATABASE_URL set inside the command string itself.
+# The parent-shell env-var check (below) misses this, because neither a bash
+# inline prefix nor a `$env:` assignment made inside the command propagates to
+# this hook's own process. BOTH syntaxes are matched (#3327):
+#   bash        DATABASE_URL=<url> <command>
+#   PowerShell  $env:DATABASE_URL = "<url>"; <command>
+# The PowerShell form has spaces around `=` and a quoted value, so the original
+# bash-only pattern never fired on it — the guard was syntax-blind on exactly
+# the path it had just been wired onto.
 # ---------------------------------------------------------------------------
-$inlineMatch = [regex]::Match($cmd, '(?i)DATABASE_URL=([^\s"'']+)')
+$inlineMatch = [regex]::Match($cmd, '(?i)(?:\$env:)?DATABASE_URL\s*=\s*["'']?([^\s"'';]+)')
 if ($inlineMatch.Success) {
     $inlineUrl  = $inlineMatch.Groups[1].Value
     $normalized = ($inlineUrl -replace '\?.*$', '') -replace '/+$', ''
     if ($normalized -notmatch '(?i)_test$') {
         $reason = @"
-pytest blocked: inline DATABASE_URL=$inlineUrl in the bash command string
+pytest blocked: inline DATABASE_URL=$inlineUrl set in the command string
 points at a non-_test DB.
 
 Inline `DATABASE_URL=... pytest ...` (or `DATABASE_URL=... docker compose exec
-api pytest ...`) bypasses the parent-shell env check because bash inline env
+api pytest ...`, or the PowerShell form ```$env:DATABASE_URL = "..."; pytest ...`)
+bypasses the parent-shell env check because an env var set inside the command
 does not propagate to the PowerShell parent scope. This is the exact pattern
 that wiped the dev DB on 2026-05-17.
 

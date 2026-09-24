@@ -1,3 +1,8 @@
+# NOT WIRED (#3327) — settings.json runs pretooluse-bash-gate.ps1 for BOTH the Bash and the
+# PowerShell matcher, and this file's logic lives there as GUARD 4, an in-process mirror. This
+# copy is kept as the readable reference. An edit HERE ALONE changes nothing at runtime: edit
+# the mirror too, or edit the gate.
+#
 # Block PowerShell-invocation shapes that Bitdefender's heuristic flags. Pre-emptive: the
 # agent never triggers a blocked call → no wasted turn time on opaque "Access is denied"
 # bounces from the AV layer.
