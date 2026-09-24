@@ -5,7 +5,11 @@ After-create-side-effect: auto-scaffolds the on-disk context/projects/<name>/ fo
 
 Soft-delete: list endpoints default-filter `WHERE status=1`; opt-in `?include_deleted=true`
 returns soft-deleted rows too. DELETE flips `status=0` (and clears `is_active` if true).
-Detail endpoints return rows regardless of status (per standards/postgresql/soft-delete.md).
+Active-only routes here: `GET /{id}`, `GET /by-name/{name}` and the POST
+`/grant-consent` + `/reconcile-budget` sub-routes 404 on a soft-deleted row. That is a
+DELIBERATE deviation from standards/postgresql/soft-delete.md (#691, locked by
+test_get_project_by_id_404_for_soft_deleted); its recovery-flow concern does not bite
+because PATCH and DELETE `/{id}` do NOT filter status. `tasks` follows the standard.
 
 Session-scoped active (Kanban #694, Phase 2): the legacy "single active project"
 invariant is gone. `is_active` is a free boolean — multiple rows may carry

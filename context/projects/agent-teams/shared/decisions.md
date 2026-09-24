@@ -18,6 +18,20 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-09-25 — #3336 `projects` read routes are active-only: a deliberate deviation from the soft-delete standard, now documented as one
+**Scope:** backend (docs only — no behaviour change). from #3322, spotted while verifying a soft-delete round trip. Lead-direct (carve-out E: docstring + two `shared/` contract files, no logic).
+
+**Ruling (a) — deliberate deviation, not a bug and not a stale standard.** `context/standards/postgresql/soft-delete.md` requires detail endpoints to return the row regardless of `status`, reasoning that "404 on a row they just soft-deleted breaks recovery flows". `routers/projects.py` does the opposite on `GET /{id}`, `GET /by-name/{name}` and the POST `/grant-consent` + `/reconcile-budget` sub-routes. The deviation was made knowingly at **#691** (`decisions-archive-2026-05.md`, 2026-05-11: "`get_or_404` with `status=RecordStatus.ACTIVE` — soft-deleted rows 404 (parity)") and is locked by `test_get_project_by_id_404_for_soft_deleted`. What the file's docstring did was recite the standard as if it were being followed — the docs were wrong, the code was not.
+
+**Why the standard's concern does not bite here, verified live rather than argued:** `PATCH /{id}` and `DELETE /{id}` do NOT filter `status`. A `PATCH {}` against soft-deleted project id=728 returned **200** with the row (`is_active=false`, still absent from the active list afterwards), and PATCH's own comment says other fields are editable on a soft-deleted row for admin edit / metadata correction. So the row stays reachable for exactly the recovery/admin path the standard was protecting; only the read routes are active-only. `GET /{id}` and `/by-name/{name}` on the same row both returned 404.
+
+**`by-name` is a stronger case than `by-id`** and the two are not one decision: the partial unique index lets a NEW project reclaim a soft-deleted project's name, so an unfiltered by-name lookup would be ambiguous by construction. `by-id`'s reason is the weaker "FE V3 project switcher + external integrations only ever want active rows".
+
+**Implications:**
+- **The wire contract was wrong in the hot bootstrap read.** `shared/api-contracts-core.md` (read at every bootstrap) and `shared/api-contracts.md` both stated the general rule for `projects` and `tasks` together. Both now carry the `projects` exception.
+- **The deviation is `projects`-only.** Repo-wide grep, not diff-scoped: `tasks` (`get_task`, no status filter, locked by `test_get_task_returns_row_regardless_of_soft_delete_status`) and `task_templates` (docstring and code agree) both follow the standard. Remaining hits are the standard itself, historical archive entries, and copies under `context/projects/.deleted/` — correct in their own scope, left alone.
+- **Open for the operator:** `context/standards/postgresql/soft-delete.md` is humans-only and still states the rule without an exception clause. Recommended, not applied: add a line noting that a resource whose name is reclaimable may make its read routes active-only, and point at `projects`. Until then the standard and this repo disagree on paper.
+
 ## 2026-09-24 — #3327 a hook's `allow` is a permission BYPASS, not a pass-through; one gate process for both shells
 **Scope:** devops (hooks + permissions). from #3324 — its residual gaps, all reproduced against the live guards before work started. Lead-direct under the operator's literal `ii`; dev-reviewer read-only over the uncommitted diff. Commit `49001a4`.
 
