@@ -1,0 +1,45 @@
+# Kanban #3320.
+#
+# FOOTGUN — templates are cached: `action_templates._CACHE` loads once on first
+# use and there is NO hot reload (services/action_templates.py says so in as many
+# words). A new or edited YAML here is invisible until the api container
+# restarts. A 422 `action_template_id 'code-change' not found` straight after
+# adding a template means the restart was skipped, not that the name is wrong.
+#
+# WHY this template exists — measured, not assumed (MorAI project 726, 292 done
+# tasks, 2026-09-24): `acceptance_criteria` is OPTIONAL at the API and guarded by
+# no hook, yet 292/292 closed tasks carried AC and none closed with a pending or
+# failed item. The activity rail, which depends on remembering throughout a task,
+# ran at 36% for the close checkpoint. A rule bound to ONE narrow moment — task
+# creation — holds; a rule spread across a task's life does not. So the flow
+# steps ride on acceptance_criteria rather than on a new gate or a hook.
+#
+# The items below deliberately name NO agent. The same audit found dev-tester
+# spawned 0 times in 292 tasks (this project's suite is operator-run) and a
+# *-reviewer on only 18 of the 100 code-changing tasks that spawned anything —
+# partly because `/code-review` and `/simplify` are skills and never appear in
+# `subagent_models`. An item naming dev-tester would have blocked nearly every
+# feature task; an item asking "was it reviewed" has to accept the skill answers.
+
+name: code-change
+version: "1.0.0"
+description: >
+  Any task that changes source or tests — feature, bug fix or refactor. Carries
+  the three flow steps that are worth proving happened: a check that would fail
+  if the change were reverted, a named review pass with its LOC delta, and
+  scoped staging. Task-specific criteria are added on top; the server merges the
+  template items first, then the caller's.
+default_task_type: feature
+default_task_kind: ai
+default_priority: 2
+ac_outline:
+  - "Behavior proven by a check that would FAIL if this change were reverted — paste the command and its real output, not a pass count. A test selector, a curl, or a grep for a string the output must contain all qualify; 'tests pass' on its own does not."
+  - "A review pass ran and is named: dev-reviewer, /code-review or /simplify — plus the diff's insertions/deletions from `git diff --stat`. A delta outsized against this task's scope sends the work back to re-scoping, it is not explained away in the close note."
+  - "Only this task's files are staged: paste `git diff --cached --name-only` and confirm every path belongs to this task. Pre-existing staged changes from another session are unstaged first, not swept into the commit."
+hints:
+  - "Walk the decision ladder before writing code: does it need to exist at all, then stdlib, then a native platform feature, then an already-installed dep, then one line. If a 'small fix' passes ~50 LOC, stop and re-scope rather than continuing."
+  - "On this project the api test suite is operator-run — an in-session container pytest is denied by the live-DB hook. Ask the operator to run a scoped selector and paste the output; do not assume it was run."
+  - "Do not report a step as done because an agent said so. Open the file, re-run the selector, curl the endpoint."
+suggested_attachments:
+  - "The failing output or reproduction that motivated the change (bug/refactor)"
+  - "The endpoint, file or screen the change is scoped to"

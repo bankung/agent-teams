@@ -42,6 +42,15 @@ From the natural-language request, derive:
   If the operator supplied AC, use theirs verbatim. Otherwise draft them and they will be visible
   in the printed result for the operator to amend. Each item: `{"text": "...", "status": "pending"}`.
   Use `"status": "na"` only for a criterion deliberately deferred (and put the follow-up reference in `notes`).
+- **action_template_id** — set to `"code-change"` when `task_type` is `feature`, `bug` or `refactor`;
+  omit it for `docs` / `chore`. The server then PREPENDS that template's `ac_outline` to the AC you
+  drafted — template items first, yours after, every one `status: pending`. The three flow items are:
+  a check that would FAIL if the change were reverted · a named review pass plus the `git diff --stat`
+  LOC delta · scoped staging. **Do NOT copy those items into your own payload** — the merge happens
+  server-side (`routers/tasks.py`: `template_ac + caller_ac`) and a hand-copy just duplicates them.
+  You still draft the task-SPECIFIC criteria exactly as before. Provenance is stamped into
+  `resume_context.action_template` as `{id, version}`, so an entry's history does not shift when the
+  YAML is later edited. An unknown name is a 422.
 
 ## Step 2.5 — self-review the drafted task BEFORE the POST (Tier A default; Tier B opt-in)
 
@@ -107,6 +116,7 @@ Write the JSON to `_scratch/agent_task_create_payload.json`. Shape (only `projec
   "description": "<description or omit>",
   "task_type": "feature",
   "task_kind": "ai",
+  "action_template_id": "code-change",
   "acceptance_criteria": [
     {"text": "<verifiable criterion 1>", "status": "pending"},
     {"text": "<verifiable criterion 2>", "status": "pending"}
@@ -115,6 +125,13 @@ Write the JSON to `_scratch/agent_task_create_payload.json`. Shape (only `projec
 ```
 
 > `priority` is omitted — the API defaults to NORMAL (2). Pass `"priority": 3` for HIGH or `"priority": 4` for URGENT only when the operator signals urgency. (Scale: LOW=1 NORMAL=2 HIGH=3 URGENT=4.)
+
+> **Template cache footgun (#3320).** `action_templates._CACHE` loads once on first use — there is NO
+> hot reload (`services/action_templates.py` says so outright). A newly added or edited
+> `.claude/templates/actions/*.yaml` stays invisible until the api container restarts, so a
+> `422 action_template_id 'code-change' not found` straight after adding a template means the restart
+> was skipped, not that the name is wrong. `GET /api/templates/actions` lists what the running API can
+> actually see.
 
 > **Non-ASCII note:** if `title`/`description`/AC contain Thai / arrows / emoji, write the payload as
 > a UTF-8 file and POST with `curl --data-binary @file` — NEVER a PowerShell-inline `-d "...ไทย..."`
@@ -160,6 +177,12 @@ add a one-line note of what the dev-spec-reviewer changed. One block, no fluff.
 1. **`project_id` goes in the BODY**, not only the `X-Project-Id` header. Header-alone returns
    a silent **422** that can look like a phantom create. Always send both.
 2. **`acceptance_criteria` is set AT CREATION** — never create-then-patch-AC-later. AC defines "done".
+2b. **Flow steps ride on the AC, not on a new gate (#3320).** Measured on MorAI (292 done tasks,
+   2026-09-24): AC is optional at the API and guarded by no hook, yet 292/292 closed tasks carried it
+   and none closed with a pending item — while the activity rail, which depends on remembering
+   through the whole task, ran at 36% for the close checkpoint. A rule bound to ONE narrow moment
+   holds; a rule spread across a task's life does not. That is why `action_template_id` puts the flow
+   steps into `acceptance_criteria` instead of adding a DONE-flip hook.
 3. **Status semantics:** new tasks are `process_status` **1 (TODO)** — the default; do not set it.
    - **Never** set `process_status: 4` (BLOCKED) directly. BLOCKED is expressed ONLY via the
      `blocked_by: <task_id>` FK. If a task is on HOLD / waiting on something external, keep it
