@@ -7,10 +7,11 @@
     expected files landed and settings.json has been filtered. Cleans up the
     tempdir on the way out.
 
-    NOTE: This smoke creates a real DB row (the agent-teams API has no consumer
-    DELETE endpoint exposed here). The project name carries a random suffix so
-    repeated smoke runs never collide, but the rows accumulate. Soft-delete
-    cleanup is a manual chore for now.
+    NOTE: This smoke creates a real DB row. The `finally` block soft-deletes
+    it via `DELETE /api/projects/{id}` before exit, so runs stop accumulating
+    active rows. No repo folder is involved — this smoke always passes a
+    -WorkingPath, and the API scaffolds context/projects/<name>/ only for
+    working_path=null projects.
 #>
 [CmdletBinding()]
 param(
@@ -97,6 +98,16 @@ try {
         Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
         Write-Host ""
         Write-Host "Cleaned up tempdir."
+    }
+
+    # Kanban #3322 — soft-delete the project row this run created; by-name
+    # 404s (CLI died before creating it) are a clean non-finding, not a fault.
+    try {
+        $proj = Invoke-RestMethod -Uri "$ApiUrl/api/projects/by-name/$projectName" -Method Get
+        Invoke-RestMethod -Uri "$ApiUrl/api/projects/$($proj.id)" -Method Delete | Out-Null
+        Write-Host "Soft-deleted project id=$($proj.id) ($projectName)."
+    } catch {
+        Write-Host "No project row to clean up (by-name lookup failed): $($_.Exception.Message)"
     }
 }
 
