@@ -7,7 +7,9 @@
     The agent-teams API runs in Docker and cannot see Windows host paths, so the manifest
     must be fetched + written from the host. This script:
       1. Find-or-creates a project row via the API.
-      2. Fetches the manifest (CLAUDE.md + .claude/** + context/teams/<team>/ + standards subset).
+      2. Fetches the manifest (a rendered per-project CLAUDE.md pointer stub, never the
+         agent-teams repo's own CLAUDE.md, + .claude/** + context/teams/<team>/ + standards
+         subset).
       3. Base64-decodes content_b64 and writes each rel_path under -WorkingPath.
 
     Idempotent: existing target files are skipped (recorded under "skipped"); zero changes

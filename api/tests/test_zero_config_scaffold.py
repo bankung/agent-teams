@@ -199,6 +199,36 @@ def test_scaffold_partial_error_continues() -> None:
         assert _has_file(target, ".claude/teams/dev.md")
 
 
+def test_render_project_claude_stub_contains_name_and_team() -> None:
+    """Kanban #3321 — the rendered stub substitutes `<name>`/`<team>` and
+    contains zero markdown-link syntax (acceptance criterion 4)."""
+    from src.services.zero_config_scaffold import render_project_claude_stub
+
+    stub = render_project_claude_stub(project_name="morai", team="dev").decode(
+        "utf-8"
+    )
+
+    assert "morai" in stub
+    assert "team=dev" in stub
+    assert "/zb-bind morai" in stub
+    assert "](" not in stub, "stub must carry zero markdown link sequences"
+    # Placeholders fully substituted — no leftover template tokens.
+    assert "<name>" not in stub
+    assert "<team>" not in stub
+
+
+def test_render_project_claude_stub_differs_from_repo_claude_md() -> None:
+    """The rendered stub must not be the agent-teams repo's own CLAUDE.md
+    content — that's the exact bug #3321 fixes (a verbatim copy shipped into
+    every scaffolded project)."""
+    from src.services.zero_config_scaffold import render_project_claude_stub
+
+    stub_bytes = render_project_claude_stub(project_name="proj-x", team="dev")
+    repo_claude_md = (AGENT_TEAMS_ROOT / "CLAUDE.md").read_bytes()
+
+    assert stub_bytes != repo_claude_md
+
+
 def test_scaffold_idempotent_double_call() -> None:
     """Call twice → second call's `copied` is empty + every previously-copied
     file appears under `skipped`. This is the core MVP-A contract."""

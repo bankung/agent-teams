@@ -85,6 +85,7 @@ from src.services.pause_switch import pause_project, unpause_project
 from src.services.project_scaffold import scaffold_project_folder
 from src.services.session_project import require_project_id_header
 from src.services.zero_config_scaffold import (
+    render_project_claude_stub,
     scaffold_orchestration,
     substitute_settings_json,
 )
@@ -141,6 +142,28 @@ def _substitute_settings_json(target: Path, project: Project) -> None:
         settings_path.write_bytes(filtered)
     except OSError as e:
         logger.warning("failed to write %s: %s", settings_path, e)
+
+
+def _write_project_claude_stub(target: Path, project: Project) -> None:
+    """Overwrite the copied CLAUDE.md with the rendered per-project stub
+    (Kanban #3321). Mirrors `_substitute_settings_json` above: the universal
+    manifest copies the repo's own CLAUDE.md byte-for-byte first, then this
+    rewrites it in place with the rendered pointer stub. Failure is
+    non-fatal — DB row is source of truth (#793 precedent)."""
+    claude_path = target / "CLAUDE.md"
+    if not claude_path.exists():
+        logger.warning(
+            "CLAUDE.md missing at %s — scaffold may have failed earlier",
+            claude_path,
+        )
+        return
+
+    try:
+        claude_path.write_bytes(
+            render_project_claude_stub(project_name=project.name, team=project.team)
+        )
+    except OSError as e:
+        logger.warning("failed to write %s: %s", claude_path, e)
 
 
 @router.get("", response_model=list[ProjectRead])
@@ -1198,6 +1221,13 @@ async def create_project(
                     agent_teams_root=settings.repo_root,
                 )
                 _substitute_settings_json(target, project)
+                # Idempotent-add guard (module contract, rule 2): only render
+                # the stub when scaffold_orchestration actually copied a fresh
+                # CLAUDE.md this call. A second POST reusing the same
+                # `working_path` under a different project name must SKIP, not
+                # re-render with the new name over an already-scaffolded file.
+                if "CLAUDE.md" in report.copied:
+                    _write_project_claude_stub(target, project)
                 logger.info(
                     "scaffolded orchestration for %s at %s: "
                     "%d copied, %d skipped, %d errors",

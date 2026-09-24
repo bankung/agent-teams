@@ -55,7 +55,16 @@ try {
     Write-Host ""
     Write-Host "Assertions:"
     Assert-True ($cliExit -eq 0) "CLI exit code is 0 (got $cliExit)"
-    Assert-True (Test-Path (Join-Path $tmp 'CLAUDE.md')) "CLAUDE.md present"
+    $claudeMdPath = Join-Path $tmp 'CLAUDE.md'
+    Assert-True (Test-Path $claudeMdPath) "CLAUDE.md present"
+    if (Test-Path $claudeMdPath) {
+        # Kanban #3321 — CLAUDE.md must be the rendered pointer stub, not the
+        # agent-teams repo's own harness copy: it names this project + links
+        # back to /zb-bind, and it contains zero markdown link syntax.
+        $claudeMdRaw = Get-Content -LiteralPath $claudeMdPath -Raw
+        Assert-True ($claudeMdRaw -match '/zb-bind') "CLAUDE.md is the rendered stub (contains /zb-bind)"
+        Assert-True ($claudeMdRaw -notmatch '\]\(') "CLAUDE.md stub contains no markdown links"
+    }
     Assert-True (Test-Path (Join-Path $tmp '.claude\agents\dev-backend.md')) "dev-backend.md present"
     Assert-True (-not (Test-Path (Join-Path $tmp '.claude\agents\novel-writer.md'))) "novel-writer.md absent (team=dev)"
 

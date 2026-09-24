@@ -39,6 +39,7 @@ from src.constants import TEAM_ROSTERS
 from src.services.zero_config_scaffold import (
     _expand_glob,
     _resolve_manifest,
+    render_project_claude_stub,
     substitute_settings_json,
 )
 from src.settings import get_settings
@@ -66,10 +67,15 @@ class ScaffoldManifestResponse(BaseModel):
 
 
 _SETTINGS_REL = ".claude/settings.json"
+_CLAUDE_MD_REL = "CLAUDE.md"
 
 
 def _read_and_encode(
-    repo_root: Path, rel_path: str, project_name: str, project_id: int
+    repo_root: Path,
+    rel_path: str,
+    project_name: str,
+    project_id: int,
+    team: str,
 ) -> ScaffoldFile | None:
     """Read one source file → optionally substitute → base64-encode.
 
@@ -93,6 +99,11 @@ def _read_and_encode(
         content = substitute_settings_json(
             content, project_name=project_name, project_id=project_id
         )
+    elif rel_path == _CLAUDE_MD_REL:
+        # Kanban #3321 — never serve the repo's own CLAUDE.md bytes; render
+        # the per-project pointer stub instead (see zero_config_scaffold
+        # module docstring for why a verbatim copy is wrong for every target).
+        content = render_project_claude_stub(project_name=project_name, team=team)
 
     return ScaffoldFile(
         rel_path=rel_path,
@@ -136,7 +147,7 @@ def get_scaffold_manifest(
 
     # Bare files first — order matches the manifest tuple, which is stable.
     for rel in files:
-        sf = _read_and_encode(repo_root, rel, project_name, project_id)
+        sf = _read_and_encode(repo_root, rel, project_name, project_id, team)
         if sf is not None:
             out.append(sf)
 
@@ -145,7 +156,7 @@ def get_scaffold_manifest(
     # harmless (the CLI's idempotent-add handles repeats).
     for pattern in globs:
         for rel in _expand_glob(repo_root, pattern):
-            sf = _read_and_encode(repo_root, rel, project_name, project_id)
+            sf = _read_and_encode(repo_root, rel, project_name, project_id, team)
             if sf is not None:
                 out.append(sf)
 

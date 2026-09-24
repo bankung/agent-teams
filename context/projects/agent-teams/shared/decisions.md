@@ -18,6 +18,22 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-09-24 — #3321 project build/test facts live in `<working_path>/shared/README.md`; the scaffold ships a pointer stub, not a CLAUDE.md copy
+**Scope:** platform + shared. from #3319 (MorAI `shared/README.md` doc index). Lead decision; `general` agent implemented the two file edits.
+
+**Decision (locked):**
+
+1. **Single source of truth for a project's build/test facts = `<working_path>/shared/README.md`**, in a section titled exactly `## Project facts (compose + tests)` with four rows: compose project name · test command · test database · app/API URL. Nothing else duplicates those values. For a project whose `working_path` is NULL (agent-teams itself) the file is `context/projects/<project-name>/shared/README.md`.
+2. **The root `CLAUDE.md` is universal-only.** It loads in every session regardless of the bound project, so four agent-teams-specific leaks were removed: the `docker compose -p agent-teams up -d --build web` rebuild command (Karpathy 5A), the hard-coded live DB name `agent_teams` in the pytest-briefing AC, the bare `docker compose exec -T api python -m scripts.seed` API-down recovery step (worse than the others — no `-p`, so from another project's folder it hits that project's stack), and the 7-step "Add a team" checklist naming 8 agent-teams source files. Each now takes its value from the bound project's `shared/README.md`; Bootstrap step 5 names that file as the source. The checklist moved to `shared/adding-a-team.md`, referenced from `CLAUDE.md` as plain text — **not** a markdown link, because the universal file must not link into one project's docs.
+3. **A project folder gets a pointer STUB, never a copy of `CLAUDE.md`.** `MorAI/CLAUDE.md` was an 18,345-byte stale copy of this repo's file, i.e. a second, drifting definition of the universal rules. It is now a 1,155-byte stub: bind via `/zb-bind <name>` from the agent-teams repo, and if you are reading it from inside the project folder, read `shared/README.md` first. **The stub contains no markdown links of any kind** — paths are inline code, so nothing can rot into a dead link; this is checked mechanically (`](` count must be 0).
+
+**Reasoning:** a universal instruction file that names one project's compose stack is worse than useless in every other project's session — the seed command in particular would have operated on the wrong stack silently. And a copied `CLAUDE.md` in a project folder cannot be kept in sync: MorAI's copy was already a month stale and still carried rules that only apply to a session started in this repo.
+
+**Implications:**
+- Every project's `shared/README.md` now owes a "Project facts (compose + tests)" section. agent-teams and MorAI landed with this task; other projects get one at next bind (Bootstrap step 5 says to create it if missing).
+- The scaffold should render the stub per project rather than copying `CLAUDE.md`; any remaining project-folder `CLAUDE.md` copies are stale by definition and should be replaced on sight.
+- The "Available teams" table stays in `CLAUDE.md` (which teams exist is universal); only the how-to-add mechanics moved.
+
 ## 2026-09-11 — #3171 cryptography ceiling raised to <51 (48.0.1 → 50.0.1); v0.8.1 review leftovers closed
 **Scope:** backend + security. From #3166's release review (leftovers deferred out of v0.8.1, see the entry below). Lead decision; dev-backend (sonnet) implemented.
 

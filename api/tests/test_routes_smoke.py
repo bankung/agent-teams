@@ -3372,7 +3372,17 @@ async def test_793_post_project_with_writable_working_path_scaffolds(
         assert resp.status_code == 201, resp.text
 
         # Universal files copied
-        assert (tmp_path / "CLAUDE.md").is_file(), "CLAUDE.md should be scaffolded"
+        claude_md_path = tmp_path / "CLAUDE.md"
+        assert claude_md_path.is_file(), "CLAUDE.md should be scaffolded"
+        # Kanban #3321 — CLAUDE.md must be the rendered per-project stub, not
+        # the agent-teams repo's own CLAUDE.md copied verbatim.
+        claude_md_text = claude_md_path.read_text(encoding="utf-8")
+        assert name in claude_md_text
+        assert "](" not in claude_md_text, "stub must carry zero markdown links"
+        from src.settings import get_settings
+
+        repo_claude_md = Path(get_settings().repo_root) / "CLAUDE.md"
+        assert claude_md_path.read_bytes() != repo_claude_md.read_bytes()
         assert (tmp_path / ".claude" / "settings.json").is_file(), (
             ".claude/settings.json should be scaffolded"
         )

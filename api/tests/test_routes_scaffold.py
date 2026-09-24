@@ -126,10 +126,39 @@ async def test_scaffold_endpoint_dev_team_includes_role_folders(client) -> None:
 
 @pytest.mark.asyncio
 async def test_scaffold_endpoint_base64_decodes_to_source_bytes(client) -> None:
-    """Pick CLAUDE.md, base64-decode → bytes match /repo/CLAUDE.md verbatim."""
+    """Pick a plain universal file (not settings.json/CLAUDE.md, which get
+    substituted/rendered — see test_scaffold_endpoint_claude_md_is_rendered_stub
+    and test_scaffold_endpoint_settings_json_filtered), base64-decode → bytes
+    match the repo source verbatim."""
     resp = await client.get(
         "/api/scaffold/dev/files",
         params={"project_name": "foo", "project_id": 99},
+    )
+    assert resp.status_code == 200, resp.text
+
+    rel = ".claude/agents/dev-analyst.md"
+    files = {f["rel_path"]: f["content_b64"] for f in resp.json()["files"]}
+    assert rel in files
+
+    decoded = base64.b64decode(files[rel])
+    source = (AGENT_TEAMS_ROOT / rel).read_bytes()
+    assert decoded == source, (
+        f"decoded {rel} bytes differ from /repo/{rel} — "
+        "endpoint must serve source bytes verbatim"
+    )
+
+
+@pytest.mark.asyncio
+async def test_scaffold_endpoint_claude_md_is_rendered_stub(client) -> None:
+    """Kanban #3321 — the manifest's CLAUDE.md entry must be the rendered
+    per-project stub, NOT the agent-teams repo's own CLAUDE.md bytes. Locks
+    the fix: a verbatim copy is wrong for every scaffolded project (dead
+    relative links, agent-teams-specific compose/DB names)."""
+    from src.services.zero_config_scaffold import render_project_claude_stub
+
+    resp = await client.get(
+        "/api/scaffold/dev/files",
+        params={"project_name": "stub-proj", "project_id": 123},
     )
     assert resp.status_code == 200, resp.text
 
@@ -138,10 +167,14 @@ async def test_scaffold_endpoint_base64_decodes_to_source_bytes(client) -> None:
 
     decoded = base64.b64decode(files["CLAUDE.md"])
     source = (AGENT_TEAMS_ROOT / "CLAUDE.md").read_bytes()
-    assert decoded == source, (
-        "decoded CLAUDE.md bytes differ from /repo/CLAUDE.md — "
-        "endpoint must serve source bytes verbatim"
+    assert decoded != source, (
+        "manifest served the repo's own CLAUDE.md verbatim instead of the "
+        "rendered per-project stub"
     )
+
+    expected = render_project_claude_stub(project_name="stub-proj", team="dev")
+    assert decoded == expected
+    assert b"](" not in decoded, "served stub must carry zero markdown links"
 
 
 @pytest.mark.asyncio
