@@ -127,7 +127,7 @@
       "PowerShell($r = Invoke-WebRequest -Uri \"http://localhost:5431/p/agent-teams\" -UseBasicParsing; \"STATUS=$\\($r.StatusCode\\) CONTENT_LENGTH=$\\($r.Content.Length\\)\"; \"--MARKERS--\"; \"href_dashboard=$\\([regex]::Matches\\($r.Content,'href=&quot;/dashboard&quot;|href=\"\"/dashboard\"\"'\\).Count\\) raw_href=$\\([regex]::Matches\\($r.Content,'/dashboard'\\).Count\\)\")",
       "Bash(curl --silent -o nul -w \"%{http_code}\" http://localhost:5431/)",
       "PowerShell(docker info --format '{{.ServerVersion}}' 2>&1)",
-      "PowerShell(docker compose ps --format '{{.Name}} {{.Status}}')",
+      "PowerShell(docker compose -p agent-teams ps --format '{{.Name}} {{.Status}}')",
       "PowerShell(& \"c:\\\\Users\\\\banku\\\\Documents\\\\Personal\\\\Projects\\\\GitHub\\\\agent-teams\\\\bin\\\\install.ps1\")",
       "Bash(curl --silent --fail --output /dev/null http://localhost:5431/dashboard)",
       "Bash(curl --silent http://localhost:5431/dashboard)",
@@ -157,24 +157,24 @@
       "Bash(python -c \"import sys,json; data=json.load\\(sys.stdin\\); print\\('total:', len\\(data\\), 'has-877?', any\\(t['id']==877 for t in data\\), 'has-ps6?', any\\(t['process_status']==6 for t in data\\)\\)\")",
       "Bash(curl --silent -X DELETE -H \"X-Project-Id: 1\" http://localhost:8456/api/tasks/877 -w \"HTTP %{http_code}\\\\n\")",
       "Bash(curl -s \"http://localhost:5431/p/agent-teams\")",
-      "PowerShell(docker compose exec -T api alembic upgrade head 2>&1)",
+      "PowerShell(docker compose -p agent-teams exec -T api alembic upgrade head 2>&1)",
       "Bash(curl -s \"http://localhost:8456/api/tasks?include_cancelled=true&limit=5\" -H \"X-Project-Id: 1\")",
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); cancelled=[t for t in d if t['process_status']==6]; print\\(f'cancelled visible with opt-in: {len\\(cancelled\\)}'\\); print\\('reason for 878:', next\\(\\(t['status_change_reason'] for t in d if t['id']==878\\), 'NOT FOUND'\\)\\)\")",
       "Bash(curl -s \"http://localhost:8456/api/tasks?include_cancelled=true&limit=200\" -H \"X-Project-Id: 1\")",
-      "PowerShell(docker compose exec -T db psql -U postgres -d agent_teams -c \"SELECT id, title, task_kind, created_at FROM tasks WHERE task_kind='ai' ORDER BY created_at DESC LIMIT 5;\")",
+      "PowerShell(docker compose -p agent-teams exec -T db psql -U postgres -d agent_teams -c \"SELECT id, title, task_kind, created_at FROM tasks WHERE task_kind='ai' ORDER BY created_at DESC LIMIT 5;\")",
       "Bash(curl -s \"http://localhost:8456/api/tasks?limit=200\" -H \"X-Project-Id: 1\")",
       "Bash(curl -s \"http://localhost:8456/api/projects/stats\")",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:5431/dashboard)",
       "Bash(curl -s http://localhost:5431/dashboard)",
       "Bash(curl -s http://localhost:5431/p/agent-teams)",
-      "PowerShell(docker compose exec -T api pytest -x 2>&1)",
+      "PowerShell(docker compose -p agent-teams exec -T api pytest -x 2>&1)",
       "Bash(curl -s \"http://localhost:5431/_next/static/chunks/app/p/%5Bname%5D/page.js\")",
       "Bash(curl -s -X DELETE \"http://localhost:8456/api/tasks/878\" -H \"X-Project-Id: 1\" -w \"\\\\nHTTP %{http_code}\\\\n\")",
-      "PowerShell(docker compose exec -T api pytest --deselect tests/test_routes_smoke.py::test_777_edge_soft_delete_recreate_isolates_working_path 2>&1)",
+      "PowerShell(docker compose -p agent-teams exec -T api pytest --deselect tests/test_routes_smoke.py::test_777_edge_soft_delete_recreate_isolates_working_path 2>&1)",
       "PowerShell(curl --silent http://localhost:8456/api/projects/by-name/agent-teams)",
       "PowerShell(curl.exe --silent http://localhost:8456/api/projects/by-name/agent-teams)",
-      "PowerShell(docker compose logs api --tail 10 2>&1)",
-      "PowerShell(docker compose ps api)",
+      "PowerShell(docker compose -p agent-teams logs api --tail 10 2>&1)",
+      "PowerShell(docker compose -p agent-teams ps api)",
       "PowerShell(docker inspect agent-teams-api --format '{{join .Config.Cmd \" \"}}')",
       "Bash(curl --silent -o /dev/null -w '%{http_code}' -X DELETE http://localhost:8456/api/tasks/__TRACKED_VAR__ -H 'X-Project-Id: 1')",
       "Bash(curl --silent http://localhost:8456/api/projects/stats -o _scratch/stats-final.json -w \"HTTP %{http_code}\\\\n\")",
@@ -306,7 +306,22 @@
         "hooks": [
           {
             "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-pytest-on-live-db.ps1\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-raw-sql-dml.ps1\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-bitdefender-triggers.ps1\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-curl-delete.ps1\"",
             "timeout": 5
           }
         ]

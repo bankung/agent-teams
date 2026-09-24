@@ -71,6 +71,11 @@ _AGENT_TEAMS_ALLOW_DROP_SUBSTRINGS: tuple[str, ...] = (
     "/api/projects/1/",
     '/api/projects/1"',
     "/context/projects/agent-teams/",
+    # Kanban #3324 — an allow/ask entry pinned to `-p agent-teams` (this repo's
+    # own compose project) is an agent-teams self-reference by definition: it
+    # aims a pre-approved command at agent-teams' stack, useless (and a hazard)
+    # from a different project's session.
+    "-p agent-teams",
 )
 
 
@@ -86,8 +91,9 @@ def substitute_settings_json(
     Drops any `permissions.allow` / `permissions.ask` entry that contains a
     hard-coded reference to the agent-teams project (its name via
     `by-name/agent-teams`, its id=1 via `/api/projects/1/` or `/api/projects/1"`,
-    or its on-disk `/context/projects/agent-teams/` path). Everything else is
-    left verbatim — the new project can hand-tune its own allow list later.
+    its on-disk `/context/projects/agent-teams/` path, or its compose project
+    via `-p agent-teams`). Everything else is left verbatim — the new project
+    can hand-tune its own allow list later.
 
     Unparseable JSON → return input unchanged + log a warning. The scaffold
     pipeline is best-effort; a malformed settings.json should not blow up the

@@ -7,6 +7,7 @@ The path-traversal guard test confirms the source-overwrite case raises.
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -227,6 +228,36 @@ def test_render_project_claude_stub_differs_from_repo_claude_md() -> None:
     repo_claude_md = (AGENT_TEAMS_ROOT / "CLAUDE.md").read_bytes()
 
     assert stub_bytes != repo_claude_md
+
+
+def test_substitute_settings_json_drops_compose_project_pin() -> None:
+    """Kanban #3324 — an allow entry pinned to `-p agent-teams` (this repo's
+    own compose project) is an agent-teams self-reference the same as the
+    id=1 / by-name hard-codes already stripped, so it must be dropped from a
+    scaffolded project's settings.json. Uses a synthetic settings blob (not
+    the live `.claude/settings.json`) so the test doesn't depend on that
+    file's current contents. An unrelated entry must survive verbatim."""
+    from src.services.zero_config_scaffold import substitute_settings_json
+
+    settings = {
+        "permissions": {
+            "allow": [
+                "PowerShell(docker compose -p agent-teams exec -T api pytest)",
+                "Bash(ls:*)",
+            ]
+        }
+    }
+    content = json.dumps(settings).encode("utf-8")
+
+    result = json.loads(
+        substitute_settings_json(content, project_name="proj-x", project_id=42)
+    )
+
+    allow = result["permissions"]["allow"]
+    assert not any("-p agent-teams" in e for e in allow), (
+        "compose-project-pinned entry survived the filter"
+    )
+    assert "Bash(ls:*)" in allow, "unrelated entry must survive verbatim"
 
 
 def test_scaffold_idempotent_double_call() -> None:
