@@ -7,6 +7,10 @@
     expected files landed and settings.json has been filtered. Cleans up the
     tempdir on the way out.
 
+    Kanban #3335 — the two #3321 stub checks also run (via Test-RenderedStub)
+    as a negative control against the repo's own harness CLAUDE.md, proving
+    they actually discriminate rendered-stub from harness-copy.
+
     NOTE: This smoke creates a real DB row. The `finally` block soft-deletes
     it via `DELETE /api/projects/{id}` before exit, so runs stop accumulating
     active rows. No repo folder is involved — this smoke always passes a
@@ -44,6 +48,17 @@ function Assert-True {
     }
 }
 
+# Kanban #3321/#3335 — the rendered CLAUDE.md stub names this project and
+# contains zero markdown-link syntax; shared by the positive assertion and
+# the #3335 negative control below so both paths run the same code.
+function Test-RenderedStub {
+    param([string]$Raw, [string]$ProjectName)
+    [PSCustomObject]@{
+        ContainsProjectName = $Raw.Contains($ProjectName)
+        NoMarkdownLinks      = ($Raw -notmatch '\]\(')
+    }
+}
+
 try {
     Write-Host "Smoke project: $projectName"
     Write-Host "Tempdir      : $tmp"
@@ -63,8 +78,22 @@ try {
         # agent-teams repo's own harness copy: it names this project + links
         # back to /zb-bind, and it contains zero markdown link syntax.
         $claudeMdRaw = Get-Content -LiteralPath $claudeMdPath -Raw
-        Assert-True ($claudeMdRaw.Contains($projectName)) "CLAUDE.md is the rendered stub (contains the scaffolded project name)"
-        Assert-True ($claudeMdRaw -notmatch '\]\(') "CLAUDE.md stub contains no markdown links"
+        $stubCheck = Test-RenderedStub -Raw $claudeMdRaw -ProjectName $projectName
+        Assert-True ($stubCheck.ContainsProjectName) "CLAUDE.md is the rendered stub (contains the scaffolded project name)"
+        Assert-True ($stubCheck.NoMarkdownLinks) "CLAUDE.md stub contains no markdown links"
+    }
+
+    # Kanban #3335 — negative control: the same two checks must FAIL against
+    # the repo's own harness CLAUDE.md, proving they discriminate rather than
+    # passing unconditionally (the earlier #3321 '/zb-bind' check did not).
+    $repoClaudeMdPath = Join-Path $scriptDir '..\CLAUDE.md'
+    if (Test-Path -LiteralPath $repoClaudeMdPath) {
+        $repoClaudeMdRaw = Get-Content -LiteralPath $repoClaudeMdPath -Raw
+        $negCheck = Test-RenderedStub -Raw $repoClaudeMdRaw -ProjectName $projectName
+        Assert-True (-not $negCheck.ContainsProjectName) "negative control: repo CLAUDE.md fails contains-project-name"
+        Assert-True (-not $negCheck.NoMarkdownLinks) "negative control: repo CLAUDE.md fails no-markdown-links"
+    } else {
+        Assert-True $false "negative control: repo CLAUDE.md not found at $repoClaudeMdPath"
     }
     Assert-True (Test-Path (Join-Path $tmp '.claude\agents\dev-backend.md')) "dev-backend.md present"
     Assert-True (-not (Test-Path (Join-Path $tmp '.claude\agents\novel-writer.md'))) "novel-writer.md absent (team=dev)"
