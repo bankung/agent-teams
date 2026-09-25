@@ -11,7 +11,7 @@ allowed-tools:
   - Bash(grep:*)
   - Bash(curl:*)
 metadata:
-  version: 1.0.1
+  version: 1.0.2
   category: platform
   tags: [platform, git, commit, mutate]
 ---
@@ -42,8 +42,11 @@ The session CWD may be a `.claude/worktrees/*` directory that is NOT a real git 
 
 ```
 git -C <root> add <file1> <file2> ...
-git -C <root> diff --cached | grep -in "<forbidden-term-list>"
+git -C <root> diff HEAD -- <file1> <file2> ... | grep -in "<forbidden-term-list>"
 ```
+
+- Scan and commit the SAME pathspec: the index is shared by every session on this tree, so a bare
+  `git diff --cached` scans (and a bare commit sweeps) paths another session staged (#3346).
 
 - The forbidden terms are the lifecycle lock-codes — the canonical list lives in the
   pre-push hook (`.git/hooks/pre-push`) and `_scratch/.lifecycle-mapping.md` (substitution
@@ -65,11 +68,13 @@ git -C <root> diff --cached | grep -in "<forbidden-term-list>"
 ## Step 4 — commit + verify (goal-driven, not claim-driven)
 
 ```
-git -C <root> commit -m "<message>"
+git -C <root> commit -m "<message>" --only -- <file1> <file2> ...
 git -C <root> log --oneline -1
 git -C <root> status --short -- <the file list>
 ```
 
+- `--only -- <paths>` commits just these paths and leaves other staged paths for their owner; if the
+  pathspec is dropped it fails (`fatal: No paths with --include/--only`) instead of taking the whole index.
 - Confirm the new hash exists and the listed files left the dirty set.
 - CRLF warnings ("LF will be replaced by CRLF") are benign on this repo — not an error.
 
@@ -102,6 +107,7 @@ sentinel trips on tool_calls deltas) — held queue, not a backfill.
 | 0 | worktree CWD ≠ repo; git resolves to main repo or fails |
 | 1 | `git add -A` swept `.codex/*` + debris into a scoped commit |
 | 2 | lock-code term reached a committed file; caught only at push-time before |
+| 2, 4 | bare `git commit` swept another session's staged paths (shared index, #3346) |
 | 3 | AI trailer appeared in a personal-repo commit |
 | 5 | push without operator signal; trailing pushes during batch-hold windows |
 | 6 | empty activity rail discovered end-of-day (2026-06-12) — recording is mandatory |
