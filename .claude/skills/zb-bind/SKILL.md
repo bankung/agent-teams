@@ -28,15 +28,17 @@ daemon (`api/scripts/telegram_poller.py`) reads. Sessions WRITE the global, neve
 
 ## Step 1 — resolve the project by name
 
+Run Step 2.1's `echo` first — `<sid>` below is its output (see "Scratch filenames").
+
 ```
 curl --silent "http://localhost:8456/api/projects/by-name/<URL-encoded name>" \
-  -o _scratch/tn_bind_resp.json -w "%{http_code}"
+  -o _scratch/tn_bind_resp_<sid>.json -w "%{http_code}"
 ```
 
 - **200** → parse `id`, `team`, `name`. Continue to Step 2.
 - **404** → the name didn't match an active project. List the live ones and STOP (ask which):
   ```
-  curl --silent "http://localhost:8456/api/projects?status=1" -o _scratch/tn_bind_list.json -w "%{http_code}"
+  curl --silent "http://localhost:8456/api/projects?status=1" -o _scratch/tn_bind_list_<sid>.json -w "%{http_code}"
   ```
   Print each project's `name` / `id` / `team`. Do NOT guess a project.
 - **any other** → show the raw response body and STOP.
@@ -67,7 +69,8 @@ global must never be read) falls back to a permission prompt.
    (gate/spawn/notify hooks + zb-* skills) already resolves per-session.
 4. Verify with a SEPARATE `cat` call (e.g. `cat _runtime/lead_project_id_<sid>.txt`) — by then the
    binding exists, so `cat`/`find` resolve the project and stay silent. Then best-effort
-   housekeeping: prune `_runtime/lead_project_id_*.txt` older than ~7 days.
+   housekeeping: prune `_runtime/lead_project_id_*.txt` and EVERY session's scratch files
+   (`_scratch/*_????????-????-????-????-????????????.json`, `_scratch/*_nosid-*.json`) older than ~7 days.
 
 ## Step 3 — announce
 
@@ -75,6 +78,15 @@ global must never be read) falls back to a permission prompt.
 
 From here, every `/api/tasks*` call uses `X-Project-Id: <id>` in the header AND `project_id: <id>`
 in the body.
+
+## Scratch filenames (every zb-* skill, #3347)
+
+`_scratch/` is shared by every session on this tree, so a fixed payload name lets one session's
+Write land in another session's POST. Every zb-* scratch file is `_scratch/<name>_<sid>.json`:
+- `<sid>` = the output of `echo $CLAUDE_CODE_SESSION_ID` (Step 2.1), typed into the command as a
+  literal — not the variable.
+- Empty output → use `nosid-<unix-seconds>` from one `date +%s` call, reused for the whole session.
+- Retention: Step 2.4 prunes these files after ~7 days.
 
 ---
 

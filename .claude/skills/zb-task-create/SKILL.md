@@ -106,7 +106,8 @@ that catch the default, with no spawn.
 
 ## Step 3 — build the payload file
 
-Write the JSON to `_scratch/agent_task_create_payload.json`. Shape (only `project_id`,
+Write the JSON to `_scratch/agent_task_create_payload_<sid>.json` (`<sid>` = session id — see
+/zb-bind "Scratch filenames"). Shape (only `project_id`,
 `title`, `task_type`, `acceptance_criteria` are essential; the rest are optional):
 
 ```json
@@ -143,9 +144,9 @@ Write the JSON to `_scratch/agent_task_create_payload.json`. Shape (only `projec
 curl --silent -X POST \
   -H "X-Project-Id: <id>" \
   -H "Content-Type: application/json" \
-  --data-binary @_scratch/agent_task_create_payload.json \
+  --data-binary @_scratch/agent_task_create_payload_<sid>.json \
   http://localhost:8456/api/tasks \
-  -o _scratch/agent_task_create_resp.json \
+  -o _scratch/agent_task_create_resp_<sid>.json \
   -w "%{http_code}"
 ```
 

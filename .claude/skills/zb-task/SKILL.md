@@ -23,8 +23,9 @@ Resolve `X-Project-Id` by running `powershell -File bin/lead-project-id.ps1` —
 ## Step 2 — fetch
 ```
 curl --silent -H "X-Project-Id: <id>" http://localhost:8456/api/tasks/<task_id> \
-  -o _scratch/tn_task.json -w "%{http_code}"
+  -o _scratch/tn_task_<sid>.json -w "%{http_code}"
 ```
+(`<sid>` = session id — see /zb-bind "Scratch filenames".)
 - **404** → not found on this project (maybe the binding points elsewhere — check `/zb-bind`).
 
 ## Step 3 — print (decode the integer codes)

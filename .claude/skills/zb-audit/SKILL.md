@@ -31,8 +31,9 @@ the 4 metrics (budget burn rate, task failure rate, task stall rate, drift place
 ## Step 3 — pull the trend (cross-project rollup; NO X-Project-Id)
 ```
 curl --silent http://localhost:8456/api/audit/daily-rollup \
-  -o _scratch/tn_audit_rollup.json -w "%{http_code}"
+  -o _scratch/tn_audit_rollup_<sid>.json -w "%{http_code}"
 ```
+(`<sid>` = session id — see /zb-bind "Scratch filenames".)
 This endpoint is cross-project (takes NO X-Project-Id header; ordered project_id ASC, day DESC).
 Filter the rows to the target project_id for the recent-days trend.
 

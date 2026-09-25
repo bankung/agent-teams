@@ -30,8 +30,9 @@ If it exits non-zero: STOP and run `/zb-bind <project>` first.
 
 ```
 curl --silent -H "X-Project-Id: <id>" http://localhost:8456/api/tasks/<task_id> \
-  -o _scratch/tn_done_task.json -w "%{http_code}"
+  -o _scratch/tn_done_task_<sid>.json -w "%{http_code}"
 ```
+(`<sid>` = session id — see /zb-bind "Scratch filenames".)
 Read its `acceptance_criteria`.
 
 ## Step 3 — verify EACH criterion (do not trust prior claims)
@@ -48,7 +49,7 @@ Read its `acceptance_criteria`.
 
 ## Step 4 — build the FULL close payload (AC verdicts + the flip together)
 
-Write ONE object to `_scratch/tn_done_payload.json` carrying both the verified AC array and
+Write ONE object to `_scratch/tn_done_payload_<sid>.json` carrying both the verified AC array and
 the DONE flip, so they land in a SINGLE PATCH (one round-trip — T2/#2541):
 ```json
 {
@@ -64,8 +65,8 @@ as passed/na. If any ended up pending/failed, do not build it — STOP (see Step
 
 ```
 curl --silent -X PATCH -H "X-Project-Id: <id>" -H "Content-Type: application/json" \
-  -d @_scratch/tn_done_payload.json http://localhost:8456/api/tasks/<task_id> \
-  -o _scratch/tn_done_resp.json -w "%{http_code}"
+  -d @_scratch/tn_done_payload_<sid>.json http://localhost:8456/api/tasks/<task_id> \
+  -o _scratch/tn_done_resp_<sid>.json -w "%{http_code}"
 ```
 Then GET the task ONCE and confirm BOTH persisted: every AC status is passed/na AND
 `process_status=5` with `completed_at` set. (One PATCH + one GET replaces the old

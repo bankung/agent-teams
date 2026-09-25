@@ -24,8 +24,9 @@ Resolve `X-Project-Id` by running `powershell -File bin/lead-project-id.ps1` —
 ## Step 2 — fetch the milestone WITH its rollup
 ```
 curl --silent -H "X-Project-Id: <id>" http://localhost:8456/api/milestones/<milestone_id> \
-  -o _scratch/tn_ms_done.json -w "%{http_code}"
+  -o _scratch/tn_ms_done_<sid>.json -w "%{http_code}"
 ```
+(`<sid>` = session id — see /zb-bind "Scratch filenames".)
 The detail response carries a `rollup`: `total` (active child tasks, incl. cancelled), `done`
 (process_status=5 count), `by_process_status`, and `progress_pct` (done / non-cancelled total).
 
@@ -42,7 +43,7 @@ The detail response carries a `rollup`: `total` (active child tasks, incl. cance
 ```
 curl --silent -X PATCH -H "X-Project-Id: <id>" -H "Content-Type: application/json" \
   -d '{"milestone_status":"released"}' http://localhost:8456/api/milestones/<milestone_id> \
-  -o _scratch/tn_ms_done_resp.json -w "%{http_code}"
+  -o _scratch/tn_ms_done_resp_<sid>.json -w "%{http_code}"
 ```
 GET-verify `milestone_status` is now `released`. Report: milestone id, title, final status, rollup.
 

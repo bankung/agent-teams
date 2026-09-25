@@ -31,11 +31,11 @@ is 404 → STOP and report. (The server also enforces same-project on the PATCH;
 pre-check.) Skip the milestone GET when detaching.
 
 ## Step 3 — attach (or detach)
-Write `_scratch/tn_attach.json` = `{"milestone_id": <milestone_id>}` (or `{"milestone_id": null}` to detach), then:
+Write `_scratch/tn_attach_<sid>.json` = `{"milestone_id": <milestone_id>}` (or `{"milestone_id": null}` to detach; `<sid>` = session id — see /zb-bind "Scratch filenames"), then:
 ```
 curl --silent -X PATCH -H "X-Project-Id: <id>" -H "Content-Type: application/json" \
-  -d @_scratch/tn_attach.json http://localhost:8456/api/tasks/<task_id> \
-  -o _scratch/tn_attach_resp.json -w "%{http_code}"
+  -d @_scratch/tn_attach_<sid>.json http://localhost:8456/api/tasks/<task_id> \
+  -o _scratch/tn_attach_resp_<sid>.json -w "%{http_code}"
 ```
 GET-verify the task's `milestone_id` is now set (or null). Report task id + its new milestone.
 

@@ -58,7 +58,8 @@ If `kind` is not in the list, STOP and ask — do not guess; the API will 422 an
 
 ## Step 4 — build the payload file (non-ASCII safe)
 
-Write the JSON to `_scratch/tn_report_payload.json` as a **UTF-8 file**. Shape:
+Write the JSON to `_scratch/tn_report_payload_<sid>.json` as a **UTF-8 file** (`<sid>` = session
+id — see /zb-bind "Scratch filenames"). Shape:
 
 ```json
 {
@@ -82,9 +83,9 @@ Optional fields: `"success": false` (default true; set false for `blocked`),
 curl --silent -X POST \
   -H "X-Project-Id: <id>" \
   -H "Content-Type: application/json" \
-  --data-binary @_scratch/tn_report_payload.json \
+  --data-binary @_scratch/tn_report_payload_<sid>.json \
   http://localhost:8456/api/tasks/<task_id>/tool-calls \
-  -o _scratch/tn_report_resp.json \
+  -o _scratch/tn_report_resp_<sid>.json \
   -w "%{http_code}"
 ```
 
@@ -98,7 +99,7 @@ curl --silent -X POST \
 ## Step 6 — verify (don't trust the POST)
 
 The POST returns **201 with the created row as the body** (`response_model=ToolCallRead`) —
-already saved to `_scratch/tn_report_resp.json` in Step 5. Verify against THAT (no second
+already saved to `_scratch/tn_report_resp_<sid>.json` in Step 5. Verify against THAT (no second
 GET round-trip — T3/#2541): open the response file and confirm it carries a numeric `id`,
 `source:"lead"`, the right `kind`, your `summary`, and that the engine-only fields
 (`tier`, `input_json`, `duration_ms`, `permission_decision`) are `null` (lead rows never

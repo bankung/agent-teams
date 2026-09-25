@@ -37,7 +37,8 @@ Apply these guards BEFORE building the PATCH:
 - **CANCELLED (6):** allowed (with a reason) — this is the soft-delete/cancel path.
 
 ## Step 4 — PATCH + verify
-Write the body to `_scratch/tn_update.json` (only the fields being changed + `status_change_reason`),
+Write the body to `_scratch/tn_update_<sid>.json` (only the fields being changed + `status_change_reason`;
+`<sid>` = session id — see /zb-bind "Scratch filenames"),
 PATCH `/api/tasks/<id>`, then GET-verify the new values persisted. Report old → new.
 
 ## Footgun guards (the point)

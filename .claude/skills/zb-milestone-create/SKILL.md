@@ -23,7 +23,7 @@ Resolve the project id by running `powershell -File bin/lead-project-id.ps1` (TH
 (they MUST match — the server 400s on mismatch). If missing, run `/zb-bind` first.
 
 ## Step 2 — build the payload
-Write to `_scratch/tn_ms_create.json`:
+Write to `_scratch/tn_ms_create_<sid>.json` (`<sid>` = session id — see /zb-bind "Scratch filenames"):
 ```json
 {
   "project_id": <id>,
@@ -37,8 +37,8 @@ Optional: `sort_order` (float, for manual ordering), `start_date` / `target_date
 ## Step 3 — POST + verify
 ```
 curl --silent -X POST -H "X-Project-Id: <id>" -H "Content-Type: application/json" \
-  -d @_scratch/tn_ms_create.json http://localhost:8456/api/milestones \
-  -o _scratch/tn_ms_create_resp.json -w "%{http_code}"
+  -d @_scratch/tn_ms_create_<sid>.json http://localhost:8456/api/milestones \
+  -o _scratch/tn_ms_create_resp_<sid>.json -w "%{http_code}"
 ```
 - **201** → report the new milestone id + title + status.
 - **400** → body project_id != header, OR project doesn't exist. Show raw error, fix, retry.

@@ -31,8 +31,9 @@ leaves open: **route wiring** and **goal-driven verification that the files exis
 Resolve the project id per session (`bin/lead-project-id.ps1`), then:
 
 ```
-curl --silent "http://localhost:8456/api/projects/<id>" -o _scratch/mob_proj.json -w "%{http_code}"
+curl --silent "http://localhost:8456/api/projects/<id>" -o _scratch/mob_proj_<sid>.json -w "%{http_code}"
 ```
+(`<sid>` = session id — see /zb-bind "Scratch filenames".)
 
 Read `paths_web` (the Angular workspace root) and `config.standards.mobile`.
 

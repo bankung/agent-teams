@@ -29,8 +29,9 @@ Resolve `X-Project-Id` by running `powershell -File bin/lead-project-id.ps1` —
 ## Step 2 — fetch milestones (for ordering + spill)
 ```
 curl --silent -H "X-Project-Id: <id>" http://localhost:8456/api/milestones \
-  -o _scratch/tn_next_ms.json -w "%{http_code}"
+  -o _scratch/tn_next_ms_<sid>.json -w "%{http_code}"
 ```
+(`<sid>` = session id — see /zb-bind "Scratch filenames".)
 Build the milestone order:
 - EXCLUDE `released` and `cancelled` milestones (not "next" work).
 - Order the rest by `sort_order` ASC (NULLs LAST), then `id` ASC.
@@ -39,7 +40,7 @@ Build the milestone order:
 ## Step 3 — fetch the actionable task pool
 ```
 curl --silent -H "X-Project-Id: <id>" "http://localhost:8456/api/tasks/summary?pending=true&limit=500" \
-  -o _scratch/tn_next_tasks.json -w "%{http_code}"
+  -o _scratch/tn_next_tasks_<sid>.json -w "%{http_code}"
 ```
 `/api/tasks/summary` is the slim list projection (#2345) — SAME query + SAME `id` order as
 `/api/tasks`, but ~8x smaller (full ~421KB → slim ~52KB at limit=500), carrying every field this

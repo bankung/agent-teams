@@ -23,12 +23,13 @@ Resolve `X-Project-Id` by running `powershell -File bin/lead-project-id.ps1` —
 ## Step 2 — list
 ```
 curl --silent -H "X-Project-Id: <id>" http://localhost:8456/api/milestones \
-  -o _scratch/tn_ms_list.json -w "%{http_code}"
+  -o _scratch/tn_ms_list_<sid>.json -w "%{http_code}"
 ```
+(`<sid>` = session id — see /zb-bind "Scratch filenames".)
 The list (MilestoneRead) does NOT include the rollup. For each milestone you want progress on,
 fetch its detail (MilestoneDetail carries `rollup`):
 ```
-curl --silent -H "X-Project-Id: <id>" http://localhost:8456/api/milestones/<mid> -o _scratch/tn_ms_<mid>.json
+curl --silent -H "X-Project-Id: <id>" http://localhost:8456/api/milestones/<mid> -o _scratch/tn_ms_<mid>_<sid>.json
 ```
 
 ## Step 3 — print
