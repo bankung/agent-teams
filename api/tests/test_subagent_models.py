@@ -1,7 +1,7 @@
 """Kanban #887 — tasks.subagent_models JSONB column.
 
 Append-only audit log of subagent spawns per task. Each element:
-    {"agent": str, "model": "opus"|"sonnet"|"haiku", "at": ISO-8601 datetime}
+    {"agent": str, "model": "opus"|"sonnet"|"haiku"|"fable", "at": ISO-8601 datetime}
 
 PATCH semantics: full-replace (Lead sends the full accumulated list).
 Column is NOT NULL DEFAULT '[]' — always a list on the wire, never null.
@@ -188,6 +188,9 @@ async def test_patch_task_with_valid_subagent_models_roundtrip(
         entries = [
             {"agent": "dev-backend", "model": "sonnet", "at": "2026-05-13T09:00:00Z"},
             {"agent": "dev-tester", "model": "haiku", "at": "2026-05-13T10:30:00Z"},
+            # #3341: "fable" is a log-only verify/validate tier, not a
+            # selectable override — must still round-trip in the spawn log.
+            {"agent": "dev-reviewer", "model": "fable", "at": "2026-05-13T11:00:00Z"},
         ]
         patch = await client.patch(
             f"/api/tasks/{task_id}",
@@ -196,21 +199,26 @@ async def test_patch_task_with_valid_subagent_models_roundtrip(
         )
         assert patch.status_code == 200, patch.text
         patched_body = patch.json()
-        assert len(patched_body["subagent_models"]) == 2
+        assert len(patched_body["subagent_models"]) == 3
         assert patched_body["subagent_models"][0]["agent"] == "dev-backend"
         assert patched_body["subagent_models"][0]["model"] == "sonnet"
         assert patched_body["subagent_models"][1]["agent"] == "dev-tester"
         assert patched_body["subagent_models"][1]["model"] == "haiku"
+        assert patched_body["subagent_models"][2]["agent"] == "dev-reviewer"
+        assert patched_body["subagent_models"][2]["model"] == "fable"
         assert patched_body["subagent_models"][0]["at"] == "2026-05-13T09:00:00Z"
         assert patched_body["subagent_models"][1]["at"] == "2026-05-13T10:30:00Z"
+        assert patched_body["subagent_models"][2]["at"] == "2026-05-13T11:00:00Z"
 
         # GET to confirm DB persistence.
         got = await client.get(f"/api/tasks/{task_id}", headers=headers)
         assert got.status_code == 200, got.text
         stored = got.json()["subagent_models"]
-        assert len(stored) == 2
+        assert len(stored) == 3
         assert stored[0]["agent"] == "dev-backend"
         assert stored[1]["agent"] == "dev-tester"
+        assert stored[2]["agent"] == "dev-reviewer"
+        assert stored[2]["model"] == "fable"
         assert stored[0]["at"] == "2026-05-13T09:00:00Z"
         assert stored[1]["at"] == "2026-05-13T10:30:00Z"
     finally:

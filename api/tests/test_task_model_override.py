@@ -220,9 +220,10 @@ async def test_patch_task_model_override_round_trip(
         await client.delete(f"/api/projects/{project_id}")
 
 
+@pytest.mark.parametrize("bad_tier", ["turbo", "fable"])
 @pytest.mark.asyncio
 async def test_patch_task_model_override_bad_tier_returns_422(
-    client, scaffold_cleanup
+    client, scaffold_cleanup, bad_tier
 ) -> None:
     """PATCH with a bad tier → 422; the existing value is left untouched."""
     project = await _create_project(client, scaffold_cleanup)
@@ -234,7 +235,7 @@ async def test_patch_task_model_override_bad_tier_returns_422(
         patch = await client.patch(
             f"/api/tasks/{task_id}",
             headers={"X-Project-Id": str(project_id)},
-            json={"model_override": "turbo"},
+            json={"model_override": bad_tier},  # #3341: fable is a spawn-log tier only, never an override
         )
         assert patch.status_code == 422, patch.text
 

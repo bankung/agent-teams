@@ -18,6 +18,18 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-09-25 — #3341 the spawn log accepts `fable`; the override tiers do not — partially supersedes #2301's Fable-5 descope
+**Scope:** backend (schema Literal + tests) + shared docs + dev playbook (`.claude/teams/dev.md`, operator `ii`). from #3335, where the log 422'd on a Fable spawn.
+
+**Decision:** `SubagentModelEntry.model` (`tasks.subagent_models`, the #887 spawn log) is now `opus|sonnet|haiku|fable`. **Only the log widens.** `ModelTierLiteral` (`tasks.model_override`), `agent_metadata` `MODEL_TIERS`/`ModelTierLiteral` (agent frontmatter), `project.py` `AgentModelLiteral` (agent overrides) and `pricing.py` stay 3-tier, and `model_override='fable'` is locked at 422 by a test.
+
+**Reasoning:** operator ruling 2026-09-25: Fable is used ONLY for verify/validate spawns (code review, leanness pass, AC/claim validation), set per spawn via the Agent tool's `model: "fable"` override — never a default or override tier, "for now". That ruling is the "further operator update" #2301 item 4 (2026-06-12, "Fable-5 DESCOPE … no fable tier") asked for; #2301 stays correct for the override/frontmatter tiers, which this change deliberately leaves alone. The log is a record of what ran, so it must accept every tier that actually runs; mislabelling a Fable spawn as `opus` was rejected.
+
+**Implications:**
+- **Pricing = skip, not $0.** `pricing.py` has no `fable` row; `lookup_price("fable", …)` returns `None`, so an auditor fallback that prices spawn-log entries drops a fable-only task out of `coverage_pct` instead of costing it at $0. Per-agent cost rollups use task-level `estimated_cost_usd`, never the tier, so Fable spawns count normally there. Add a price row only once Fable pricing is known — do not guess one.
+- **GOTCHA — removing `fable` later needs a backfill first.** `TaskRead.subagent_models` re-validates on the way out, so dropping it from the Literal would 500 every GET on a task with a stored fable entry (the #887 risk note in `decisions-archive-2026-05.md`). First stored entries: #3335 (2 dev-reviewer spawns) and #3341.
+- Every reader was checked tier-agnostic: `agent_spawns.py` (JSONB text), `AgentSpawn.model: str | None`, `skill_stub_detector.py` (string key), request-size middleware (count only); web never reads `subagent_models`. Contracts updated: `api-contracts.md`, `api-contracts-core.md` (×2), `db-schema.md`.
+
 ## 2026-09-25 — #3336 `projects` read routes are active-only: a deliberate deviation from the soft-delete standard, now documented as one
 **Scope:** backend (docs only — no behaviour change). from #3322, spotted while verifying a soft-delete round trip. Lead-direct (carve-out E: docstring + two `shared/` contract files, no logic).
 

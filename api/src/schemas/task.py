@@ -61,9 +61,10 @@ InteractionKindLiteral = Literal["work", "question", "decision"]
 # model-tier override. One of the three Claude tiers, or null (=inherit, no
 # override). NOT backed by a src.constants tuple (no DB CHECK on the column —
 # the value is gated solely by this Literal at the API boundary, 422 on any
-# other value), so there is no lockstep guard at the module bottom. The tier
-# set intentionally matches SubagentModelEntry.model so a resolved override and
-# its recorded spawn-log entry speak the same vocabulary.
+# other value), so there is no lockstep guard at the module bottom. The
+# spawn-log vocabulary (SubagentModelEntry.model) is a SUPERSET of this set:
+# "fable" is log-only, recording a verify/validate-tier spawn (#3341), and is
+# deliberately NOT a selectable override tier here.
 ModelTierLiteral = Literal["haiku", "sonnet", "opus"]
 
 # Kanban #2300 (2026-06-11): wire enum for tasks.effort_override — the per-task
@@ -316,8 +317,10 @@ class SubagentModelEntry(BaseModel):
 
     Locked design 2026-05-13: append-only audit log of subagent spawns per task.
     `agent` is required (free-form name from agent frontmatter, min_length=1).
-    `model` is constrained to the three Claude tiers so the log stays
-    queryable by tier without free-form string matching.
+    `model` is constrained to the four Claude tiers (the three selectable
+    override tiers plus "fable", a verify/validate-only log tier — #3341
+    ruling: Fable is set per spawn, never a default/override) so the log
+    stays queryable by tier without free-form string matching.
     `at` is the UTC ISO-8601 spawn timestamp.
 
     `extra='forbid'` rejects unknown keys at 422 (parity with AcceptanceCriterion).
@@ -327,7 +330,7 @@ class SubagentModelEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     agent: str = Field(min_length=1)
-    model: Literal["opus", "sonnet", "haiku"]
+    model: Literal["opus", "sonnet", "haiku", "fable"]
     at: datetime
 
 
