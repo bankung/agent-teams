@@ -70,6 +70,7 @@ Audit append-only tables (`tasks_history`, any future `*_history`) do NOT carry 
 - **Default-filter `WHERE status = 1`.** Soft-deleted rows are invisible by default.
 - **Opt-in `?include_deleted=true`** returns active and soft-deleted rows together.
 - **Detail endpoints (`GET /api/<resource>/{id}`) return the row regardless of `status`.** The caller already supplied the id; withholding by status would surprise consumers (404 on a row they just soft-deleted breaks recovery flows). Cross-ref `fastapi/routing.md`.
+  - **Exception:** a resource whose natural key is reclaimable after soft-delete (e.g. projects, where a partial unique index lets a new row claim a deleted row's name) MAY make its read routes active-only, because an unfiltered by-name lookup is ambiguous by construction. Such a resource must keep PATCH and DELETE unfiltered so recovery and admin edit still reach the row, and must say so in its router docstring. See projects (#691, #3336).
 
 ## Delete endpoint shape
 
