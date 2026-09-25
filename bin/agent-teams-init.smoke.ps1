@@ -7,10 +7,6 @@
     expected files landed and settings.json has been filtered. Cleans up the
     tempdir on the way out.
 
-    Kanban #3335 — the two #3321 stub checks also run (via Test-RenderedStub)
-    as a negative control against the repo's own harness CLAUDE.md, proving
-    they actually discriminate rendered-stub from harness-copy.
-
     NOTE: This smoke creates a real DB row. The `finally` block soft-deletes
     it via `DELETE /api/projects/{id}` before exit, so runs stop accumulating
     active rows. No repo folder is involved — this smoke always passes a
@@ -48,9 +44,7 @@ function Assert-True {
     }
 }
 
-# Kanban #3321/#3335 — the rendered CLAUDE.md stub names this project and
-# contains zero markdown-link syntax; shared by the positive assertion and
-# the #3335 negative control below so both paths run the same code.
+# Kanban #3321/#3335 — stub discriminators; shared by the positive checks and the negative control.
 function Test-RenderedStub {
     param([string]$Raw, [string]$ProjectName)
     [PSCustomObject]@{
@@ -64,7 +58,6 @@ try {
     Write-Host "Tempdir      : $tmp"
     Write-Host ""
 
-    # Run the CLI — capture exit code via $LASTEXITCODE.
     & $cli -Name $projectName -WorkingPath $tmp -Team dev -ApiUrl $ApiUrl
     $cliExit = $LASTEXITCODE
 
@@ -74,18 +67,14 @@ try {
     $claudeMdPath = Join-Path $tmp 'CLAUDE.md'
     Assert-True (Test-Path $claudeMdPath) "CLAUDE.md present"
     if (Test-Path $claudeMdPath) {
-        # Kanban #3321 — CLAUDE.md must be the rendered pointer stub, not the
-        # agent-teams repo's own harness copy: it names this project + links
-        # back to /zb-bind, and it contains zero markdown link syntax.
+        # Kanban #3321 — must be the rendered stub, not the repo's harness copy (see Test-RenderedStub).
         $claudeMdRaw = Get-Content -LiteralPath $claudeMdPath -Raw
         $stubCheck = Test-RenderedStub -Raw $claudeMdRaw -ProjectName $projectName
         Assert-True ($stubCheck.ContainsProjectName) "CLAUDE.md is the rendered stub (contains the scaffolded project name)"
         Assert-True ($stubCheck.NoMarkdownLinks) "CLAUDE.md stub contains no markdown links"
     }
 
-    # Kanban #3335 — negative control: the same two checks must FAIL against
-    # the repo's own harness CLAUDE.md, proving they discriminate rather than
-    # passing unconditionally (the earlier #3321 '/zb-bind' check did not).
+    # Kanban #3335 — negative control: both checks must FAIL against the repo's own harness CLAUDE.md.
     $repoClaudeMdPath = Join-Path $scriptDir '..\CLAUDE.md'
     if (Test-Path -LiteralPath $repoClaudeMdPath) {
         $repoClaudeMdRaw = Get-Content -LiteralPath $repoClaudeMdPath -Raw
