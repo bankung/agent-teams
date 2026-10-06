@@ -52,8 +52,8 @@ try {
     $cwd            = _Prop $payload 'cwd' $null
     $agentIdRaw     = _Prop $payload 'agent_id' $null   # may be absent / differently named
 
-    # Log path lives under the (worktree) cwd's _runtime.
-    $runtimeDir = if ($cwd) { Join-Path $cwd '_runtime' } else { $here }
+    # _runtime at the repo root (script location, like Get-ProjectId) — never payload cwd (#3465).
+    $runtimeDir = Join-Path (Resolve-Path (Join-Path $here '..\..')) '_runtime'
     $logPath = Join-Path $runtimeDir 'usage_capture.log'
 
     # W2 (#2361): log only non-content diagnostic fields, never $rawIn (carries last_assistant_message).

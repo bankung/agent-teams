@@ -27,7 +27,7 @@ try {
     $cwd            = _Prop $payload 'cwd' $null
     $reason         = _Prop $payload 'reason' 'unknown'
 
-    $runtimeDir = if ($cwd) { Join-Path $cwd '_runtime' } else { $here }
+    $runtimeDir = Join-Path (Resolve-Path (Join-Path $here '..\..')) '_runtime'  # repo root, not payload cwd (#3465)
     $logPath = Join-Path $runtimeDir 'usage_capture.log'
     # W2 (#2361): log only non-content diagnostic fields, never $rawIn (carries last_assistant_message).
     Write-UsageLog $logPath ("[SessionEnd] fields (reason=$reason): session_id=$sessionId cwd=$cwd transcript=$transcriptPath")
