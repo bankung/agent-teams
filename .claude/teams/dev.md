@@ -131,7 +131,6 @@ Dev team tracks subagent tier in `tasks.subagent_models`. Every state-transition
 
 - **Counts:** any `Agent({subagent_type, ...})` call that returns real work output. **Not:** Lead's own Read/Grep/Glob/Bash, or Skill invocations.
 - **Element shape:** `{"agent": "<frontmatter name>", "model": "opus"|"sonnet"|"haiku"|"fable", "at": "<UTC ISO-8601 spawn time>"}` — no frontmatter `model:` line → opus default.
-- **`fable` = verify/validate-only tier** (operator ruling 2026-09-25, #3341): read-only verification spawns only — code review, leanness pass, AC/claim validation — via the Agent `model: "fable"` override; never implementation, drafting or research. Lead re-verifies its findings before relaying.
 - Task loops back (DONE → rework → DONE) → keep accumulating across the full task lifetime.
 
 ## Lifecycle (per task)

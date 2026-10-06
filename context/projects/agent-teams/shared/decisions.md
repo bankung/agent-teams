@@ -18,6 +18,11 @@ Template:
 
 > **Archive:** entries dated ≤ 2026-05-19 are in [`decisions-archive-2026-05.md`](decisions-archive-2026-05.md) (split 2026-06-02, Kanban #1583, to shrink the bootstrap context read). Grep the archive for historical / closed decisions.
 
+## 2026-10-06 — #3458 no standing Fable usage rule — supersedes #3341's verify-only reasoning
+**Scope:** dev playbook (`.claude/teams/dev.md`, operator `ii`) only — no code or schema change.
+
+**Decision:** the "`fable` = verify/validate-only tier" bullet is removed from the dev playbook. Fable runs only when a spawn sets the Agent `model: "fable"` override by hand, so the operator/Lead picks it per spawn and a fixed usage rule adds nothing (operator ruling 2026-10-06; also replaces the 2026-10-05 verify+planning widening). Everything #3341 changed in code stands: the spawn log accepts `fable`; `model_override`, frontmatter and agent-override tiers stay 3-tier; no agent pins Fable in frontmatter.
+
 ## 2026-09-25 — #3341 the spawn log accepts `fable`; the override tiers do not — partially supersedes #2301's Fable-5 descope
 **Scope:** backend (schema Literal + tests) + shared docs + dev playbook (`.claude/teams/dev.md`, operator `ii`). from #3335, where the log 422'd on a Fable spawn.
 
