@@ -50,8 +50,7 @@ global file. **Issue each write as its OWN bare `printf` Bash call** — no `&&`
 chaining, exactly `printf '<id>' > <file>`. This is non-negotiable: the Bash gate's
 bind-binding-write allow (#2711) is anchored full-string to that exact shape, so it stays
 silent during the no-binding window of the bind itself. A chained or reshaped write (or the
-Write tool — which can't overwrite the always-present global without first Reading it, and the
-global must never be read) falls back to a permission prompt.
+Write tool, which that Bash-gate allow does not cover) falls back to a permission prompt.
 
 1. Get this session's id: `echo $CLAUDE_CODE_SESSION_ID` (Bash). It equals the `session_id`
    the cost-capture hooks receive in their payload. (Quoted `echo "$CLAUDE_CODE_SESSION_ID"`
