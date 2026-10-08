@@ -95,6 +95,11 @@ lease must not rely on the harness's read state surviving compaction. Side findi
 rationale ("the Write tool ... can't overwrite the always-present global without first Reading it") is
 wrong on 2.1.179 — the printf rule still stands for the gate-allow reason.
 
+**Re-measured on Claude Code 2.1.293 (#3476, 2026-10-08, single session, own Bash = outside change):** target line
+replaced → Edit refused (same stale error) · append → Edit applied with the on-disk-modified note · Read + append →
+Write refused · existing file never Read → Write silently allowed · touch only → Edit allowed. Identical to 2.1.179;
+the never-Read Write gap is still open. (/compact cell not re-run.)
+
 ## Open operator decisions (Phase 2 only)
 - D1 WIP push rule — all sessions share `dev`, so pushing any task pushes another task's WIP commit.
 - D2 wait record — `blocked_by` cannot cross projects; option: a lease-side wait record, task stays TODO and
