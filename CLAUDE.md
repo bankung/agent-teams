@@ -77,7 +77,7 @@ Full zone/blast-radius table, `working_path` set-vs-null path resolution, and th
 
 ## Permission model (universal)
 
-`.claude/settings.json` enforces: `Read`/`Glob`/`Grep` → auto-allow; `Write`/`Edit`/`Bash` → curated allowlist (accreted per-command/per-path over time, see the `permissions.allow` array) with `defaultMode: "default"` — anything NOT on the allowlist still prompts every time. Editing `.claude/settings.json` or `.claude/hooks/*` (or writing `context/standards/**`) prompts via a `permissions.ask` gate (#2764) and requires the operator's literal `doit` authorization (self-modification gate; replaced `ii` on 2026-10-08 — a deliberate word, not a reflex keystroke; historical records keep `ii`). Never spawn subagents with `--dangerously-skip-permissions`.
+`.claude/settings.json` enforces: `Read`/`Glob`/`Grep` → auto-allow; `Write`/`Edit` → curated allowlist (accreted per-command/per-path over time, see the `permissions.allow` array) with `defaultMode: "default"` — anything NOT on the allowlist still prompts every time. Bash (bound session) is decided by `pretooluse-bash-gate.ps1`: default **allow**, **ask** on the destructive class (rm -r outside throwaway paths, git discard/force ops, HTTP DELETE, docker volume/image removal — #3486), **deny** on raw SQL DML / live-DB pytest. Editing `.claude/settings.json` or `.claude/hooks/*` (or writing `context/standards/**`) prompts via a `permissions.ask` gate (#2764) and requires the operator's literal `doit` authorization (self-modification gate; replaced `ii` on 2026-10-08 — a deliberate word, not a reflex keystroke; historical records keep `ii`). Never spawn subagents with `--dangerously-skip-permissions`.
 
 ## Bootstrap — bind this session to a user-named project
 

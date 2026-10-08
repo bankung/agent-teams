@@ -6,27 +6,20 @@
 # tool-dependent behaviour is approval-policies-gate, which runs for Bash ONLY —
 # see the non-Bash stop just above that section for why.
 #
-# Replaces the 5 sequential Bash PreToolUse hooks with ONE process:
-#   approval-policies-gate.ps1   (policy eval + Lever B cache)
-#   block-raw-sql-dml.ps1        (deny raw SQL DML)
-#   block-curl-delete.ps1        (ask on curl DELETE)
-#   block-bitdefender-triggers.ps1 (deny AV-trigger shapes)
-#   block-pytest-on-live-db.ps1  (deny pytest against live DB)
+# Guards, in ONE process (formerly 5 sequential hooks):
+#   GUARD 2 raw SQL DML (deny) · GUARD 3 destructive class (ask, #3486 option C) ·
+#   GUARD 4 AV-trigger shapes (deny) · GUARD 5 pytest against the live DB (deny) ·
+#   GUARD 6 approval-policies (Bash only; policy eval + Lever B cache).
+# GUARDS 2/3/5 match per quote-aware command segment (Get-ShellSegments, _shared.ps1).
 #
-# Guard order (deny-first reorder, #2541): the four LOCAL block-* guards run FIRST
+# Guard order (deny-first reorder, #2541): the LOCAL guards run FIRST
 # (pure functions of the command — no I/O), then approval-policies-gate runs LAST
 # (it does the Lever B project fetch). A local deny short-circuits (exit 2) before
 # any network fetch. The final decision is unchanged: deny short-circuits regardless
 # of position, asks accumulate, allow is a no-op — so aggregation is order-invariant.
 #
 # Fail-open-to-ask on infra error (payload unreadable / project_id missing /
-# API unreachable) — same as original approval-policies-gate.ps1.
-# Fail-safe (deny) for the block-* guards — same as the originals.
-#
-# Promote path: _scratch/hooks-draft/pretooluse-bash-gate.ps1
-#            -> .claude/hooks/pretooluse-bash-gate.ps1
-# Then update settings.json Bash PreToolUse to single entry (see
-# _scratch/hooks-draft/settings-bash-matcher.json).
+# API unreachable). Fail-safe (deny) for the local deny guards.
 
 $ErrorActionPreference = 'Stop'
 
@@ -52,6 +45,19 @@ if (-not $toolName) { Fail-Open-Ask -WarnMsg 'tool_name missing from payload' -S
 $toolInput = $payload.tool_input
 $cmd = if ($toolInput) { [string]$toolInput.command } else { '' }
 
+# Quote-aware simple-command segments (#3486, _shared.ps1). GUARDS 2, 3 and 5 match a
+# segment's command word, so text inside a commit message / JSON / heredoc / node -e
+# string neither trips them nor hides a `cd x && <cmd>` / `$(...)` command from them.
+$isPs = $toolName -eq 'PowerShell'
+$heredocs = @{}
+try {
+    $segments = if ($cmd) { Get-ShellSegments -Command $cmd -PowerShell:$isPs -Heredocs $heredocs } else { @() }
+    $destructive = if ($cmd) { Get-DestructiveHit -Segments $segments -PowerShell:$isPs } else { $null }
+} catch {
+    # A tokenizer fault must not silently drop the deny guards: ask instead.
+    Fail-Open-Ask -WarnMsg "command segmenting failed: $($_.Exception.Message)" -Source 'pretooluse-bash-gate'
+}
+
 # Severity aggregation — preserve the original deny > ask > allow precedence ACROSS
 # all guards (the 5 separate hooks let Claude Code take the most-restrictive result).
 # A 'deny' from any guard short-circuits immediately (deny is maximal). An 'ask' is
@@ -61,29 +67,37 @@ $cmd = if ($toolInput) { [string]$toolInput.command } else { '' }
 $askReason = $null
 
 # ---------------------------------------------------------------------------
-# GUARD 2 — block-raw-sql-dml  (deny)
-# Mirror of block-raw-sql-dml.ps1 logic, in-process.
+# GUARD 2 — raw SQL DML  (deny)
+# Per segment: psql anywhere in it (docker exec, sudo -u, kubectl ...) with -c/--command
+# <DML> or a heredoc body holding DML, or python[3] -c <DML>. `cd x && psql ...` is caught
+# (#3486); a segment led by echo/printf/grep/git/cat only mentions it.
 # ---------------------------------------------------------------------------
-if ($cmd) {
-    $firstWord = (($cmd -replace '^\s+', '') -split '\s+')[0]
-    $safeWrappers = @('git', 'echo', 'cat', 'head', 'tail', 'less', 'more',
-                      'ls', 'pwd', 'cd', 'grep', 'awk', 'sed', 'find',
-                      'diff', 'wc', 'sort', 'uniq', 'cut', 'tr')
-    if ($safeWrappers -notcontains $firstWord) {
-        $isPsqlExec   = $cmd -match '\bpsql\b[^\|;]*\s-c\b'
-        $isPythonExec = $cmd -match '\bpython3?\b[^\|;]*\s-c\b'
-        if ($isPsqlExec -or $isPythonExec) {
-            $dmlPatterns = @(
-                '\bDELETE\s+FROM\b',
-                '\bUPDATE\s+\w+\s+SET\b',
-                '\bINSERT\s+INTO\b',
-                '\bTRUNCATE\b',
-                '\bDROP\s+(TABLE|DATABASE|SCHEMA|INDEX|CONSTRAINT|VIEW)\b',
-                '\bALTER\s+TABLE\b'
-            )
-            foreach ($pattern in $dmlPatterns) {
-                if ($cmd -match "(?i)$pattern") {
-                    $reason = @"
+$dmlPatterns = @(
+    '\bDELETE\s+FROM\b',
+    '\bUPDATE\s+\w+\s+SET\b',
+    '\bINSERT\s+INTO\b',
+    '\bTRUNCATE\b',
+    '\bDROP\s+(TABLE|DATABASE|SCHEMA|INDEX|CONSTRAINT|VIEW)\b',
+    '\bALTER\s+TABLE\b'
+)
+for ($si = 0; $si -lt $segments.Count; $si++) {
+    $seg = $segments[$si]
+    $h = Get-SegmentHead -Tokens $seg
+    if ($h -ge $seg.Count -or (Get-CommandLeaf $seg[$h]) -in @('echo', 'printf', 'grep', 'rg', 'git', 'cat')) { continue }
+    $sqlText = $null
+    for ($j = $h; $j -lt $seg.Count -and -not $sqlText; $j++) {
+        $leaf = Get-CommandLeaf $seg[$j]
+        if ($leaf -notmatch '^(psql|python(3(\.\d+)?)?|py)$') { continue }
+        $flag = if ($leaf -eq 'psql') { '^(-[a-zA-Z]*c|--command)$' } else { '^-c$' }
+        for ($k = $j + 1; $k -lt $seg.Count - 1; $k++) {
+            if ($seg[$k] -cmatch $flag) { $sqlText = $seg[$k + 1]; break }
+        }
+        if (-not $sqlText -and $leaf -eq 'psql' -and $heredocs.ContainsKey($si)) { $sqlText = $heredocs[$si] }
+    }
+    if (-not $sqlText) { continue }
+    foreach ($pattern in $dmlPatterns) {
+        if ($sqlText -match "(?i)$pattern") {
+            $reason = @"
 Raw SQL DML detected (pattern: $pattern).
 
 Subagents must NEVER execute destructive SQL via psql -c or python -c — even for cleanup of
@@ -98,34 +112,24 @@ If you are the user and want to run this manually, edit .claude/settings.json to
 PreToolUse hook (or run the command in a separate terminal outside Claude Code). The friction
 of disabling the hook IS the gate — see .claude/docs/lessons.md "Raw SQL DML is human-only".
 "@
-                    Emit-Decision -Decision 'deny' -Reason $reason
-                    exit 2
-                }
-            }
+            Emit-Decision -Decision 'deny' -Reason $reason
+            exit 2
         }
     }
 }
 
 # ---------------------------------------------------------------------------
-# GUARD 3 — block-curl-delete  (ask)
-# Mirror of block-curl-delete.ps1 logic, in-process.
+# GUARD 3 — destructive class  (ask; option C, operator 2026-10-08, #3486)
+# rm -r outside throwaway paths, git checkout --/restore/reset --hard/clean -f/
+# push --force|--delete/branch -D/stash drop/rm -r, HTTP DELETE (curl or PS cmdlets),
+# docker volume|image rm/prune, system prune, rmi, down -v. Rules: Get-DestructiveHit.
+# Everything else keeps the default allow (walker throughput unchanged).
 # ---------------------------------------------------------------------------
-if ($cmd) {
-    $tokens    = ($cmd -replace '^\s+', '') -split '\s+'
-    $firstWord = $tokens[0]
-    while ($firstWord -match '^[A-Z_][A-Z0-9_]*=') {
-        $tokens    = $tokens | Select-Object -Skip 1
-        $firstWord = $tokens[0]
-    }
-    # PowerShell HTTP cmdlets are matched by word boundary, not first word: the
-    # native shape assigns the result (`$r = Invoke-WebRequest ...`). #3327.
-    $isCurl   = $firstWord -match '^curl(\.exe)?$'
-    $isPsHttp = $cmd -match '(?i)\b(Invoke-RestMethod|Invoke-WebRequest|irm|iwr)\b'
-    if ($isCurl -or $isPsHttp) {
-        if (($isCurl   -and $cmd -match '(?i)(?:^|\s)(?:-X|--request)\s+DELETE\b') -or
-            ($isPsHttp -and $cmd -match '(?i)(?:^|\s)-Method(?:\s*:\s*|\s+)["'']?DELETE\b')) {
-            $reason = @"
-HTTP DELETE detected — forcing permission prompt (overriding allowlist).
+if ($destructive) {
+    $segText = $destructive.segment.Substring(0, [Math]::Min(200, $destructive.segment.Length))
+    if ($destructive.rule -eq 'HTTP DELETE') {
+        $reason = @"
+HTTP DELETE detected ($segText) — forcing permission prompt (overriding allowlist).
 
 The trailing-wildcard allowlist patterns (Bash(curl ... :*), and the same shape
 for a PowerShell HTTP entry) accept any suffix, which would let `-X DELETE` or
@@ -140,11 +144,15 @@ Preferred alternatives for routine task removal:
   - Soft-delete via API: PATCH /api/tasks/{id} with {"process_status": 6}
   - Hard-delete via direct human-approved DB op (separate terminal, manual psql)
 "@
-            # curl DELETE is an ASK (not deny). Record it; do NOT exit — a later
-            # block-* guard could still escalate this command to deny.
-            if (-not $askReason) { $askReason = $reason }
-        }
+    } else {
+        $reason = @"
+Destructive command ($($destructive.rule)): $segText
+Asking before it runs — git / the API cannot give this work or data back (#3486, option C).
+Throwaway paths (_scratch, .next, node_modules, /tmp/, Temp, scratchpad, tsbuildinfo) are exempt for rm -r.
+"@
     }
+    # An ASK (not deny). Record it; do NOT exit — a later guard can still escalate to deny.
+    if (-not $askReason) { $askReason = $reason }
 }
 
 # ---------------------------------------------------------------------------
@@ -214,15 +222,32 @@ if ($cmd -and ($cmd -match '(?i)\bpytest\b')) {
     } elseif ($apiTestRun) {
         # no decision — normal permission flow applies
     } else {
-        # #3480: `docker compose run ... api ... pytest` (service name optionally quoted) starts
-        # a fresh LIVE-DB `api` container, and plain `docker run` of the api image can join the
-        # live network — the exec attestation below never saw either.
-        if ($cmd -match '(?i)docker\s+(compose\b.*\brun\b.*\s["'']?api["'']?\s|(container\s+)?run\b).*\bpytest\b') {
+        # Per segment (#3486): docker / docker-compose past any global flag (-p, -f,
+        # --project-directory, --profile ...), and python[3] -c. A segment only counts if
+        # pytest appears in it, so a commit message that names these shapes is not denied.
+        $runDeny = $false; $execDeny = $false; $pyDeny = $false
+        foreach ($seg in $segments) {
+            if (($seg -join ' ') -notmatch '(?i)\bpytest\b') { continue }
+            $v = Get-DockerVerb -Tokens $seg
+            if ($v) {
+                $sub = $v.sub; $r = $v.rest
+                if ($sub -eq 'container' -and $r.Count) { $sub = $r[0].ToLowerInvariant(); $r = @($r | Select-Object -Skip 1) }
+                # #3480: `compose run ... api` starts a fresh LIVE-DB api container; plain
+                # `docker run` of the api image can join the live network.
+                if ($sub -eq 'run' -and (-not $v.compose -or $r -contains 'api')) { $runDeny = $true }
+                if ($sub -eq 'exec') { $execDeny = $true }
+            }
+            # python[3] -c anywhere in the segment (uv run python -c, timeout 60 python3 -c ...)
+            for ($j = 0; $j -lt $seg.Count - 1; $j++) {
+                if ((Get-CommandLeaf $seg[$j]) -match '^(python(3(\.\d+)?)?|py)$' -and @($seg[($j + 1)..($seg.Count - 1)]) -contains '-c') { $pyDeny = $true }
+            }
+        }
+        if ($runDeny) {
             Emit-Decision -Decision 'deny' -Reason "pytest blocked: 'docker compose run ... api ... pytest' / 'docker run ... pytest' can reach the LIVE db. In-session tests use the isolated path: docker compose -p agent-teams --profile test run --rm api-test pytest -q <selector> (/zb-test, #3480)."
             exit 2
         }
         # L1.5 check #1 — python -c "...pytest..."
-        if ($cmd -match '(?i)python\s+-c\s+["''][^"'']*pytest') {
+        if ($pyDeny) {
             $reason = @"
 pytest blocked: invocation via 'python -c "...pytest..."' looks like a hook-bypass attempt.
 
@@ -272,8 +297,8 @@ the SAME shell — the hook honours it and emits a [BYPASS] marker for audit.
             }
         }
 
-        # L1.5 check #3 — docker compose exec ... pytest (and plain `docker exec`, #3480)
-        if ($cmd -match '(?i)docker\s+(compose\s+(-p\s+\S+\s+)?)?(container\s+)?exec\s+.*\bpytest\b') {
+        # L1.5 check #3 — docker [compose|container] exec ... pytest (any global flags, docker-compose)
+        if ($execDeny) {
             if ($env:DOCKER_PYTEST_VERIFIED -ne "1") {
                 $reason = @"
 pytest blocked: 'docker compose exec ... pytest' uses CONTAINER env, not the
