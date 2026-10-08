@@ -65,6 +65,23 @@ function Emit-Decision {
 # Never throws — a log fault must not change a decision.
 # ---------------------------------------------------------------------------
 $script:GateLogCmd = $null; $script:GateLogMeta = ''
+# Mask credential-shaped values in a log line (the whole line: a reason can quote the command too).
+function Hide-Secrets {
+    param([string]$Text)
+    return $Text `
+        -replace '(?i)((?:proxy-)?authorization\s*:\s*)(?:(?:bearer|basic|token|digest)\s+)?[^\s"'']+', '$1***' `
+        -replace '(?i)(cookie\s*:\s*)[^"''\t]+', '$1***' `
+        -replace '(?i)(\b[\w-]*(?:token|secret|pass(?:word|wd|phrase)?|pwd|api[_-]?key|access[_-]?key|private[_-]?key|authorization|cookie)[\w-]*["'']?\s*[:=]\s*["'']?)(?:(?:bearer|basic|token)\s+)?[^\s"'']+', '$1***' `
+        -replace '(?i)(--?(?:token|password|passwd|pass|secret|api-?key|oauth2-bearer|proxy-user|cookie)[\s=]+["'']?)[^\s"'']+', '$1***' `
+        -replace '(?i)(/bot\d+:)[\w-]+', '$1***' `
+        -replace '\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]+', '***' `
+        -replace '(\s-b\s*["'']?)[^\s"'']+', '$1***' `
+        -replace '\bA(?:KIA|SIA)[0-9A-Z]{12,}', '***' `
+        -replace '(\s-u\s*|\s--user[\s=])[^\s"'']+', '$1***' `
+        -replace '(://[^/\s:@"'']+:)[^@\s/"'']+@', '$1***@' `
+        -replace '(?i)([?&](?:key|token|access_token|api_key|sig|signature|password)=)[^&\s"'']+', '$1***' `
+        -replace '\b(?:gh[pousr]_[A-Za-z0-9]{8,}|sk-[A-Za-z0-9_-]{8,}|xox[bpas]-[A-Za-z0-9-]{8,})', '***'
+}
 function Write-GateLog {
     param([string]$Decision, [string]$Reason)
     if ($null -eq $script:GateLogCmd) { return }
@@ -73,11 +90,9 @@ function Write-GateLog {
         if ($Decision -eq 'allow' -and $env:GATE_LOG_ALLOW -ne '1' -and -not (Test-Path (Join-Path $runtime 'GATE_LOG_ALLOW'))) { return }
         $log = Join-Path $runtime 'pretooluse-gate.log'
         if ((Test-Path $log) -and (Get-Item $log).Length -gt 5MB) { Move-Item $log "$log.1" -Force }
-        $cmd = $script:GateLogCmd -replace '(?i)((authorization|x-operator-token|token|password|passwd|secret|api[_-]?key)["'']?(\s*[:=]\s*|\s+))(bearer\s+)?\S+', '$1***' `
-                                  -replace '(\s-u\s*|\s--user[\s=])\S+', '$1***'
         $cut = { param($s, $n) $t = ($s -replace '\s+', ' ').Trim(); if ($t.Length -gt $n) { $t.Substring(0, $n) + '...' } else { $t } }
-        $line = (Get-Date).ToString('o'), $script:GateLogMeta, $Decision, (& $cut (($Reason -split "`n")[0]) 100), (& $cut $cmd 160) -join "`t"
-        [IO.File]::AppendAllText($log, $line + "`n", [Text.Encoding]::UTF8)
+        $line = (Get-Date).ToString('o'), $script:GateLogMeta, $Decision, (& $cut (($Reason -split "`n")[0]) 100), (& $cut $script:GateLogCmd 160) -join "`t"
+        [IO.File]::AppendAllText($log, (Hide-Secrets $line) + "`n", [Text.Encoding]::UTF8)
     } catch { }
 }
 
@@ -364,28 +379,42 @@ function Invoke-PolicyRuleEval {
     return $noMatch
 }
 
+
 # ---------------------------------------------------------------------------
-# Shell segmenting (#3486) — rules match a SEGMENT's command word, never raw text,
-# so a commit message, JSON payload, heredoc body or `node -e "..."` string that
-# merely mentions `rm -rf` / `pytest` / `DELETE FROM` cannot trip (or dodge) a guard.
-# Segments split on unquoted ; && || | & newline ( ) { } (+ backtick for Bash).
-# Heredoc bodies, PS here-strings, comments and redirect targets are dropped;
-# $( ) / backtick bodies inside double quotes and the script after
-# bash|sh|pwsh|powershell -c/-Command are segmented recursively.
-# shortcut: regex tokenizer, not a shell parser — $VAR paths, eval and aliases stay
-# opaque; upgrade: a real parser if the decision log (#3487) shows misses.
+# Shell segmenting (#3486, hardened in the #3483 batch review) — rules match a SEGMENT's
+# command word, never raw text, so a commit message, JSON payload, heredoc body or
+# `node -e "..."` string that merely mentions `rm -rf` / `pytest` / `DELETE FROM` cannot
+# trip (or dodge) a guard.
+# - Segments split on unquoted ; && || | & newline (+ backtick for Bash) and, in the default
+#   view, ( ) { }. The -KeepBrackets (statement) view keeps brackets inside words so flags
+#   after `@{..}` / `(..)` stay on their command; the gate checks both views.
+# - Heredoc bodies and here-strings are attached to their segment (-Heredocs); a heredoc
+#   marker with no terminator line is not a heredoc (`$(( 1 << 2 ))`). Unquoted heredoc
+#   bodies have their $( ) / backticks segmented, as the shell expands them.
+# - Shells anywhere in a segment are followed: bash|sh -c / -lc, pwsh -Command (any prefix),
+#   -EncodedCommand, a positional PowerShell script; a head shell with no script runs its
+#   stdin (heredoc / here-string body segmented, a pipe -> synthetic __shell_stdin__).
+# - Synthetic segments the destructive class asks on: __shell_stdin__, __nested_too_deep__
+#   (> 3 nesting levels), __opaque_script__ (undecodable -EncodedCommand). A word left open by an
+#   unclosed quote / ${ at end of input has the text after its opener re-segmented (Get-UnclosedAt).
+# - A 3 s budget (-Clock) throws past its limit; the gate turns that into ask, so a slow parse
+#   can never run into the hook timeout and silently skip the deny guards.
+# shortcut: regex tokenizer, not a shell parser — $VAR paths, eval, ${IFS}/brace-expansion
+# obfuscation and aliases stay opaque (it is a guard rail, not a sandbox); upgrade: a real
+# parser if the decision log (#3487) shows misses.
 # ---------------------------------------------------------------------------
 function Get-SegmentHead {
     param([string[]]$Tokens)
-    $prefix = @('time', 'exec', 'nohup', 'command', 'builtin', 'do', 'then', 'else', 'elif', '!', '.')
+    $prefix = @('builtin', 'do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '.')
     # wrappers that run the next word as the command; listed flags take a value
     $wrappers = @{ sudo = @('-u', '-g', '-U', '-C', '-h', '-p', '-D'); env = @('-u', '-C', '-S'); nice = @('-n')
-                   xargs = @('-n', '-I', '-L', '-P', '-d', '-s', '-E', '-a'); timeout = @('-s', '-k'); stdbuf = @(); ionice = @('-c', '-n') }
+                   xargs = @('-n', '-I', '-L', '-P', '-d', '-s', '-E', '-a'); timeout = @('-s', '-k'); stdbuf = @()
+                   ionice = @('-c', '-n'); exec = @('-a'); time = @('-f', '-o'); command = @(); nohup = @(); setsid = @() }
     $i = 0
     while ($i -lt $Tokens.Count) {
         $t = $Tokens[$i]
-        if ($t -match '^[A-Za-z_][A-Za-z0-9_]*=' -or $prefix -contains $t) { $i++; continue }
-        if ($t -match '^\$[\w:]+$' -and ($i + 1) -lt $Tokens.Count -and $Tokens[$i + 1] -eq '=') { $i += 2; continue }
+        if ($t -match '^[A-Za-z_][A-Za-z0-9_]*\+?=' -or $prefix -contains $t) { $i++; continue }
+        if ($t -match '^\$[\w:]+$' -and ($i + 1) -lt $Tokens.Count -and $Tokens[$i + 1] -in @('=', '+=')) { $i += 2; continue }
         $leaf = Get-CommandLeaf $t
         if ($wrappers.ContainsKey($leaf)) {
             $i++
@@ -405,85 +434,278 @@ function Get-CommandLeaf {
     return ((($t -split '[\\/]')[-1]) -replace '(?i)\.exe$', '').ToLowerInvariant()
 }
 
+# What the shell token at -At runs: @{kind='script'; text; ps} (-c / -lc, -Command, -EncodedCommand,
+# a positional PowerShell script), 'file' (a script path), 'opaque' (undecodable), or 'stdin'.
+function Get-ShellScriptArg {
+    param([string[]]$Tokens, [int]$At)
+    $ps = (Get-CommandLeaf $Tokens[$At]) -in @('pwsh', 'powershell')
+    for ($k = $At + 1; $k -lt $Tokens.Count; $k++) {
+        $t = $Tokens[$k]
+        $tail = @(if ($k + 1 -lt $Tokens.Count) { $Tokens[($k + 1)..($Tokens.Count - 1)] })
+        if ($ps) {
+            if ($t -match '^(?i)-(c|co|com|comm|comma|comman|command)$') { return @{ kind = 'script'; ps = $true; text = ($tail -join ' ') } }
+            if ($t -match '^(?i)-(e|ec|en|enc|enco|encod|encode|encoded\w*)$') {
+                try { return @{ kind = 'script'; ps = $true; text = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([string]$tail[0])) } }
+                catch { return @{ kind = 'opaque' } }
+            }
+            if ($t -match '^(?i)-(f|fi|fil|file)$') { return @{ kind = 'file' } }
+            if ($t -match '^(?i)-(ex\w*|ep|w|wi\w*|of|ou\w*|if|inp\w*|v|ve\w*|conf\w*|wd|wo\w*|se\w*|ps\w*)$') { $k++; continue }
+            if ($t -like '-*') { continue }
+            return @{ kind = 'script'; ps = $true; text = (@($Tokens[$k..($Tokens.Count - 1)]) -join ' ') }
+        }
+        if ($t -cmatch '^-[a-zA-Z]*c[a-zA-Z]*$') {   # -c, -lc, -ce, -c -e ... : the script is the next non-option word
+            foreach ($w in $tail) { if ($w -notlike '-*' -and $w -notlike '+*') { return @{ kind = 'script'; ps = $false; text = $w } } }
+            return @{ kind = 'stdin' }
+        }
+        if ($t -in @('-o', '+o', '-O', '+O', '--rcfile', '--init-file')) { $k++; continue }
+        if ($t -like '-*' -or $t -like '+*') { continue }
+        return @{ kind = 'file' }
+    }
+    return @{ kind = 'stdin' }
+}
+
+# Index of the `)` closing a $( whose body starts at -At (or the text length when unclosed). Quote-
+# aware like the shell: parens inside '..' or ".." do not count; a ".." may hold a nested $( .. ).
+function Find-SubstEnd {
+    param([string]$Text, [int]$At, [char]$Esc)
+    $stack = New-Object 'System.Collections.Generic.Stack[char]'; $stack.Push([char]'(')
+    $i = $At
+    while ($i -lt $Text.Length) {
+        $c = $Text[$i]
+        if ($c -eq $Esc) { $i += 2; continue }
+        if ($stack.Peek() -eq [char]'"') {
+            if ($c -eq '"') { [void]$stack.Pop() }
+            elseif ($c -eq '$' -and $i + 1 -lt $Text.Length -and $Text[$i + 1] -eq '(') { $stack.Push([char]'('); $i++ }
+            $i++; continue
+        }
+        if ($c -eq "'") { $k = $Text.IndexOf([char]"'", $i + 1); if ($k -lt 0) { return $Text.Length }; $i = $k + 1; continue }
+        if ($c -eq '"') { $stack.Push([char]'"') }
+        elseif ($c -eq '(') { $stack.Push([char]'(') }
+        elseif ($c -eq ')') { [void]$stack.Pop(); if ($stack.Count -eq 0) { return $i } }
+        $i++
+    }
+    return $Text.Length
+}
+
+# Bodies of $( .. ) (and bash backticks) in $Text, ended by Find-SubstEnd so `"$(dirname "$0")"` and
+# `"$(cd "/x" && rm -rf "y")"` keep their inner quotes. A $( inside double quotes runs; inside bash
+# single quotes it does not. -NoQuotes: heredoc bodies, where quote characters are literal text.
+function Get-Substitutions {
+    param([string]$Text, [switch]$PowerShell, [switch]$NoQuotes)
+    $out = New-Object System.Collections.Generic.List[string]
+    $esc = if ($PowerShell) { [char]'`' } else { [char]'\' }
+    $sq = $false; $dq = $false; $i = 0
+    while ($i -lt $Text.Length) {
+        $c = $Text[$i]
+        if ($sq) { if ($c -eq "'") { $sq = $false }; $i++; continue }
+        if ($c -eq $esc) { $i += 2; continue }
+        if (-not $NoQuotes) {
+            if ($c -eq '"') { $dq = -not $dq; $i++; continue }
+            if ($c -eq "'" -and -not $dq) { $sq = $true; $i++; continue }
+        }
+        if ($c -eq '$' -and $i + 1 -lt $Text.Length -and $Text[$i + 1] -eq '(') {
+            $j = Find-SubstEnd -Text $Text -At ($i + 2) -Esc $esc
+            $out.Add($Text.Substring($i + 2, $j - $i - 2))
+            $i = $j + 1; continue
+        }
+        if (-not $PowerShell -and $c -eq '`') {
+            $k = $Text.IndexOf([char]'`', $i + 1); if ($k -lt 0) { $k = $Text.Length }
+            $out.Add($Text.Substring($i + 1, $k - $i - 1)); $i = $k + 1; continue
+        }
+        $i++
+    }
+    return ,$out.ToArray()
+}
+
+# Does a psql argument carry SQL? -c / -f, also clustered (-tAc); a value-taking option ends the
+# cluster (-hlocalhost is -h with value "localhost").
+function Test-PsqlCommandFlag {
+    param([string]$Token)
+    if ($Token -match '^--(command|file)') { return $true }
+    if ($Token -cnotmatch '^-[a-zA-Z]') { return $false }
+    foreach ($ch in $Token.Substring(1).ToCharArray()) {
+        if ('cf'.IndexOf($ch) -ge 0) { return $true }
+        if ('dhpUvPoLTFR'.IndexOf($ch) -ge 0) { return $false }
+    }
+    return $false
+}
+
+# Index just past a quote / ${ opened in $Text and still open at its end, else -1. Only called for
+# the word that reached end of input: the linear patterns let an unclosed construct swallow the rest
+# of the line, so the caller re-segments the text after the opener — nothing hides behind it (a real
+# unclosed quote makes the shell reject the line anyway; a nested-quote misparse stays harmless).
+function Get-UnclosedAt {
+    param([string]$Text, [switch]$PowerShell)
+    $esc = if ($PowerShell) { [char]'`' } else { [char]'\' }
+    $state = ''; $at = -1
+    for ($i = 0; $i -lt $Text.Length; $i++) {
+        $c = $Text[$i]
+        if ($state -eq "'") { if ($c -eq "'") { $state = '' }; continue }
+        if ($c -eq $esc) { $i++; continue }
+        if ($state -eq '"') { if ($c -eq '"') { $state = '' }; continue }
+        if ($state -eq '{') { if ($c -eq '}') { $state = '' }; continue }
+        if ($c -eq "'" -or $c -eq '"') { $state = [string]$c; $at = $i + 1 }
+        elseif ($c -eq '$' -and $i + 1 -lt $Text.Length -and $Text[$i + 1] -eq '{') { $state = '{'; $i++; $at = $i + 1 }
+    }
+    if ($state) { return $at } else { return -1 }
+}
+
 function Get-ShellSegments {
-    # -Heredocs (optional hashtable): filled with segment index -> heredoc body fed to that segment.
-    param([string]$Command, [switch]$PowerShell, [int]$Depth = 0, [hashtable]$Heredocs)
+    # -Heredocs (optional hashtable): filled with segment index -> heredoc / here-string text fed to it.
+    # -Fragment: text recovered from behind an unclosed quote — maybe prose, so a bare shell word in
+    #   it is not taken as "a shell reading stdin" (real commands in it are still judged).
+    param([string]$Command, [switch]$PowerShell, [int]$Depth = 0, [hashtable]$Heredocs,
+          [switch]$KeepBrackets, [Diagnostics.Stopwatch]$Clock, [switch]$Fragment)
+    if (-not $Clock) { $Clock = [Diagnostics.Stopwatch]::StartNew() }
+    if ($Clock.ElapsedMilliseconds -gt 3000) { throw 'command segmenting exceeded its 3 s budget' }
     $segs = New-Object System.Collections.Generic.List[object]
-    if (-not $Command -or $Depth -gt 3) { return ,$segs.ToArray() }
+    if (-not $Command) { return ,$segs.ToArray() }
+    if ($Depth -gt 3) { $segs.Add([string[]]@('__nested_too_deep__')); return ,$segs.ToArray() }
+    $br = if ($KeepBrackets) { '' } else { '(){}' }
+    # unterminated quotes / ${ consume to the end once (linear time; the shell would reject them anyway)
+    # Line continuation (bash `\`+LF, PS backtick+LF) is a word piece the unquote step deletes — done in
+    # the tokenizer, not as a pre-pass, so a comment, an escaped `\\` or a heredoc body is not joined to
+    # the next line (#3483 review round 3: `echo hi # note\`+LF+`rm -rf x` hid the rm).
+    $s = $Command
     if ($PowerShell) {
-        $s = [regex]::Replace($Command, '`\r?\n', ' ')
-        # a here-string is one quoted word, so a command written inside it stays text
-        $dq = '"(?:`.|""|[^"`])*"'; $plain = '(?s:@''\r?\n.*?\r?\n''@|@"\r?\n.*?\r?\n"@)|[^\s''"`;|&(){}<>]|`.'; $sep = '&&|\|\||[;|&\n(){}]'
-        $unq = "'([^']*)'|""((?:``.|""""|[^""``])*)""|``(.)"
+        $dq = '"(?:`[\s\S]|""|[^"`])*"?'
+        $plain = '`\r?\n|(?s:@''\r?\n.*?\r?\n''@|@"\r?\n.*?\r?\n"@)|[^\s''"`;|&<>' + $br + ']|`.'
+        $sep = '&&|\|\||[;|&\n' + $br + ']'
+        $unq = "'([^']*)'?|""((?:``[\s\S]|""""|[^""``])*)""?|``\r?\n|``(.)"
+        $lcOnly = '^(`\r?\n)+$'
         $hd = ''
     } else {
-        $s = [regex]::Replace($Command, '\\\r?\n', ' ')
-        $dq = '"(?:\\.|[^"\\])*"'; $plain = '[^\s''"`;|&(){}<>\\]|\\.'; $sep = '&&|\|\||[;|&\n(){}`]'
-        $unq = "'([^']*)'|""((?:\\.|[^""\\])*)""|\\(.)"
-        # heredoc marker, matched by the tokenizer so a quoted "<<X" stays text
-        $hd = "(?<hd><<-?[ \t]*(?<hq>['""]?)(?<hw>\w+)\k<hq>)|"
+        $dq = '"(?:\\[\s\S]|[^"\\])*"?'
+        $plain = '\\\r?\n|[^\s''"`;|&<>\\' + $br + ']|\\.'
+        $sep = '&&|\|\||[;|&\n`' + $br + ']'
+        $unq = "'([^']*)'?|""((?:\\[\s\S]|[^""\\])*)""?|\\\r?\n|\\(.)"
+        $lcOnly = '^(\\\r?\n)+$'
+        # heredoc marker: the whole delimiter word incl. quoted / escaped parts; bash strips the quotes and
+        # backslashes (<<E"O"F and <<A\ B end at EOF / "A B")
+        $hd = '(?<hd><<-?[ \t]*(?<hw>(?:\\.|''[^''\n]*''|"[^"\n]*"|[^\s;&|<>()''"\\])+))|'
     }
-    $piece = "'[^']*'|$dq|\$\{[^}]*\}|$plain"
-    $rx = [regex]"$hd(?<c>(?<=^|[\s;|&(){}])#[^\n]*)|(?<r>\d*(?:>>|>&|<&|>\||<<<|<<-?|<>|[<>])(?:\d+|-)?)|(?<sep>$sep)|(?<w>(?:$piece)+)"
-    $cur = New-Object System.Collections.Generic.List[string]
-    $skipNext = $false
-    $pendingHd = New-Object System.Collections.Generic.List[string]
-    $hdOwner = $null; $hdOwnerIndex = -1
-    $pos = 0
+    $piece = '''[^'']*''?|' + $dq + '|\$\{[^}]*\}?|' + $plain
+    $rx = [regex]::new($hd + '(?<c>(?<=^|[\s;|&(){}])#[^\n]*)|(?<r>\d*(?:>>|>&|<&|>\||<<<|<<-?|<>|[<>])(?:\d+|-)?)|(?<sep>' + $sep + ')|(?<w>(?:' + $piece + ')+)', [Text.RegularExpressions.RegexOptions]::None, [TimeSpan]::FromSeconds(1))   # a timeout throws -> the gate asks
+    $order = New-Object System.Collections.Generic.List[object]   # own segments @{id; tok} and recursed string[] in order
+    $feeds = @{}                                                    # own segment id -> stdin text (heredoc / here-string)
+    $cur = New-Object System.Collections.Generic.List[string]; $curId = 0
+    $pending = New-Object System.Collections.Generic.List[object]
+    $skipNext = $false; $hereStr = $false; $pos = 0; $n = 0
     while ($true) {
+        if ((++$n % 200) -eq 0 -and $Clock.ElapsedMilliseconds -gt 3000) { throw 'command segmenting exceeded its 3 s budget' }
         $m = $rx.Match($s, $pos)
         if ($m.Success) {
             $pos = $m.Index + $m.Length
-            if ($m.Groups['hd'].Success) { $pendingHd.Add($m.Groups['hw'].Value); $hdOwner = $cur; continue }
+            if ($m.Groups['hd'].Success) {
+                $hw = $m.Groups['hw'].Value
+                $pending.Add(@{ word = ($hw -replace '\\(.)', '$1' -replace '[''"]', ''); quoted = $hw -match '[''"\\]'; owner = $curId }); continue
+            }
             if ($m.Groups['c'].Success) { continue }
-            if ($m.Groups['r'].Success) { $skipNext = $m.Value -notmatch '&(\d+|-)$'; continue }
+            if ($m.Groups['r'].Success) { $hereStr = $m.Value -match '<<<'; $skipNext = $m.Value -notmatch '&(\d+|-)$'; continue }
             if ($m.Groups['w'].Success) {
-                if ($skipNext) { $skipNext = $false; continue }
                 $raw = $m.Value
-                foreach ($q in [regex]::Matches($raw, $dq)) {
-                    $subs = @([regex]::Matches($q.Value, '\$\(((?:[^()]|\([^()]*\))*)\)') | ForEach-Object { $_.Groups[1].Value })
-                    if (-not $PowerShell) { $subs += @([regex]::Matches($q.Value, '`([^`]*)`') | ForEach-Object { $_.Groups[1].Value }) }
-                    foreach ($sub in $subs) { foreach ($x in (Get-ShellSegments -Command $sub -PowerShell:$PowerShell -Depth ($Depth + 1))) { $segs.Add($x) } }
+                if ($pos -ge $s.Length -and $raw -match '[''"]|\$\{') {
+                    # PS here-strings are one literal; an apostrophe inside one is not a quote
+                    $scan = if ($PowerShell) { [regex]::Replace($raw, '(?s)@''\r?\n.*?\r?\n''@|@"\r?\n.*?\r?\n"@', "''") } else { $raw }
+                    $at = Get-UnclosedAt -Text $scan -PowerShell:$PowerShell
+                    if ($at -ge 0 -and $at -lt $scan.Length) {
+                        foreach ($x in (Get-ShellSegments -Command $scan.Substring($at) -PowerShell:$PowerShell -Depth ($Depth + 1) -KeepBrackets:$KeepBrackets -Clock $Clock -Fragment)) { $order.Add($x) }
+                    }
                 }
-                $cur.Add([regex]::Replace($raw, $unq, { param($x) $x.Groups[1].Value + $x.Groups[2].Value + $x.Groups[3].Value }))
+                $text = if ($raw -match '[''"`\\]') { [regex]::Replace($raw, $unq, { param($x) $x.Groups[1].Value + $x.Groups[2].Value + $x.Groups[3].Value }) } else { $raw }
+                if ($raw -match $lcOnly) { continue }   # a bare continuation between words is whitespace
+                if ($hereStr) { $feeds[$curId] = "$($feeds[$curId])`n$text"; $hereStr = $false; $skipNext = $false; continue }
+                if ($skipNext) { $skipNext = $false; continue }
+                if ($raw.Contains('$(') -or (-not $PowerShell -and $raw.Contains('`'))) {
+                    foreach ($sub in (Get-Substitutions -Text $raw -PowerShell:$PowerShell)) {
+                        foreach ($x in (Get-ShellSegments -Command $sub -PowerShell:$PowerShell -Depth ($Depth + 1) -KeepBrackets:$KeepBrackets -Clock $Clock -Fragment:$Fragment)) { $order.Add($x) }
+                    }
+                }
+                $cur.Add($text)
                 continue
             }
         }
         # separator or end of input: close the segment
-        $skipNext = $false
+        $skipNext = $false; $hereStr = $false
         if ($cur.Count -gt 0) {
-            $tok = $cur.ToArray()
-            if ([object]::ReferenceEquals($cur, $hdOwner)) { $hdOwnerIndex = $segs.Count }
-            $segs.Add($tok)
-            $h = Get-SegmentHead -Tokens $tok
-            if ($h -lt $tok.Count -and (Get-CommandLeaf $tok[$h]) -in @('bash', 'sh', 'zsh', 'dash', 'pwsh', 'powershell')) {
-                $isPs = (Get-CommandLeaf $tok[$h]) -in @('pwsh', 'powershell')
-                for ($j = $h + 1; $j -lt $tok.Count - 1; $j++) {
-                    if ($tok[$j] -match '^-(c|command)$') {
-                        foreach ($x in (Get-ShellSegments -Command $tok[$j + 1] -PowerShell:$isPs -Depth ($Depth + 1))) { $segs.Add($x) }
-                        break
-                    }
-                }
-            }
-            $cur = New-Object System.Collections.Generic.List[string]
+            $order.Add(@{ id = $curId; tok = $cur.ToArray() })
+            $cur = New-Object System.Collections.Generic.List[string]; $curId++
         }
         if (-not $m.Success) { break }
-        # first newline after heredoc marker(s): skip each body through its terminator line
-        if ($m.Value -eq "`n" -and $pendingHd.Count) {
-            $bodyStart = $pos
-            foreach ($word in $pendingHd) {
-                $t = ([regex]"(?m)^[ \t]*$([regex]::Escape($word))[ \t]*\r?$").Match($s, $pos)
-                $pos = if ($t.Success) { $t.Index + $t.Length } else { $s.Length }
+        # first newline after heredoc marker(s): attach each body to its segment, then skip it
+        if ($m.Value -eq "`n" -and $pending.Count) {
+            foreach ($p in $pending) {
+                $t = ([regex]('(?m)^[ \t]*' + [regex]::Escape($p.word) + '[ \t]*\r?$')).Match($s, $pos)
+                if (-not $t.Success) { continue }   # no terminator line: not a heredoc — keep tokenizing
+                $body = $s.Substring($pos, $t.Index - $pos)
+                $pos = $t.Index + $t.Length
+                $feeds[$p.owner] = "$($feeds[$p.owner])`n$body"
+                if (-not $p.quoted) {
+                    foreach ($sub in (Get-Substitutions -Text $body -NoQuotes)) { foreach ($x in (Get-ShellSegments -Command $sub -Depth ($Depth + 1) -KeepBrackets:$KeepBrackets -Clock $Clock -Fragment:$Fragment)) { $order.Add($x) } }
+                }
             }
-            if ($null -ne $Heredocs -and $hdOwnerIndex -ge 0) { $Heredocs[$hdOwnerIndex] = $s.Substring($bodyStart, $pos - $bodyStart) }
-            $pendingHd.Clear(); $hdOwner = $null; $hdOwnerIndex = -1
+            $pending.Clear()
+        }
+    }
+    $shells = @('bash', 'sh', 'zsh', 'dash', 'ksh', 'pwsh', 'powershell')
+    foreach ($item in $order) {
+        if ($item -isnot [hashtable]) { $segs.Add($item); continue }
+        $tok = $item.tok; $feed = $feeds[$item.id]
+        if ($null -ne $Heredocs -and $feed) { $Heredocs[$segs.Count] = $feed }
+        $segs.Add($tok)
+        $h = Get-SegmentHead -Tokens $tok
+        $headLeaf = if ($h -lt $tok.Count) { Get-CommandLeaf $tok[$h] } else { '' }
+        # a shell after a container/remote runner (`docker exec -i db sh <<EOF`, `... | docker exec -i x sh`)
+        # reads its stdin just like a head shell does
+        $runner = $headLeaf -in @('docker', 'docker-compose', 'podman', 'kubectl', 'ssh', 'wsl')
+        for ($j = $h; $j -lt $tok.Count; $j++) {
+            if (-not ($tok[$j].IndexOf('sh', [StringComparison]::OrdinalIgnoreCase) -ge 0)) { continue }   # every shell name contains 'sh'
+            $leaf = Get-CommandLeaf $tok[$j]
+            if ($shells -notcontains $leaf) { continue }
+            $arg = Get-ShellScriptArg -Tokens $tok -At $j
+            $sub = $null; $subPs = $leaf -in @('pwsh', 'powershell')
+            if ($arg.kind -eq 'script') { $sub = $arg.text; $subPs = $arg.ps }
+            elseif ($arg.kind -eq 'opaque') { $segs.Add([string[]]@('__opaque_script__')) }
+            elseif ($arg.kind -eq 'stdin' -and ($j -eq $h -or $runner)) {
+                if ($feed) { $sub = $feed } elseif (-not $Fragment) { $segs.Add([string[]]@('__shell_stdin__')) }
+            }
+            if ($sub) { foreach ($x in (Get-ShellSegments -Command $sub -PowerShell:$subPs -Depth ($Depth + 1) -KeepBrackets:$KeepBrackets -Clock $Clock -Fragment:$Fragment)) { $segs.Add($x) } }
+        }
+        # eval / Invoke-Expression run their arguments as a command line
+        $rest = @(if ($h + 1 -lt $tok.Count) { $tok[($h + 1)..($tok.Count - 1)] })
+        $evalText = $null; $evalPs = $PowerShell
+        if ($headLeaf -eq 'eval') { $evalText = $rest -join ' '; $evalPs = $false }
+        elseif ($headLeaf -in @('iex', 'invoke-expression')) { $evalText = @($rest | Where-Object { $_ -notmatch '^(?i)-Command$' }) -join ' '; $evalPs = $true }
+        if ($evalText) { foreach ($x in (Get-ShellSegments -Command $evalText -PowerShell:$evalPs -Depth ($Depth + 1) -KeepBrackets:$KeepBrackets -Clock $Clock -Fragment:$Fragment)) { $segs.Add($x) } }
+        # the command a container runs (`docker compose exec -T db rm -rf /var/lib/...`) is judged as its own segment
+        if ($headLeaf -in @('docker', 'docker-compose')) {
+            $inner = Get-ContainerCommand -Tokens $tok
+            if ($inner.Count) { $segs.Add([string[]]$inner) }
         }
     }
     return ,$segs.ToArray()
 }
 
+# The command after the container / service / image of a docker [compose] exec|run segment, or @().
+function Get-ContainerCommand {
+    param([string[]]$Tokens)
+    $v = Get-DockerVerb -Tokens $Tokens
+    if (-not $v) { return @() }
+    $sub = $v.sub; $r = $v.rest
+    if ($sub -eq 'container' -and $r.Count) { $sub = $r[0].ToLowerInvariant(); $r = @($r | Select-Object -Skip 1) }
+    if ($sub -notin @('exec', 'run')) { return @() }
+    $valueFlags = @('-e', '--env', '-u', '--user', '-w', '--workdir', '--env-file', '--index', '-v', '--volume', '--name',
+                    '--entrypoint', '-p', '--publish', '-l', '--label', '--network', '--net', '--mount', '--platform',
+                    '-m', '--memory', '--cpus', '-h', '--hostname', '--add-host', '--device', '--restart', '--log-driver')
+    for ($k = 0; $k -lt $r.Count; $k++) {
+        if ($r[$k] -like '-*') { if ($valueFlags -contains $r[$k]) { $k++ }; continue }
+        return @(if ($k + 1 -lt $r.Count) { $r[($k + 1)..($r.Count - 1)] })
+    }
+    return @()
+}
+
 # Returns @{ compose; sub; rest } for a docker / docker-compose segment (global flags
-# like -p/-f/--project-directory/--profile skipped), or $null for any other command.
+# like -p/-f/--project-directory/--profile/-l skipped), or $null for any other command.
 function Get-DockerVerb {
     param([string[]]$Tokens)
     $h = Get-SegmentHead -Tokens $Tokens
@@ -492,7 +714,7 @@ function Get-DockerVerb {
     if ($leaf -notin @('docker', 'docker-compose')) { return $null }
     $compose = $leaf -eq 'docker-compose'
     $valueFlags = @('-p', '--project-name', '-f', '--file', '--project-directory', '--profile', '--env-file',
-                    '--context', '-c', '-H', '--host', '--log-level', '--config', '--ansi', '--parallel', '--progress')
+                    '--context', '-c', '-H', '--host', '-l', '--log-level', '--config', '--ansi', '--parallel', '--progress')
     $i = $h + 1
     while ($i -lt $Tokens.Count) {
         $t = $Tokens[$i]
@@ -505,6 +727,18 @@ function Get-DockerVerb {
     return @{ compose = $compose; sub = $Tokens[$i].ToLowerInvariant(); rest = $rest }
 }
 
+# Any token a long option or its GNU-style abbreviation (`--har` = --hard, `--rec` = --recursive)?
+function Test-LongOpt {
+    param([object[]]$Tokens, [string[]]$Full)
+    foreach ($t in $Tokens) {
+        if ($t -notlike '--?*') { continue }
+        $name = ($t -split '=')[0]
+        if ($name.Length -lt 4) { continue }
+        foreach ($f in $Full) { if ($f.StartsWith($name, [StringComparison]::Ordinal)) { return $true } }
+    }
+    return $false
+}
+
 # Option-C destructive class (#3486; operator chose C 2026-10-08). Returns
 # @{ rule; segment } for the first hit, else $null. The gate turns a hit into ASK.
 function Get-DestructiveHit {
@@ -512,22 +746,42 @@ function Get-DestructiveHit {
     if ($null -eq $Segments) { $Segments = Get-ShellSegments -Command $Command -PowerShell:$PowerShell }
     # a path is throwaway when one of its components is a throwaway dir (whole component, not a substring)
     $safePath = '(?i)(^|[\\/])(_scratch[\w.-]*|\.next[\w.-]*|node_modules|tmp|temp|scratchpad|\$TEMP|\$TMPDIR|\$env:TEMP|\$env:TMP)([\\/]|$)|\.tsbuildinfo$'
-    $vars = @{}   # NAME=value / $name = value set earlier in this command, so `S=<scratchpad>; rm -rf $S/x` resolves
+    $synthetic = @{ '__shell_stdin__' = 'shell reading commands from stdin / a pipe'; '__nested_too_deep__' = 'shell nesting deeper than 3 levels'
+                    '__opaque_script__' = 'undecodable -EncodedCommand' }
+    # NAME=value / $name = value set earlier in this command, so `S=<scratchpad>; rm -rf $S/x` resolves.
+    # Bash names are case-sensitive; any other kind of (re)assignment forgets the name.
+    $vars = if ($PowerShell) { @{} } else { New-Object 'System.Collections.Generic.Dictionary[string,string]' }
     foreach ($seg in $Segments) {
         $h = Get-SegmentHead -Tokens $seg
-        if ($seg.Count -eq 3 -and $seg[0] -match '^\$(\w+)$' -and $seg[1] -eq '=') { $vars[$Matches[1]] = $seg[2] }
+        $psVar = if ($seg.Count -ge 2 -and $seg[0] -match '^\$(\w+)$') { $Matches[1] } else { $null }
+        if ($psVar -and $seg.Count -eq 3 -and $seg[1] -eq '=') { $vars[$psVar] = $seg[2] }
+        elseif ($psVar -and $seg[1] -in @('+=', '-=', '*=', '/=')) { [void]$vars.Remove($psVar) }
         if ($h -ge $seg.Count) {   # assignment-only segment (a `S=x cmd $S` prefix does not change what $S expands to)
-            foreach ($t in $seg) { if ($t -match '^([A-Za-z_]\w*)=(.*)$') { $vars[$Matches[1]] = $Matches[2] } }
+            foreach ($t in $seg) {
+                if ($t -match '^([A-Za-z_]\w*)=(.*)$') { $vars[$Matches[1]] = $Matches[2] }
+                elseif ($t -match '^([A-Za-z_]\w*)\+=') { [void]$vars.Remove($Matches[1]) }
+            }
             continue
         }
         $leaf = Get-CommandLeaf $seg[$h]
         $rest = @(if ($h + 1 -lt $seg.Count) { $seg[($h + 1)..($seg.Count - 1)] })
+        if ($leaf -in @('export', 'declare', 'local', 'readonly', 'typeset', 'for', 'read')) {
+            foreach ($t in $rest) { if ($t -match '^([A-Za-z_]\w*)') { [void]$vars.Remove($Matches[1]) } }
+            continue
+        }
         $rule = $null
-        if ($leaf -in @('rm', 'remove-item', 'ri', 'del', 'erase') -or ($PowerShell -and $leaf -in @('rd', 'rmdir'))) {
-            $rec = if ($PowerShell -or $leaf -ne 'rm') { @($rest | Where-Object { $_ -match '^-r(e(c(u(r(s(e)?)?)?)?)?)?(:\$true)?$' }) }
-                   else { @($rest | Where-Object { $_ -cmatch '^-[a-zA-Z]*[rR]' -or $_ -eq '--recursive' }) }
-            $paths  = @($rest | Where-Object { $_ -notlike '-*' } | ForEach-Object {
-                [regex]::Replace($_, '\$\{?(\w+)\}?', { param($m) if ($vars.ContainsKey($m.Groups[1].Value)) { $vars[$m.Groups[1].Value] } else { $m.Value } }) })
+        if ($synthetic.ContainsKey($seg[$h])) { $rule = $synthetic[$seg[$h]] }
+        elseif ($leaf -in @('rm', 'remove-item', 'ri', 'del', 'erase') -or ($PowerShell -and $leaf -in @('rd', 'rmdir'))) {
+            $psStyle = ($PowerShell -and $seg[$h] -notmatch '(?i)\.exe$') -or $leaf -ne 'rm'   # rm.exe takes bash-style flags
+            $rec = if ($psStyle) { @($rest | Where-Object { $_ -match '^-r(e(c(u(r(s(e)?)?)?)?)?)?(:\$true)?$' }) }
+                   else { @($rest | Where-Object { $_ -cmatch '^-[a-zA-Z]*[rR]' }) + @(if (Test-LongOpt $rest '--recursive') { '--recursive' }) }
+            # PS parameters whose value is not a path (-ErrorAction SilentlyContinue, -Include *.log, ...)
+            $valueFlag = '^(?i)-(ea|erroraction|ev|errorvariable|wa|warningaction|include|exclude|filter|credential|stream|ov|outvariable)$'
+            $paths = New-Object System.Collections.Generic.List[string]
+            for ($k = 0; $k -lt $rest.Count; $k++) {
+                if ($rest[$k] -like '-*') { if ($psStyle -and $rest[$k] -match $valueFlag) { $k++ }; continue }
+                $paths.Add([regex]::Replace($rest[$k], '\$\{?(\w+)\}?', { param($m) if ($vars.ContainsKey($m.Groups[1].Value)) { $vars[$m.Groups[1].Value] } else { $m.Value } }))
+            }
             $unsafe = @($paths | Where-Object { $_ -notmatch $safePath -or $_ -match '\.\.' })
             if ($rec.Count -and ($paths.Count -eq 0 -or $unsafe.Count)) { $rule = 'rm -r outside throwaway paths' }
         } elseif ($leaf -eq 'git') {
@@ -538,33 +792,37 @@ function Get-DestructiveHit {
             $sub = if ($i -lt $rest.Count) { $rest[$i] } else { '' }
             $r = @(if ($i + 1 -lt $rest.Count) { $rest[($i + 1)..($rest.Count - 1)] })
             switch ($sub) {
-                'checkout' { if ($r -contains '--' -or $r -contains '.') { $rule = 'git checkout -- (discards edits)' } }
-                'restore'  { if (-not ($r -contains '--staged' -or $r -ccontains '-S') -or $r -contains '--worktree' -or $r -ccontains '-W') { $rule = 'git restore (discards edits)' } }
-                'reset'    { if ($r -contains '--hard') { $rule = 'git reset --hard' } }
-                'clean'    { if (@($r | Where-Object { $_ -cmatch '^-[a-zA-Z]*f' -or $_ -eq '--force' }).Count) { $rule = 'git clean -f' } }
-                'push'     { if (@($r | Where-Object { $_ -in @('--force', '--delete') -or $_ -like '--force-with-lease*' -or $_ -cmatch '^-[a-zA-Z]*[fd]' -or $_ -match '^[+:]' }).Count) { $rule = 'git push --force/--delete' } }
-                'branch'   { if (@($r | Where-Object { $_ -cmatch '^-[a-zA-Z]*D' }).Count -or ($r -contains '--delete' -and ($r -contains '--force' -or $r -contains '-f'))) { $rule = 'git branch -D' } }
-                'stash'    { if ($r.Count -and $r[0] -in @('drop', 'clear')) { $rule = 'git stash drop/clear' } }
-                'rm'       { if (@($r | Where-Object { $_ -cmatch '^-[a-zA-Z]*r' }).Count -and $r -notcontains '--cached') { $rule = 'git rm -r' } }
+                'checkout'   { if ($r -contains '--' -or $r -contains '.' -or $r -ccontains '-f' -or (Test-LongOpt $r '--force')) { $rule = 'git checkout --/-f (discards edits)' } }
+                'switch'     { if ($r -ccontains '-f' -or (Test-LongOpt $r @('--force', '--discard-changes'))) { $rule = 'git switch -f (discards edits)' } }
+                'restore'    { if (-not ($r -ccontains '-S' -or (Test-LongOpt $r '--staged')) -or $r -ccontains '-W' -or (Test-LongOpt $r '--worktree')) { $rule = 'git restore (discards edits)' } }
+                'reset'      { if (Test-LongOpt $r '--hard') { $rule = 'git reset --hard' } }
+                'clean'      { if ((@($r | Where-Object { $_ -cmatch '^-[a-zA-Z]*f' }).Count -or (Test-LongOpt $r '--force')) -and
+                                   -not (@($r | Where-Object { $_ -cmatch '^-[a-zA-Z]*n' }).Count -or (Test-LongOpt $r '--dry-run'))) { $rule = 'git clean -f' } }
+                'push'       { if (@($r | Where-Object { $_ -cmatch '^-[a-zA-Z]*[fd]' -or $_ -match '^[+:]' }).Count -or (Test-LongOpt $r @('--force', '--force-with-lease', '--delete', '--mirror'))) { $rule = 'git push --force/--delete/--mirror' } }
+                'branch'     { if (@($r | Where-Object { $_ -cmatch '^-[a-zA-Z]*D' }).Count -or ((Test-LongOpt $r '--delete') -and ($r -ccontains '-f' -or (Test-LongOpt $r '--force')))) { $rule = 'git branch -D' } }
+                'stash'      { if ($r.Count -and $r[0] -in @('drop', 'clear')) { $rule = 'git stash drop/clear' } }
+                'rm'         { if (@($r | Where-Object { $_ -cmatch '^-[a-zA-Z]*r' }).Count -and $r -notcontains '--cached') { $rule = 'git rm -r' } }
+                'update-ref' { if ($r -ccontains '-d' -or $r -contains '--delete') { $rule = 'git update-ref -d' } }
             }
-        } elseif ($leaf -in @('curl', 'invoke-restmethod', 'invoke-webrequest', 'irm', 'iwr')) {
+        } elseif ($leaf -in @('curl', 'wget', 'invoke-restmethod', 'invoke-webrequest', 'irm', 'iwr')) {
             for ($j = 0; $j -lt $rest.Count; $j++) {
                 $a = $rest[$j]; $next = if ($j + 1 -lt $rest.Count) { $rest[$j + 1] } else { '' }
-                $verb = $null   # curl -X / -sX / -XDELETE, --request[=], PS -Method[:]
-                if ($a -cmatch '^-[a-zA-Z]*X(.*)$') { $verb = if ($Matches[1]) { $Matches[1] } else { $next } }
-                elseif ($a -match '^(?i)--request(=(.*))?$') { $verb = if ($Matches[1]) { $Matches[2] } else { $next } }
+                $verb = $null   # curl -X / -sX / -XDELETE, --request[=], wget --method[=], PS -Method[:]
+                if ($leaf -eq 'curl' -and $a -cmatch '^-[a-zA-Z]*X(.*)$') { $verb = if ($Matches[1]) { $Matches[1] } else { $next } }
+                elseif ($a -match '^(?i)--(request|method)(=(.*))?$') { $verb = if ($Matches[2]) { $Matches[3] } else { $next } }
                 elseif ($a -match '^(?i)-Me(t(h(o(d)?)?)?)?(:(.*))?$') { $verb = if ($Matches[5]) { $Matches[6] } else { $next } }
                 if ($verb -match '^(?i)\s*DELETE$') { $rule = 'HTTP DELETE'; break }
             }
         } elseif ($leaf -in @('docker', 'docker-compose')) {
             $v = Get-DockerVerb -Tokens $seg
             if ($v) {
-                $r = $v.rest; $r0 = if ($r.Count) { $r[0] } else { '' }
-                if (($v.sub -in @('volume', 'image') -and $r0 -in @('rm', 'remove', 'prune')) -or
-                    ($v.sub -eq 'system' -and $r0 -eq 'prune') -or $v.sub -eq 'rmi' -or
-                    ($v.sub -in @('down', 'rm') -and @($r | Where-Object { $_ -eq '--volumes' -or $_ -cmatch '^-[a-zA-Z]*v' }).Count)) {
-                    $rule = if ($v.sub -in @('volume', 'image', 'system')) { "docker $($v.sub) $r0" } else { "docker $($v.sub) -v" }
-                    if ($v.sub -eq 'rmi') { $rule = 'docker rmi' }
+                $sub = $v.sub; $r = $v.rest
+                if ($sub -eq 'container' -and $r.Count) { $sub = $r[0].ToLowerInvariant(); $r = @($r | Select-Object -Skip 1) }
+                $r0 = if ($r.Count) { $r[0] } else { '' }
+                if (($sub -in @('volume', 'image') -and $r0 -in @('rm', 'remove', 'prune')) -or
+                    ($sub -eq 'system' -and $r0 -eq 'prune') -or $sub -eq 'rmi' -or
+                    ($sub -in @('down', 'rm') -and (@($r | Where-Object { $_ -cmatch '^-[a-zA-Z]*v' }).Count -or (Test-LongOpt $r '--volumes')))) {
+                    $rule = if ($sub -in @('volume', 'image', 'system')) { "docker $sub $r0" } elseif ($sub -eq 'rmi') { 'docker rmi' } else { "docker $sub -v" }
                 }
             }
         }

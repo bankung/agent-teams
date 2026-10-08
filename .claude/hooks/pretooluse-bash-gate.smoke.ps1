@@ -160,6 +160,10 @@ $tests = @(
     @{ B=1; Name='G2 commit msg naming psql DELETE -> allow'; Cmd='git commit -m "psql -c DELETE FROM is denied"'; Expected='allow' }
 )
 
+# Review-batch rows (#3483) live in a DATA file: written into this script, payloads such as
+# `powershell -Command Remove-Item -Recurse ...` make AMSI/Bitdefender block the whole smoke.
+$tests += Get-Content -Raw -Encoding utf8 (Join-Path $PSScriptRoot 'pretooluse-bash-gate.smoke-cases.json') | ConvertFrom-Json
+
 $failCount = 0
 foreach ($t in $tests) {
     $tool     = if ($t.T) { $t.T } else { 'Bash' }

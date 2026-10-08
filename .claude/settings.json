@@ -285,7 +285,7 @@
           {
             "type": "command",
             "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-bash-gate.ps1\"",
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },

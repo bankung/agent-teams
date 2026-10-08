@@ -23,6 +23,19 @@
 
 $ErrorActionPreference = 'Stop'
 
+# Any fault left uncaught becomes ask, and whole-command regexes run with a timeout (Test-Rx) that
+# throws into this trap: a pathological command must never push the hook past its timeout, where
+# Claude Code would skip every guard (#3483 review: GUARD 4 on 4.6 KB took 51 s).
+function Test-Rx([string]$Text, [string]$Pattern) {
+    [regex]::IsMatch($Text, $Pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase, [TimeSpan]::FromMilliseconds(750))
+}
+trap {
+    [Console]::Error.WriteLine("WARN: pretooluse-bash-gate: $($_.Exception.Message) ; falling through to ask")
+    Write-Output (@{ hookSpecificOutput = @{ hookEventName = 'PreToolUse'; permissionDecision = 'ask'
+                     permissionDecisionReason = "pretooluse-bash-gate fallthrough: $($_.Exception.Message)" } } | ConvertTo-Json -Compress -Depth 4)
+    exit 0
+}
+
 # Dot-source shared helpers (same dir as this script).
 . (Join-Path $PSScriptRoot '_shared.ps1')
 
@@ -52,11 +65,17 @@ $script:GateLogMeta = "$($payload.session_id)`t$(if ($payload.agent_type) { $pay
 # Quote-aware simple-command segments (#3486, _shared.ps1). GUARDS 2, 3 and 5 match a
 # segment's command word, so text inside a commit message / JSON / heredoc / node -e
 # string neither trips them nor hides a `cd x && <cmd>` / `$(...)` command from them.
+# Two views: $segments splits at ( ) { } to reach `$( )` / `{ }` bodies; $stmts keeps brackets
+# inside words so `irm ... -Headers @{..} -Method Delete` keeps its flags on its command.
+# $allSegs = both. One 3 s budget for all parsing (past it -> ask, never a hook timeout).
 $isPs = $toolName -eq 'PowerShell'
 $heredocs = @{}
 try {
-    $segments = if ($cmd) { Get-ShellSegments -Command $cmd -PowerShell:$isPs -Heredocs $heredocs } else { @() }
-    $destructive = if ($cmd) { Get-DestructiveHit -Segments $segments -PowerShell:$isPs } else { $null }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $segments = if ($cmd) { Get-ShellSegments -Command $cmd -PowerShell:$isPs -Heredocs $heredocs -Clock $clock } else { @() }
+    $stmts    = if ($cmd) { Get-ShellSegments -Command $cmd -PowerShell:$isPs -KeepBrackets -Clock $clock } else { @() }
+    $allSegs  = @($segments) + @($stmts)
+    $destructive = if ($cmd) { Get-DestructiveHit -Segments $allSegs -PowerShell:$isPs } else { $null }
 } catch {
     # A tokenizer fault must not silently drop the deny guards: ask instead.
     Fail-Open-Ask -WarnMsg "command segmenting failed: $($_.Exception.Message)" -Source 'pretooluse-bash-gate'
@@ -72,33 +91,52 @@ $askReason = $null
 
 # ---------------------------------------------------------------------------
 # GUARD 2 — raw SQL DML  (deny)
-# Per segment: psql anywhere in it (docker exec, sudo -u, kubectl ...) with -c/--command
-# <DML> or a heredoc body holding DML, or python[3] -c <DML>. `cd x && psql ...` is caught
-# (#3486); a segment led by echo/printf/grep/git/cat only mentions it.
+# Per segment (both views; nested `sh -c "psql ..."` arrive as their own segments): psql
+# anywhere in it — every argument counts (`-c a -c b`, `-c"..."`, `--command=`), plus its
+# heredoc / here-string; psql with no -c/-f runs its stdin, so the whole command is its SQL
+# (`echo "DELETE ..." | psql`). python[3] -c / -Bc <DML> (before any -m). A segment led by
+# echo/printf/grep/rg/git/cat only mentions it.
 # ---------------------------------------------------------------------------
+# SQL comments are blanked before matching (linear C-comment regex, no nested quantifier), so
+# `DELETE/**/FROM`, `UPDATE/**/t SET`, `DELETE --x<LF>FROM` match the plain patterns below.
+$sqlComment = '/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|--[^\n]*'
 $dmlPatterns = @(
     '\bDELETE\s+FROM\b',
-    '\bUPDATE\s+\w+\s+SET\b',
+    '\bUPDATE\s+[\w."]+(\s+(AS\s+)?\w+)?\s+SET\b',
+    '\bMERGE\s+INTO\b',
     '\bINSERT\s+INTO\b',
     '\bTRUNCATE\b',
-    '\bDROP\s+(TABLE|DATABASE|SCHEMA|INDEX|CONSTRAINT|VIEW)\b',
+    '\bDROP\s+(TABLE|DATABASE|SCHEMA|INDEX|CONSTRAINT|VIEW|MATERIALIZED\s+VIEW|TRIGGER|FUNCTION|SEQUENCE|TYPE|ROLE|USER|EXTENSION)\b',
     '\bALTER\s+TABLE\b'
 )
-for ($si = 0; $si -lt $segments.Count; $si++) {
-    $seg = $segments[$si]
+for ($si = 0; $si -lt $allSegs.Count; $si++) {
+    if ($clock.ElapsedMilliseconds -gt 6000) { Fail-Open-Ask -WarnMsg 'guard evaluation exceeded its 6 s budget' -Source 'pretooluse-bash-gate' }
+    $seg = [string[]]$allSegs[$si]
     $h = Get-SegmentHead -Tokens $seg
     if ($h -ge $seg.Count -or (Get-CommandLeaf $seg[$h]) -in @('echo', 'printf', 'grep', 'rg', 'git', 'cat')) { continue }
     $sqlText = $null
     for ($j = $h; $j -lt $seg.Count -and -not $sqlText; $j++) {
+        if (-not (($seg[$j].IndexOf('psql', [StringComparison]::OrdinalIgnoreCase) -ge 0) -or ($seg[$j].IndexOf('py', [StringComparison]::OrdinalIgnoreCase) -ge 0))) { continue }   # cheap filter: a 30k-arg line stays fast
         $leaf = Get-CommandLeaf $seg[$j]
-        if ($leaf -notmatch '^(psql|python(3(\.\d+)?)?|py)$') { continue }
-        $flag = if ($leaf -eq 'psql') { '^(-[a-zA-Z]*c|--command)$' } else { '^-c$' }
-        for ($k = $j + 1; $k -lt $seg.Count - 1; $k++) {
-            if ($seg[$k] -cmatch $flag) { $sqlText = $seg[$k + 1]; break }
+        if ($leaf -notmatch '^(psql|python(3(\.\d+)?)?|py)$') { continue }   # slice only for these (a 12k-arg line stays linear)
+        $after = @(if ($j + 1 -lt $seg.Count) { $seg[($j + 1)..($seg.Count - 1)] })
+        if ($leaf -eq 'psql') {
+            $sqlText = (@($after | ForEach-Object { $_ -creplace '^(--command=|-[a-zA-Z]*c(?=\S))', '' }) -join "`n") +
+                       "`n" + [string]$heredocs[$si]
+            # no -c / -f, or `-f -`: psql runs its stdin, so the whole command is its SQL
+            $joined = ' ' + ($after -join ' ') + ' '
+            if (-not @($after | Where-Object { Test-PsqlCommandFlag $_ }).Count -or $joined -match '\s(-f\s*|--file[=\s])-\s') { $sqlText += "`n" + $cmd }
+        } elseif ($leaf -match '^(python(3(\.\d+)?)?|py)$') {
+            for ($k = 0; $k -lt $after.Count; $k++) {
+                if ($after[$k] -cmatch '^-[WXQ]') { if ($after[$k].Length -eq 2) { $k++ }; continue }   # options taking a value (-X utf8, -Wonce)
+                if ($after[$k] -ceq '-m' -or $after[$k] -notlike '-*') { break }
+                if ($after[$k] -cmatch '^-[a-zA-Z]*c(.*)$') { $sqlText = if ($Matches[1]) { $Matches[1] } elseif ($k + 1 -lt $after.Count) { $after[$k + 1] } else { '' }; break }
+            }
+            if (-not $sqlText) { $sqlText = [string]$heredocs[$si] }   # `python3 - <<EOF ... EOF`
         }
-        if (-not $sqlText -and $leaf -eq 'psql' -and $heredocs.ContainsKey($si)) { $sqlText = $heredocs[$si] }
     }
     if (-not $sqlText) { continue }
+    $sqlText = $sqlText -replace $sqlComment, " "
     foreach ($pattern in $dmlPatterns) {
         if ($sqlText -match "(?i)$pattern") {
             $reason = @"
@@ -188,7 +226,7 @@ if ($cmd) {
     )
 
     foreach ($t in $bdTriggers) {
-        if ($cmd -match $t.pattern) {
+        if (Test-Rx $cmd $t.pattern) {
             $reason = @"
 Bitdefender-trigger pattern detected (matched: $($t.pattern)).
 
@@ -215,10 +253,16 @@ Common fixes:
 # GUARD 5 — block-pytest-on-live-db  (deny)
 # Mirror of block-pytest-on-live-db.ps1 logic, in-process.
 # ---------------------------------------------------------------------------
-if ($cmd -and ($cmd -match '(?i)\bpytest\b')) {
+# pytest as the shell sees it: unquoted tokens of both views catch `py""test`, `py.test`,
+# `python -m _pytest`; the raw text keeps the env checks below for `pytest` itself.
+$pytestRx = '(?i)\b(pytest|py\.test|_pytest)\b'
+$pytestTokens = ((@($allSegs | ForEach-Object { $_ -join ' ' }) -join "`n") -replace '[\x27\x22\\]', '') -match $pytestRx   # quotes left inside a container's sh -c script ('p""ytest') stripped
+if ($cmd -and ($cmd -match $pytestRx -or $pytestTokens)) {
     # Sanctioned isolated path (#3480): api-test sits on an internal network with
-    # no route to the live db. Exact shape only — no chaining, quotes, or env flags.
-    $apiTestRun = $cmd -match '^\s*docker\s+compose\s+-p\s+agent-teams\s+--profile\s+test\s+run\s+--rm\s+api-test\s+pytest(\s+[\w./:\-\[\]]+)*\s*$'
+    # no route to the live db. Exact shape only — one line, no chaining, quotes, or env flags
+    # (a newline would let `\s+` carry a second command, #3483 review).
+    $apiTestRun = ($cmd -notmatch '[\r\n]') -and
+                  (Test-Rx $cmd '^\s*docker\s+compose\s+-p\s+agent-teams\s+--profile\s+test\s+run\s+--rm\s+api-test\s+pytest(?>(?:\s+[\w./:\-\[\]]+)*)\s*\z')
     # Bypass valve.
     if ($env:BYPASS_LIVE_DB_PYTEST_HOOK -eq "1") {
         [Console]::Error.WriteLine("[BYPASS] pretooluse-bash-gate: block-pytest-on-live-db BYPASSED via BYPASS_LIVE_DB_PYTEST_HOOK=1")
@@ -230,9 +274,13 @@ if ($cmd -and ($cmd -match '(?i)\bpytest\b')) {
         # --project-directory, --profile ...), and python[3] -c. A segment only counts if
         # pytest appears in it, so a commit message that names these shapes is not denied.
         $runDeny = $false; $execDeny = $false; $pyDeny = $false
-        foreach ($seg in $segments) {
-            if (($seg -join ' ') -notmatch '(?i)\bpytest\b') { continue }
+        for ($si = 0; $si -lt $allSegs.Count; $si++) {
+            $seg = [string[]]$allSegs[$si]
             $v = Get-DockerVerb -Tokens $seg
+            # a container shell fed by a heredoc or a pipe runs that input: count it as the segment's text
+            $txt = ($seg -join ' ') + "`n" + [string]$heredocs[$si]
+            if ($v -and @($seg | Where-Object { (Get-CommandLeaf $_) -in @('bash', 'sh', 'zsh', 'dash', 'ksh') }).Count) { $txt += "`n" + $cmd }
+            if (($txt -replace '[\x27\x22\\]', '') -notmatch $pytestRx) { continue }
             if ($v) {
                 $sub = $v.sub; $r = $v.rest
                 if ($sub -eq 'container' -and $r.Count) { $sub = $r[0].ToLowerInvariant(); $r = @($r | Select-Object -Skip 1) }
@@ -241,9 +289,16 @@ if ($cmd -and ($cmd -match '(?i)\bpytest\b')) {
                 if ($sub -eq 'run' -and (-not $v.compose -or $r -contains 'api')) { $runDeny = $true }
                 if ($sub -eq 'exec') { $execDeny = $true }
             }
-            # python[3] -c anywhere in the segment (uv run python -c, timeout 60 python3 -c ...)
+            # python[3] -c / -Bc anywhere in the segment (uv run python -c, timeout 60 python3 -c ...);
+            # a -c after -m belongs to the module (`python -m pytest -c pytest.ini` is plain pytest)
             for ($j = 0; $j -lt $seg.Count - 1; $j++) {
-                if ((Get-CommandLeaf $seg[$j]) -match '^(python(3(\.\d+)?)?|py)$' -and @($seg[($j + 1)..($seg.Count - 1)]) -contains '-c') { $pyDeny = $true }
+                if (-not ($seg[$j].IndexOf('py', [StringComparison]::OrdinalIgnoreCase) -ge 0)) { continue }
+                if ((Get-CommandLeaf $seg[$j]) -notmatch '^(python(3(\.\d+)?)?|py)$') { continue }
+                for ($k = $j + 1; $k -lt $seg.Count; $k++) {
+                    if ($seg[$k] -cmatch '^-[WXQ]') { if ($seg[$k].Length -eq 2) { $k++ }; continue }   # options taking a value (-X utf8, -Wonce)
+                    if ($seg[$k] -ceq '-m' -or $seg[$k] -notlike '-*') { break }
+                    if ($seg[$k] -cmatch '^-[a-zA-Z]*c') { $pyDeny = $true; break }
+                }
             }
         }
         if ($runDeny) {
@@ -398,30 +453,28 @@ if ($cmd) {
     #     nothing executable.
     $isEchoSessionId = $bootstrapCmd -cmatch '^echo (\$CLAUDE_CODE_SESSION_ID|"\$CLAUDE_CODE_SESSION_ID")$'
 
-    # (b) curl GET to the project-resolution endpoints (by-name / active-list). The
-    #     first token must be curl(.exe) (after any leading VAR= assignments), the
-    #     URL must be one of the two resolve endpoints, and NO unsafe flag may be
-    #     present. A bind GET uses none of -X/--request/-d/--data*/-F/--form/-T/
-    #     --upload-file (write/upload) nor -K/--config (reads a config file that can
-    #     OVERRIDE the URL to a foreign host, defeating $hasForeignUrl), so the mere
-    #     presence of any forces the normal path.
+    # (b) curl GET to a project-resolution endpoint — an ALLOWLIST of exactly the shape /zb-bind
+    #     sends (#3483 review: a flag blocklist kept missing -sd, -o ~/x, --resolve, -x, VAR=
+    #     prefixes): `curl` first, then only -s/--silent/-S/--show-error, `-w <fmt>`,
+    #     `-o _scratch/<file>`, and exactly one resolve URL (by-name/<name> or projects?status=<x>).
     $isBindResolveCurl = $false
-    $bTokens = $bootstrapCmd -split '\s+'
-    $bFirst  = $bTokens[0]
-    while ($bFirst -match '^[A-Z_][A-Z0-9_]*=') {
-        $bTokens = $bTokens | Select-Object -Skip 1
-        $bFirst  = $bTokens[0]
-    }
-    if ($bFirst -match '^curl(\.exe)?$') {
-        $hitsResolveUrl = ($bootstrapCmd -match '(?i)https?://localhost:8456/api/projects/by-name/') -or `
-                          ($bootstrapCmd -match '(?i)https?://localhost:8456/api/projects\?status=')
-        $hasUnsafeFlag = ($bootstrapCmd -match '(?i)(?:^|\s)(?:-X|--request)\b') -or `
-                         ($bootstrapCmd -match '(?i)(?:^|\s)(?:-d|--data|--data-binary|--data-raw|--data-urlencode|-F|--form|-T|--upload-file)\b') -or `
-                         ($bootstrapCmd -match '(?i)(?:^|\s)(?:-K|--config)\b')
-        if ($hitsResolveUrl -and -not $hasUnsafeFlag) { $isBindResolveCurl = $true }
+    $bTok = @($bootstrapCmd -split '\s+')
+    if ($bTok[0] -match '^curl(\.exe)?$') {
+        $urls = 0; $ok = $true
+        for ($q = 1; $q -lt $bTok.Count -and $ok; $q++) {
+            $t = $bTok[$q]; $v = $t.Trim('"', "'")
+            if ($t -cin @('-s', '--silent', '-S', '--show-error', '-sS', '-Ss')) { continue }
+            if ($t -ceq '-w' -and $q + 1 -lt $bTok.Count -and $bTok[$q + 1] -match '^["'']?%\{http_code\}(\\n)?["'']?$') { $q++; continue }
+            if ($t -ceq '-o' -and $q + 1 -lt $bTok.Count -and $bTok[$q + 1].Trim('"', "'") -match '^_scratch/[\w.-]+$') { $q++; continue }
+            if ($v -match '^(?i)https?://localhost:8456/api/projects(/by-name/[\w.%-]+|\?status=\w+)$' -and $v -notmatch '\.\.') { $urls++; continue }
+            $ok = $false
+        }
+        $isBindResolveCurl = $ok -and $urls -eq 1
     }
 
-    if (($isEchoSessionId -or $isBindResolveCurl) -and -not $hasShellMeta -and -not $hasForeignUrl) {
+    # Never override an ask a guard above already recorded (#3483 review: `curl -XDELETE
+    # .../projects/by-name/../../tasks/5` rode this allow past the HTTP DELETE ask).
+    if (($isEchoSessionId -or $isBindResolveCurl) -and -not $hasShellMeta -and -not $hasForeignUrl -and -not $askReason) {
         Emit-Decision -Decision 'allow' -Reason 'pretooluse-bash-gate: bind-bootstrap read-only command (echo session-id / curl GET project-resolve) — allowed pre-binding (#2706)'
         exit 0
     }
@@ -456,7 +509,7 @@ if ($cmd) {
 if ($cmd) {
     $bw = $cmd.Trim()
     if (($bw -cmatch '^printf [''"]?[0-9]+[''"]?\s*>\s*_runtime/lead_project_id(_[0-9a-fA-F-]+)?\.txt$') -and `
-        ($bw -notmatch '[\r\n]')) {
+        ($bw -notmatch '[\r\n]') -and -not $askReason) {
         Emit-Decision -Decision 'allow' -Reason 'pretooluse-bash-gate: bind-binding-write (printf <id> > _runtime/lead_project_id marker) — allowed pre-binding (#2711)'
         exit 0
     }
