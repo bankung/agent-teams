@@ -372,5 +372,63 @@ services:
       start_period: 15s
     command: ["tail", "-f", "/dev/null"]
 
+  # ---------------------------------------------------------------------------
+  # db-test + api-test — structurally isolated pytest target (Kanban #3480).
+  # Replaces "pytest inside the live api container, relying on conftest to
+  # rewrite DATABASE_URL" (the layer whose bypass caused the 2026-05-17 live-DB
+  # wipe). api-test sits ONLY on the internal `testnet` network with db-test:
+  # the live `db` hostname does not resolve, there is no route to it, and no
+  # live credential / secret is passed in. Throwaway PG: tmpfs data, no ports.
+  # Profile-gated — a plain `up` never starts these. The ONLY sanctioned shape:
+  #   docker compose -p agent-teams --profile test run --rm api-test pytest -q <selector>
+  # (stop db-test afterwards: ... --profile test stop db-test; ... rm -f db-test)
+  # ---------------------------------------------------------------------------
+  db-test:
+    profiles: ["test"]
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: test_only_NOT_A_SECRET
+      POSTGRES_DB: agent_teams
+    tmpfs:
+      - /var/lib/postgresql/data
+    command: ["postgres", "-c", "max_connections=20", "-c", "shared_buffers=32MB"]
+    networks: [testnet]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d agent_teams"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  api-test:
+    profiles: ["test"]
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+      target: dev
+    depends_on:
+      db-test:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:test_only_NOT_A_SECRET@db-test:5432/agent_teams
+      PYTEST_DB_PASSWORD: pytest_runner_test_only_NOT_A_SECRET
+      APP_ENV: test
+      REPO_ROOT: /repo
+      APP_SCHEDULER_DISABLE: "true"
+    volumes:
+      - .:/repo
+    networks: [testnet]
+    # Migrate db-test/agent_teams first: creates the pytest_runner role + the
+    # schema the conftest live-DB sentinel reads. MIGRATION_TARGET=live is set
+    # inline for THIS command only (alembic env.py refuses non-_test DB names
+    # otherwise) — safe because the only reachable DB is the disposable db-test.
+    # `$$@` = compose-escaped `$@` (the pytest command passed to `run`).
+    entrypoint: ["sh", "-c", "MIGRATION_TARGET=live alembic upgrade head && exec \"$$@\"", "--"]
+    command: ["pytest", "-q"]
+
+networks:
+  testnet:
+    internal: true
+
 volumes:
   agent-teams-pgdata:

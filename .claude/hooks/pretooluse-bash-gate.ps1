@@ -204,11 +204,23 @@ Common fixes:
 # Mirror of block-pytest-on-live-db.ps1 logic, in-process.
 # ---------------------------------------------------------------------------
 if ($cmd -and ($cmd -match '(?i)\bpytest\b')) {
+    # Sanctioned isolated path (#3480): api-test sits on an internal network with
+    # no route to the live db. Exact shape only — no chaining, quotes, or env flags.
+    $apiTestRun = $cmd -match '^\s*docker\s+compose\s+-p\s+agent-teams\s+--profile\s+test\s+run\s+--rm\s+api-test\s+pytest(\s+[\w./:\-\[\]]+)*\s*$'
     # Bypass valve.
     if ($env:BYPASS_LIVE_DB_PYTEST_HOOK -eq "1") {
         [Console]::Error.WriteLine("[BYPASS] pretooluse-bash-gate: block-pytest-on-live-db BYPASSED via BYPASS_LIVE_DB_PYTEST_HOOK=1")
         # fall through to allow
+    } elseif ($apiTestRun) {
+        # no decision — normal permission flow applies
     } else {
+        # #3480: `docker compose run ... api ... pytest` (service name optionally quoted) starts
+        # a fresh LIVE-DB `api` container, and plain `docker run` of the api image can join the
+        # live network — the exec attestation below never saw either.
+        if ($cmd -match '(?i)docker\s+(compose\b.*\brun\b.*\s["'']?api["'']?\s|(container\s+)?run\b).*\bpytest\b') {
+            Emit-Decision -Decision 'deny' -Reason "pytest blocked: 'docker compose run ... api ... pytest' / 'docker run ... pytest' can reach the LIVE db. In-session tests use the isolated path: docker compose -p agent-teams --profile test run --rm api-test pytest -q <selector> (/zb-test, #3480)."
+            exit 2
+        }
         # L1.5 check #1 — python -c "...pytest..."
         if ($cmd -match '(?i)python\s+-c\s+["''][^"'']*pytest') {
             $reason = @"
@@ -260,8 +272,8 @@ the SAME shell — the hook honours it and emits a [BYPASS] marker for audit.
             }
         }
 
-        # L1.5 check #3 — docker compose exec ... pytest
-        if ($cmd -match '(?i)docker\s+compose\s+(-p\s+\S+\s+)?exec\s+.*\bpytest\b') {
+        # L1.5 check #3 — docker compose exec ... pytest (and plain `docker exec`, #3480)
+        if ($cmd -match '(?i)docker\s+(compose\s+(-p\s+\S+\s+)?)?(container\s+)?exec\s+.*\bpytest\b') {
             if ($env:DOCKER_PYTEST_VERIFIED -ne "1") {
                 $reason = @"
 pytest blocked: 'docker compose exec ... pytest' uses CONTAINER env, not the
