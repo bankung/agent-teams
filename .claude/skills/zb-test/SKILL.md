@@ -14,7 +14,7 @@ allowed-tools:
   - Bash(docker network rm agent-teams_testnet)
 metadata:
   version: 1.0.0
-  category: testing
+  category: platform
   tags: [pytest, test, isolated, api-test]
 ---
 
