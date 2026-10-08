@@ -11,7 +11,7 @@ allowed-tools:
   - Bash(curl:*)
   - Read
   - Write
-  - Task
+  - Agent
 metadata:
   version: 1.1.0
   category: kanban

@@ -29,6 +29,7 @@
 | `zb-memory-compact` | memory, decisions, compaction, context-hygiene, hitl | Use when the operator says "compact memory", "dedupe the memory", "memory is bloated / getting long", "consolidate decisions", "clean up… | `.claude/skills/zb-memory-compact/SKILL.md` |
 | `zb-release` | platform, git, release, mutate | Run the weekly agent-teams release flow (dev → main) end-to-end — Tier-2 gate, merge, version bump, annotated tag, push, MILESTONE FLIPS… | `.claude/skills/zb-release/SKILL.md` |
 | `zb-skill-new` | platform, skill, scaffold, authoring, mutate | Use when the operator says "new skill", "scaffold a skill", "create a zb-* skill", "add a skill", "I want to author a skill", "make a new… | `.claude/skills/zb-skill-new/SKILL.md` |
+| `zb-test` | pytest, test, isolated, api-test | Use when the Lead or a subagent needs to run api tests: "run the tests", "pytest this", "zb-test", "check the test file passes". NOT for… | `.claude/skills/zb-test/SKILL.md` |
 | `zb-walker` | mode-a, walker, autonomous, drain-loop, hitl, v0.8.0 | Use when the operator says "run the walker", "walk the board", "drain the board", "auto-run", "zb-walker", "keep working tasks until you're… | `.claude/skills/zb-walker/SKILL.md` |
 
 ## review

@@ -42,8 +42,8 @@ From THIS conversation's context, write down concisely the state a fresh session
 otherwise know:
 
 - **In-flight now:** what is half-done at this moment? (code written but not tested, a
-  migration authored but not applied, a multi-file edit with 1 file left, a fix awaiting the
-  operator's pytest, …)
+  migration authored but not applied, a multi-file edit with 1 file left, a fix awaiting a
+  witnessed test run, …)
 - **Unfinished plan steps:** if the session was executing a plan / milestone slice, which
   steps remain? Keep the *thread* (e.g. "plan was A→B→C; A,B done, C left").
 - **Deferred this session:** anything consciously parked (an `na` AC + its follow-up id, a
@@ -92,11 +92,12 @@ PICK UP NEXT:
 2. <operator's additional asks>
 3. <Kanban fallback — only if 1+2 empty>
 
-CONTEXT FLAGS: <standing constraints this session relied on — e.g. pytest operator-run,
+CONTEXT FLAGS: <standing constraints this session relied on — e.g. tests via /zb-test,
 commit-no-push default, project-specific quirks>.
 ```
 
-Then save the same content to `_scratch/handoff-<YYYY-MM-DD>.md` (a durable copy in case the
+Then save the same content to `_scratch/handoff-<YYYY-MM-DD>_<sid>.md` — `<sid>` per /zb-bind
+"Scratch filenames"; a date-only name overwrote a concurrent session's handoff (2026-10-08) — (a durable copy in case the
 chat scrolls before the operator pastes it).
 
 ## Footgun guards (why each step exists)

@@ -48,10 +48,9 @@ git -C <root> diff HEAD -- <file1> <file2> ... | grep -in "<forbidden-term-list>
 - Scan and commit the SAME pathspec: the index is shared by every session on this tree, so a bare
   `git diff --cached` scans (and a bare commit sweeps) paths another session staged (#3346).
 
-- The forbidden terms are the lifecycle lock-codes — the canonical list lives in the
-  pre-push hook (`.git/hooks/pre-push`) and `_scratch/.lifecycle-mapping.md` (substitution
-  table: internal code → committed GOV-name). Scan for the internal codes; any hit =
-  UNSTAGE, substitute per the mapping, re-stage.
+- The forbidden terms are the lifecycle lock-codes — the canonical list is `PATTERN` in the
+  pre-push hook (`.git/hooks/pre-push`). Scan for those terms; any hit = UNSTAGE, substitute
+  the committed name (next bullet), re-stage.
 - Committed text uses committed names ONLY (e.g. `GOV1..GOV5`, `project-auditor`,
   `lifecycle program`). This applies to code, comments, tests, docs, and commit messages.
 
@@ -89,16 +88,15 @@ git -C <root> status --short -- <the file list>
 
 ## Step 6 — rail checkpoint (activity-rail rule, 2026-06-12)
 
-Post the commit checkpoint on the task's activity rail in the same working stretch:
+Post the commit checkpoint on the task's activity rail in the same working stretch via
+/zb-report (it owns the payload shape, UTF-8 file and project header):
 
 ```
-curl --silent -X POST -H "X-Project-Id: <id>" -H "Content-Type: application/json" \
-  -d '{"source":"lead","kind":"commit","summary":"Committed <hash> on <branch> (local; push held): <one-line> . Gates: <evidence>."}' \
-  http://localhost:8456/api/tasks/<task_id>/tool-calls
+/zb-report <task_id> commit Committed <hash> on <branch> (local; push held): <one-line>. Gates: <evidence>.
 ```
 
-EXCEPTION: if the FULL api suite is running, HOLD this post until it finishes (live-DB
-sentinel trips on tool_calls deltas) — held queue, not a backfill.
+EXCEPTION: if the FULL api suite is running against the live db, HOLD this post until it
+finishes (live-DB sentinel trips on tool_calls deltas) — held queue, not a backfill.
 
 ## Footgun index (why each step exists)
 

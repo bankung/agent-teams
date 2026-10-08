@@ -38,9 +38,8 @@ Args: optional `vX.Y.Z` (else compute the next MINOR from the latest tag).
 - `git tag -a vX.Y.0 -m "vX.Y.0 — <summary>"` (body = `git log --oneline <prev-tag>..HEAD`).
 
 ## Step 5 — pre-push lock-code scan, then push
-- Scan staged/tree for the lifecycle lock-codes and substitute to the committed `GOV`
-  names per `_scratch/.lifecycle-mapping.md` (the `pre-push` hook carries the forbidden
-  term list and enforces this).
+- Scan staged/tree for the lifecycle lock-codes (`PATTERN` in `.git/hooks/pre-push`, which
+  also enforces it) and substitute the committed `GOV` names.
 - `git push origin main && git push origin vX.Y.0`
 
 ## Step 6 — milestone flips (Kanban) ← the #2056 step

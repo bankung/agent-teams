@@ -145,7 +145,7 @@ Then restart Claude Code — skills load at session start; /<name> is NOT invoka
 | Step | Incident class / why it exists |
 |---|---|
 | 0 | Category must be one of the `VALID_CATEGORIES` names (skill-authoring §1.4 documents them) — the validator hard-fails on any other value. Reject "general" / "tooling" / etc. at input time, not after writing. Do NOT hard-code the list here; read §1.4 / `VALID_CATEGORIES` so this scaffolder never drifts from the validator (the drift that caused #2921). |
-| 1 | Write ONLY to `_scratch/` — `.claude/` is operator-applied; subagents writing there directly bypasses the review gate (CLAUDE.md, humans-commit rule; `ii` self-mod gate). |
+| 1 | Write ONLY to `_scratch/` — `.claude/` is operator-applied; subagents writing there directly bypasses the review gate (CLAUDE.md, humans-commit rule; `doit` self-mod gate). |
 | 1 | `allowed-tools` in the new skill must match what its Procedure actually calls (least-privilege; E3). Over-declaration defeats the audit trail. |
 | 3 | Validate ONLY the just-scaffolded skill, not the full corpus — use `--skills-dir <staging-dir>` pointing at a directory containing only the new skill. Validating the corpus picks up pre-existing WARNs and can mask the new skill's result. |
 | 4 | New skill is NOT invokable until Claude Code is restarted — skills load at session start. Do not tell the operator to try `/<name>` immediately. |
