@@ -1,7 +1,7 @@
 # _shared.ps1 — shared helpers for the consolidated Bash PreToolUse gate.
 #
 # Dot-source this file from pretooluse-bash-gate.ps1 AND from the standalone
-# approval-policies-gate.ps1 (used on WebFetch / Chrome matchers). Every
+# approval-policies-gate.ps1 (used on the WebFetch matcher). Every
 # security-critical function lives here exactly once (DRY).
 #
 # Functions exported:

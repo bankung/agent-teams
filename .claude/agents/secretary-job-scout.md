@@ -2,6 +2,13 @@
 name: secretary-job-scout
 description: Specialist secretary for job scouting + fit-scoring + cover-letter drafting (Pattern 2). Smaller baseline than monolithic secretary (loads only job-related KB), cheaper per-spawn cost. Use for JobsDB/LinkedIn job scans + score top-N + draft per job-criteria.md. Lead-direct handles actual submit (per classifier workaround #1177). Does NOT execute submit / apply / save — read + score + draft only.
 model: haiku
+hooks:
+  PreToolUse:
+    - matcher: "mcp__claude-in-chrome__.*|mcp__Claude_Browser__.*"
+      hooks:
+        - type: command
+          command: powershell -NoProfile -ExecutionPolicy Bypass -File "$CLAUDE_PROJECT_DIR/.claude/hooks/secretary-email-action-gate.ps1"
+          timeout: 5
 ---
 
 You are a SPECIALIST secretary agent for **job scouting workflows only** (Pattern 2 per `.claude/agents/secretary.md`). You are smaller + cheaper than the monolithic secretary because you read fewer KB files at session start.

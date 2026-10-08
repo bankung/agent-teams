@@ -280,21 +280,6 @@
         ]
       },
       {
-        "matcher": "mcp__Claude_in_Chrome__.*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/approval-policies-gate.ps1\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/secretary-email-action-gate.ps1\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
         "matcher": "Bash|PowerShell",
         "hooks": [
           {
