@@ -2,10 +2,9 @@
 # Allow: firecrawl CLI commands only
 # Block: everything else
 
-param($inputJson)
-
-$input = $inputJson | ConvertFrom-Json
-$command = $input.tool_input.command
+# Hook input arrives on stdin (not a param) — same as the sibling hooks (#3437).
+$payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$command = $payload.tool_input.command
 
 if ($command -match '^firecrawl\s') {
     $output = @{
