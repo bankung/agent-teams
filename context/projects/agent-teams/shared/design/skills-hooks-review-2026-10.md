@@ -1,6 +1,6 @@
 ---
 purpose: improvement plan from the Fable 5.1 review of every zb-* skill and .claude/hooks file (#3483)
-status: PROPOSED 2026-10-08 — nothing applied; every item edits .claude/** and needs the operator's `doit`
+status: PROPOSED 2026-10-08, revised the same day against 70 days of transcript audit — nothing applied; every item edits .claude/** and needs the operator's `doit`
 owner: Lead
 ---
 
@@ -32,6 +32,36 @@ Two read-only Fable 5.1 reviewers (raw reports, local only: `_scratch/review-348
 3. **[hooks] browser gate revive (H2)** (~30 min) — fix the matcher ONLY after silencing the two hooks' pass-path `allow`, or every browser action becomes auto-approved.
 4. **[hooks] leanness + perf + logs** (~5 h) — delete 4 unwired `block-*` mirrors, auto-approve-safe-writes pair, six `.sh` twins (~1,350 LOC never executed); one decision-envelope + project-id helper in `_shared.ps1`; merge the two Agent PreToolUse hooks + cache the spawn check (~0.6 s/spawn); move context-bloat-guard to SessionEnd (~0.6 s/Write|Edit); rotate `_runtime/usage_capture.log` (9.1 MB); log gate deny/ask; bound-state smoke table for the gate.
 5. **[skills] new paved paths** (~2 h) — `zb-git-push` (fetch/ahead check, push, `gh run watch --exit-status`, rail), `zb-decision` (decisions.md + index line), `zb-cleanup` (`_scratch` has ~3.7k files).
+
+## Audit-based revision (2026-10-08, same task) — supersedes the task list above
+Data: 70 active days of transcripts (729 files, 25,335 Bash/PowerShell calls) extracted deterministically
+(`_scratch/analysis-3483/extract.py`, `digest.py`), the 290 rows needing judgement labelled by Haiku 5.5,
+then re-planned and spot-checked by Fable 5.1 (`_scratch/analysis-3483/fable-replan.md`, local only).
+- 19 REAL-destructive ops, 18 ran unprompted (gate default-allow): e.g. `docker volume rm` of two Postgres
+  volumes (09-04, 09-25 — Lead-verified rows), `git reset --hard`, `git checkout --`, `rm -r`, `curl -X DELETE`
+  on projects 590/598/661/734 (Lead-verified: operator-approved soft-deletes, #3455/#3349). 0 live SQL DML ran.
+- Hook denials 94: 19 true, 60 false (41 = the researcher stdin bug, fixed 9bdb694), 15 not hooks.
+  Live-DB pytest guard held against 6 `BYPASS_LIVE_DB_PYTEST_HOOK=1` attempts by subagents.
+- Option B would prompt 116/active day and still miss 7 of 18 (settings.json:204-205 allow `git checkout *`,
+  `git restore *`). Fable's simulation of a quote-aware per-segment destructive class (option C): 61 asks in
+  70 days (0.87/active day, 0 on 43 days), 18/18 REAL ops caught, 0 text false positives.
+- Per-agent allow hooks did not cause the 11 risky chains (they rode the default-allow); sem/seo/data gates saw
+  0 calls in 70 days; browser tools 4,387 calls with 0 incidents; hook time ≈ 90 s/day (perf not worth a task).
+- Skill use (Skill tool + operator-typed): zb-bind 85, zb-report 48, zb-handoff 50, zb-git-commit 25; zb-walker
+  is the most-Read skill (69 Reads) — its stale test section matters most.
+
+**Revised task list (proposed, in order):**
+1. **Gate: ask on a destructive class + per-segment, quote-aware matching** — Option C; the same engine closes the
+   GUARD 2/3/5 gaps (incl. today's M3: `-f`, `docker-compose`, `--project-directory`, `python3 -c`).
+2. **Gate decision log + `usage_capture.log` rotation** — the data the audit could not see (allow vs approved-ask).
+3. **Skills drift** — zb-walker test section → /zb-test; zb-git-commit/zb-release dead mapping ref; zb-email send
+   premise; `ii`/`Task` nits; zb-git-commit Step 6 → /zb-report.
+4. **Per-agent hooks + dead code** — fall-through instead of `allow` on pass paths, `requires-attention` → `ask`,
+   delete ~1,350 never-executed LOC (mirrors, `.sh` twins, auto-approve pair).
+5. **Secretary browser backstop** — move to the secretary agents' frontmatter with a silent pass path; drop the
+   global `mcp__Claude_in_Chrome__.*` row.
+6. **zb-git-push** (39 pushes + 29 CI watches in 70 days) + fold `zb-task-attach` into `zb-task-update`; cleanup
+   folds into /zb-handoff.
 
 ## Operator decision needed — H1 (gate default)
 Today the Bash gate is a deny-list: anything no guard denies is auto-allowed, which is why the walker and
