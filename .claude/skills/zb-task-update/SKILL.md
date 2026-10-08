@@ -1,17 +1,18 @@
 ---
 name: zb-task-update
 description: >-
-  Update a Kanban task's status / priority / fields the guarded way — BLOCKED only via blocked_by,
-  HOLD stays TODO+reason, status changes carry a reason, and DONE is redirected to /zb-task-done.
-argument-hint: "<task id> <changes: status=in_progress priority=high ...>"
+  Update a Kanban task's status / priority / milestone / fields the guarded way — BLOCKED only via
+  blocked_by, HOLD stays TODO+reason, status changes carry a reason, milestone attach/detach is
+  same-project checked, and DONE is redirected to /zb-task-done.
+argument-hint: "<task id> <changes: status=in_progress priority=high milestone=<id|none> ...>"
 allowed-tools:
   - Bash(curl:*)
   - Read
   - Write
 metadata:
-  version: 1.0.0
+  version: 1.1.0
   category: kanban
-  tags: [kanban, task, update, mutate]
+  tags: [kanban, task, update, milestone, mutate]
 ---
 
 # /zb-task-update — guarded PATCH of a task
@@ -35,6 +36,9 @@ Apply these guards BEFORE building the PATCH:
   record why in `status_change_reason` — do not use status 4 for a soft hold.
 - **Any status change** requires a `status_change_reason` (ask for one if not supplied).
 - **CANCELLED (6):** allowed (with a reason) — this is the soft-delete/cancel path.
+- **milestone=<id>** (attach) → `milestone_id: <id>`; first `GET /api/milestones/<id>` with the same
+  `X-Project-Id` must return 200 (404 = not on the bound project → STOP; the server also enforces it).
+  **milestone=none** (detach) → `milestone_id: null`, never a 0/placeholder id.
 
 ## Step 4 — PATCH + verify
 Write the body to `_scratch/tn_update_<sid>.json` (only the fields being changed + `status_change_reason`;
@@ -45,12 +49,16 @@ PATCH `/api/tasks/<id>`, then GET-verify the new values persisted. Report old �
 1. DONE never flips here → /zb-task-done (AC-verify gate).
 2. BLOCKED only via `blocked_by` FK; HOLD = TODO + reason, never raw status=4.
 3. Status changes always carry a reason.
+4. Milestone and task must be on the same (bound) project; detach is `null`.
 
 ## Usage
 ```
 /zb-task-update 1842 status=in_progress priority=high
+/zb-task-update 1842 milestone=57
+/zb-task-update 1842 milestone=none
 ```
 
 ## Related skills
 - `zb-task-done` — the only correct path to set status=DONE (AC-verify gate)
 - `zb-task-create` — create a new task before there is anything to update
+- `zb-milestones` — find the milestone id to attach to

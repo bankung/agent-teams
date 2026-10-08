@@ -12,10 +12,9 @@
 | `zb-report` | kanban, activity-rail, report, mutate, audit | Append one Lead activity checkpoint to a task's activity rail (the #980 tool_calls surface, source='lead'). | `.claude/skills/zb-report/SKILL.md` |
 | `zb-spec` | kanban, spec, planning, refine | Use when an idea is fuzzy or high-stakes and you want the acceptance criteria right the first time. | `.claude/skills/zb-spec/SKILL.md` |
 | `zb-task` | kanban, task, read-only, inspect | Show ONE Kanban task — its fields and acceptance criteria, formatted — for the active agent-teams project. | `.claude/skills/zb-task/SKILL.md` |
-| `zb-task-attach` | kanban, task, milestone, attach, mutate | Attach a task to a milestone (or detach it) on the active project — sets tasks. | `.claude/skills/zb-task-attach/SKILL.md` |
 | `zb-task-create` | kanban, task, create, mutate, self-review | Open a Kanban task on the active agent-teams project the correct way — project_id in the request BODY (not just the header),… | `.claude/skills/zb-task-create/SKILL.md` |
 | `zb-task-done` | kanban, task, done, mutate, ac-verify | Flip a Kanban task to DONE the disciplined way — verify EVERY acceptance criterion, PATCH the AC array with verdicts, then set… | `.claude/skills/zb-task-done/SKILL.md` |
-| `zb-task-update` | kanban, task, update, mutate | Update a Kanban task's status / priority / fields the guarded way — BLOCKED only via blocked_by, HOLD stays TODO+reason, status changes… | `.claude/skills/zb-task-update/SKILL.md` |
+| `zb-task-update` | kanban, task, update, milestone, mutate | Update a Kanban task's status / priority / milestone / fields the guarded way — BLOCKED only via blocked_by, HOLD stays TODO+reason, status… | `.claude/skills/zb-task-update/SKILL.md` |
 | `zb-tasks-next` | kanban, task, planning, read-only, queue | List the next N actionable tasks for the active project, ordered the way you actually work them: current (or a specified) milestone first,… | `.claude/skills/zb-tasks-next/SKILL.md` |
 
 ## platform
@@ -25,6 +24,7 @@
 | `zb-audit` | platform, audit, health, read-only | Run an on-demand health audit of a project — spawn the read-only project-auditor for the 4 metrics (budget burn, task failure rate, task… | `.claude/skills/zb-audit/SKILL.md` |
 | `zb-bind` | platform, bind, project, setup | Bind this session to an agent-teams project by NAME — resolve it via the API and persist the binding so every zb-* command (and the… | `.claude/skills/zb-bind/SKILL.md` |
 | `zb-git-commit` | platform, git, commit, mutate | Use when committing scoped task work locally: "commit this", "stage and commit", "commit #<id>", "save the work", or any request to create… | `.claude/skills/zb-git-commit/SKILL.md` |
+| `zb-git-push` | platform, git, push, ci, mutate | Use when the operator says "push", "push it", "push dev", "ship the commits", or after /zb-git-commit when they give the go. NOT for… | `.claude/skills/zb-git-push/SKILL.md` |
 | `zb-handoff` | handoff, session-continuity, platform, boundary | Generate a session-boundary handoff prompt the operator pastes as the FIRST message of the next session (before /clear or a restart). | `.claude/skills/zb-handoff/SKILL.md` |
 | `zb-memory-compact` | memory, decisions, compaction, context-hygiene, hitl | Use when the operator says "compact memory", "dedupe the memory", "memory is bloated / getting long", "consolidate decisions", "clean up… | `.claude/skills/zb-memory-compact/SKILL.md` |
 | `zb-release` | platform, git, release, mutate | Run the weekly agent-teams release flow (dev → main) end-to-end — Tier-2 gate, merge, version bump, annotated tag, push, MILESTONE FLIPS… | `.claude/skills/zb-release/SKILL.md` |

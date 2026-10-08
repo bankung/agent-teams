@@ -40,4 +40,4 @@ rollup. Keep it compact.
 ## Related skills
 - `zb-milestone-create` — create a new milestone once you've reviewed the current ones here
 - `zb-milestone-done` — release a milestone when its progress is 100%
-- `zb-task-attach` — attach a task to a milestone id discovered via this skill
+- `zb-task-update` — attach a task to a milestone id discovered via this skill (`milestone=<id>`)

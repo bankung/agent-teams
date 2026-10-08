@@ -57,4 +57,4 @@ curl --silent -X POST -H "X-Project-Id: <id>" -H "Content-Type: application/json
 ## Related skills
 - `zb-milestone-done` — release the milestone you created here once all its tasks are done
 - `zb-milestones` — list existing milestones before creating a new one to avoid duplicates
-- `zb-task-attach` — attach tasks to the new milestone id returned by this skill
+- `zb-task-update` — attach tasks to the new milestone id returned by this skill (`milestone=<id>`)

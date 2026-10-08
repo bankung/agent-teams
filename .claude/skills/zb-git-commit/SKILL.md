@@ -4,7 +4,7 @@ description: >-
   Paved-path local commit — scoped staging + keyword scan + goal-driven verify; NEVER pushes.
   Use when committing scoped task work locally: "commit this", "stage and commit", "commit #<id>",
   "save the work", or any request to create a git commit for a specific task or file list.
-  NOT for pushing, releasing, or merging (use zb-release for those).
+  NOT for pushing (use zb-git-push), releasing, or merging (use zb-release).
 argument-hint: "<task-id> [file1 file2 …] [-- \"<commit message>\"]"
 allowed-tools:
   - Bash(git:*)
