@@ -131,7 +131,7 @@ reason — and **notify** (walker-stopped/empty, Ring 2).
 - **Ring 3 — HITL-gate:** §3 (decisions / `requires_human_review` = simple; push = informed-approval).
 - **Ring 4 — NEVER auto, terminal-only (never chat-approve):** key/secret provisioning · external
   third-party actions · **secretary email** (stays secretary-only — the walker never sends mail) ·
-  `.claude/**` self-mod (needs the operator's literal `ii`) · raw DB writes (API only) ·
+  `.claude/**` self-mod (needs the operator's literal `doit`) · raw DB writes (API only) ·
   **budget / cost-cap breach (hard halt)**. On hitting a Ring-4 need → stop or park for the operator
   at a terminal; do NOT open a chat-answerable gate.
 
