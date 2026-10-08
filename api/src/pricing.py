@@ -54,9 +54,13 @@ from typing import Literal
 
 MODEL_PRICING: dict = {
     "anthropic": {
-        "opus":   {"input_per_M":  5.00, "output_per_M": 25.00},
-        "sonnet": {"input_per_M":  3.00, "output_per_M": 15.00},
-        "haiku":  {"input_per_M":  1.00, "output_per_M":  5.00},
+        # Bare tiers = what frontmatter `model: <tier>` resolves to on Claude Code
+        # 2.1.293 (opus-5-5 / sonnet-5-5 / haiku-5-5 / fable-5-1); #3475.
+        # haiku is the <=100k-prompt tier (>100k is 0.50/2.50) — aggregate callers.
+        "fable":  {"input_per_M": 10.00, "output_per_M": 50.00},
+        "opus":   {"input_per_M":  4.00, "output_per_M": 20.00},
+        "sonnet": {"input_per_M":  2.00, "output_per_M": 10.00},
+        "haiku":  {"input_per_M":  0.10, "output_per_M":  0.50},
     },
     "openai": {
         "gpt-4.1":     {"input_per_M": 5.00,  "output_per_M": 15.00},
@@ -80,7 +84,7 @@ MODEL_PRICING: dict = {
         "13b": {"input_per_M": 0.0005, "output_per_M": 0.0005},
         "70b": {"input_per_M": 0.005,  "output_per_M": 0.005},
     },
-    "_last_updated": "2026-06-11",
+    "_last_updated": "2026-10-08",
     "_notes": (
         "Public pricing snapshot. Local LLM = electricity+amortized hardware "
         "estimate for consumer-GPU self-hosted; operator-tunable per project "

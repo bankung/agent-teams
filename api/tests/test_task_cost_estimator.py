@@ -160,11 +160,11 @@ def test_estimate_task_cost_ollama_provider_zero_cost(monkeypatch) -> None:
 
 
 def test_resolve_provider_model_defaults_to_anthropic_opus(monkeypatch) -> None:
-    # Kanban #1304: default bumped sonnet-4-6 -> opus-4-8 (the model interactive
+    # Kanban #1304: default bumped sonnet-4-6 -> opus-4-8; #3475 -> opus-5-5 (the model interactive
     # Lead sessions actually run; aligned with langgraph/llm.py).
     monkeypatch.delenv("LANGGRAPH_LLM_PROVIDER", raising=False)
     monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
-    assert resolve_provider_model() == ("anthropic", "claude-opus-4-8")
+    assert resolve_provider_model() == ("anthropic", "claude-opus-5-5")
 
 
 def test_resolve_provider_model_openai_branch(monkeypatch) -> None:

@@ -4,7 +4,7 @@ Two layers:
 
 1. Pure-unit on `forecast_task_cost` (no DB / no HTTP) — SimpleNamespace fakes
    for the task + pinned resources. The provider env vars are cleared per test
-   so the resolved model is deterministically the opus-4-8 default regardless of
+   so the resolved model is deterministically the opus-5-5 default regardless of
    the container's `LANGGRAPH_LLM_PROVIDER` (the api image sets it to `ollama`).
 
 2. HTTP integration on `POST /api/tasks/{id}/cost-forecast` via the ASGI client.
@@ -76,11 +76,11 @@ def _fake_resource(kind: str, size_bytes, tags) -> SimpleNamespace:
 
 @pytest.fixture
 def _opus_default_env(monkeypatch):
-    """Clear provider env so resolve_provider_model() lands the opus-4-8 default.
+    """Clear provider env so resolve_provider_model() lands the opus-5-5 default.
 
     The api container sets LANGGRAPH_LLM_PROVIDER=ollama; without this the pure
     forecast would price at $0 (ollama). Deleting the vars makes the unit cost
-    assertions deterministic on the documented anthropic/opus-4-8 default.
+    assertions deterministic on the documented anthropic/opus-5-5 default.
     """
     monkeypatch.delenv("LANGGRAPH_LLM_PROVIDER", raising=False)
     monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
@@ -95,7 +95,7 @@ def test_forecast_empty_task_role_brief_only(_opus_default_env) -> None:
     """Empty task: prompt+resources=0, only the role-brief term remains.
 
     estimated_tokens == ROLE_BRIEF_TOKEN_ESTIMATE; cost is the role-brief priced
-    at opus-4-8 (> $0 — role_brief is always summed). Confidence is "high": no
+    at opus-5-5 (> $0 — role_brief is always summed). Confidence is "high": no
     file resources + known model = nothing untagged. (NOT $0/low — see module
     docstring + #1304 report.)
     """
@@ -107,7 +107,7 @@ def test_forecast_empty_task_role_brief_only(_opus_default_env) -> None:
     assert r["breakdown"]["completion"] == int(
         ROLE_BRIEF_TOKEN_ESTIMATE * OUTPUT_TOKEN_RATIO
     )
-    assert r["model"] == "claude-opus-4-8"
+    assert r["model"] == "claude-opus-5-5"
     # POSITIVE: role-brief priced > $0 at opus rates.
     assert r["estimated_usd"] > Decimal("0.0000")
     # NEGATIVE (lock): role-brief term means it is NEVER zero for the empty task.
@@ -116,7 +116,7 @@ def test_forecast_empty_task_role_brief_only(_opus_default_env) -> None:
 
 
 def test_forecast_text_only_task_priced_at_opus(_opus_default_env) -> None:
-    """Text-only task: prompt tokens + role_brief, priced at opus-4-8, high."""
+    """Text-only task: prompt tokens + role_brief, priced at opus-5-5, high."""
     task = _fake_task(
         title="Add a login endpoint",
         description="Build a FastAPI login route returning a JWT. " * 5,
@@ -138,7 +138,7 @@ def test_forecast_text_only_task_priced_at_opus(_opus_default_env) -> None:
     assert r["breakdown"]["completion"] == int(
         r["estimated_tokens"] * OUTPUT_TOKEN_RATIO
     )
-    assert r["model"] == "claude-opus-4-8"
+    assert r["model"] == "claude-opus-5-5"
     assert r["provider"] == "anthropic"
     assert r["estimated_usd"] > Decimal("0.0000")
     assert r["confidence"] == "high"
@@ -304,7 +304,7 @@ def test_resolve_forecast_model_tier_alias_matches_env_provider_google_falls_thr
     monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
     task = _fake_task(model_override=tier)
     resolved = resolve_forecast_model(task)
-    assert resolved == resolve_provider_model() == ("anthropic", "claude-opus-4-8")
+    assert resolved == resolve_provider_model() == ("anthropic", "claude-opus-5-5")
     assert resolved != ("google", tier)
 
 
@@ -312,13 +312,13 @@ def test_resolve_forecast_model_tier_alias_matches_env_provider_google_falls_thr
 def test_resolve_forecast_model_tier_alias_matches_env_provider_default(
     monkeypatch, tier
 ) -> None:
-    """No provider env set at all -> falls to the anthropic/opus-4-8 default,
+    """No provider env set at all -> falls to the anthropic/opus-5-5 default,
     same as the no-override path (mirrors _opus_default_env's clearing)."""
     monkeypatch.delenv("LANGGRAPH_LLM_PROVIDER", raising=False)
     monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
     task = _fake_task(model_override=tier)
     resolved = resolve_forecast_model(task)
-    assert resolved == resolve_provider_model() == ("anthropic", "claude-opus-4-8")
+    assert resolved == resolve_provider_model() == ("anthropic", "claude-opus-5-5")
 
 
 def test_resolve_forecast_model_full_model_name_keeps_inference(monkeypatch) -> None:

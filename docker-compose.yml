@@ -62,7 +62,7 @@ services:
       LANGGRAPH_LLM_PROVIDER: ${LANGGRAPH_LLM_PROVIDER:-anthropic}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5-5}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
       # Off-site encrypted backup (Kanban #959). Disabled-by-default — runner
       # logs warning + skips scheduling when any of the 4 required keys
@@ -236,7 +236,7 @@ services:
       LANGGRAPH_LLM_PROVIDER: ${LANGGRAPH_LLM_PROVIDER:-anthropic}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5-5}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       # Kanban #891 — Ollama provider (free local LLM). Only consulted when

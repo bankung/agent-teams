@@ -21,9 +21,9 @@ done-flip time (`process_status` transition <5 → 5). Two code paths:
 Provider/model resolution:
 - env `LANGGRAPH_LLM_PROVIDER` (default 'anthropic')
 - env `ANTHROPIC_MODEL` / `OPENAI_MODEL` per provider (default
-  'claude-opus-4-8' for anthropic — the model interactive Lead sessions
-  actually run; aligned with langgraph/llm.py's DEFAULT_ANTHROPIC_MODEL,
-  Kanban #1304). For ollama, any local-model name collapses to
+  'claude-opus-5-5' for anthropic — the model interactive Lead sessions
+  actually run; Kanban #1304, bumped from opus-4-8 in #3475; langgraph/llm.py's
+  own DEFAULT_ANTHROPIC_MODEL is separate and unchanged). For ollama, any local-model name collapses to
   ("ollama","local") in the price card lookup.
 
 Public API:
@@ -74,10 +74,10 @@ _CPT_DENSE = 2
 # Default model resolution — interactive Claude Code sessions don't set these
 # env vars, so the default needs to be sensible for the typical Lead-drove-it
 # case. Kanban #1304: bumped sonnet-4-6 -> opus-4-8 to match the model interactive
-# Lead sessions actually run (and langgraph/llm.py's DEFAULT_ANTHROPIC_MODEL).
+# Lead sessions actually run. #3475: opus-4-8 -> opus-5-5 (Oct-2026 lineup).
 # Shared with the #944 done-flip estimator — the bump is INTENDED there too.
 _DEFAULT_PROVIDER = "anthropic"
-_DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-8"
+_DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
 _DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 
 _ZERO_COST = Decimal("0.0000")
@@ -144,7 +144,7 @@ def _heuristic_tokens(text: str) -> int:
 def resolve_provider_model() -> tuple[str, str]:
     """Read LANGGRAPH_LLM_PROVIDER + ANTHROPIC_MODEL / OPENAI_MODEL env vars.
 
-    Defaults to ('anthropic', 'claude-opus-4-8') for interactive sessions
+    Defaults to ('anthropic', 'claude-opus-5-5') for interactive sessions
     that don't set the vars (Kanban #1304). Unknown providers fall back to
     anthropic + opus rather than raising — estimation is advisory, not
     load-bearing.

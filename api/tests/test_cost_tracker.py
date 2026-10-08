@@ -302,3 +302,74 @@ def test_compute_cost_opus_4_8_reconciles_to_validated_session_baseline() -> Non
         cache_creation_input_tokens=547871,
     )
     assert result == Decimal("12.1623"), result
+
+
+# ---------------------------------------------------------------------------
+# Kanban #3475 — Oct-2026 lineup: 5.x exact keys, fable, per-model cache read
+# ---------------------------------------------------------------------------
+
+# (model, input $/MTok, output $/MTok, cache-read multiplier)
+_OCT_2026 = [
+    ("claude-fable-5-1", 10.0, 50.0, Decimal("0.025")),
+    ("claude-fable-5", 10.0, 50.0, Decimal("0.10")),
+    ("claude-opus-5-5", 4.0, 20.0, Decimal("0.05")),
+    ("claude-opus-5", 5.0, 25.0, Decimal("0.10")),
+    ("claude-sonnet-5-5", 2.0, 10.0, Decimal("0.05")),
+    ("claude-sonnet-5", 2.0, 10.0, Decimal("0.10")),
+    ("claude-haiku-5-5", 0.10, 0.50, Decimal("0.10")),
+]
+
+
+@pytest.mark.parametrize(("model", "rate_in", "rate_out", "read_mult"), _OCT_2026)
+def test_oct_2026_exact_keys_rates_and_cache_read(model, rate_in, rate_out, read_mult) -> None:
+    """Each 5.x id resolves to ITS OWN exact key (not a 4.x catch-all), prices at
+    the published rate, and cache reads use the per-model multiplier."""
+    from src.services.cost_tracker import compute_cost, resolve_pricing_key
+
+    assert resolve_pricing_key("anthropic", model) == ("anthropic", model)
+    assert compute_cost("anthropic", model, 1_000_000, 1_000_000) == Decimal(
+        str(rate_in + rate_out)
+    ).quantize(Decimal("0.0001"))
+    # 1M cache-read tokens = base input * multiplier (distinct per model -> locks the multiplier).
+    expected = (Decimal(str(rate_in)) * read_mult).quantize(Decimal("0.0001"))
+    assert compute_cost("anthropic", model, 0, 0, cache_read_input_tokens=1_000_000) == expected
+
+
+def test_fable_no_longer_raises_and_default_cache_read_unchanged() -> None:
+    """Pre-#3475 'claude-fable-5-1' raised ValueError (cost $0). Models without a
+    per-model 'cache_read' keep the 0.10 default (sonnet-4-6: 3.0 * 0.10)."""
+    from src.services.cost_tracker import compute_cost
+
+    assert compute_cost("anthropic", "claude-fable-5-1", 1_000_000, 0) == Decimal("10.0000")
+    assert compute_cost(
+        "anthropic", "claude-sonnet-4-6", 0, 0, cache_read_input_tokens=1_000_000
+    ) == Decimal("0.3000")
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_key"),
+    [
+        ("claude-fable-5-1-20261001", "claude-fable-5-1"),
+        ("claude-opus-5-5-20261001", "claude-opus-5-5"),
+        ("claude-sonnet-5-5-20261001", "claude-sonnet-5-5"),
+        ("claude-haiku-5-5-20261001", "claude-haiku-5-5"),
+        ("claude-fable-6", "claude-fable-5"),  # unknown future fable -> 'fable' family fallback
+        ("claude-sonnet-9", "claude-sonnet-4-6"),  # other catch-alls unchanged
+        ("claude-haiku-9", "claude-haiku"),
+    ],
+)
+def test_oct_2026_versioned_and_family_fallbacks(model: str, expected_key: str) -> None:
+    from src.services.cost_tracker import resolve_pricing_key
+
+    assert resolve_pricing_key("anthropic", model) == ("anthropic", expected_key)
+
+
+def test_haiku_5_5_priced_at_le_100k_tier_even_for_large_totals() -> None:
+    """Haiku-tier decision (#3475): callers pass AGGREGATED totals, so we price at the
+    <=100k tier ($0.10/$0.50) always. 200k input must be $0.0200 (NOT the >100k $0.50
+    tier = $0.1000) — locks the documented under-statement. Second value is the
+    validated real-session sample (output 486, cache write 72462)."""
+    from src.services.cost_tracker import compute_cost
+
+    assert compute_cost("anthropic", "claude-haiku-5-5", 200_000, 0) == Decimal("0.0200")
+    assert compute_cost("anthropic", "claude-haiku-5-5", 0, 486, 0, 72462) == Decimal("0.0093")

@@ -37,6 +37,22 @@ PRICING: dict[tuple[str, str], dict[str, float]] = {
     # current opus). Decision: shared/decisions.md (#2727).
     ("anthropic", "claude-opus-4-x"): {"input": 5.0, "output": 25.0},
     ("anthropic", "claude-haiku"): {"input": 1.0, "output": 5.0},
+    # Oct-2026 lineup (#3475; platform.claude.com/docs/en/about-claude/pricing,
+    # verified 2026-10-08). Optional "cache_read" = per-model cache-read multiplier
+    # (default _CACHE_READ_MULTIPLIER 0.10). Exact keys so the 5.x ids never fall
+    # into the 4.x catch-alls below.
+    ("anthropic", "claude-fable-5-1"): {"input": 10.0, "output": 50.0, "cache_read": 0.025},
+    ("anthropic", "claude-fable-5"): {"input": 10.0, "output": 50.0},
+    ("anthropic", "claude-opus-5-5"): {"input": 4.0, "output": 20.0, "cache_read": 0.05},
+    ("anthropic", "claude-opus-5"): {"input": 5.0, "output": 25.0},
+    ("anthropic", "claude-sonnet-5-5"): {"input": 2.0, "output": 10.0, "cache_read": 0.05},
+    ("anthropic", "claude-sonnet-5"): {"input": 2.0, "output": 10.0},
+    # shortcut: haiku-5-5 is $0.10/$0.50 for prompts <=100k tokens but $0.50/$2.50
+    # above that. usage_events / session_runs callers pass AGGREGATED per-subagent /
+    # per-session token totals (no per-request prompt size), so we always price at the
+    # <=100k tier -> under-states cost for >100k-token prompts.
+    # upgrade: have the hook send per-request counts, then pick the tier per request.
+    ("anthropic", "claude-haiku-5-5"): {"input": 0.10, "output": 0.50},
     # OpenAI (Kanban #944) — rates locked from the #944 spec; reconfirm when
     # the openai provider abstraction lands.
     ("openai", "gpt-4o"): {"input": 2.50, "output": 10.0},
@@ -64,6 +80,8 @@ def resolve_pricing_key(provider: str, model: str) -> tuple[str, str]:
     """Map a (provider, model) pair to a key that exists in PRICING.
 
     Exact match → use it. Else fall back to family aliases:
+      - anthropic claude-{opus,sonnet,haiku}-5-5*, claude-fable-5-1* → their exact key
+      - anthropic claude-fable*            → ("anthropic", "claude-fable-5")
       - anthropic claude-opus-4-anything   → ("anthropic", "claude-opus-4-x")
       - anthropic claude-haiku*            → ("anthropic", "claude-haiku")
       - anthropic claude-sonnet*           → ("anthropic", "claude-sonnet-4-6")
@@ -88,6 +106,13 @@ def resolve_pricing_key(provider: str, model: str) -> tuple[str, str]:
         m = model.lower()
         if "opus-4-8" in m:
             return ("anthropic", "claude-opus-4-8")
+        # Versioned/dated 5.x ids (#3475) resolve to their exact key before the
+        # generic family catch-alls; unknown future ids keep the catch-all semantics.
+        for tag in ("opus-5-5", "sonnet-5-5", "haiku-5-5", "fable-5-1"):
+            if tag in m:
+                return ("anthropic", f"claude-{tag}")
+        if "fable" in m:
+            return ("anthropic", "claude-fable-5")
         if "opus" in m:
             return ("anthropic", "claude-opus-4-x")
         if "haiku" in m:
@@ -120,7 +145,7 @@ def resolve_pricing_key(provider: str, model: str) -> tuple[str, str]:
 # TTL = 2.0x write, etc.) can land as a parallel constant without disturbing
 # the regular-input path.
 _CACHE_WRITE_MULTIPLIER = Decimal("1.25")
-_CACHE_READ_MULTIPLIER = Decimal("0.10")
+_CACHE_READ_MULTIPLIER = Decimal("0.10")  # default; PRICING entries may override via "cache_read"
 
 
 def compute_cost(
@@ -142,7 +167,8 @@ def compute_cost(
             remainder, so callers should pass that field directly.
         output_tokens: output tokens billed at the base output rate.
         cache_read_input_tokens: tokens served from the prompt cache
-            (Kanban #1186). Billed at `0.10x` the base input rate. Defaults
+            (Kanban #1186). Billed at the model's `cache_read` multiplier
+            (default `0.10x`; 0.025x fable-5-1, 0.05x opus/sonnet-5-5). Defaults
             to 0 — callers that don't pass this field get the pre-#1186
             behavior (backward compatible).
         cache_creation_input_tokens: tokens written into the prompt cache
@@ -164,6 +190,9 @@ def compute_cost(
         )
     base_input_rate = Decimal(str(rates["input"]))
     base_output_rate = Decimal(str(rates["output"]))
+    cache_read_multiplier = (
+        Decimal(str(rates["cache_read"])) if "cache_read" in rates else _CACHE_READ_MULTIPLIER
+    )
 
     input_cost = (base_input_rate * Decimal(input_tokens)) / _PER_MILLION
     output_cost = (base_output_rate * Decimal(output_tokens)) / _PER_MILLION
@@ -171,7 +200,7 @@ def compute_cost(
         base_input_rate * _CACHE_WRITE_MULTIPLIER * Decimal(cache_creation_input_tokens)
     ) / _PER_MILLION
     cache_read_cost = (
-        base_input_rate * _CACHE_READ_MULTIPLIER * Decimal(cache_read_input_tokens)
+        base_input_rate * cache_read_multiplier * Decimal(cache_read_input_tokens)
     ) / _PER_MILLION
 
     total = input_cost + output_cost + cache_write_cost + cache_read_cost

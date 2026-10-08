@@ -23,28 +23,19 @@ from src.pricing import MODEL_PRICING, lookup_price
 # Bare-name resolution (defaults to anthropic vendor per D3 backcompat)
 # ----------------------------------------------------------------------
 
-def test_lookup_bare_opus_input() -> None:
-    assert lookup_price("opus", "input") == 5.00
-
-
-def test_lookup_bare_opus_output() -> None:
-    assert lookup_price("opus", "output") == 25.00
-
-
-def test_lookup_bare_sonnet_input() -> None:
-    assert lookup_price("sonnet", "input") == 3.00
-
-
-def test_lookup_bare_sonnet_output() -> None:
-    assert lookup_price("sonnet", "output") == 15.00
-
-
-def test_lookup_bare_haiku_input() -> None:
-    assert lookup_price("haiku", "input") == 1.00
-
-
-def test_lookup_bare_haiku_output() -> None:
-    assert lookup_price("haiku", "output") == 5.00
+@pytest.mark.parametrize(
+    ("tier", "in_per_m", "out_per_m"),
+    [
+        ("fable", 10.00, 50.00),
+        ("opus", 4.00, 20.00),
+        ("sonnet", 2.00, 10.00),
+        ("haiku", 0.10, 0.50),  # <=100k-prompt tier (#3475)
+    ],
+)
+def test_lookup_bare_anthropic_tier_rates(tier: str, in_per_m: float, out_per_m: float) -> None:
+    """Oct-2026 lineup (#3475): bare tiers resolve to the 5.x model rates."""
+    assert lookup_price(tier, "input") == in_per_m
+    assert lookup_price(tier, "output") == out_per_m
 
 
 # ----------------------------------------------------------------------
@@ -80,8 +71,8 @@ def test_lookup_model_name_with_hyphens_and_dots() -> None:
 
 def test_lookup_prefixed_anthropic_explicit() -> None:
     """Explicit `anthropic:opus` works identically to bare `opus`."""
-    assert lookup_price("anthropic:opus", "input") == 5.00
-    assert lookup_price("anthropic:opus", "output") == 25.00
+    assert lookup_price("anthropic:opus", "input") == 4.00
+    assert lookup_price("anthropic:opus", "output") == 20.00
 
 
 # ----------------------------------------------------------------------
@@ -175,8 +166,8 @@ def test_pricing_table_has_all_vendors() -> None:
 
 
 def test_pricing_table_per_vendor_counts_match_spec() -> None:
-    """Locked counts: anthropic=3, openai=5, gemini=3, local=6."""
-    assert len(MODEL_PRICING["anthropic"]) == 3
+    """Locked counts: anthropic=4, openai=5, gemini=3, local=6."""
+    assert len(MODEL_PRICING["anthropic"]) == 4
     assert len(MODEL_PRICING["openai"]) == 5
     assert len(MODEL_PRICING["gemini"]) == 3
     assert len(MODEL_PRICING["local"]) == 6

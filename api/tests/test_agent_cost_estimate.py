@@ -42,7 +42,7 @@ _LONG_DESCRIPTION = "cost estimate fixture task body. " * 40
 
 
 def _force_paid_provider(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Force the #944 estimator's default (anthropic, claude-opus-4-8) — a
+    """Force the #944 estimator's default (anthropic, claude-opus-5-5) — a
     real, non-zero price-card entry — regardless of this container's ambient
     LANGGRAPH_LLM_PROVIDER (confirmed live: `ollama`, which prices at exactly
     $0 by definition). Mirrors the existing
