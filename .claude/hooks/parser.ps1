@@ -270,6 +270,14 @@ function Write-UsageLog {
         if ($dir -and -not (Test-Path -LiteralPath $dir)) {
             New-Item -ItemType Directory -Path $dir -Force | Out-Null
         }
+        # #3487: rotate at 5 MB to <name>.<stamp><ext>; rotated files are kept 8 weeks.
+        $item = Get-Item -LiteralPath $LogPath -ErrorAction SilentlyContinue
+        if ($item -and $item.Length -gt 5MB) {
+            Move-Item -LiteralPath $LogPath -Destination (Join-Path $dir ("{0}.{1:yyyyMMdd-HHmmss}{2}" -f $item.BaseName, (Get-Date), $item.Extension)) -Force
+            Get-ChildItem -LiteralPath $dir -Filter ("{0}.*{1}" -f $item.BaseName, $item.Extension) |
+                Where-Object { $_.Name -ne $item.Name -and $_.LastWriteTime -lt (Get-Date).AddDays(-56) } |
+                Remove-Item -Force
+        }
         $ts = (Get-Date).ToString('o')
         Add-Content -LiteralPath $LogPath -Value "$ts  $Message" -Encoding utf8
     }

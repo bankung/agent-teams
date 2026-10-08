@@ -1,8 +1,8 @@
 # approval-policies-gate.ps1 — standalone Layer-B policy gate (Lever B refactor).
 #
 # Used by:
-#   - WebFetch PreToolUse matcher
-#   - mcp__Claude_in_Chrome__.* PreToolUse matcher
+#   - WebFetch PreToolUse matcher (the mcp__Claude_in_Chrome__.* row was removed in #3490 —
+#     it matched no real tool name)
 #
 # NOT used for Bash (replaced by pretooluse-bash-gate.ps1).
 #

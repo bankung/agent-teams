@@ -45,6 +45,10 @@ if (-not $toolName) { Fail-Open-Ask -WarnMsg 'tool_name missing from payload' -S
 $toolInput = $payload.tool_input
 $cmd = if ($toolInput) { [string]$toolInput.command } else { '' }
 
+# Decision log context (#3487, Write-GateLog in _shared.ps1). No agent_type = Lead session.
+$script:GateLogCmd  = $cmd
+$script:GateLogMeta = "$($payload.session_id)`t$(if ($payload.agent_type) { $payload.agent_type } else { 'lead' })`t$toolName"
+
 # Quote-aware simple-command segments (#3486, _shared.ps1). GUARDS 2, 3 and 5 match a
 # segment's command word, so text inside a commit message / JSON / heredoc / node -e
 # string neither trips them nor hides a `cd x && <cmd>` / `$(...)` command from them.

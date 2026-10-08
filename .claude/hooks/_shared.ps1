@@ -5,7 +5,8 @@
 # security-critical function lives here exactly once (DRY).
 #
 # Functions exported:
-#   Emit-Decision        — write a PreToolUse decision JSON to stdout
+#   Emit-Decision        — write a PreToolUse decision JSON to stdout (+ Write-GateLog)
+#   Write-GateLog        — gate decision log line (#3487)
 #   Fail-Open-Ask        — emit ask + stderr warn, then exit 0
 #   Get-ProjectId        — resolve bound project_id from file (or fixture override)
 #   Invoke-CachedPolicyFetch — Lever B: TTL-cached project fetch; NO curl if fresh
@@ -52,6 +53,32 @@ function Emit-Decision {
         }
     } | ConvertTo-Json -Compress -Depth 6
     Write-Output $out
+    Write-GateLog -Decision $Decision -Reason $Reason
+}
+
+# ---------------------------------------------------------------------------
+# Write-GateLog (#3487) — one tab-separated line per Bash/PowerShell gate decision to
+# _runtime/pretooluse-gate.log: ts, session, agent, tool, decision, reason (first line),
+# command (credential-shaped values masked). Only the gate sets $script:GateLogCmd, so
+# approval-policies-gate's decisions are not logged. Allow lines need GATE_LOG_ALLOW=1 or a
+# _runtime/GATE_LOG_ALLOW file (the 14-day class-tuning window). Rotates to .1 at 5 MB.
+# Never throws — a log fault must not change a decision.
+# ---------------------------------------------------------------------------
+$script:GateLogCmd = $null; $script:GateLogMeta = ''
+function Write-GateLog {
+    param([string]$Decision, [string]$Reason)
+    if ($null -eq $script:GateLogCmd) { return }
+    try {
+        $runtime = Join-Path $PSScriptRoot '..\..\_runtime'
+        if ($Decision -eq 'allow' -and $env:GATE_LOG_ALLOW -ne '1' -and -not (Test-Path (Join-Path $runtime 'GATE_LOG_ALLOW'))) { return }
+        $log = Join-Path $runtime 'pretooluse-gate.log'
+        if ((Test-Path $log) -and (Get-Item $log).Length -gt 5MB) { Move-Item $log "$log.1" -Force }
+        $cmd = $script:GateLogCmd -replace '(?i)((authorization|x-operator-token|token|password|passwd|secret|api[_-]?key)["'']?(\s*[:=]\s*|\s+))(bearer\s+)?\S+', '$1***' `
+                                  -replace '(\s-u\s*|\s--user[\s=])\S+', '$1***'
+        $cut = { param($s, $n) $t = ($s -replace '\s+', ' ').Trim(); if ($t.Length -gt $n) { $t.Substring(0, $n) + '...' } else { $t } }
+        $line = (Get-Date).ToString('o'), $script:GateLogMeta, $Decision, (& $cut (($Reason -split "`n")[0]) 100), (& $cut $cmd 160) -join "`t"
+        [IO.File]::AppendAllText($log, $line + "`n", [Text.Encoding]::UTF8)
+    } catch { }
 }
 
 # ---------------------------------------------------------------------------
