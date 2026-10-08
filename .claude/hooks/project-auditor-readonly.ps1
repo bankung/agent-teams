@@ -17,7 +17,7 @@
 #   The project-auditor uses Bash for one purpose — curl against the localhost API
 #   to read project / task state. Any other Bash command is a code smell. Rather
 #   than enumerate every dangerous command, we explicitly deny by default and
-#   only allow `curl ...`. The pattern list below (DML, file-write redirects,
+#   only let a lone `curl ...` pass (no decision — the main Bash gate decides, #3489). The pattern list below (DML, file-write redirects,
 #   git-mutate, docker-mutate) is for diagnostic purposes: when something gets
 #   denied, the reason names the matched pattern so the user understands WHY
 #   the catch-all fallback fired. The catch-all is the actual safety net.
@@ -116,20 +116,14 @@ if ($toolName -eq 'Bash') {
         Deny-Tool "project-auditor-readonly: empty Bash command, denying for safety"
     }
 
-    $trimmed = $cmd -replace '^\s+', ''
-    $firstWord = ($trimmed -split '\s+')[0]
-
-    # ALLOW curl — auditor's only legitimate Bash use.
-    if ($firstWord -eq 'curl') {
-        $out = @{
-            hookSpecificOutput = @{
-                hookEventName            = "PreToolUse"
-                permissionDecision       = "allow"
-                permissionDecisionReason = "curl auto-approved for project-auditor read-only API probing (.claude/hooks/project-auditor-readonly.ps1)"
-            }
-        } | ConvertTo-Json -Compress -Depth 4
-        Write-Output $out
-        exit 0
+    # A lone curl is the auditor's only legitimate Bash use: no decision here, so the
+    # main Bash gate decides (it asks on HTTP DELETE). A chained curl (`curl x ; rm ...`)
+    # is not a lone curl and falls to the denies below (#3489; was a first-word allow).
+    . (Join-Path $PSScriptRoot '_shared.ps1')
+    try { $segs = Get-ShellSegments -Command $cmd } catch { Deny-Tool "project-auditor-readonly: command segmenting failed ($($_.Exception.Message)), denying for safety" }
+    if ($segs.Count -eq 1) {
+        $h = Get-SegmentHead -Tokens $segs[0]
+        if ($h -lt $segs[0].Count -and (Get-CommandLeaf $segs[0][$h]) -eq 'curl') { exit 0 }
     }
 
     # Informative deny patterns. Case-insensitive. If any of these fire, the

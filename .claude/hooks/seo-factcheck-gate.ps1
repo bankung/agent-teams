@@ -29,6 +29,7 @@ function Emit-Decision {
         [Parameter(Mandatory = $true)][ValidateSet('allow', 'deny')][string]$Decision,
         [Parameter(Mandatory = $true)][string]$Reason
     )
+    if ($Decision -eq 'allow') { return }   # #3489: a pass emits nothing (explicit allow skips the normal permission flow)
     $out = @{
         hookSpecificOutput = @{
             hookEventName            = "PreToolUse"

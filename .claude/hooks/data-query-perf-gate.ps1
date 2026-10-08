@@ -143,7 +143,7 @@ See: data-analytics team standards for query budget conventions.
 $output = @{
     hookSpecificOutput = @{
         hookEventName            = "PreToolUse"
-        permissionDecision       = "requires-attention"
+        permissionDecision       = "ask"   # #3489: requires-attention is not a valid decision
         permissionDecisionReason = $reason
     }
 } | ConvertTo-Json -Compress -Depth 4

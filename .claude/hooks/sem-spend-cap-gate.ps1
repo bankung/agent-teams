@@ -4,7 +4,7 @@
 # when a proposed budget edit exceeds a hardcoded daily/monthly threshold.
 # Pre-flight tripwire only — authoritative cap lives in services/budget_gate.py
 # (Kanban #1194 — Phase 1 cost cap). This hook never blocks via hard deny; it
-# always either emits allow or requires-attention.
+# emits ask on a hit and nothing otherwise (#3489).
 #
 # DRAFT ONLY — do NOT install. Lead handles agent file + .claude/hooks/ placement
 # per feedback_claude_dir_humans_only.md.
@@ -31,10 +31,13 @@ function Emit-Decision {
         [Parameter(Mandatory = $true)][ValidateSet('allow', 'requires-attention')][string]$Decision,
         [string]$Reason = ''
     )
+    # #3489: a pass emits nothing (an explicit allow would skip the normal permission
+    # flow); requires-attention is not a permissionDecision, so it maps to ask.
+    if ($Decision -eq 'allow') { return }
     $payload = @{
         hookSpecificOutput = @{
             hookEventName      = "PreToolUse"
-            permissionDecision = $Decision
+            permissionDecision = 'ask'
         }
     }
     if ($Reason) { $payload.hookSpecificOutput.permissionDecisionReason = $Reason }

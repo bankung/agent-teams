@@ -85,7 +85,7 @@ not lose the other writer's lines. Write is the lossy path, and is guarded only 
 | `ng generate` | zb-mobile-scaffold | uncovered |
 | `Copy-Item` promote `_scratch` → `.claude/skills` | zb-skill-new (operator-run) | uncovered |
 | PowerShell `Add-Content` / `[IO.File]::WriteAllText` / `New-Item` / `Remove-Item` | hooks: parser.ps1, _shared.ps1, notify-session-waiting, posttooluse-bash-hygiene, data-dashboard-publish, sem-performance-dashboard, seo-ranking-report | uncovered (hook processes, not tool calls) |
-| Bash `echo/printf >> $LOG` | hooks: data-dashboard-publish.sh, sem-performance-dashboard.sh, seo-ranking-report.sh | uncovered |
+| Bash `echo/printf >> $LOG` | hooks: data-dashboard-publish.sh, sem-performance-dashboard.sh, seo-ranking-report.sh (never wired; deleted #3489 — the wired .ps1 twins append via Add-Content) | n/a |
 
 Consequences for Phase 1/2: (1) Phase 1 needs Bash/PowerShell write detection — every non-tool idiom above is
 outside the native check; (2) the real native gap for tool writes is **Write on a never-Read existing file**,

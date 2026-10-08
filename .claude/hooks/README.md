@@ -10,7 +10,7 @@ Hook input/output contract: stdin is JSON with `tool_input.command`; stdout is a
 >
 > On the non-Bash path a command that matches no guard gets **no decision at all** (bare `exit 0`, no stdout), so it still falls through to the allowlist and the ordinary permission prompt. That is deliberate and load-bearing: an explicit `"allow"` is a decision that *bypasses* the permission check, which would silently auto-approve every unlisted PowerShell command. Bash keeps its own long-standing default-allow (#1614) — do not copy it onto the non-Bash branch.
 >
-> The four `block-*.ps1` files are therefore **NOT wired**; they are the readable reference (and, for `block-pytest-on-live-db.ps1`, the manual-test recipes). **Editing one of them alone changes nothing at runtime** — change its GUARD block in the gate too. Consolidating was measured, not assumed: 4 separate hook processes cost 2,114 ms per call vs 498 ms for one (~539 ms of Windows PowerShell startup each).
+> The four `block-*.ps1` files are therefore **NOT wired for Claude Code**; they are the readable reference (and, for `block-pytest-on-live-db.ps1`, the manual-test recipes). **Editing one of them alone changes nothing at runtime** — change its GUARD block in the gate too. They are kept because `.codex/hooks.json` wires the Codex copies and `api/src/services/zero_config_scaffold.py` copies `block-raw-sql-dml.ps1` + the `auto-approve-safe-writes` pair into new projects (#3489). Since #3486 the gate matches GUARD 2/3/5 per quote-aware command segment, and GUARD 3 is the option-C destructive class (ask), a superset of `block-curl-delete.ps1`. Consolidating was measured, not assumed: 4 separate hook processes cost 2,114 ms per call vs 498 ms for one (~539 ms of Windows PowerShell startup each).
 
 | Hook | Purpose | Bypass valve |
 | --- | --- | --- |
@@ -27,10 +27,15 @@ Hook input/output contract: stdin is JSON with `tool_input.command`; stdout is a
 
 ## Per-agent permission hooks (loaded via subagent frontmatter, not settings.json)
 
-- `tester-curl-allow.ps1` — auto-approve localhost curl for the tester agent.
-- `researcher-web-allow.ps1` — auto-approve WebSearch / WebFetch on whitelisted domains for the researcher agent.
-- `researcher-firecrawl-allow.ps1` — auto-approve Firecrawl skill calls for the researcher agent.
-- `auto-approve-safe-writes.ps1` — auto-approve Writes/Edits to safe paths (`_scratch/`, role-state, etc.); see the smoke file alongside.
+Bash pass paths emit **no decision** (the main gate decides); only a violation emits deny/ask (#3489).
+
+- `tester-curl-allow.ps1` (dev-tester, PreToolUse Bash) — deny any curl segment whose URL is not localhost / 127.0.0.1.
+- `researcher-firecrawl-allow.ps1` (general-researcher, PreToolUse Bash) — deny unless every segment is firecrawl or a read-only filter (head/tail/grep/jq/...).
+- `researcher-web-allow.ps1` (general-researcher, PreToolUse WebSearch/WebFetch) — auto-approve WebSearch / https WebFetch.
+- `project-auditor-readonly.ps1` (project-auditor, PreToolUse) — a lone curl passes; Write/Edit and any other Bash are denied.
+- `sem-spend-cap-gate.ps1` (sem-* agents, PreToolUse Edit|Write), `seo-factcheck-gate.ps1` (seo-strategist / content-seo-optimizer), `data-query-perf-gate.ps1` (bi-analyst / sql-optimizer / analytics-platform-integrator) — ask / deny on a hit.
+- `data-dashboard-publish.ps1`, `sem-performance-dashboard.ps1`, `seo-ranking-report.ps1` — PostToolUse Write audit loggers.
+- Not wired in Claude Code: `auto-approve-safe-writes.ps1` (+ smoke) — kept for the project scaffold (see above).
 
 ## Manual smoke (`block-pytest-on-live-db.ps1`)
 
