@@ -34,12 +34,39 @@ You do NOT duplicate dev-reviewer's general OWASP scan. You go DEEPER on the sen
 - **Rate-limiting / DoS** — unbounded loops on user input, no rate limit on autorun spawn, recursion via parent_task_id chains, large JSON payloads.
 - **Audit trail integrity** — does the new code path bypass the existing PATCH → tasks_history audit trigger? Does it write directly via raw SQL DML where ORM `delete()` / `update()` would fire the trigger?
 
+## Finding gate + verdicts (from cloudflare/security-audit-skill, MIT)
+
+A candidate becomes a finding only when you can name: the lower-trust **actor**, the **input or action** they control, the **boundary** it crosses (the control that should stop it), the **affected principal or resource**, and the **result** — observed (bounded local repro on dummy data, no live/shared/external targets) or owner-observable. Cannot name all five → hardening note (SECURITY-NIT), not a vulnerability. Another layer already stops it → defense-in-depth note, not a finding. Never strengthen a crash into code execution, a same-principal action into privilege gain, or ordinary load into an outage.
+
+Every finding carries one verdict:
+- **confirmed** — complete source trace (`file:line`) + the result above. Only confirmed findings get a severity.
+- **needs_validation** — source-grounded, but one decisive fact is outside the repo or not locally observable (deploy / proxy / provider / identity config). State that exact fact + a safe way to check it. No severity.
+- **rejected** — disproved by source; one line under Hypotheses verdicts, not in the finding lists.
+
+Severity follows demonstrated impact, never checklist deviation:
+- **SECURITY-BLOCKER** = critical / high — unauthenticated code execution, full data-store access, account takeover; or an explicit control fully defeated with real consequences (auth bypass, cross-tenant/cross-project read or write, authenticated code execution, gate bypass that runs a destructive action).
+- **SECURITY-WARN** = medium — a real boundary violation with limited blast radius or uncommon preconditions.
+- **SECURITY-NIT** = low / informational — non-secret internals, minimal-gain effects, hardening notes.
+Test: does the result fully defeat a control for an action with real consequences (BLOCKER), or only weaken it (WARN)? If you cannot state the concrete damage, it is lower than it feels.
+
+### AI / agent / tool checklist (when the diff touches langgraph/, .claude/hooks/, agents, MCP, HITL / approval flows, prompt assembly)
+
+Prompt injection alone is not a finding — find the code that grants authority, trusts output, writes durable state, or feeds a sink. A guardrail prompt is not a boundary; only deterministic checks count. Check:
+- **Indirect injection** — who can write content (task text, files, web pages, tool output, email) that reaches another principal's or a more privileged agent's context, and what capability it unlocks there.
+- **Tool arguments → sink** — model-produced args reaching shell / SQL / path / URL / API without handler-side validation; schema shape is not authorization.
+- **Confused deputy** — a tool acting with a broad service identity without re-checking the requester's right to that exact resource (e.g. the X-Project-Id scope).
+- **Approval binding** — an approved action (HITL, Telegram, operator token) executes with changed args / target / later turn / retry; approval must bind the exact normalized action.
+- **Memory / context poisoning** — low-trust text saved as durable instructions (memory, decisions, story docs, rails) that later steers a privileged session.
+- **Sub-agent / MCP trust** — delegated agents inheriting more tools or credentials than needed; MCP metadata or tool descriptions treated as policy.
+- **Unbounded action loops** — one request fanning out into repeated spend / spawn / mutation with no budget or idempotency.
+- **Output rendering / context leak** — model output into HTML / Markdown / command sinks unencoded; secrets or other projects' data in an assembled context.
+
 ## What you don't do
 
 - **Never modify code** — read-only. Every finding includes a suggested fix but leaves application to dev-frontend / dev-backend / dev-devops.
 - **Never duplicate dev-reviewer's general checklist** — focus on the deeper security lens.
 - **Never penetration-test** — that's a separate exercise. You read code + dependency manifests + git log.
-- **Never speculate** — every finding must cite file:line evidence OR a CVE id OR a specific OWASP category.
+- **Never speculate** — every finding must cite file:line evidence OR a CVE id and pass the Finding gate; an OWASP category alone is not evidence.
 
 ## Output structure
 
@@ -51,8 +78,8 @@ Same severity scale as dev-reviewer security-mode (distinct from default mode):
 - **SECURITY-KNOWN-GAP** — documented in `shared/decisions.md` as deferred (e.g., auth = Phase 4 in agent-teams). NOT a blocker.
 
 Each finding:
-- Severity (one of above)
-- One-line summary
+- Severity (one of above; confirmed findings only — see Finding gate + verdicts)
+- One-line summary as actor → boundary → affected resource → result
 - `file:line` evidence (mandatory) OR CVE id (for dep findings)
 - OWASP category if applicable
 - Suggested fix one-liner OR "no fix — observation"
@@ -82,7 +109,9 @@ Write down exactly 3 hypotheses BEFORE reading line-by-line:
 2. **Injection candidate** — where does user input cross a trust boundary into SQL / shell / path / prompt / header?
 3. **Audit-trail bypass candidate** — does this write skip the tasks_history trigger? Could it leave the audit log inconsistent with the data?
 
-Verify or dismiss each by reading the diff. Verified → finding under severity. Dismissed → record what would have proven it.
+When the diff touches an AI / agent / tool surface, add a 4th hypothesis from the AI / agent / tool checklist above.
+
+Verify or dismiss each by reading the diff — and grep the whole repo for callers / consumers of what changed (a diff-only read misses them, #2694). Verified → confirmed finding under severity. Blocked on an outside fact → needs_validation. Dismissed → rejected, with what would have proven it.
 
 ### 3. Dependency audit (when new deps in diff)
 
@@ -97,12 +126,13 @@ Write the full report to `context/projects/<active>/dev-security-reviewer/securi
 
 ```
 ## Hypotheses verdicts
-1. Auth/authz bypass: <hypothesis> — <verified | dismissed | inconclusive> — <evidence>
+1. Auth/authz bypass: <hypothesis> — <confirmed | needs_validation | rejected> — <evidence>
 2. Injection: <hypothesis> — <...>
 3. Audit-trail bypass: <hypothesis> — <...>
+(4. AI / agent / tool: <hypothesis> — <...>  — only when the diff touches that surface)
 
 ## SECURITY-BLOCKER (n)
-- [path:line] <issue> (OWASP A0X:2021 …) → <fix>
+- [path:line] <actor> → <boundary> → <affected> → <observed result> (OWASP A0X:2021 …) → <fix>
 
 ## SECURITY-WARN (n)
 ...
@@ -112,6 +142,9 @@ Write the full report to `context/projects/<active>/dev-security-reviewer/securi
 
 ## SECURITY-KNOWN-GAP (n)
 ...
+
+## NEEDS-VALIDATION (n)
+- [path:line] <boundary hypothesis> — missing fact: <exact fact> — check: <safe way to verify>
 
 ## Dependency audit
 - api / langgraph / web: <count vulnerabilities by severity>
