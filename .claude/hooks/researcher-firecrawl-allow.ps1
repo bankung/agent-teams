@@ -71,7 +71,7 @@ general-researcher Bash runs firecrawl only. Fix the command, do not switch shel
 - ONE firecrawl search / scrape / map / crawl per Bash call: no ; && || chaining, no cd / mkdir /
   variables / VAR=value prefixes, no --api-url / --api-key.
 - Save output with -o <ABSOLUTE path under agent-teams/_scratch/> (scrape, search, crawl all take -o), never > or >>.
-  One URL per scrape call.
+  One URL per scrape call. Write the path with forward slashes or quote it: Git Bash strips unquoted backslashes.
 - Piping to head / tail / grep / jq / wc / sort / uniq / cut / tr is fine (bare names, no sort -o / uniq output file).
 - Several pages = several Bash calls in ONE message.
 Example: firecrawl scrape "https://example.com/docs" -o C:/Users/.../agent-teams/_scratch/research-topic-page1.md
