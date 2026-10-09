@@ -187,9 +187,12 @@ See: .claude/hooks/project-auditor-readonly.ps1
 
     # Catch-all whitelist fallback — any non-curl Bash that didn't match a known
     # mutation pattern is still denied. This is the real safety net.
+    $heads = ($segs | ForEach-Object { $h = Get-SegmentHead -Tokens $_; if ($h -lt $_.Count) { Get-CommandLeaf $_[$h] } }) -join ', '
     Deny-Tool @"
-project-auditor Bash blocked — '$firstWord' is not on the curl-only whitelist.
+project-auditor Bash blocked — '$heads' is not a single curl (the only allowed Bash shape).
 
+Fix: ONE curl per Bash call — no ; && || | chaining (not even | jq), no redirects; issue several
+curl calls in one message instead, and read the JSON in your reply.
 The project-auditor agent may only invoke `curl ...` from Bash (typically against
 http://localhost:8456/api/... to read project/task state). Any other command —
 even apparently read-only ones like ls / cat / grep — should be done via the

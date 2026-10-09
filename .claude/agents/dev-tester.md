@@ -4,7 +4,7 @@ description: Dev tester / QA engineer — unit / integration / e2e tests, edge c
 model: sonnet
 hooks:
   PreToolUse:
-    - matcher: "Bash"
+    - matcher: "Bash|PowerShell"
       hooks:
         - type: command
           command: powershell -NoProfile -ExecutionPolicy Bypass -File "$CLAUDE_PROJECT_DIR/.claude/hooks/tester-curl-allow.ps1"
