@@ -166,6 +166,9 @@ of disabling the hook IS the gate — see .claude/docs/lessons.md "Raw SQL DML i
 # push --force|--delete/branch -D/stash drop/rm -r, HTTP DELETE (curl or PS cmdlets),
 # docker volume|image rm/prune, system prune, rmi, down -v. Rules: Get-DestructiveHit.
 # Everything else keeps the default allow (walker throughput unchanged).
+# ACCEPTED LIMIT (#3500): an accident guard for cooperating agents, not a sandbox. Obfuscated
+# shapes (brace expansion, ${IFS}, $'..', env -S, busybox/flock wrappers) and interpreter code
+# (python -c, node -e, [IO.Directory]::Delete, docker run ... rm -rf) stay opaque.
 # ---------------------------------------------------------------------------
 if ($destructive) {
     $segText = $destructive.segment.Substring(0, [Math]::Min(200, $destructive.segment.Length))

@@ -132,6 +132,13 @@ $tests = @(
     @{ B=1; Name='SAFE heredoc body naming rm -rf -> allow'; Cmd="cat > _scratch/n.md <<'EOF'`nrm -rf mobile/ and git checkout -- x`nEOF"; Expected='allow' },
     @{ B=1; Name='SAFE node -e string -> allow';             Cmd='node -e "require(''child_process''); // rm -rf web"'; Expected='allow' },
     @{ B=1; Name='SAFE plain git checkout branch -> allow';  Cmd='git checkout dev'; Expected='allow' },
+    @{ B=1; Name='CLASS git checkout HEAD file -> ask';      Cmd='git checkout HEAD api/main.py'; Expected='ask' },   # #3500
+    @{ B=1; Name='SAFE git checkout -b x base -> allow';     Cmd='git checkout -b feat origin/dev'; Expected='allow' },
+    @{ B=1; Name='CLASS find -delete -> ask';                Cmd='find . -name "*.pyc" -delete'; Expected='ask' },
+    @{ B=1; Name='CLASS find -exec rm -rf -> ask';           Cmd='find web -type d -exec rm -rf {} +'; Expected='ask' },
+    @{ B=1; Name='CLASS find -exec rm (files) -> ask';       Cmd='find . -type f -exec rm {} +'; Expected='ask' },
+    @{ B=1; Name='CLASS git checkout file.py -> ask';        Cmd='git checkout api/main.py'; Expected='ask' },
+    @{ B=1; Name='SAFE find _scratch -delete -> allow';      Cmd='find _scratch -name "*.json" -delete'; Expected='allow' },
     @{ B=1; Name='CLASS bash -c rm -rf -> ask';              Cmd='bash -c "rm -rf web/app"'; Expected='ask' },
     @{ B=1; T='PowerShell'; Name='PS Remove-Item -Recurse -> ask';     Cmd='Remove-Item -Recurse -Force C:\repo\web\app'; Expected='ask' },
     @{ B=1; T='PowerShell'; Name='PS irm -Method Delete -> ask';       Cmd='$r = Invoke-RestMethod -Uri http://localhost:8456/api/tasks/1 -Method Delete'; Expected='ask' },

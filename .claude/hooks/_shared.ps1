@@ -792,7 +792,11 @@ function Get-DestructiveHit {
             $sub = if ($i -lt $rest.Count) { $rest[$i] } else { '' }
             $r = @(if ($i + 1 -lt $rest.Count) { $rest[($i + 1)..($rest.Count - 1)] })
             switch ($sub) {
-                'checkout'   { if ($r -contains '--' -or $r -contains '.' -or $r -ccontains '-f' -or (Test-LongOpt $r '--force')) { $rule = 'git checkout --/-f (discards edits)' } }
+                'checkout'   {   # paths without `--` (#3500): 2+ positionals once -b/-B/--orphan values are skipped,
+                                 # one that looks like a file (x.py), or --ours/--theirs
+                                 $pos = 0; $file = $false
+                                 for ($k = 0; $k -lt $r.Count; $k++) { if ($r[$k] -cin @('-b', '-B', '--orphan')) { $k++ } elseif ($r[$k] -notlike '-*') { $pos++; if ($r[$k] -match '\.[A-Za-z]\w*$') { $file = $true } } }
+                                 if ($r -contains '--' -or $r -contains '.' -or $pos -ge 2 -or $file -or $r -ccontains '-f' -or (Test-LongOpt $r @('--force', '--ours', '--theirs'))) { $rule = 'git checkout <path>/-f (discards edits)' } }
                 'switch'     { if ($r -ccontains '-f' -or (Test-LongOpt $r @('--force', '--discard-changes'))) { $rule = 'git switch -f (discards edits)' } }
                 'restore'    { if (-not ($r -ccontains '-S' -or (Test-LongOpt $r '--staged')) -or $r -ccontains '-W' -or (Test-LongOpt $r '--worktree')) { $rule = 'git restore (discards edits)' } }
                 'reset'      { if (Test-LongOpt $r '--hard') { $rule = 'git reset --hard' } }
@@ -804,6 +808,15 @@ function Get-DestructiveHit {
                 'rm'         { if (@($r | Where-Object { $_ -cmatch '^-[a-zA-Z]*r' }).Count -and $r -notcontains '--cached') { $rule = 'git rm -r' } }
                 'update-ref' { if ($r -ccontains '-d' -or $r -contains '--delete') { $rule = 'git update-ref -d' } }
             }
+        } elseif ($leaf -eq 'find') {
+            # find -delete / -exec rm (#3500): a tree walk, so judged by the start paths like rm -r
+            $roots = New-Object System.Collections.Generic.List[string]
+            foreach ($t in $rest) { if ($t -cin @('-H', '-L', '-P')) { continue }; if ($t -match '^[-(!]') { break }; $roots.Add($t) }
+            $del = $rest -ccontains '-delete'
+            for ($k = 0; -not $del -and $k -lt $rest.Count - 1; $k++) {
+                if ($rest[$k] -cin @('-exec', '-execdir', '-ok', '-okdir') -and (Get-CommandLeaf $rest[$k + 1]) -eq 'rm') { $del = $true }
+            }
+            if ($del -and ($roots.Count -eq 0 -or @($roots | Where-Object { $_ -notmatch $safePath -or $_ -match '\.\.' }).Count)) { $rule = 'find -delete / -exec rm outside throwaway paths' }
         } elseif ($leaf -in @('curl', 'wget', 'invoke-restmethod', 'invoke-webrequest', 'irm', 'iwr')) {
             for ($j = 0; $j -lt $rest.Count; $j++) {
                 $a = $rest[$j]; $next = if ($j + 1 -lt $rest.Count) { $rest[$j + 1] } else { '' }
