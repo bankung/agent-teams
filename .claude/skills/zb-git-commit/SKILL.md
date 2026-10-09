@@ -10,6 +10,7 @@ allowed-tools:
   - Bash(git:*)
   - Bash(grep:*)
   - Bash(curl:*)
+  - Write
 metadata:
   version: 1.0.2
   category: platform
@@ -86,17 +87,26 @@ git -C <root> status --short -- <the file list>
   hook re-scans for lock-codes; `main` additionally requires the ruleset bypass and the
   /zb-release procedure. Never `--force` on main, never `--no-verify` anywhere.
 
-## Step 6 — rail checkpoint (activity-rail rule, 2026-06-12)
+## Step 6 — rail commit checkpoint (part of this flow — #3516)
 
-Post the commit checkpoint on the task's activity rail in the same working stretch via
-/zb-report (it owns the payload shape, UTF-8 file and project header):
-
+No task id in scope (chore / release prep) → skip, and say "no rail row: no task id" in the output.
+Otherwise, right after Step 4 verified the hash: resolve `X-Project-Id` with
+`powershell -File bin/lead-project-id.ps1`, write `_scratch/tn_report_payload_<sid>.json` (UTF-8;
+`<sid>` per /zb-bind "Scratch filenames"):
+```json
+{"source": "lead", "kind": "commit",
+ "summary": "Committed <short hash> on <branch> (local; push held): <one-line>. Gates: <evidence>."}
 ```
-/zb-report <task_id> commit Committed <hash> on <branch> (local; push held): <one-line>. Gates: <evidence>.
 ```
-
-EXCEPTION: if the FULL api suite is running against the live db, HOLD this post until it
-finishes (live-DB sentinel trips on tool_calls deltas) — held queue, not a backfill.
+curl --silent -X POST -H "X-Project-Id: <id>" -H "Content-Type: application/json" \
+  --data-binary @_scratch/tn_report_payload_<sid>.json \
+  http://localhost:8456/api/tasks/<task_id>/tool-calls \
+  -o _scratch/tn_report_resp_<sid>.json -w "%{http_code}"
+```
+- 201 → the body is the persisted row; confirm `id`, `source:"lead"`, `kind:"commit"`.
+- Non-201 → show the raw body, retry ONCE; still failing → warn. The commit stands — never revert it.
+- HOLD this post while the FULL api suite runs against the live db (live-DB sentinel trips on
+  tool_calls deltas); post right after — held queue, not a backfill.
 
 ## Footgun index (why each step exists)
 
@@ -108,7 +118,7 @@ finishes (live-DB sentinel trips on tool_calls deltas) — held queue, not a bac
 | 2, 4 | bare `git commit` swept another session's staged paths (shared index, #3346) |
 | 3 | AI trailer appeared in a personal-repo commit |
 | 5 | push without operator signal; trailing pushes during batch-hold windows |
-| 6 | empty activity rail discovered end-of-day (2026-06-12) — recording is mandatory |
+| 6 | empty activity rail discovered end-of-day (2026-06-12); "call /zb-report" still left 37% of commits unrailed (#3320) |
 
 ## Usage
 

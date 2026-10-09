@@ -72,8 +72,27 @@ Then GET the task ONCE and confirm BOTH persisted: every AC status is passed/na 
 `process_status=5` with `completed_at` set. (One PATCH + one GET replaces the old
 PATCH-AC → GET → PATCH-done → GET — proven live on #2542; verify-don't-trust unchanged.)
 
-## Step 6 — report
-Print: task id, title, EACH criterion + its verdict + evidence, and the final status.
+## Step 6 — rail close checkpoint (part of this flow, not a later /zb-report — #3516)
+
+Only after Step 5's GET confirmed the flip, write `_scratch/tn_report_payload_<sid>.json` (UTF-8):
+```json
+{"source": "lead", "kind": "status_change",
+ "summary": "<old process_status> -> 5 DONE: <status_change_reason>. AC <n passed>/<n na> of <total>."}
+```
+```
+curl --silent -X POST -H "X-Project-Id: <id>" -H "Content-Type: application/json" \
+  --data-binary @_scratch/tn_report_payload_<sid>.json \
+  http://localhost:8456/api/tasks/<task_id>/tool-calls \
+  -o _scratch/tn_report_resp_<sid>.json -w "%{http_code}"
+```
+- 201 → the body is the persisted row; confirm `id`, `source:"lead"`, `kind:"status_change"`.
+- Non-201 → show the raw body, retry ONCE; still failing → warn in the report. The DONE flip stands —
+  never PATCH it back over a rail failure.
+- HOLD this post while the FULL api suite runs against the live db (live-DB sentinel); post right after.
+
+## Step 7 — report
+Print: task id, title, EACH criterion + its verdict + evidence, the final status, and the rail row id
+(or the warning from Step 6).
 
 ---
 
@@ -85,6 +104,8 @@ Print: task id, title, EACH criterion + its verdict + evidence, and the final st
    of the flip, so the HARD GATE in Step 3 still runs first.)
 3. **Verify independently — don't trust** the task's own notes or a prior agent's "it passed".
 4. **`na`** is for a criterion deliberately deferred — record the follow-up reference in `notes`.
+5. **The close checkpoint rides the flip** (Step 6) — hand-posted close rows were skipped 64% of the
+   time (#3320 rail audit); a rail failure warns, never blocks or undoes the flip.
 
 ## Usage
 ```
